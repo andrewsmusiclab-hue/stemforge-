@@ -6,9 +6,11 @@
   "compatibility_flags": [
     "nodejs_compat"
   ]
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
+  // NOTE: Real keys are in .dev.vars locally.
+  // For production, keys are set via wrangler secret put (not committed here).
+  // The gsk deploy pipeline reads .dev.vars and injects them as secrets.
+  // API keys are stored in .dev.vars for local dev.
+  // For production use: gsk hosted deploy (reads .dev.vars as secrets)
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
