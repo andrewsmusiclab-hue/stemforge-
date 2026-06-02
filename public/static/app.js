@@ -1,79 +1,36 @@
 /* ═══════════════════════════════════════════════════════════════
    StemForge — Frontend App JS
+   Real pipeline: GPT-4o blueprint → Mureka generation → track extraction
 ═══════════════════════════════════════════════════════════════ */
 
 document.addEventListener('DOMContentLoaded', () => {
 
-  // ── Nav scroll effect ──────────────────────────────────────────
+  // ── Nav scroll ─────────────────────────────────────────────────
   const nav = document.getElementById('sf-nav');
-  if (nav) {
-    window.addEventListener('scroll', () => {
-      nav.classList.toggle('scrolled', window.scrollY > 20);
-    });
-  }
+  if (nav) window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 20));
 
-  // ── Hamburger menu ─────────────────────────────────────────────
+  // ── Hamburger ──────────────────────────────────────────────────
   const hamburger = document.getElementById('hamburger');
   const mobileMenu = document.getElementById('mobile-menu');
-  if (hamburger && mobileMenu) {
-    hamburger.addEventListener('click', () => {
-      mobileMenu.classList.toggle('open');
-    });
-  }
+  if (hamburger && mobileMenu) hamburger.addEventListener('click', () => mobileMenu.classList.toggle('open'));
 
   // ── Waveform animation (hero) ──────────────────────────────────
   const trackColors = {
-    kick:   '#ef4444', snare: '#f97316', hats:   '#eab308',
-    bass:   '#3b82f6', rhodes:'#8b5cf6', guitar: '#06b6d4',
-    pad:    '#10b981', fx:    '#ec4899'
+    kick:'#ef4444', snare:'#f97316', hats:'#eab308',
+    bass:'#3b82f6', rhodes:'#8b5cf6', guitar:'#06b6d4',
+    pad:'#10b981', fx:'#ec4899'
   };
   document.querySelectorAll('.wv-bars').forEach(container => {
-    const track = container.dataset.track;
-    const color = trackColors[track] || '#4e9fff';
+    const color = trackColors[container.dataset.track] || '#4e9fff';
     for (let i = 0; i < 80; i++) {
       const bar = document.createElement('div');
       bar.className = 'wv-bar';
-      const h = Math.random() * 24 + 4;
-      bar.style.cssText = `
-        height: ${h}px;
-        background: ${color};
-        animation-delay: ${(Math.random() * 1.2).toFixed(2)}s;
-        animation-duration: ${(0.8 + Math.random() * 0.8).toFixed(2)}s;
-        opacity: ${0.4 + Math.random() * 0.6};
-      `;
+      bar.style.cssText = `height:${Math.random()*24+4}px;background:${color};
+        animation-delay:${(Math.random()*1.2).toFixed(2)}s;
+        animation-duration:${(0.8+Math.random()*0.8).toFixed(2)}s;
+        opacity:${0.4+Math.random()*0.6};`;
       container.appendChild(bar);
     }
-  });
-
-  // ── Track row waveforms (generator / project) ──────────────────
-  const allTrackColors = {
-    Kick:'#ef4444', Snare:'#f97316', 'Hi-hats':'#eab308',
-    Bass:'#3b82f6', Rhodes:'#8b5cf6', Guitar:'#06b6d4',
-    Pad:'#10b981', FX:'#ec4899'
-  };
-  function fillTrackWave(container, color) {
-    for (let i = 0; i < 120; i++) {
-      const b = document.createElement('div');
-      const h = Math.random() * 26 + 4;
-      b.style.cssText = `
-        width:2px; height:${h}px; border-radius:1px;
-        background:${color}; opacity:${0.4 + Math.random() * 0.5};
-        flex-shrink:0;
-      `;
-      container.appendChild(b);
-    }
-  }
-  document.querySelectorAll('.track-row').forEach(row => {
-    const name = row.dataset.track;
-    const color = allTrackColors[name] || '#4e9fff';
-    const wave = row.querySelector('.track-row__wave');
-    if (wave && !wave.dataset.autofill) fillTrackWave(wave, color);
-  });
-  document.querySelectorAll('[data-autofill]').forEach(wave => {
-    const row = wave.closest('.track-row');
-    const name = row?.dataset.track;
-    const color = allTrackColors[name] || '#4e9fff';
-    fillTrackWave(wave, color);
   });
 
   // ── FAQ accordion ──────────────────────────────────────────────
@@ -86,43 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // ── Credit calculator ──────────────────────────────────────────
-  const calcInputs = {
-    beats:   { el: document.getElementById('calc-beats'),   cost: 50 },
-    masters: { el: document.getElementById('calc-masters'),  cost: 20 },
-    stems:   { el: document.getElementById('calc-stems'),   cost: 60 },
-    tracks:  { el: document.getElementById('calc-tracks'),  cost: 180 },
-    regen:   { el: document.getElementById('calc-regen'),   cost: 15 },
-  };
-  const calcTotal = document.getElementById('calc-total');
-  const calcPlan  = document.getElementById('calc-plan');
-  function updateCalc() {
-    let total = 0;
-    Object.values(calcInputs).forEach(({ el, cost }) => {
-      if (el) total += (parseInt(el.value) || 0) * cost;
-    });
-    if (calcTotal) calcTotal.textContent = total.toLocaleString();
-    if (calcPlan) {
-      if (total <= 150)       calcPlan.textContent = 'Free';
-      else if (total <= 3000) calcPlan.textContent = 'Creator ($12/mo)';
-      else                    calcPlan.textContent = 'Pro Artist ($29/mo)';
-    }
-  }
-  Object.values(calcInputs).forEach(({ el }) => {
-    if (el) el.addEventListener('input', updateCalc);
-  });
-  updateCalc();
-
-  // ── Generator: BPM slider ──────────────────────────────────────
-  const bpmSlider = document.getElementById('gen-bpm');
-  const bpmVal    = document.getElementById('gen-bpm-val');
-  if (bpmSlider && bpmVal) {
-    bpmSlider.addEventListener('input', () => {
-      bpmVal.textContent = bpmSlider.value + ' BPM';
-    });
-  }
-
-  // ── Generator: toggle groups ───────────────────────────────────
+  // ── Generator toggle groups ────────────────────────────────────
   document.querySelectorAll('.toggle-group').forEach(group => {
     group.querySelectorAll('.toggle-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -132,79 +53,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // ── Generator: instrument tags ─────────────────────────────────
-  document.querySelectorAll('.inst-tag').forEach(tag => {
-    tag.addEventListener('click', () => tag.classList.toggle('active'));
-  });
+  // ── Instrument tags ────────────────────────────────────────────
+  document.querySelectorAll('.inst-tag').forEach(tag => tag.addEventListener('click', () => tag.classList.toggle('active')));
 
-  // ── Generator: filter buttons ──────────────────────────────────
-  document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
-  });
-
-  // ── Generator: prompt preview ──────────────────────────────────
-  const promptInput   = document.getElementById('gen-prompt');
-  const promptPreview = document.getElementById('prompt-preview');
-  if (promptInput && promptPreview) {
-    promptInput.addEventListener('input', () => {
-      promptPreview.textContent = promptInput.value.trim()
-        || 'Start typing to build your prompt preview...';
-    });
-  }
-
-  // ── Generator: simulate generate ──────────────────────────────
-  const genFullBtn = document.getElementById('gen-full-btn');
-  const genDraftBtn= document.getElementById('gen-draft-btn');
-  const genResult  = document.getElementById('gen-result');
-  const genEmpty   = document.getElementById('gen-empty');
-
-  function showResult() {
-    if (genResult) {
-      genResult.style.display = 'block';
-      const title = document.getElementById('gen-result-title');
-      const sub   = document.getElementById('gen-result-sub');
-      const genre = document.getElementById('gen-genre');
-      const bpm   = document.getElementById('gen-bpm');
-      if (title && genre && bpm) {
-        title.textContent = (genre?.value || 'Beat') + ' — ' + (bpm?.value || '90') + ' BPM';
-      }
-      if (sub) sub.textContent = 'Generated · 8 individual tracks · 2:14';
-    }
-    if (genEmpty) genEmpty.style.display = 'none';
-  }
-
-  function simulateGenerate(btn, label) {
-    if (!btn) return;
-    const orig = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ' + label + '...';
-    btn.disabled = true;
-    setTimeout(() => {
-      btn.innerHTML = orig;
-      btn.disabled = false;
-      showResult();
-    }, 2000);
-  }
-
-  if (genFullBtn) genFullBtn.addEventListener('click', () => simulateGenerate(genFullBtn, 'Generating'));
-  if (genDraftBtn) genDraftBtn.addEventListener('click', () => simulateGenerate(genDraftBtn, 'Drafting'));
-
-  // ── Export buttons ─────────────────────────────────────────────
-  document.querySelectorAll('.export-btn:not(.export-btn--locked)').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const orig = btn.innerHTML;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing...';
-      btn.disabled = true;
-      setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 1500);
-    });
-  });
-  document.querySelectorAll('.export-btn--locked').forEach(btn => {
-    btn.addEventListener('click', () => {
-      window.location.href = '/pricing';
-    });
-  });
+  // ── BPM slider ─────────────────────────────────────────────────
+  const bpmSlider = document.getElementById('gen-bpm');
+  const bpmVal    = document.getElementById('gen-bpm-val');
+  if (bpmSlider && bpmVal) bpmSlider.addEventListener('input', () => bpmVal.textContent = bpmSlider.value + ' BPM');
 
   // ── Password toggle ────────────────────────────────────────────
   const pwToggle = document.getElementById('pw-toggle');
@@ -224,59 +79,39 @@ document.addEventListener('DOMContentLoaded', () => {
     pwInput.addEventListener('input', () => {
       const v = pwInput.value;
       let score = 0;
-      if (v.length >= 8)  score++;
+      if (v.length >= 8) score++;
       if (/[A-Z]/.test(v)) score++;
       if (/[0-9]/.test(v)) score++;
       if (/[^A-Za-z0-9]/.test(v)) score++;
       const colors = ['#ef4444','#f97316','#eab308','#10b981'];
       const widths = ['25%','50%','75%','100%'];
-      pwStrength.style.cssText = `
-        height:3px; border-radius:2px; margin-top:6px;
-        background:${colors[score-1]||'#1a2a48'};
-        width:${widths[score-1]||'0%'};
-        transition:all .3s ease;
-      `;
+      pwStrength.style.cssText = `height:3px;border-radius:2px;margin-top:6px;
+        background:${colors[score-1]||'#1a2a48'};width:${widths[score-1]||'0%'};transition:all .3s ease;`;
     });
   }
 
-  // ── Card number formatting ─────────────────────────────────────
+  // ── Card formatting ────────────────────────────────────────────
   const cardNum = document.getElementById('card-num');
-  if (cardNum) {
-    cardNum.addEventListener('input', e => {
-      let v = e.target.value.replace(/\D/g, '').substring(0, 16);
-      e.target.value = v.replace(/(.{4})/g, '$1 ').trim();
-    });
-  }
+  if (cardNum) cardNum.addEventListener('input', e => {
+    let v = e.target.value.replace(/\D/g,'').substring(0,16);
+    e.target.value = v.replace(/(.{4})/g,'$1 ').trim();
+  });
   const cardExp = document.getElementById('card-exp');
-  if (cardExp) {
-    cardExp.addEventListener('input', e => {
-      let v = e.target.value.replace(/\D/g, '').substring(0, 4);
-      if (v.length >= 2) v = v.slice(0,2) + ' / ' + v.slice(2);
-      e.target.value = v;
-    });
-  }
+  if (cardExp) cardExp.addEventListener('input', e => {
+    let v = e.target.value.replace(/\D/g,'').substring(0,4);
+    if (v.length >= 2) v = v.slice(0,2) + ' / ' + v.slice(2);
+    e.target.value = v;
+  });
 
-  // ── Signup form ────────────────────────────────────────────────
+  // ── Auth forms ─────────────────────────────────────────────────
   const signupForm = document.getElementById('signup-form');
-  if (signupForm) {
-    signupForm.addEventListener('submit', e => {
-      e.preventDefault();
-      const plan = signupForm.querySelector('input[name="plan"]:checked')?.value;
-      if (plan === 'free') window.location.href = '/dashboard';
-      else window.location.href = '/checkout';
-    });
-  }
-
-  // ── Login form ─────────────────────────────────────────────────
+  if (signupForm) signupForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const plan = signupForm.querySelector('input[name="plan"]:checked')?.value;
+    window.location.href = plan === 'free' ? '/dashboard' : '/checkout';
+  });
   const loginForm = document.getElementById('login-form');
-  if (loginForm) {
-    loginForm.addEventListener('submit', e => {
-      e.preventDefault();
-      window.location.href = '/dashboard';
-    });
-  }
-
-  // ── Checkout form ──────────────────────────────────────────────
+  if (loginForm) loginForm.addEventListener('submit', e => { e.preventDefault(); window.location.href = '/dashboard'; });
   const checkoutForm = document.getElementById('checkout-form');
   const checkoutSubmit = document.getElementById('checkout-submit');
   if (checkoutForm && checkoutSubmit) {
@@ -286,34 +121,343 @@ document.addEventListener('DOMContentLoaded', () => {
       checkoutSubmit.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
       checkoutSubmit.disabled = true;
       setTimeout(() => {
-        checkoutSubmit.innerHTML = '<i class="fas fa-check"></i> Payment successful!';
+        checkoutSubmit.innerHTML = '<i class="fas fa-check"></i> Success!';
         checkoutSubmit.style.background = '#10b981';
         setTimeout(() => window.location.href = '/dashboard', 1200);
       }, 2000);
     });
   }
 
-  // ── Fade-up on scroll ──────────────────────────────────────────
-  const observer = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting) {
-        entry.target.style.opacity = '1';
-        entry.target.style.transform = 'translateY(0)';
-      }
+  // ── Scroll fade-in ─────────────────────────────────────────────
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) { e.target.style.opacity='1'; e.target.style.transform='translateY(0)'; }
     });
   }, { threshold: 0.12 });
-
-  document.querySelectorAll('.feature-card, .plan-card, .testi-card, .how__step').forEach(el => {
-    el.style.cssText += '; opacity:0; transform:translateY(20px); transition: opacity .5s ease, transform .5s ease;';
+  document.querySelectorAll('.feature-card,.plan-card,.testi-card,.how__step').forEach(el => {
+    el.style.cssText += ';opacity:0;transform:translateY(20px);transition:opacity .5s ease,transform .5s ease;';
     observer.observe(el);
   });
 
-  // ── Active nav link highlight ──────────────────────────────────
-  const path = window.location.pathname;
-  document.querySelectorAll('.sf-nav__links a, .sf-nav__mobile a').forEach(link => {
-    if (link.getAttribute('href') === path) {
-      link.style.color = 'var(--primary)';
+  // ═══════════════════════════════════════════════════════════════
+  //  REAL PIPELINE — Beat Generator
+  // ═══════════════════════════════════════════════════════════════
+
+  const genBtn        = document.getElementById('gen-full-btn');
+  const genRetryBtn   = document.getElementById('gen-retry-btn');
+  const pipelineStatus= document.getElementById('pipeline-status');
+  const genResult     = document.getElementById('gen-result');
+  const genEmpty      = document.getElementById('gen-empty');
+  const genError      = document.getElementById('gen-error');
+  const genErrorMsg   = document.getElementById('gen-error-msg');
+  const trackList     = document.getElementById('track-list');
+  const stereoPlayer  = document.getElementById('stereo-player');
+  const stereoAudio   = document.getElementById('stereo-audio');
+  const stereoDownload= document.getElementById('stereo-download');
+  const bpBlueprint   = document.getElementById('pipeline-blueprint');
+  const bpPills       = document.getElementById('blueprint-pills');
+
+  if (!genBtn) return; // not on generator page
+
+  let currentJobId = null;
+  let pollInterval = null;
+
+  function getInputs() {
+    const genre    = document.getElementById('gen-genre')?.value || '';
+    const bpm      = document.getElementById('gen-bpm')?.value || '90';
+    const prompt   = document.getElementById('gen-prompt')?.value || '';
+    const vocal    = document.querySelector('#gen-vocal .toggle-btn.active')?.dataset.val || 'high';
+    const energy   = document.querySelector('#gen-energy .toggle-btn.active')?.dataset.val || 'medium';
+    const include  = [...document.querySelectorAll('.inst-tag.active:not(.inst-tag--exclude)')].map(t=>t.dataset.instr);
+    const exclude  = [...document.querySelectorAll('.inst-tag--exclude.active')].map(t=>t.dataset.instr);
+    return { genre, bpm, prompt, vocal_space: vocal, energy, instruments_include: include, instruments_exclude: exclude };
+  }
+
+  function setStep(step, state) {
+    // state: 'active' | 'done' | 'error' | ''
+    const ind = document.getElementById('ind-' + step);
+    const row = document.getElementById('step-' + step);
+    if (!ind || !row) return;
+    ind.innerHTML = state === 'active'
+      ? '<i class="fas fa-spinner fa-spin" style="color:var(--primary)"></i>'
+      : state === 'done'
+      ? '<i class="fas fa-check-circle" style="color:var(--accent-2)"></i>'
+      : state === 'error'
+      ? '<i class="fas fa-times-circle" style="color:var(--danger)"></i>'
+      : '';
+    row.style.opacity = (state === '' ) ? '0.4' : '1';
+  }
+
+  function showBlueprint(bp) {
+    if (!bp || !bpPills) return;
+    bpPills.innerHTML = '';
+    const pills = [
+      { icon: 'fa-drum',       label: bp.bpm + ' BPM' },
+      { icon: 'fa-music',      label: bp.key + ' ' + bp.scale },
+      { icon: 'fa-compact-disc',label: bp.genre },
+      { icon: 'fa-heart',      label: bp.mood },
+      { icon: 'fa-bolt',       label: bp.energy + ' energy' },
+      { icon: 'fa-clock',      label: Math.round(bp.duration_seconds/60) + ' min' },
+      { icon: 'fa-layer-group',label: bp.instrument_count + ' instruments' },
+    ];
+    pills.forEach(p => {
+      const el = document.createElement('span');
+      el.className = 'blueprint-pill';
+      el.innerHTML = `<i class="fas ${p.icon}"></i> ${p.label}`;
+      bpPills.appendChild(el);
+    });
+    bpBlueprint.style.display = 'block';
+  }
+
+  function buildTrackRow(track) {
+    const row = document.createElement('div');
+    row.className = 'track-row';
+    row.id = 'track-' + track.stem;
+
+    const iconMap = {
+      drums: 'fa-drum', bass: 'fa-guitar', vocals: 'fa-microphone',
+      other: 'fa-wave-square', instrumental: 'fa-music', mix: 'fa-compact-disc',
+      synth: 'fa-wave-square', fx: 'fa-magic', default: 'fa-music'
+    };
+    const icon = iconMap[track.family] || iconMap[track.stem] || iconMap.default;
+
+    row.innerHTML = `
+      <div class="track-row__info">
+        <span class="track-row__icon" style="background:${track.color}">
+          <i class="fas ${icon}"></i>
+        </span>
+        <div>
+          <strong>${track.name}</strong>
+          <span>${track.stem}.wav</span>
+        </div>
+      </div>
+      <div class="track-row__wave" id="wave-${track.stem}"></div>
+      <div class="track-row__actions" id="actions-${track.stem}">
+        ${renderTrackActions(track)}
+      </div>`;
+
+    // fill waveform bars
+    const wave = row.querySelector('.track-row__wave');
+    fillWave(wave, track.color);
+
+    return row;
+  }
+
+  function renderTrackActions(track) {
+    if (track.status === 'pending') {
+      return `<span style="font-size:.78rem;color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Extracting...</span>`;
     }
+    if (track.status === 'ready' && track.zip_url) {
+      // Download individual WAV stem from ZIP
+      // Note: Individual downloads are locked to Pro; ZIP download is shown in export panel
+      return `
+        <span class="stem-file-badge">${track.stem}.wav</span>
+        <span class="track-row__dl locked-pro" title="Pro Artist — download individual track"><i class="fas fa-lock"></i> Pro</span>`;
+    }
+    if (track.status === 'error') {
+      return `<span style="font-size:.78rem;color:var(--danger)"><i class="fas fa-times"></i> Error</span>`;
+    }
+    return `<span class="track-row__dl locked-pro"><i class="fas fa-lock"></i></span>`;
+  }
+
+  function fillWave(container, color) {
+    for (let i = 0; i < 120; i++) {
+      const b = document.createElement('div');
+      const h = Math.random()*26+4;
+      b.style.cssText = `width:2px;height:${h}px;border-radius:1px;background:${color};opacity:${0.4+Math.random()*0.5};flex-shrink:0;`;
+      container.appendChild(b);
+    }
+  }
+
+  function updateTrackRow(track) {
+    const actionsEl = document.getElementById('actions-' + track.stem);
+    if (actionsEl) actionsEl.innerHTML = renderTrackActions(track);
+  }
+
+  function showError(msg) {
+    genBtn.innerHTML = '<i class="fas fa-play"></i> Generate Beat — 50 credits';
+    genBtn.disabled = false;
+    if (pipelineStatus) pipelineStatus.style.display = 'none';
+    if (genEmpty) genEmpty.style.display = 'none';
+    if (genResult) genResult.style.display = 'none';
+    if (genError) genError.style.display = 'block';
+    if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
+    if (pollInterval) clearInterval(pollInterval);
+  }
+
+  async function startGeneration() {
+    const inputs = getInputs();
+
+    if (!inputs.prompt && !inputs.genre) {
+      alert('Please describe your beat first.');
+      return;
+    }
+
+    // Reset UI
+    genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+    genBtn.disabled = true;
+    if (genEmpty) genEmpty.style.display = 'none';
+    if (genError) genError.style.display = 'none';
+    if (genResult) genResult.style.display = 'none';
+    if (pipelineStatus) { pipelineStatus.style.display = 'block'; }
+    if (bpBlueprint) bpBlueprint.style.display = 'none';
+
+    setStep('blueprint', 'active');
+    setStep('generating', '');
+    setStep('extracting', '');
+
+    try {
+      // Start the pipeline job
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: inputs.prompt,
+          genre: inputs.genre,
+          bpm: inputs.bpm,
+          vocal_space: inputs.vocal_space,
+          energy: inputs.energy,
+          instruments_include: inputs.instruments_include,
+          instruments_exclude: inputs.instruments_exclude
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to start generation');
+      }
+
+      const { job_id } = await res.json();
+      currentJobId = job_id;
+
+      genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
+
+      // Poll for status
+      let lastStatus = '';
+      pollInterval = setInterval(async () => {
+        try {
+          const pollRes = await fetch('/api/job/' + job_id);
+          if (!pollRes.ok) return;
+          const job = await pollRes.json();
+
+          // Update pipeline steps
+          if (job.status === 'blueprint' && lastStatus !== 'blueprint') {
+            setStep('blueprint', 'active');
+            lastStatus = 'blueprint';
+          }
+          if (job.status === 'generating' && lastStatus !== 'generating') {
+            setStep('blueprint', 'done');
+            setStep('generating', 'active');
+            if (job.blueprint) showBlueprint(job.blueprint);
+            lastStatus = 'generating';
+          }
+          if (job.status === 'extracting' && lastStatus !== 'extracting') {
+            setStep('blueprint', 'done');
+            setStep('generating', 'done');
+            setStep('extracting', 'active');
+            if (job.blueprint) showBlueprint(job.blueprint);
+
+            // Show stereo player immediately (available once generating is done)
+            if (job.stereo_url && stereoPlayer && stereoAudio) {
+              stereoAudio.src = job.stereo_url;
+              stereoPlayer.style.display = 'block';
+              if (stereoDownload) {
+                stereoDownload.href = job.stereo_url;
+                stereoDownload.download = 'stemforge-stereo.mp3';
+              }
+            }
+
+            // Show result panel early
+            if (genResult) genResult.style.display = 'block';
+            lastStatus = 'extracting';
+          }
+
+          if (job.status === 'ready') {
+            clearInterval(pollInterval);
+            setStep('blueprint', 'done');
+            setStep('generating', 'done');
+            setStep('extracting', 'done');
+
+            // Final update of all tracks (or build if not yet rendered)
+            if (trackList) {
+              if (trackList.children.length === 0) {
+                job.tracks.forEach(t => trackList.appendChild(buildTrackRow(t)));
+              } else {
+                job.tracks.forEach(t => updateTrackRow(t));
+              }
+            }
+
+            // Stereo player
+            if (job.stereo_url && stereoPlayer && stereoAudio) {
+              stereoAudio.src = job.stereo_url;
+              stereoPlayer.style.display = 'block';
+              if (stereoDownload) {
+                stereoDownload.href = job.stereo_url;
+                stereoDownload.download = 'stemforge-stereo.mp3';
+              }
+            }
+
+            // ZIP download button for grouped stems
+            const zipBtn = document.getElementById('exp-stems');
+            if (zipBtn && job.zip_url) {
+              zipBtn.onclick = () => window.open(job.zip_url, '_blank');
+              zipBtn.classList.remove('export-btn--locked');
+              zipBtn.title = 'Download all stems (ZIP)';
+            }
+
+            // Update result header
+            const titleEl = document.getElementById('gen-result-title');
+            const subEl   = document.getElementById('gen-result-sub');
+            if (titleEl && job.blueprint) {
+              titleEl.textContent = job.blueprint.genre + ' — ' + job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
+            }
+            if (subEl) {
+              const stemCount = job.tracks.length;
+              subEl.textContent = 'Ready · ' + stemCount + ' stems extracted · ' + Math.round((job.blueprint?.duration_seconds||120)/60) + ' min';
+            }
+
+            if (genResult) genResult.style.display = 'block';
+            genBtn.innerHTML = '<i class="fas fa-check"></i> Generated!';
+            genBtn.disabled = false;
+            setTimeout(() => {
+              genBtn.innerHTML = '<i class="fas fa-play"></i> Generate Beat — 50 credits';
+            }, 3000);
+          }
+
+          if (job.status === 'error') {
+            clearInterval(pollInterval);
+            setStep('blueprint', lastStatus === 'blueprint' ? 'error' : lastStatus === '' ? '' : 'done');
+            setStep('generating', lastStatus === 'generating' ? 'error' : '');
+            setStep('extracting', lastStatus === 'extracting' ? 'error' : '');
+            showError(job.error || 'Generation failed. Please try again.');
+          }
+
+        } catch (pollErr) {
+          console.error('Poll error:', pollErr);
+        }
+      }, 3000); // poll every 3 seconds
+
+    } catch (err) {
+      showError(err.message || 'Failed to start generation. Please try again.');
+    }
+  }
+
+  genBtn.addEventListener('click', startGeneration);
+
+  if (genRetryBtn) genRetryBtn.addEventListener('click', () => {
+    if (genError) genError.style.display = 'none';
+    if (genEmpty) genEmpty.style.display = 'block';
+    if (trackList) trackList.innerHTML = '';
+    currentJobId = null;
   });
 
 });
+
+// ── Global: download ZIP stems ─────────────────────────────────
+// Stems are in a ZIP file — individual download requires Pro plan
+// The ZIP contains: drums.wav, bass.wav, vocals.wav, other.wav,
+//                   instrumental.wav, song.wav, song.mp3
+window.downloadStem = function(zipUrl, stemName) {
+  // For now, open the full ZIP (individual extraction requires Pro)
+  if (zipUrl) window.open(zipUrl, '_blank');
+};

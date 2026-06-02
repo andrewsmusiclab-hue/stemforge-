@@ -1133,3 +1133,63 @@ p  { color: var(--sub); }
   .export-btn { min-width: 80px; padding: 10px 12px; }
   .form-row-2 { grid-template-columns: 1fr; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   Pipeline UI styles
+═══════════════════════════════════════════════════════════════ */
+.pipeline-status {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px;
+}
+.pipeline-steps { display: flex; flex-direction: column; gap: 0; }
+.pipeline-step {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 0; border-bottom: 1px solid var(--border);
+  opacity: 0.4; transition: opacity .3s ease;
+}
+.pipeline-step:last-child { border-bottom: none; }
+.pipeline-step__icon {
+  width: 36px; height: 36px; border-radius: 9px;
+  background: rgba(78,159,255,.1); color: var(--primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: .9rem; flex-shrink: 0;
+}
+.pipeline-step__body { flex: 1; }
+.pipeline-step__body strong { display: block; font-size: .9rem; }
+.pipeline-step__body span  { font-size: .78rem; color: var(--muted); }
+.pipeline-step__indicator { width: 20px; text-align: center; font-size: .9rem; }
+.pipeline-blueprint { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.blueprint-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.blueprint-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 99px;
+  background: rgba(78,159,255,.08); border: 1px solid rgba(78,159,255,.15);
+  font-size: .78rem; color: var(--primary); font-weight: 600;
+}
+.stereo-player {
+  padding: 16px 24px; border-bottom: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.stereo-player__label { font-size: .78rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+.stereo-player audio { border-radius: 8px; }
+.gen-error {
+  text-align: center; padding: 60px 24px;
+  background: var(--surface); border: 1px solid rgba(248,113,113,.2);
+  border-radius: var(--radius-lg);
+}
+
+/* ── Stem file badge ─────────────────────────────────────────── */
+.stem-file-badge {
+  display: inline-flex; align-items: center;
+  padding: 3px 10px; border-radius: 99px;
+  background: rgba(16,185,129,.1); border: 1px solid rgba(16,185,129,.2);
+  font-size: .72rem; color: #10b981; font-weight: 600;
+  font-family: 'Space Mono', monospace;
+  letter-spacing: .02em;
+}
+.track-row__dl.locked-pro {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .75rem; padding: 4px 10px; border-radius: 99px;
+  background: rgba(255,255,255,.04); border: 1px solid var(--border);
+  color: var(--muted); cursor: default;
+}
