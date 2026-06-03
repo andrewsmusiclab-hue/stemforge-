@@ -5,6 +5,7 @@ import { serveStatic } from 'hono/cloudflare-workers'
 type Bindings = {
   OPENAI_API_KEY: string
   MUREKA_API_KEY: string
+  JOBS_KV: KVNamespace       // Cloudflare KV for persistent job storage
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -21,10 +22,28 @@ app.use('/static/*', serveStatic({ root: './' }))
 
 const MUREKA_BASE = 'https://api.mureka.ai/v1'
 const OPENAI_BASE = 'https://api.openai.com/v1'
+const JOB_TTL_SECONDS = 60 * 60 * 6  // 6 hours
 
-// In-memory job store (per worker instance — fine for dev/MVP)
-// In production replace with Cloudflare KV or D1
-const jobs = new Map<string, Job>()
+// ── KV-backed job store ────────────────────────────────────────
+// Survives across Cloudflare Worker instances (no more "Job not found")
+// Falls back to in-memory Map if JOBS_KV is not bound (local dev without KV)
+const memJobs = new Map<string, Job>()  // fallback for local dev
+
+async function getJob(kv: KVNamespace | undefined, id: string): Promise<Job | null> {
+  if (kv) {
+    const raw = await kv.get(id)
+    return raw ? JSON.parse(raw) as Job : null
+  }
+  return memJobs.get(id) ?? null
+}
+
+async function setJob(kv: KVNamespace | undefined, job: Job): Promise<void> {
+  if (kv) {
+    await kv.put(job.id, JSON.stringify(job), { expirationTtl: JOB_TTL_SECONDS })
+  } else {
+    memJobs.set(job.id, job)
+  }
+}
 
 // Mureka /v1/song/stem returns these stem names inside the ZIP
 const MUREKA_STEMS = ['drums', 'bass', 'vocals', 'other', 'instrumental'] as const
@@ -243,29 +262,29 @@ async function extractStems(songUrl: string, apiKey: string): Promise<string> {
 // ═══════════════════════════════════════════════════════════════
 
 async function runPipeline(jobId: string, env: Bindings) {
-  const job = jobs.get(jobId)
+  const kv = env.JOBS_KV
+  let job = await getJob(kv, jobId)
   if (!job) return
 
   try {
     // ── Step 1: Generate blueprint ──────────────────────────────
     job.status = 'blueprint'
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
     const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY)
     job.blueprint = blueprint
-    // tracks will be populated after stem extraction
     job.tracks = []
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
     // ── Step 2: Generate stereo instrumental ───────────────────
     job.status = 'generating'
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
     const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY)
     job.stereo_task_id = stereoTaskId
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
-    // Poll for stereo completion (up to 3 minutes)
+    // Poll for stereo completion (up to 3 minutes, 36 × 5s)
     let stereoUrl: string | null = null
     for (let i = 0; i < 36; i++) {
       await sleep(5000)
@@ -275,25 +294,24 @@ async function runPipeline(jobId: string, env: Bindings) {
 
     if (!stereoUrl) throw new Error('Stereo generation timed out')
     job.stereo_url = stereoUrl
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
     // ── Step 3: Stem separation via /v1/song/stem ─────────────
     // Returns zip_url synchronously — no polling!
     // ZIP contains: drums.wav, bass.wav, vocals.wav, other.wav,
     //               instrumental.wav, song.wav, song.mp3
     job.status = 'extracting'
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
     const zipUrl = await extractStems(stereoUrl!, env.MUREKA_API_KEY)
     job.zip_url = zipUrl
 
-    // Build the 5 named stem tracks from the ZIP
     const STEM_CONFIG: Array<{ stem: MurekaStem; name: string; family: string; color: string }> = [
-      { stem: 'drums',        name: 'Drums',        family: 'drums',  color: '#ef4444' },
-      { stem: 'bass',         name: 'Bass',          family: 'bass',   color: '#3b82f6' },
-      { stem: 'vocals',       name: 'Vocals',        family: 'vocals', color: '#ec4899' },
-      { stem: 'other',        name: 'Other (Melody)',family: 'synth',  color: '#8b5cf6' },
-      { stem: 'instrumental', name: 'Instrumental',  family: 'mix',    color: '#10b981' },
+      { stem: 'drums',        name: 'Drums',         family: 'drums',  color: '#ef4444' },
+      { stem: 'bass',         name: 'Bass',           family: 'bass',   color: '#3b82f6' },
+      { stem: 'vocals',       name: 'Vocals',         family: 'vocals', color: '#ec4899' },
+      { stem: 'other',        name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6' },
+      { stem: 'instrumental', name: 'Instrumental',   family: 'mix',    color: '#10b981' },
     ]
 
     job.tracks = STEM_CONFIG.map(s => ({
@@ -304,15 +322,14 @@ async function runPipeline(jobId: string, env: Bindings) {
       zip_url: zipUrl,
       color: s.color
     }))
-    jobs.set(jobId, { ...job })
 
     job.status = 'ready'
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
 
   } catch (err: any) {
     job.status = 'error'
     job.error = err?.message || 'Unknown pipeline error'
-    jobs.set(jobId, { ...job })
+    await setJob(kv, { ...job })
   }
 }
 
@@ -352,19 +369,18 @@ app.post('/api/generate', async (c) => {
     prompt: fullPrompt,
     tracks: []
   }
-  jobs.set(jobId, job)
+  await setJob(c.env.JOBS_KV, job)
 
   // Run pipeline in background (non-blocking)
-  const env = c.env
-  c.executionCtx.waitUntil(runPipeline(jobId, env))
+  c.executionCtx.waitUntil(runPipeline(jobId, c.env))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
 
 // GET /api/job/:id — poll job status
-app.get('/api/job/:id', (c) => {
+app.get('/api/job/:id', async (c) => {
   const id = c.req.param('id')
-  const job = jobs.get(id)
+  const job = await getJob(c.env.JOBS_KV, id)
 
   if (!job) return c.json({ error: 'Job not found' }, 404)
 

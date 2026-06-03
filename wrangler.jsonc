@@ -5,32 +5,19 @@
   "pages_build_output_dir": "./dist",
   "compatibility_flags": [
     "nodejs_compat"
+  ],
+  // API keys as vars — MVP approach so the deployed worker can call OpenAI + Mureka
+  // Production upgrade: move to wrangler secret put once Genspark deploy supports it
+  "vars": {
+    "OPENAI_API_KEY": "REDACTED_OPENAI_KEY",
+    "MUREKA_API_KEY": "REDACTED_MUREKA_KEY"
+  },
+  // KV namespace for persistent job store (survives across worker instances)
+  "kv_namespaces": [
+    {
+      "binding": "JOBS_KV",
+      "id": "PLACEHOLDER_KV_ID",
+      "preview_id": "PLACEHOLDER_KV_PREVIEW_ID"
+    }
   ]
-  // NOTE: Real keys are in .dev.vars locally.
-  // For production, keys are set via wrangler secret put (not committed here).
-  // The gsk deploy pipeline reads .dev.vars and injects them as secrets.
-  // API keys are stored in .dev.vars for local dev.
-  // For production use: gsk hosted deploy (reads .dev.vars as secrets)
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "MY_KV_NAMESPACE",
-  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  //   }
-  // ],
-  // "r2_buckets": [
-  //   {
-  //     "binding": "MY_BUCKET",
-  //     "bucket_name": "my-bucket"
-  //   }
-  // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
-  // "ai": {
-  //   "binding": "AI"
-  // }
 }
