@@ -5,7 +5,7 @@ import { serveStatic } from 'hono/cloudflare-workers'
 type Bindings = {
   OPENAI_API_KEY: string
   MUREKA_API_KEY: string
-  JOBS_KV: KVNamespace       // Cloudflare KV for persistent job storage
+  DB: D1Database             // Cloudflare D1 for persistent job storage
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -22,24 +22,40 @@ app.use('/static/*', serveStatic({ root: './' }))
 
 const MUREKA_BASE = 'https://api.mureka.ai/v1'
 const OPENAI_BASE = 'https://api.openai.com/v1'
-const JOB_TTL_SECONDS = 60 * 60 * 6  // 6 hours
-
-// ── KV-backed job store ────────────────────────────────────────
+// ── D1-backed job store ───────────────────────────────────────
 // Survives across Cloudflare Worker instances (no more "Job not found")
-// Falls back to in-memory Map if JOBS_KV is not bound (local dev without KV)
+// Falls back to in-memory Map if DB is not bound (local dev without D1)
 const memJobs = new Map<string, Job>()  // fallback for local dev
 
-async function getJob(kv: KVNamespace | undefined, id: string): Promise<Job | null> {
-  if (kv) {
-    const raw = await kv.get(id)
-    return raw ? JSON.parse(raw) as Job : null
+async function ensureTable(db: D1Database): Promise<void> {
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS jobs (
+      id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`
+  ).run()
+}
+
+async function getJob(db: D1Database | undefined, id: string): Promise<Job | null> {
+  if (db) {
+    try {
+      const row = await db.prepare('SELECT data FROM jobs WHERE id = ?').bind(id).first<{ data: string }>()
+      return row ? JSON.parse(row.data) as Job : null
+    } catch {
+      return null
+    }
   }
   return memJobs.get(id) ?? null
 }
 
-async function setJob(kv: KVNamespace | undefined, job: Job): Promise<void> {
-  if (kv) {
-    await kv.put(job.id, JSON.stringify(job), { expirationTtl: JOB_TTL_SECONDS })
+async function setJob(db: D1Database | undefined, job: Job): Promise<void> {
+  if (db) {
+    await ensureTable(db)
+    await db.prepare(
+      `INSERT INTO jobs (id, data, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET data = excluded.data`
+    ).bind(job.id, JSON.stringify(job), job.created_at).run()
   } else {
     memJobs.set(job.id, job)
   }
@@ -262,7 +278,7 @@ async function extractStems(songUrl: string, apiKey: string): Promise<string> {
 // ═══════════════════════════════════════════════════════════════
 
 async function runPipeline(jobId: string, env: Bindings) {
-  const kv = env.JOBS_KV
+  const kv = env.DB
   let job = await getJob(kv, jobId)
   if (!job) return
 
@@ -369,7 +385,7 @@ app.post('/api/generate', async (c) => {
     prompt: fullPrompt,
     tracks: []
   }
-  await setJob(c.env.JOBS_KV, job)
+  await setJob(c.env.DB, job)
 
   // Run pipeline in background (non-blocking)
   c.executionCtx.waitUntil(runPipeline(jobId, c.env))
@@ -380,7 +396,7 @@ app.post('/api/generate', async (c) => {
 // GET /api/job/:id — poll job status
 app.get('/api/job/:id', async (c) => {
   const id = c.req.param('id')
-  const job = await getJob(c.env.JOBS_KV, id)
+  const job = await getJob(c.env.DB, id)
 
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
