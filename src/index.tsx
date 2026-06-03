@@ -750,11 +750,11 @@ function homePage() {
       <div class="plan-card">
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
-        <p class="plan-card__desc">Test the engine. Hear the quality.</p>
+        <p class="plan-card__desc">Try the engine. No card needed.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 150 credits/month</li>
-          <li><i class="fas fa-check"></i> Draft previews</li>
-          <li><i class="fas fa-check"></i> Stereo exports</li>
+          <li><i class="fas fa-check"></i> 3 generations/month</li>
+          <li><i class="fas fa-check"></i> Stereo preview</li>
+          <li><i class="fas fa-check"></i> Stem ZIP download</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
@@ -763,12 +763,12 @@ function homePage() {
       <div class="plan-card plan-card--featured">
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$12</span><span>/month</span></div>
+        <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
         <p class="plan-card__desc">For rappers, writers, and content creators.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 3,000 credits/month</li>
+          <li><i class="fas fa-check"></i> 50 generations/month</li>
           <li><i class="fas fa-check"></i> Full stereo beats</li>
-          <li><i class="fas fa-check"></i> Master + premaster</li>
+          <li><i class="fas fa-check"></i> Stem ZIP export</li>
           <li><i class="fas fa-check"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
@@ -776,20 +776,20 @@ function homePage() {
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$29</span><span>/month</span></div>
+        <div class="plan-card__price"><span class="plan-card__amount">$39</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 10,000 credits/month</li>
+          <li><i class="fas fa-check"></i> 150 generations/month</li>
           <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Grouped stems</li>
           <li><i class="fas fa-check"></i> Individual tracks</li>
           <li><i class="fas fa-check"></i> Regenerate one track</li>
+          <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <a href="/signup?plan=pro" class="btn btn--outline btn--full">Start Pro Artist</a>
       </div>
     </div>
     <div class="pricing-preview__cta">
-      <a href="/pricing" class="btn btn--ghost">See full pricing & credit calculator <i class="fas fa-arrow-right"></i></a>
+      <a href="/pricing" class="btn btn--ghost">See full pricing details <i class="fas fa-arrow-right"></i></a>
     </div>
   </div>
 </section>
@@ -869,7 +869,7 @@ function generatorPage() {
       <span class="inst-tag inst-tag--exclude" data-instr="Acoustic">Acoustic</span>
     </div>
   </div>
-  <div class="credit-pill"><i class="fas fa-coins"></i> 150 credits remaining</div>
+  <div class="credit-pill"><i class="fas fa-music"></i> 3 generations remaining</div>
 </div>
 
 <div class="app-main">
@@ -879,12 +879,12 @@ function generatorPage() {
       <textarea class="prompt-box__input" id="gen-prompt"
         placeholder="Describe your beat... e.g. dark surf noir trap beat, open vocal space, minimal percussion, moody Rhodes"></textarea>
       <div class="prompt-box__meta">
-        <span class="prompt-box__cost"><i class="fas fa-coins"></i> 50 credits — full beat with individual tracks</span>
+        <span class="prompt-box__cost"><i class="fas fa-music"></i> 1 generation — stereo mix + 5-stem ZIP</span>
       </div>
     </div>
     <div class="gen-actions">
       <button class="btn btn--primary btn--lg" id="gen-full-btn">
-        <i class="fas fa-play"></i> Generate Beat — 50 credits
+        <i class="fas fa-play"></i> Generate Beat — 1 generation
       </button>
     </div>
   </div>
@@ -951,10 +951,10 @@ function generatorPage() {
       <h4>Export options</h4>
       <div class="export-options">
         <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
-        <button class="export-btn export-btn--locked" id="exp-stems"><i class="fas fa-layer-group"></i><span>Grouped stems</span><small>60 cr · Pro</small></button>
-        <button class="export-btn export-btn--locked" id="exp-tracks"><i class="fas fa-list"></i><span>All tracks</span><small>180 cr · Pro</small></button>
+        <button class="export-btn" id="exp-stems"><i class="fas fa-layer-group"></i><span>Stem ZIP</span><small>Free</small></button>
+        <button class="export-btn export-btn--locked" id="exp-tracks"><i class="fas fa-list"></i><span>Individual tracks</span><small>Pro Artist</small></button>
       </div>
-      <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Pro Artist to unlock grouped stems and individual tracks</a>
+      <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Pro Artist to unlock individual track downloads</a>
     </div>
   </div>
 
@@ -996,80 +996,93 @@ function pricingPage() {
       <div class="plan-card">
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
-        <p class="plan-card__desc">Test the engine. No card needed.</p>
-        <div class="plan-card__credits"><i class="fas fa-coins"></i> 150 credits/month + 5/day refresh</div>
+        <p class="plan-card__desc">Try the engine. No card needed.</p>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 3 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Draft previews (10 credits)</li>
-          <li><i class="fas fa-check"></i> Stereo exports</li>
+          <li><i class="fas fa-check"></i> Full AI beat generation</li>
+          <li><i class="fas fa-check"></i> Stereo preview & download</li>
+          <li><i class="fas fa-check"></i> Stem ZIP (5 stems)</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
-          <li class="muted"><i class="fas fa-times"></i> Master export</li>
-          <li class="muted"><i class="fas fa-times"></i> Grouped stems</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
-          <li class="muted"><i class="fas fa-times"></i> Credit rollover</li>
+          <li class="muted"><i class="fas fa-times"></i> Overage add-ons</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full">Start free</a>
       </div>
       <div class="plan-card plan-card--featured">
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$12</span><span>/month</span></div>
-        <p class="plan-card__desc">For rappers, writers, content creators.</p>
-        <div class="plan-card__credits"><i class="fas fa-coins"></i> 3,000 credits/month + 25% rollover</div>
+        <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
+        <p class="plan-card__desc">For rappers, writers, and content creators.</p>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 50 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full stereo beats (50 cr)</li>
-          <li><i class="fas fa-check"></i> Mastered export (10 cr)</li>
-          <li><i class="fas fa-check"></i> Premaster export (10 cr)</li>
+          <li><i class="fas fa-check"></i> Full AI beat generation</li>
+          <li><i class="fas fa-check"></i> Stereo download</li>
+          <li><i class="fas fa-check"></i> Stem ZIP export (5 stems)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li><i class="fas fa-check"></i> Priority queue</li>
-          <li><i class="fas fa-check"></i> 25% credit rollover</li>
-          <li class="muted"><i class="fas fa-times"></i> Grouped stems</li>
+          <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
-        <a href="/signup?plan=creator" class="btn btn--primary btn--full">Start Creator — $12/mo</a>
+        <a href="/signup?plan=creator" class="btn btn--primary btn--full">Start Creator — $19/mo</a>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$29</span><span>/month</span></div>
+        <div class="plan-card__price"><span class="plan-card__amount">$39</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track clean.</p>
-        <div class="plan-card__credits"><i class="fas fa-coins"></i> 10,000 credits/month + 50% rollover</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 150 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Grouped stems (60 cr)</li>
-          <li><i class="fas fa-check"></i> Individual tracks (180 cr)</li>
-          <li><i class="fas fa-check"></i> Regenerate one track (15 cr)</li>
-          <li><i class="fas fa-check"></i> Replace instrument (20 cr)</li>
-          <li><i class="fas fa-check"></i> Highest priority queue</li>
-          <li><i class="fas fa-check"></i> 50% credit rollover</li>
+          <li><i class="fas fa-check"></i> Individual track download</li>
+          <li><i class="fas fa-check"></i> Regenerate one track</li>
+          <li><i class="fas fa-check"></i> Replace instrument</li>
+          <li><i class="fas fa-check"></i> Priority queue</li>
+          <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
         </ul>
-        <a href="/signup?plan=pro" class="btn btn--outline btn--full">Start Pro Artist — $29/mo</a>
+        <a href="/signup?plan=pro" class="btn btn--outline btn--full">Start Pro Artist — $39/mo</a>
+      </div>
+      <div class="plan-card">
+        <div class="plan-card__tier">Studio</div>
+        <div class="plan-card__price"><span class="plan-card__amount">$79</span><span>/month</span></div>
+        <p class="plan-card__desc">For labels, studios, and power producers.</p>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 400 generations/month</div>
+        <ul class="plan-card__features plan-card__features--full">
+          <li><i class="fas fa-check"></i> Everything in Pro Artist</li>
+          <li><i class="fas fa-check"></i> Team seat (up to 3 users)</li>
+          <li><i class="fas fa-check"></i> Highest priority queue</li>
+          <li><i class="fas fa-check"></i> Bulk export</li>
+          <li><i class="fas fa-check"></i> API access (coming soon)</li>
+          <li><i class="fas fa-check"></i> +$0.39 per extra generation</li>
+        </ul>
+        <a href="/signup?plan=studio" class="btn btn--outline btn--full">Start Studio — $79/mo</a>
       </div>
     </div>
 
     <div class="credit-table-wrap">
       <div class="section-header">
-        <div class="section-tag">Credit costs</div>
-        <h2>Exactly what each action costs.</h2>
+        <div class="section-tag">What's included</div>
+        <h2>Simple, generation-based pricing.</h2>
       </div>
       <div class="credit-table">
-        <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Credits</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-play"></i> Draft preview</span><span class="credit-val">10</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> Full stereo beat</span><span class="credit-val">50</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-compact-disc"></i> Mastered export</span><span class="credit-val">10</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-sliders"></i> Premaster export</span><span class="credit-val">10</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Grouped stems</span><span class="credit-val">60</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-list"></i> Individual track export</span><span class="credit-val">180</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">15</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">20</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat (stereo + 5-stem ZIP)</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP (5 stems)</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-list"></i> Individual track download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-plus-circle"></i> Extra generation (Creator / Pro)</span><span class="credit-val">$0.49</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-plus-circle"></i> Extra generation (Studio)</span><span class="credit-val">$0.39</span><span class="tier-badge tier-badge--pro">Studio</span></div>
       </div>
     </div>
 
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused credits roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Free: no rollover. Creator: 25% rollover. Pro Artist: 50% rollover.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is the difference between grouped stems and individual tracks? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Grouped stems = 4 files (Drums / Bass / Music / FX). Individual tracks = every single instrument on its own file — kick alone, snare alone, Rhodes alone, etc.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are non-commercial.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes. Cancel anytime from account settings. No cancellation fees.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: GPT-4o builds the blueprint, Mureka renders the instrumental, and stems are extracted — all included. You get the stereo mix + a 5-stem ZIP from that single generation.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Studio plans get $0.39/gen. Free plan users must upgrade to continue after 3 generations.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator, Pro Artist, and Studio exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes. Cancel anytime from account settings. No cancellation fees. You keep access until the end of your billing period.</div></div>
       </div>
     </div>
   </div>
@@ -1086,13 +1099,13 @@ function dashboardPage() {
   <nav class="dash-nav">
     <a href="/dashboard" class="dash-nav__item active"><i class="fas fa-th-large"></i> Projects</a>
     <a href="/generator" class="dash-nav__item"><i class="fas fa-play-circle"></i> New beat</a>
-    <a href="#" class="dash-nav__item"><i class="fas fa-coins"></i> Credits</a>
+    <a href="#" class="dash-nav__item"><i class="fas fa-chart-bar"></i> Usage</a>
     <a href="#" class="dash-nav__item"><i class="fas fa-cog"></i> Settings</a>
   </nav>
   <div class="dash-credits-card">
-    <div class="dash-credits-card__label">Credits remaining</div>
-    <div class="dash-credits-card__val">1,840 <small>/ 3,000</small></div>
-    <div class="dash-credits-card__bar"><div style="width:61%"></div></div>
+    <div class="dash-credits-card__label">Generations used</div>
+    <div class="dash-credits-card__val">32 <small>/ 50 gen</small></div>
+    <div class="dash-credits-card__bar"><div style="width:64%"></div></div>
     <a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:12px">Upgrade to Pro Artist</a>
   </div>
 </div>
@@ -1113,14 +1126,14 @@ function projectPage() {
 <div class="app-sidebar app-sidebar--dash">
   <nav class="dash-nav"><a href="/dashboard" class="dash-nav__item"><i class="fas fa-arrow-left"></i> Back</a></nav>
   <div class="project-meta-card"><div class="project-meta-card__art project-card__art--1"></div><h4>Surf Noir Trap</h4><p>90 BPM · D Minor · 2:14</p><div class="project-meta-card__plan plan-badge plan-badge--creator">Creator plan</div></div>
-  <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Credits remaining</div><div class="dash-credits-card__val">1,840</div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Unlock stems</a></div>
+  <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Generations used</div><div class="dash-credits-card__val">32 <small>/ 50 gen</small></div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Upgrade plan</a></div>
 </div>
 <div class="app-main">
   <div class="dash-header"><h2>Surf Noir Trap <span class="dash-header__sub">Export</span></h2></div>
   <div class="export-tier-grid">
     <div class="export-tier-card export-tier-card--available"><div class="export-tier-card__icon"><i class="fas fa-file-audio"></i></div><div class="export-tier-card__body"><h4>Stereo mix</h4><p>Full stereo bounce.</p><span class="credit-tag">Free</span></div><button class="btn btn--primary btn--sm"><i class="fas fa-download"></i> Download</button></div>
-    <div class="export-tier-card export-tier-card--locked"><div class="export-tier-card__icon"><i class="fas fa-layer-group"></i></div><div class="export-tier-card__body"><h4>Grouped stems <span class="lock-badge"><i class="fas fa-lock"></i> Pro Artist</span></h4><p>4 files: Drums / Bass / Music / FX.</p><span class="credit-tag">60 credits</span></div><a href="/pricing" class="btn btn--outline btn--sm">Upgrade</a></div>
-    <div class="export-tier-card export-tier-card--locked"><div class="export-tier-card__icon"><i class="fas fa-list"></i></div><div class="export-tier-card__body"><h4>Individual tracks <span class="lock-badge"><i class="fas fa-lock"></i> Pro Artist</span></h4><p>Every instrument on its own file.</p><span class="credit-tag">180 credits</span></div><a href="/pricing" class="btn btn--outline btn--sm">Upgrade</a></div>
+    <div class="export-tier-card export-tier-card--available"><div class="export-tier-card__icon"><i class="fas fa-layer-group"></i></div><div class="export-tier-card__body"><h4>Stem ZIP</h4><p>5 files: Drums / Bass / Vocals / Melody / Instrumental.</p><span class="credit-tag">Free</span></div><button class="btn btn--primary btn--sm"><i class="fas fa-download"></i> Download</button></div>
+    <div class="export-tier-card export-tier-card--locked"><div class="export-tier-card__icon"><i class="fas fa-list"></i></div><div class="export-tier-card__body"><h4>Individual tracks <span class="lock-badge"><i class="fas fa-lock"></i> Pro Artist</span></h4><p>Download each stem file separately.</p><span class="credit-tag">Pro Artist+</span></div><a href="/pricing" class="btn btn--outline btn--sm">Upgrade</a></div>
   </div>
 </div>
 </main>`, `<style>.sf-nav{display:none}</style>`)
@@ -1153,7 +1166,7 @@ function signupPage() {
           <div class="form-group"><label>Full name</label><input type="text" placeholder="Your name"/></div>
           <div class="form-group"><label>Email</label><input type="email" placeholder="you@example.com"/></div>
           <div class="form-group"><label>Password</label><div class="input-icon-wrap"><input type="password" id="pw-input" placeholder="At least 8 characters"/><button type="button" class="input-icon-btn" id="pw-toggle"><i class="fas fa-eye" id="pw-eye"></i></button></div><div class="pw-strength" id="pw-strength"></div></div>
-          <div class="form-group"><label>Plan</label><div class="plan-radio-group"><label class="plan-radio"><input type="radio" name="plan" value="free" checked/><span>Free — $0</span></label><label class="plan-radio"><input type="radio" name="plan" value="creator"/><span>Creator — $12/mo</span></label><label class="plan-radio"><input type="radio" name="plan" value="pro"/><span>Pro Artist — $29/mo</span></label></div></div>
+          <div class="form-group"><label>Plan</label><div class="plan-radio-group"><label class="plan-radio"><input type="radio" name="plan" value="free" checked/><span>Free — $0</span></label><label class="plan-radio"><input type="radio" name="plan" value="creator"/><span>Creator — $19/mo</span></label><label class="plan-radio"><input type="radio" name="plan" value="pro"/><span>Pro Artist — $39/mo</span></label><label class="plan-radio"><input type="radio" name="plan" value="studio"/><span>Studio — $79/mo</span></label></div></div>
           <div class="form-group form-group--check"><label class="checkbox-label"><input type="checkbox" required/> I agree to the <a href="#">Terms</a> and <a href="#">Privacy Policy</a></label></div>
           <button type="submit" class="btn btn--primary btn--full btn--lg">Create account <i class="fas fa-arrow-right"></i></button>
         </form>
@@ -1196,9 +1209,9 @@ function checkoutPage() {
     <div class="checkout-left">
       <a href="/" class="sf-nav__logo auth-logo" style="margin-bottom:32px;display:inline-flex"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
       <div class="checkout-plan-summary">
-        <div class="checkout-plan-summary__header"><div><h3>Creator Plan</h3><p>Billed monthly · Cancel anytime</p></div><div class="checkout-plan-summary__price">$12<span>/mo</span></div></div>
-        <ul class="checkout-plan-summary__features"><li><i class="fas fa-check"></i> 3,000 credits/month</li><li><i class="fas fa-check"></i> Full stereo beats</li><li><i class="fas fa-check"></i> Commercial use</li></ul>
-        <div class="checkout-plan-summary__total"><span>Total today</span><strong>$12.00</strong></div>
+        <div class="checkout-plan-summary__header"><div><h3>Creator Plan</h3><p>Billed monthly · Cancel anytime</p></div><div class="checkout-plan-summary__price">$19<span>/mo</span></div></div>
+        <ul class="checkout-plan-summary__features"><li><i class="fas fa-check"></i> 50 generations/month</li><li><i class="fas fa-check"></i> Stereo + 5-stem ZIP download</li><li><i class="fas fa-check"></i> Commercial use rights</li></ul>
+        <div class="checkout-plan-summary__total"><span>Total today</span><strong>$19.00</strong></div>
       </div>
       <div class="checkout-trust"><span><i class="fas fa-lock"></i> Secure</span><span><i class="fas fa-shield-alt"></i> SSL</span><span><i class="fas fa-undo"></i> Cancel anytime</span></div>
     </div>
@@ -1209,7 +1222,7 @@ function checkoutPage() {
           <div class="form-group"><label>Email</label><input type="email" placeholder="you@example.com"/></div>
           <div class="form-group"><label>Card number</label><input type="text" placeholder="1234 5678 9012 3456" id="card-num" maxlength="19"/></div>
           <div class="form-row-2"><div class="form-group"><label>Expiry</label><input type="text" placeholder="MM / YY" id="card-exp" maxlength="7"/></div><div class="form-group"><label>CVC</label><input type="text" placeholder="123" id="card-cvc" maxlength="4"/></div></div>
-          <button type="submit" class="btn btn--primary btn--full btn--lg" id="checkout-submit"><i class="fas fa-lock"></i> Start Creator — $12/month</button>
+          <button type="submit" class="btn btn--primary btn--full btn--lg" id="checkout-submit"><i class="fas fa-lock"></i> Start Creator — $19/month</button>
         </form>
       </div>
     </div>
