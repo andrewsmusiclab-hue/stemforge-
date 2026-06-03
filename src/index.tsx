@@ -274,62 +274,85 @@ async function extractStems(songUrl: string, apiKey: string): Promise<string> {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  BACKGROUND PIPELINE RUNNER
+//  PIPELINE — CLIENT-DRIVEN MODEL
+//
+//  CF Workers cannot sleep for minutes inside waitUntil.
+//  Instead, each POST /api/generate does Step 1 (blueprint + kick
+//  off Mureka). Then the frontend calls POST /api/poll/:id every
+//  ~5 s — each call does ONE Mureka status check and, when ready,
+//  runs Step 3 (stem extraction) synchronously (~5 s).
+//  No sleep loops. No long-running tasks.
 // ═══════════════════════════════════════════════════════════════
 
-async function runPipeline(jobId: string, env: Bindings) {
-  const kv = env.DB
-  let job = await getJob(kv, jobId)
+const STEM_CONFIG: Array<{ stem: MurekaStem; name: string; family: string; color: string }> = [
+  { stem: 'drums',        name: 'Drums',         family: 'drums',  color: '#ef4444' },
+  { stem: 'bass',         name: 'Bass',           family: 'bass',   color: '#3b82f6' },
+  { stem: 'vocals',       name: 'Vocals',         family: 'vocals', color: '#ec4899' },
+  { stem: 'other',        name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6' },
+  { stem: 'instrumental', name: 'Instrumental',   family: 'mix',    color: '#10b981' },
+]
+
+// Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
+async function startPipeline(jobId: string, env: Bindings) {
+  const db = env.DB
+  let job = await getJob(db, jobId)
   if (!job) return
 
   try {
-    // ── Step 1: Generate blueprint ──────────────────────────────
+    // Step 1 — GPT blueprint (~2-3 s)
     job.status = 'blueprint'
-    await setJob(kv, { ...job })
+    await setJob(db, { ...job })
 
     const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY)
     job.blueprint = blueprint
     job.tracks = []
-    await setJob(kv, { ...job })
 
-    // ── Step 2: Generate stereo instrumental ───────────────────
+    // Step 2 — kick off Mureka instrumental (instant — just submits the job)
     job.status = 'generating'
-    await setJob(kv, { ...job })
+    await setJob(db, { ...job })
 
     const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY)
     job.stereo_task_id = stereoTaskId
-    await setJob(kv, { ...job })
+    await setJob(db, { ...job })
 
-    // Poll for stereo completion (up to 3 minutes, 36 × 5s)
-    let stereoUrl: string | null = null
-    for (let i = 0; i < 36; i++) {
-      await sleep(5000)
-      stereoUrl = await pollInstrumentalStatus(stereoTaskId, env.MUREKA_API_KEY)
-      if (stereoUrl) break
+  } catch (err: any) {
+    job.status = 'error'
+    job.error = err?.message || 'Pipeline start error'
+    await setJob(db, { ...job })
+  }
+}
+
+// Step 2b+3: called on each POST /api/poll/:id from the frontend
+// Does ONE Mureka status check. If done, runs stem extraction and marks ready.
+async function advancePipeline(jobId: string, env: Bindings): Promise<Job | null> {
+  const db = env.DB
+  let job = await getJob(db, jobId)
+  if (!job) return null
+
+  // Only advance jobs that are waiting on Mureka
+  if (job.status !== 'generating' || !job.stereo_task_id) return job
+
+  try {
+    const stereoUrl = await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+
+    if (!stereoUrl) {
+      // Not ready yet — check timeout (10 min max)
+      const ageMs = Date.now() - job.created_at
+      if (ageMs > 10 * 60 * 1000) {
+        job.status = 'error'
+        job.error = 'Mureka generation timed out after 10 minutes'
+        await setJob(db, { ...job })
+      }
+      return job
     }
 
-    if (!stereoUrl) throw new Error('Stereo generation timed out')
+    // Mureka is done — run stem extraction (~5-10 s, synchronous)
     job.stereo_url = stereoUrl
-    await setJob(kv, { ...job })
-
-    // ── Step 3: Stem separation via /v1/song/stem ─────────────
-    // Returns zip_url synchronously — no polling!
-    // ZIP contains: drums.wav, bass.wav, vocals.wav, other.wav,
-    //               instrumental.wav, song.wav, song.mp3
     job.status = 'extracting'
-    await setJob(kv, { ...job })
+    await setJob(db, { ...job })
 
-    const zipUrl = await extractStems(stereoUrl!, env.MUREKA_API_KEY)
+    const zipUrl = await extractStems(stereoUrl, env.MUREKA_API_KEY)
     job.zip_url = zipUrl
-
-    const STEM_CONFIG: Array<{ stem: MurekaStem; name: string; family: string; color: string }> = [
-      { stem: 'drums',        name: 'Drums',         family: 'drums',  color: '#ef4444' },
-      { stem: 'bass',         name: 'Bass',           family: 'bass',   color: '#3b82f6' },
-      { stem: 'vocals',       name: 'Vocals',         family: 'vocals', color: '#ec4899' },
-      { stem: 'other',        name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6' },
-      { stem: 'instrumental', name: 'Instrumental',   family: 'mix',    color: '#10b981' },
-    ]
-
     job.tracks = STEM_CONFIG.map(s => ({
       name: s.name,
       stem: s.stem,
@@ -338,19 +361,16 @@ async function runPipeline(jobId: string, env: Bindings) {
       zip_url: zipUrl,
       color: s.color
     }))
-
     job.status = 'ready'
-    await setJob(kv, { ...job })
+    await setJob(db, { ...job })
 
   } catch (err: any) {
     job.status = 'error'
-    job.error = err?.message || 'Unknown pipeline error'
-    await setJob(kv, { ...job })
+    job.error = err?.message || 'Pipeline advance error'
+    await setJob(db, { ...job })
   }
-}
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return job
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -387,10 +407,49 @@ app.post('/api/generate', async (c) => {
   }
   await setJob(c.env.DB, job)
 
-  // Run pipeline in background (non-blocking)
-  c.executionCtx.waitUntil(runPipeline(jobId, c.env))
+  // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
+  // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env))
 
   return c.json({ job_id: jobId, status: 'pending' })
+})
+
+// POST /api/poll/:id — called by frontend every ~5s while status=generating
+// Does one Mureka status check; if done, runs stem extraction and marks ready.
+// Returns the same shape as GET /api/job/:id.
+app.post('/api/poll/:id', async (c) => {
+  const id = c.req.param('id')
+  const job = await advancePipeline(id, c.env)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  return c.json({
+    id: job.id,
+    status: job.status,
+    created_at: job.created_at,
+    prompt: job.prompt,
+    blueprint: job.blueprint ? {
+      bpm: job.blueprint.bpm,
+      key: job.blueprint.key,
+      scale: job.blueprint.scale,
+      genre: job.blueprint.genre,
+      mood: job.blueprint.mood,
+      duration_seconds: job.blueprint.duration_seconds,
+      arrangement: job.blueprint.arrangement,
+      instrument_count: job.blueprint.instruments?.length || 0,
+      mureka_prompt: job.blueprint.mureka_prompt
+    } : null,
+    stereo_url: job.stereo_url || null,
+    zip_url: job.zip_url || null,
+    tracks: job.tracks.map(t => ({
+      name: t.name,
+      stem: t.stem,
+      family: t.family,
+      status: t.status,
+      zip_url: t.zip_url || null,
+      color: t.color
+    })),
+    error: job.error || null
+  })
 })
 
 // GET /api/job/:id — poll job status

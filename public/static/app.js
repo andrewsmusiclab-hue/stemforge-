@@ -333,10 +333,15 @@ document.addEventListener('DOMContentLoaded', () => {
       genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
 
       // Poll for status
+      // While status=generating, use POST /api/poll/:id (advances Mureka check each call)
+      // For all other statuses, GET /api/job/:id is fine (read-only)
       let lastStatus = '';
       pollInterval = setInterval(async () => {
         try {
-          const pollRes = await fetch('/api/job/' + job_id);
+          const usePost = (lastStatus === 'generating' || lastStatus === 'pending' || lastStatus === 'blueprint' || lastStatus === '');
+          const pollRes = usePost
+            ? await fetch('/api/poll/' + job_id, { method: 'POST' })
+            : await fetch('/api/job/' + job_id);
           if (!pollRes.ok) return;
           const job = await pollRes.json();
 
@@ -435,7 +440,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (pollErr) {
           console.error('Poll error:', pollErr);
         }
-      }, 3000); // poll every 3 seconds
+      }, 5000); // poll every 5 seconds (POST /api/poll advances Mureka check each call)
 
     } catch (err) {
       showError(err.message || 'Failed to start generation. Please try again.');
