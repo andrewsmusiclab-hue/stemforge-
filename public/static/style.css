@@ -1418,6 +1418,393 @@ p  { color: var(--sub); }
 .project-card[data-stereo] .project-card__art { cursor: pointer; }
 .project-card[data-stereo]:hover .project-card__play { opacity: 1; transform: scale(1); }
 
+/* ══════════════════════════════════════════════════════════════
+   SUNO-STYLE GENERATOR PAGE
+══════════════════════════════════════════════════════════════ */
+
+/* ── Page wrapper: two-column on desktop, single-column on mobile */
+.suno-gen-page {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 24px;
+  min-height: calc(100vh - 80px);
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 16px;
+}
+
+/* ── Left column: stacked cards */
+.suno-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Right column: results / empty state */
+.suno-right {
+  padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Card */
+.suno-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  overflow: hidden;
+  transition: border-color .2s;
+}
+.suno-card:focus-within { border-color: rgba(78,159,255,.4); }
+.suno-card--slim { padding: 0; }
+.suno-card--collapsed .suno-card__body { display: none; }
+
+/* ── Card header */
+.suno-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 14px 12px;
+  user-select: none;
+}
+.suno-card__collapse {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  transition: background .15s;
+  flex-shrink: 0;
+}
+.suno-card__collapse:hover { background: rgba(255,255,255,.08); }
+.suno-card__collapse--right { margin-left: 0; }
+.suno-card__title {
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+}
+
+/* ── Tab group (Write / Prompt / Instrumental) */
+.suno-tab-group {
+  display: flex;
+  background: rgba(255,255,255,.06);
+  border-radius: 99px;
+  padding: 3px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.suno-tab {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 5px 12px;
+  border-radius: 99px;
+  font-size: .78rem;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+  transition: all .15s;
+}
+.suno-tab.active {
+  background: rgba(255,255,255,.12);
+  color: var(--text);
+}
+.suno-tab:hover:not(.active) { color: var(--text); }
+
+/* ── Tab panels */
+.suno-tab-panel { display: none; }
+.suno-tab-panel.active { display: block; }
+
+/* ── Textarea */
+.suno-textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: .88rem;
+  line-height: 1.6;
+  resize: none;
+  padding: 0 16px 8px;
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+  min-height: 110px;
+}
+.suno-textarea::placeholder { color: var(--muted); opacity: .8; }
+
+/* ── Textarea action row */
+.suno-textarea-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--border);
+  justify-content: space-between;
+}
+
+/* ── Icon button */
+.suno-icon-btn {
+  background: rgba(255,255,255,.06);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 6px 12px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: .8rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all .15s;
+}
+.suno-icon-btn:hover { background: rgba(255,255,255,.1); color: var(--text); }
+.suno-icon-btn--blue {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: transform .4s ease, background .15s;
+}
+.suno-icon-btn--blue:hover { background: #3b8fe8; transform: scale(1.08); }
+
+/* ── Instrumental toggle */
+.suno-instrumental-toggle {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  justify-content: space-between;
+}
+.suno-instrumental-toggle__info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: 1;
+}
+.suno-instrumental-toggle__info div strong { display: block; font-size: .9rem; margin-bottom: 4px; }
+.suno-instrumental-toggle__info div p { margin: 0; font-size: .78rem; color: var(--muted); }
+.suno-instrumental-note {
+  margin: 0 16px 14px;
+  padding: 10px 14px;
+  background: rgba(16,185,129,.08);
+  border: 1px solid rgba(16,185,129,.2);
+  border-radius: 10px;
+  font-size: .82rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+/* ── Switch (iOS-style toggle) */
+.suno-switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+.suno-switch input { opacity: 0; width: 0; height: 0; }
+.suno-switch__track {
+  position: absolute; cursor: pointer; inset: 0;
+  background: rgba(255,255,255,.1);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  transition: background .2s;
+}
+.suno-switch input:checked + .suno-switch__track { background: var(--primary); border-color: var(--primary); }
+.suno-switch__thumb {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform .2s;
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
+.suno-switch input:checked + .suno-switch__track .suno-switch__thumb { transform: translateX(20px); }
+
+/* ── Styles section */
+.suno-style-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: .88rem;
+  padding: 8px 16px;
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.suno-style-input::placeholder { color: var(--muted); }
+.suno-style-chips-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 14px;
+  border-top: 1px solid var(--border);
+  overflow: hidden;
+}
+.suno-style-chips {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: 1;
+  padding-bottom: 2px;
+}
+.suno-style-chips::-webkit-scrollbar { display: none; }
+
+/* ── Chips */
+.suno-chip {
+  background: rgba(255,255,255,.07);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  padding: 5px 14px;
+  font-size: .78rem;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .15s;
+  font-family: inherit;
+}
+.suno-chip:hover { background: rgba(255,255,255,.12); color: var(--text); }
+.suno-chip.active {
+  background: rgba(78,159,255,.15);
+  border-color: rgba(78,159,255,.4);
+  color: var(--primary);
+}
+.suno-chip--sm { padding: 4px 10px; font-size: .74rem; }
+
+/* ── More options */
+.suno-option-row {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.suno-option-row:last-child { border-bottom: none; }
+.suno-option-label {
+  display: block;
+  font-size: .75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 10px;
+}
+.suno-bpm-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.suno-range {
+  flex: 1;
+  accent-color: var(--primary);
+  cursor: pointer;
+  height: 4px;
+}
+.suno-bpm-val {
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--primary);
+  min-width: 60px;
+  text-align: right;
+}
+.suno-bpm-presets {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Field row (song title) */
+.suno-field-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.suno-field-icon { color: var(--muted); font-size: .9rem; flex-shrink: 0; }
+.suno-field-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: .88rem;
+  outline: none;
+  font-family: inherit;
+}
+.suno-field-input::placeholder { color: var(--muted); }
+
+/* ── Create bar (sticky bottom) */
+.suno-create-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 200;
+  background: rgba(10,14,26,.95);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  justify-content: center;
+}
+.suno-create-btn {
+  background: linear-gradient(135deg, var(--primary) 0%, #6366f1 100%);
+  border: none;
+  border-radius: 99px;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 14px 48px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  letter-spacing: .02em;
+  transition: all .2s;
+  box-shadow: 0 4px 20px rgba(78,159,255,.3);
+  min-width: 200px;
+  justify-content: center;
+}
+.suno-create-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 28px rgba(78,159,255,.45); }
+.suno-create-btn:active { transform: translateY(0); }
+.suno-create-btn:disabled {
+  opacity: .7;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Pipeline inside right column */
+.suno-pipeline { padding: 8px 0; }
+
+/* ── Shake keyframe for validation feedback */
+@keyframes shake {
+  0%,100% { transform: translateX(0); }
+  20%      { transform: translateX(-6px); }
+  40%      { transform: translateX(6px); }
+  60%      { transform: translateX(-4px); }
+  80%      { transform: translateX(4px); }
+}
+
+/* ── Mobile: single column ── */
+@media (max-width: 900px) {
+  .suno-gen-page {
+    grid-template-columns: 1fr;
+    padding: 16px 12px;
+    gap: 16px;
+  }
+  .suno-right { order: -1; } /* results above controls on mobile */
+  .suno-tab { padding: 5px 8px; font-size: .72rem; }
+  .suno-create-btn { width: 100%; max-width: 400px; }
+}
+
 /* Light mode support */
 body.light {
   --bg: #f5f7fa;

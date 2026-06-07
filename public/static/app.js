@@ -492,6 +492,124 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ═══════════════════════════════════════════════════════════════
+  //  SUNO-STYLE GENERATOR CONTROLS
+  // ═══════════════════════════════════════════════════════════════
+
+  // ── Tab switching (Write / Prompt / Instrumental) ─────────────
+  let activeTab = 'write'; // track active tab
+  document.querySelectorAll('.suno-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      activeTab = target;
+      document.querySelectorAll('.suno-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.suno-tab-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      const panel = document.getElementById('tab-' + target);
+      if (panel) panel.classList.add('active');
+    });
+  });
+
+  // ── Instrumental toggle note ──────────────────────────────────
+  const instrCheckbox = document.getElementById('gen-instrumental');
+  const instrNote = document.getElementById('instrumental-note');
+  if (instrCheckbox && instrNote) {
+    instrCheckbox.addEventListener('change', () => {
+      instrNote.style.display = instrCheckbox.checked ? 'block' : 'none';
+    });
+  }
+
+  // ── Style chips ───────────────────────────────────────────────
+  const styleInput = document.getElementById('gen-style');
+  document.querySelectorAll('.suno-chip[data-style]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      if (!styleInput) return;
+      const style = chip.dataset.style;
+      const current = styleInput.value.trim();
+      const styles = current ? current.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const idx = styles.findIndex(s => s.toLowerCase() === style.toLowerCase());
+      if (idx > -1) {
+        styles.splice(idx, 1);
+        chip.classList.remove('active');
+      } else {
+        styles.push(style);
+        chip.classList.add('active');
+      }
+      styleInput.value = styles.join(', ');
+    });
+  });
+
+  // ── BPM presets ───────────────────────────────────────────────
+  const bpmSliderEl = document.getElementById('gen-bpm');
+  const bpmValEl    = document.getElementById('gen-bpm-val');
+  document.querySelectorAll('.suno-chip[data-bpm]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const val = parseInt(chip.dataset.bpm);
+      if (bpmSliderEl) { bpmSliderEl.value = val; }
+      if (bpmValEl) bpmValEl.textContent = val + ' BPM';
+      document.querySelectorAll('.suno-chip[data-bpm]').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+    });
+  });
+
+  // ── More Options collapse ─────────────────────────────────────
+  const moreToggle = document.getElementById('more-options-toggle');
+  const moreBody   = document.getElementById('more-body');
+  const moreIcon   = document.getElementById('more-collapse-icon');
+  if (moreToggle && moreBody) {
+    moreToggle.addEventListener('click', () => {
+      const isOpen = moreBody.style.display !== 'none';
+      moreBody.style.display = isOpen ? 'none' : 'block';
+      if (moreIcon) moreIcon.className = isOpen ? 'fas fa-chevron-right' : 'fas fa-chevron-down';
+    });
+  }
+
+  // ── Card collapses (Lyrics / Styles) ─────────────────────────
+  ['lyrics', 'styles'].forEach(id => {
+    const btn  = document.getElementById(id + '-collapse-btn');
+    const body = document.getElementById(id + '-body');
+    const icon = document.getElementById(id + '-collapse-icon');
+    if (btn && body) {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const isOpen = body.style.display !== 'none';
+        body.style.display = isOpen ? 'none' : 'block';
+        if (icon) icon.className = isOpen ? 'fas fa-chevron-right' : 'fas fa-chevron-down';
+      });
+    }
+  });
+
+  // ── Magic wand (auto-fill prompt) ────────────────────────────
+  const magicPrompts = [
+    'dark surf noir trap beat, moody Rhodes, open hi-hats, deep 808 bass',
+    'melodic R&B soul beat, lush chords, soft snare, 90 BPM, emotional',
+    'hard drill beat, sliding 808s, rattling hi-hats, aggressive energy',
+    'lo-fi chill hop, dusty samples, slow tempo, mellow vibes',
+    'afrobeats groovy instrumental, percussion-heavy, uplifting, 110 BPM',
+    'cinematic orchestral hip-hop, strings, dramatic, dark trap drums',
+    'boom bap classic, punchy kicks, vinyl crackle, sample-based, soulful',
+  ];
+  ['lyrics-magic-btn','prompt-magic-btn','style-magic-btn'].forEach(btnId => {
+    const btn = document.getElementById(btnId);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const rnd = magicPrompts[Math.floor(Math.random() * magicPrompts.length)];
+        const promptEl = document.getElementById('gen-prompt');
+        const styleEl  = document.getElementById('gen-style');
+        if (btnId === 'style-magic-btn' && styleEl) {
+          // extract genre/mood parts as style
+          styleEl.value = rnd.split(',').slice(0,2).join(',');
+        } else if (promptEl) {
+          promptEl.value = rnd;
+          // switch to prompt tab
+          document.querySelectorAll('.suno-tab').forEach(t => { if(t.dataset.tab==='prompt') t.click(); });
+        }
+        btn.style.transform = 'rotate(360deg)';
+        setTimeout(() => btn.style.transform = '', 400);
+      });
+    }
+  });
+
+  // ═══════════════════════════════════════════════════════════════
   //  REAL PIPELINE — Beat Generator
   // ═══════════════════════════════════════════════════════════════
 
@@ -515,14 +633,36 @@ document.addEventListener('DOMContentLoaded', () => {
   let pollInterval = null;
 
   function getInputs() {
-    const genre    = document.getElementById('gen-genre')?.value || '';
-    const bpm      = document.getElementById('gen-bpm')?.value || '90';
-    const prompt   = document.getElementById('gen-prompt')?.value || '';
-    const vocal    = document.querySelector('#gen-vocal .toggle-btn.active')?.dataset.val || 'high';
-    const energy   = document.querySelector('#gen-energy .toggle-btn.active')?.dataset.val || 'medium';
-    const include  = [...document.querySelectorAll('.inst-tag.active:not(.inst-tag--exclude)')].map(t=>t.dataset.instr);
-    const exclude  = [...document.querySelectorAll('.inst-tag--exclude.active')].map(t=>t.dataset.instr);
-    return { genre, bpm, prompt, vocal_space: vocal, energy, instruments_include: include, instruments_exclude: exclude };
+    // Read from the new Suno-style fields
+    const lyrics      = document.getElementById('gen-lyrics')?.value?.trim() || '';
+    const prompt      = document.getElementById('gen-prompt')?.value?.trim() || '';
+    const style       = document.getElementById('gen-style')?.value?.trim() || '';
+    const bpm         = document.getElementById('gen-bpm')?.value || '90';
+    const instrumental= document.getElementById('gen-instrumental')?.checked || false;
+    const energy      = document.querySelector('#gen-energy .toggle-btn.active')?.dataset.val || 'medium';
+    const include     = [...document.querySelectorAll('.inst-tag.active:not(.inst-tag--exclude)')].map(t=>t.dataset.instr);
+    const title       = document.getElementById('gen-title')?.value?.trim() || '';
+
+    // Build the combined prompt
+    const parts = [];
+    if (activeTab === 'write' && lyrics) parts.push('lyrics: ' + lyrics);
+    if (prompt) parts.push(prompt);
+    if (style)  parts.push('style: ' + style);
+    if (instrumental) parts.push('instrumental only, no vocals');
+    if (include.length) parts.push('include: ' + include.join(', '));
+    if (energy !== 'medium') parts.push('energy: ' + energy);
+
+    return {
+      genre: style || '',
+      bpm,
+      prompt: parts.join('. '),
+      vocal_space: instrumental ? 'none' : 'high',
+      energy,
+      instruments_include: include,
+      instruments_exclude: [],
+      title,
+      instrumental
+    };
   }
 
   function setStep(step, state) {
@@ -627,7 +767,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function showError(msg) {
-    genBtn.innerHTML = '<i class="fas fa-play"></i> Generate Beat — 50 credits';
+    genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
     genBtn.disabled = false;
     if (pipelineStatus) pipelineStatus.style.display = 'none';
     if (genEmpty) genEmpty.style.display = 'none';
@@ -640,13 +780,27 @@ document.addEventListener('DOMContentLoaded', () => {
   async function startGeneration() {
     const inputs = getInputs();
 
-    if (!inputs.prompt && !inputs.genre) {
-      alert('Please describe your beat first.');
+    // Validate: need either lyrics (write tab), prompt, style, or instrumental selected
+    const hasContent = document.getElementById('gen-lyrics')?.value?.trim() ||
+                       document.getElementById('gen-prompt')?.value?.trim() ||
+                       document.getElementById('gen-style')?.value?.trim() ||
+                       document.getElementById('gen-instrumental')?.checked;
+    if (!hasContent) {
+      // Shake the left panel to indicate input needed
+      const left = document.getElementById('suno-left');
+      if (left) { left.style.animation = 'shake .3s ease'; setTimeout(() => left.style.animation = '', 400); }
+      // Flash the create bar
+      const bar = document.querySelector('.suno-create-bar');
+      if (bar) { bar.style.background = 'rgba(239,68,68,.15)'; setTimeout(() => bar.style.background = '', 600); }
       return;
     }
 
+    // Scroll result area into view on mobile
+    const sunoRight = document.querySelector('.suno-right');
+    if (sunoRight && window.innerWidth < 900) sunoRight.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
     // Reset UI
-    genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+    genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
     genBtn.disabled = true;
     if (genEmpty) genEmpty.style.display = 'none';
     if (genError) genError.style.display = 'none';
@@ -774,10 +928,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (genResult) genResult.style.display = 'block';
-            genBtn.innerHTML = '<i class="fas fa-check"></i> Generated!';
+            genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
             setTimeout(() => {
-              genBtn.innerHTML = '<i class="fas fa-play"></i> Generate Beat — 50 credits';
+              genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
             }, 3000);
           }
 

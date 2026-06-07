@@ -1440,173 +1440,261 @@ function homePage() {
 // ─── GENERATOR PAGE (real pipeline UI) ───────────────────────────────────────
 function generatorPage() {
   return shell('Generator', `
-<main class="inner-page app-shell">
-<div class="app-sidebar">
-  <div class="app-sidebar__section">
-    <h4>Genre & mood</h4>
-    <select class="sf-select" id="gen-genre">
-      <option>Modern Trap</option>
-      <option>Dark Drill</option>
-      <option>Melodic R&B</option>
-      <option>Surf Noir</option>
-      <option>Cinematic Hip-Hop</option>
-      <option>Afrobeats</option>
-      <option>Lo-Fi Hip-Hop</option>
-      <option>Boom Bap</option>
-    </select>
-  </div>
-  <div class="app-sidebar__section">
-    <h4>BPM</h4>
-    <div class="sf-range-wrap">
-      <input type="range" id="gen-bpm" min="60" max="180" value="90" class="sf-range"/>
-      <span id="gen-bpm-val">90 BPM</span>
-    </div>
-  </div>
-  <div class="app-sidebar__section">
-    <h4>Vocal space</h4>
-    <div class="toggle-group" id="gen-vocal">
-      <button class="toggle-btn active" data-val="high">High</button>
-      <button class="toggle-btn" data-val="medium">Medium</button>
-      <button class="toggle-btn" data-val="low">Low</button>
-    </div>
-  </div>
-  <div class="app-sidebar__section">
-    <h4>Energy level</h4>
-    <div class="toggle-group" id="gen-energy">
-      <button class="toggle-btn" data-val="low">Low</button>
-      <button class="toggle-btn active" data-val="medium">Medium</button>
-      <button class="toggle-btn" data-val="high">High</button>
-    </div>
-  </div>
-  <div class="app-sidebar__section">
-    <h4>Instruments (include)</h4>
-    <div class="tag-group">
-      <span class="inst-tag active" data-instr="Rhodes">Rhodes</span>
-      <span class="inst-tag active" data-instr="Bass">Bass</span>
-      <span class="inst-tag" data-instr="Flute">Flute</span>
-      <span class="inst-tag" data-instr="Guitar">Guitar</span>
-      <span class="inst-tag" data-instr="Violin">Violin</span>
-      <span class="inst-tag" data-instr="Trumpet">Trumpet</span>
-      <span class="inst-tag" data-instr="Piano">Piano</span>
-      <span class="inst-tag" data-instr="Synth">Synth</span>
-    </div>
-  </div>
-  <div class="app-sidebar__section">
-    <h4>Exclude</h4>
-    <div class="tag-group">
-      <span class="inst-tag inst-tag--exclude active" data-instr="Retro">Retro</span>
-      <span class="inst-tag inst-tag--exclude" data-instr="8-bit">8-bit</span>
-      <span class="inst-tag inst-tag--exclude" data-instr="Acoustic">Acoustic</span>
-    </div>
-  </div>
-  <div class="credit-pill"><i class="fas fa-music"></i> 3 generations remaining</div>
-</div>
+<!-- Suno-style generator layout: left panel = controls, right panel = result -->
+<div class="suno-gen-page">
 
-<div class="app-main">
-  <div class="app-main__top">
-    <div class="prompt-box">
-      <label class="prompt-box__label">Beat description</label>
-      <textarea class="prompt-box__input" id="gen-prompt"
-        placeholder="Describe your beat... e.g. dark surf noir trap beat, open vocal space, minimal percussion, moody Rhodes"></textarea>
-      <div class="prompt-box__meta">
-        <span class="prompt-box__cost"><i class="fas fa-music"></i> 1 generation — stereo mix + 5-stem ZIP</span>
+  <!-- ── LEFT COLUMN: Input Controls ─────────────────────────── -->
+  <div class="suno-left" id="suno-left">
+
+    <!-- SECTION 1: Lyrics / Prompt / Instrumental -->
+    <div class="suno-card" id="card-lyrics">
+      <div class="suno-card__header">
+        <button class="suno-card__collapse" id="lyrics-collapse-btn" aria-label="Toggle">
+          <i class="fas fa-chevron-down" id="lyrics-collapse-icon"></i>
+        </button>
+        <span class="suno-card__title">Lyrics</span>
+        <div class="suno-tab-group" id="lyrics-tabs">
+          <button class="suno-tab active" data-tab="write">Write</button>
+          <button class="suno-tab" data-tab="prompt">Prompt</button>
+          <button class="suno-tab" data-tab="instrumental">Instrumental</button>
+        </div>
+      </div>
+      <div class="suno-card__body" id="lyrics-body">
+        <!-- Write tab -->
+        <div class="suno-tab-panel active" id="tab-write">
+          <textarea class="suno-textarea" id="gen-lyrics" rows="5"
+            placeholder="[Verse]&#10;Write your lyrics here, or describe what you want...&#10;&#10;Section tags like [Chorus] help structure your track."></textarea>
+          <div class="suno-textarea-actions">
+            <button class="suno-icon-btn" title="Magic Wand" id="lyrics-magic-btn"><i class="fas fa-magic"></i></button>
+            <button class="suno-icon-btn" title="Expand" onclick="document.getElementById('gen-lyrics').rows=document.getElementById('gen-lyrics').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
+          </div>
+        </div>
+        <!-- Prompt tab -->
+        <div class="suno-tab-panel" id="tab-prompt">
+          <textarea class="suno-textarea" id="gen-prompt" rows="5"
+            placeholder="Describe your beat... e.g. dark surf noir trap, moody Rhodes, open hi-hats, deep 808 bass, cinematic and emotional"></textarea>
+          <div class="suno-textarea-actions">
+            <button class="suno-icon-btn" title="Magic Wand" id="prompt-magic-btn"><i class="fas fa-magic"></i></button>
+            <button class="suno-icon-btn" title="Expand" onclick="document.getElementById('gen-prompt').rows=document.getElementById('gen-prompt').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
+          </div>
+        </div>
+        <!-- Instrumental tab (toggle) -->
+        <div class="suno-tab-panel" id="tab-instrumental">
+          <div class="suno-instrumental-toggle">
+            <div class="suno-instrumental-toggle__info">
+              <i class="fas fa-drum" style="font-size:24px;color:var(--primary)"></i>
+              <div>
+                <strong>Instrumental mode</strong>
+                <p>Generate a beat with no vocals — pure instrumentals only.</p>
+              </div>
+            </div>
+            <label class="suno-switch">
+              <input type="checkbox" id="gen-instrumental"/>
+              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
+            </label>
+          </div>
+          <p class="suno-instrumental-note" id="instrumental-note" style="display:none">
+            <i class="fas fa-check-circle" style="color:var(--accent-2)"></i>
+            Instrumental mode is <strong>ON</strong> — no vocal space will be generated.
+          </p>
+        </div>
       </div>
     </div>
-    <div class="gen-actions">
-      <button class="btn btn--primary btn--lg" id="gen-full-btn">
-        <i class="fas fa-play"></i> Generate Beat — 1 generation
+
+    <!-- SECTION 2: Styles -->
+    <div class="suno-card" id="card-styles">
+      <div class="suno-card__header">
+        <button class="suno-card__collapse" id="styles-collapse-btn" aria-label="Toggle">
+          <i class="fas fa-chevron-down" id="styles-collapse-icon"></i>
+        </button>
+        <span class="suno-card__title">Styles</span>
+      </div>
+      <div class="suno-card__body" id="styles-body">
+        <input type="text" class="suno-style-input" id="gen-style"
+          placeholder="e.g. dark trap, melodic, 808s, moody, cinematic..."
+          maxlength="200"/>
+        <div class="suno-style-chips-row">
+          <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
+          <div class="suno-style-chips" id="style-chips-scroll">
+            <button class="suno-chip" data-style="trap">Trap</button>
+            <button class="suno-chip" data-style="drill">Drill</button>
+            <button class="suno-chip" data-style="R&B">R&B</button>
+            <button class="suno-chip" data-style="lo-fi">Lo-Fi</button>
+            <button class="suno-chip" data-style="boom bap">Boom Bap</button>
+            <button class="suno-chip" data-style="afrobeats">Afrobeats</button>
+            <button class="suno-chip" data-style="cinematic">Cinematic</button>
+            <button class="suno-chip" data-style="reggaeton">Reggaeton</button>
+            <button class="suno-chip" data-style="house">House</button>
+            <button class="suno-chip" data-style="gospel">Gospel</button>
+            <button class="suno-chip" data-style="jazz">Jazz</button>
+            <button class="suno-chip" data-style="soul">Soul</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 3: More Options (collapsible) -->
+    <div class="suno-card suno-card--collapsed" id="card-more">
+      <div class="suno-card__header" id="more-options-toggle" style="cursor:pointer">
+        <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
+          <i class="fas fa-chevron-right" id="more-collapse-icon"></i>
+        </button>
+        <span class="suno-card__title">More Options</span>
+      </div>
+      <div class="suno-card__body" id="more-body" style="display:none">
+        <!-- BPM -->
+        <div class="suno-option-row">
+          <label class="suno-option-label">Tempo</label>
+          <div class="suno-bpm-row">
+            <input type="range" class="suno-range" id="gen-bpm" min="60" max="200" value="90"/>
+            <span class="suno-bpm-val" id="gen-bpm-val">90 BPM</span>
+          </div>
+          <div class="suno-bpm-presets">
+            <button class="suno-chip suno-chip--sm" data-bpm="70">Slow (70)</button>
+            <button class="suno-chip suno-chip--sm" data-bpm="90">Mid (90)</button>
+            <button class="suno-chip suno-chip--sm" data-bpm="120">Fast (120)</button>
+            <button class="suno-chip suno-chip--sm" data-bpm="140">Hard (140)</button>
+          </div>
+        </div>
+        <!-- Energy -->
+        <div class="suno-option-row">
+          <label class="suno-option-label">Energy</label>
+          <div class="toggle-group" id="gen-energy">
+            <button class="toggle-btn" data-val="low">Low</button>
+            <button class="toggle-btn active" data-val="medium">Medium</button>
+            <button class="toggle-btn" data-val="high">High</button>
+          </div>
+        </div>
+        <!-- Instruments -->
+        <div class="suno-option-row">
+          <label class="suno-option-label">Include instruments</label>
+          <div class="tag-group">
+            <span class="inst-tag" data-instr="Rhodes">Rhodes</span>
+            <span class="inst-tag" data-instr="Bass">Bass</span>
+            <span class="inst-tag" data-instr="Flute">Flute</span>
+            <span class="inst-tag" data-instr="Guitar">Guitar</span>
+            <span class="inst-tag" data-instr="Violin">Violin</span>
+            <span class="inst-tag" data-instr="Trumpet">Trumpet</span>
+            <span class="inst-tag" data-instr="Piano">Piano</span>
+            <span class="inst-tag" data-instr="Synth">Synth</span>
+            <span class="inst-tag" data-instr="Strings">Strings</span>
+            <span class="inst-tag" data-instr="Choir">Choir</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 4: Song Title -->
+    <div class="suno-card suno-card--slim">
+      <div class="suno-field-row">
+        <i class="fas fa-music suno-field-icon"></i>
+        <input type="text" class="suno-field-input" id="gen-title" placeholder="Song title (optional)"/>
+      </div>
+    </div>
+
+  </div><!-- /suno-left -->
+
+  <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
+  <div class="suno-right">
+
+    <!-- Pipeline status -->
+    <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
+      <div class="pipeline-steps">
+        <div class="pipeline-step" id="step-blueprint">
+          <div class="pipeline-step__icon"><i class="fas fa-brain"></i></div>
+          <div class="pipeline-step__body">
+            <strong>Building blueprint</strong>
+            <span>GPT-4o analyzing your prompt...</span>
+          </div>
+          <div class="pipeline-step__indicator" id="ind-blueprint"></div>
+        </div>
+        <div class="pipeline-step" id="step-generating">
+          <div class="pipeline-step__icon"><i class="fas fa-music"></i></div>
+          <div class="pipeline-step__body">
+            <strong>Generating instrumental</strong>
+            <span>Mureka AI composing your beat...</span>
+          </div>
+          <div class="pipeline-step__indicator" id="ind-generating"></div>
+        </div>
+        <div class="pipeline-step" id="step-extracting">
+          <div class="pipeline-step__icon"><i class="fas fa-layer-group"></i></div>
+          <div class="pipeline-step__body">
+            <strong>Extracting individual tracks</strong>
+            <span>Separating each instrument...</span>
+          </div>
+          <div class="pipeline-step__indicator" id="ind-extracting"></div>
+        </div>
+      </div>
+      <div class="pipeline-blueprint" id="pipeline-blueprint" style="display:none">
+        <div class="blueprint-pills" id="blueprint-pills"></div>
+      </div>
+    </div>
+
+    <!-- Result area -->
+    <div class="gen-result" id="gen-result" style="display:none">
+      <div class="gen-result__header">
+        <div>
+          <h3 id="gen-result-title">Beat Ready</h3>
+          <p id="gen-result-sub">Loading track info...</p>
+        </div>
+        <div class="gen-result__status">
+          <span class="status-dot status-dot--ready"></span> Ready
+        </div>
+      </div>
+      <!-- Stereo player -->
+      <div class="stereo-player" id="stereo-player" style="display:none">
+        <div class="stereo-player__label"><i class="fas fa-music"></i> Full stereo mix</div>
+        <audio id="stereo-audio" controls style="width:100%;margin-top:8px;"></audio>
+        <a id="stereo-download" class="btn btn--outline btn--sm" style="margin-top:10px" download>
+          <i class="fas fa-download"></i> Download stereo mix
+        </a>
+      </div>
+      <!-- Track list -->
+      <div class="track-list" id="track-list"></div>
+      <!-- Export panel -->
+      <div class="export-panel">
+        <h4>Export options</h4>
+        <div class="export-options">
+          <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
+          <button class="export-btn" id="exp-stems"><i class="fas fa-layer-group"></i><span>Stem ZIP</span><small>Free</small></button>
+          <button class="export-btn export-btn--locked" id="exp-tracks"><i class="fas fa-list"></i><span>Individual tracks</span><small>Pro Artist</small></button>
+        </div>
+        <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Pro Artist to unlock individual track downloads</a>
+      </div>
+    </div>
+
+    <!-- Empty state -->
+    <div class="gen-empty" id="gen-empty">
+      <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
+      <h3>Your beat will appear here.</h3>
+      <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
+    </div>
+
+    <!-- Error state -->
+    <div class="gen-error" id="gen-error" style="display:none">
+      <div class="gen-empty__icon" style="color:var(--danger)"><i class="fas fa-exclamation-triangle"></i></div>
+      <h3>Generation failed</h3>
+      <p id="gen-error-msg">Something went wrong. Please try again.</p>
+      <button class="btn btn--outline" id="gen-retry-btn" style="margin-top:16px">
+        <i class="fas fa-redo"></i> Try again
       </button>
     </div>
-  </div>
 
-  <!-- Pipeline status -->
-  <div class="pipeline-status" id="pipeline-status" style="display:none">
-    <div class="pipeline-steps">
-      <div class="pipeline-step" id="step-blueprint">
-        <div class="pipeline-step__icon"><i class="fas fa-brain"></i></div>
-        <div class="pipeline-step__body">
-          <strong>Building blueprint</strong>
-          <span>GPT-4o analyzing your prompt...</span>
-        </div>
-        <div class="pipeline-step__indicator" id="ind-blueprint"></div>
-      </div>
-      <div class="pipeline-step" id="step-generating">
-        <div class="pipeline-step__icon"><i class="fas fa-music"></i></div>
-        <div class="pipeline-step__body">
-          <strong>Generating instrumental</strong>
-          <span>Mureka AI composing your beat...</span>
-        </div>
-        <div class="pipeline-step__indicator" id="ind-generating"></div>
-      </div>
-      <div class="pipeline-step" id="step-extracting">
-        <div class="pipeline-step__icon"><i class="fas fa-layer-group"></i></div>
-        <div class="pipeline-step__body">
-          <strong>Extracting individual tracks</strong>
-          <span>Separating each instrument...</span>
-        </div>
-        <div class="pipeline-step__indicator" id="ind-extracting"></div>
-      </div>
-    </div>
-    <div class="pipeline-blueprint" id="pipeline-blueprint" style="display:none">
-      <div class="blueprint-pills" id="blueprint-pills"></div>
-    </div>
-  </div>
+  </div><!-- /suno-right -->
 
-  <!-- Result area -->
-  <div class="gen-result" id="gen-result" style="display:none">
-    <div class="gen-result__header">
-      <div>
-        <h3 id="gen-result-title">Beat Ready</h3>
-        <p id="gen-result-sub">Loading track info...</p>
-      </div>
-      <div class="gen-result__status">
-        <span class="status-dot status-dot--ready"></span> Ready
-      </div>
-    </div>
+</div><!-- /suno-gen-page -->
 
-    <!-- Stereo player -->
-    <div class="stereo-player" id="stereo-player" style="display:none">
-      <div class="stereo-player__label"><i class="fas fa-music"></i> Full stereo mix</div>
-      <audio id="stereo-audio" controls style="width:100%;margin-top:8px;"></audio>
-      <a id="stereo-download" class="btn btn--outline btn--sm" style="margin-top:10px" download>
-        <i class="fas fa-download"></i> Download stereo mix
-      </a>
-    </div>
-
-    <!-- Track list -->
-    <div class="track-list" id="track-list"></div>
-
-    <!-- Export panel -->
-    <div class="export-panel">
-      <h4>Export options</h4>
-      <div class="export-options">
-        <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
-        <button class="export-btn" id="exp-stems"><i class="fas fa-layer-group"></i><span>Stem ZIP</span><small>Free</small></button>
-        <button class="export-btn export-btn--locked" id="exp-tracks"><i class="fas fa-list"></i><span>Individual tracks</span><small>Pro Artist</small></button>
-      </div>
-      <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Pro Artist to unlock individual track downloads</a>
-    </div>
-  </div>
-
-  <!-- Empty state -->
-  <div class="gen-empty" id="gen-empty">
-    <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
-    <h3>Your beat will appear here.</h3>
-    <p>Set your options on the left, describe your beat above, and hit generate.<br/>
-    Real AI generation powered by GPT-4o + Mureka.</p>
-  </div>
-
-  <!-- Error state -->
-  <div class="gen-error" id="gen-error" style="display:none">
-    <div class="gen-empty__icon" style="color:var(--danger)"><i class="fas fa-exclamation-triangle"></i></div>
-    <h3>Generation failed</h3>
-    <p id="gen-error-msg">Something went wrong. Please try again.</p>
-    <button class="btn btn--outline" id="gen-retry-btn" style="margin-top:16px">
-      <i class="fas fa-redo"></i> Try again
-    </button>
-  </div>
+<!-- ── STICKY CREATE BUTTON (Suno-style bottom bar) ─────────── -->
+<div class="suno-create-bar">
+  <button class="suno-create-btn" id="gen-full-btn">
+    <i class="fas fa-music"></i> Create
+  </button>
 </div>
-</main>`, `<style>.sf-nav,.sf-footer{display:none}</style>`)
+
+`, `<style>
+  .sf-nav,.sf-footer{display:none}
+  body{padding-bottom:80px}
+</style>`)
 }
 
 // ─── PRICING PAGE ────────────────────────────────────────────────────────────
