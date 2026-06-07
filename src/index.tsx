@@ -1029,6 +1029,8 @@ app.get('/signup', (c) => c.html(signupPage()))
 app.get('/register', (c) => c.html(registerPage()))
 app.get('/login', (c) => c.html(loginPage()))
 app.get('/checkout', (c) => c.html(checkoutPage()))
+app.get('/terms', (c) => c.html(termsPage()))
+app.get('/privacy', (c) => c.html(privacyPage()))
 
 app.get('/profile', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.html(profilePage(null))
@@ -1214,8 +1216,8 @@ function footer() {
       </div>
       <div>
         <h4>Legal</h4>
-        <a href="#">Terms</a>
-        <a href="#">Privacy</a>
+        <a href="/terms">Terms</a>
+        <a href="/privacy">Privacy</a>
       </div>
     </div>
   </div>
@@ -1592,6 +1594,14 @@ function generatorPage() {
       </div>
     </div>
 
+    <!-- CREATE BUTTON — inline below song title, like Suno -->
+    <div class="suno-create-inline">
+      <button class="suno-create-btn" id="gen-full-btn">
+        <i class="fas fa-music"></i> Create
+      </button>
+      <p class="suno-create-note">1 generation · stereo mix + 5-stem ZIP</p>
+    </div>
+
   </div><!-- /suno-left -->
 
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
@@ -1684,16 +1694,8 @@ function generatorPage() {
 
 </div><!-- /suno-gen-page -->
 
-<!-- ── STICKY CREATE BUTTON (Suno-style bottom bar) ─────────── -->
-<div class="suno-create-bar">
-  <button class="suno-create-btn" id="gen-full-btn">
-    <i class="fas fa-music"></i> Create
-  </button>
-</div>
-
 `, `<style>
   .sf-nav,.sf-footer{display:none}
-  body{padding-bottom:80px}
 </style>`)
 }
 
@@ -1872,7 +1874,7 @@ function signupPage() {
         <a href="/register" class="btn btn--outline btn--full btn--lg" style="margin-top:8px">
           <i class="fas fa-envelope"></i> Sign up with email
         </a>
-        <p class="auth-card__sub" style="margin-top:20px;font-size:13px">By continuing you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</p>
+        <p class="auth-card__sub" style="margin-top:20px;font-size:13px">By continuing you agree to our <a href="/terms" target="_blank">Terms</a> and <a href="/privacy" target="_blank">Privacy Policy</a>.</p>
       </div>
     </div>
   </div>
@@ -1924,7 +1926,7 @@ function registerPage() {
             </div>
           </div>
           <div class="form-group form-group--check">
-            <label class="checkbox-label"><input type="checkbox" id="su-terms" required/> I agree to the <a href="#">Terms</a> and <a href="#">Privacy Policy</a></label>
+            <label class="checkbox-label"><input type="checkbox" id="su-terms" required/> I agree to the <a href="/terms" target="_blank">Terms of Service</a> and <a href="/privacy" target="_blank">Privacy Policy</a></label>
           </div>
           <button type="submit" class="btn btn--primary btn--full btn--lg" id="signup-btn">
             Create account <i class="fas fa-arrow-right"></i>
@@ -2273,6 +2275,310 @@ function accountPage(user: User) {
     </div>
   </div>
 </main>`)
+}
+
+// ─── LEGAL PAGES HELPER ──────────────────────────────────────────────────────
+function legalShell(title: string, lastUpdated: string, content: string) {
+  return shell(title, `
+<main class="inner-page">
+  <div class="legal-wrap">
+    <div class="legal-header">
+      <div class="legal-header__tag">Legal</div>
+      <h1>${title}</h1>
+      <p class="legal-header__meta">Last updated: ${lastUpdated} · Effective immediately upon posting</p>
+    </div>
+    <div class="legal-body">
+      ${content}
+    </div>
+    <div class="legal-footer">
+      <p>Questions? Email us at <a href="mailto:legal@stemforge.com">legal@stemforge.com</a></p>
+      <div class="legal-footer__links">
+        <a href="/terms">Terms of Service</a>
+        <a href="/privacy">Privacy Policy</a>
+        <a href="/">Home</a>
+      </div>
+    </div>
+  </div>
+</main>`)
+}
+
+// ─── TERMS OF SERVICE ─────────────────────────────────────────────────────────
+function termsPage() {
+  return legalShell('Terms of Service', 'June 7, 2025', `
+<section>
+  <h2>1. Acceptance of Terms</h2>
+  <p>Welcome to <strong>StemForge</strong> ("StemForge," "we," "our," or "us"). By accessing or using our website at <a href="https://stemforge.com">stemforge.com</a>, our beat generation platform, or any related services (collectively, the "Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, do not use our Service.</p>
+  <p>We reserve the right to modify these Terms at any time. We will provide notice of significant changes by updating the "Last Updated" date above or sending an email to registered users. Your continued use of the Service after such changes constitutes your acceptance of the revised Terms.</p>
+</section>
+
+<section>
+  <h2>2. The Service</h2>
+  <p>StemForge is an AI-powered music beat generation platform that allows users to create original instrumental beats and audio tracks using artificial intelligence. The Service includes:</p>
+  <ul>
+    <li>AI-powered beat generation using text prompts, style descriptors, and musical parameters</li>
+    <li>Stereo mix downloads and multi-stem ZIP exports (Drums, Bass, Vocals, Melody, Instrumental)</li>
+    <li>Individual stem/track downloads (Pro Artist plan)</li>
+    <li>Project storage, dashboard, and playback functionality</li>
+    <li>Account management including profile, subscription, and billing tools</li>
+  </ul>
+  <p>We use third-party AI providers (including Mureka AI and OpenAI) to power our generation pipeline. Output quality and availability depend on these services and may vary.</p>
+</section>
+
+<section>
+  <h2>3. Eligibility & Accounts</h2>
+  <p>You must be at least <strong>13 years old</strong> (or the minimum age required in your country) to use the Service. By creating an account, you represent that you meet this requirement.</p>
+  <p>You are responsible for maintaining the confidentiality of your account credentials and for all activity that occurs under your account. You agree to:</p>
+  <ul>
+    <li>Provide accurate, current, and complete information during registration</li>
+    <li>Promptly update your account information if it changes</li>
+    <li>Notify us immediately of any unauthorized access to your account</li>
+    <li>Not share your account with others or allow others to access your account</li>
+  </ul>
+  <p>We reserve the right to suspend or terminate accounts that violate these Terms, at our sole discretion.</p>
+</section>
+
+<section>
+  <h2>4. Subscriptions, Credits & Billing</h2>
+  <h3>4.1 Free Plan</h3>
+  <p>Free accounts receive 3 beat generations per month at no charge. Free generations include stereo mix and 5-stem ZIP downloads. No credit card is required to start.</p>
+
+  <h3>4.2 Paid Plans</h3>
+  <p>We offer the following paid subscription tiers, billed monthly:</p>
+  <ul>
+    <li><strong>Creator Plan ($19/month):</strong> 50 generations/month, stereo mix + stem ZIP, commercial use rights, +$0.49 per extra generation</li>
+    <li><strong>Pro Artist Plan ($39/month):</strong> 150 generations/month, everything in Creator, individual track downloads, priority queue, +$0.49 per extra generation</li>
+  </ul>
+
+  <h3>4.3 Billing & Renewal</h3>
+  <p>Paid plans are billed monthly via Stripe. Subscriptions automatically renew unless cancelled before the next billing date. You authorize us to charge your payment method on file for recurring subscription fees and any overage charges.</p>
+
+  <h3>4.4 Refunds</h3>
+  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation credits consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:billing@stemforge.com">billing@stemforge.com</a> and we will review your case.</p>
+
+  <h3>4.5 Cancellation</h3>
+  <p>You may cancel your subscription at any time through the Subscription page in your account or via the Stripe billing portal. Cancellation takes effect at the end of your current billing period. You retain access to your plan until then.</p>
+
+  <h3>4.6 Generation Credits</h3>
+  <p>Monthly generation credits reset on your billing date and do not roll over to the following month. Unused generations are forfeited at period end.</p>
+</section>
+
+<section>
+  <h2>5. Intellectual Property & Ownership</h2>
+  <h3>5.1 Your Content</h3>
+  <p>When you provide prompts, lyrics, style descriptors, or other input to generate beats ("Input"), you retain ownership of your Input. You grant StemForge a non-exclusive, worldwide, royalty-free license to use your Input solely for the purpose of providing the Service to you.</p>
+
+  <h3>5.2 Generated Output</h3>
+  <p>Subject to your plan and payment of applicable fees:</p>
+  <ul>
+    <li><strong>Free Plan:</strong> Beats generated are for personal, non-commercial use only. You may not sell, license, or commercialize beats generated under the Free plan.</li>
+    <li><strong>Creator & Pro Artist Plans:</strong> You receive a non-exclusive license to use generated beats for commercial purposes, including in music releases, content monetization, sync licensing, and other commercial applications.</li>
+  </ul>
+  <p>StemForge does not claim ownership of your generated beats. However, because AI generation is non-deterministic, we cannot guarantee uniqueness — similar outputs may be produced for other users.</p>
+
+  <h3>5.3 StemForge Platform</h3>
+  <p>All platform code, design, branding, logos, trademarks, and underlying technology are the exclusive property of StemForge. You may not copy, reverse-engineer, or create derivative works of the platform.</p>
+</section>
+
+<section>
+  <h2>6. Acceptable Use</h2>
+  <p>You agree not to use the Service to:</p>
+  <ul>
+    <li>Generate content that infringes the intellectual property rights of any third party</li>
+    <li>Create content that is illegal, defamatory, harassing, threatening, or abusive</li>
+    <li>Reproduce, scrape, or systematically extract data from the platform</li>
+    <li>Circumvent, disable, or interfere with security or access controls</li>
+    <li>Use automated tools (bots, scrapers, crawlers) to access the Service without our written consent</li>
+    <li>Resell, sublicense, or commercially exploit the platform itself without our written authorization</li>
+    <li>Generate content designed to deceive, manipulate, or defraud others</li>
+    <li>Violate any applicable local, national, or international law or regulation</li>
+  </ul>
+  <p>Violation of these rules may result in immediate account termination without refund.</p>
+</section>
+
+<section>
+  <h2>7. AI-Generated Content Disclaimer</h2>
+  <p>StemForge uses AI to generate audio content. While we strive to produce high-quality, original output, we make no guarantees regarding:</p>
+  <ul>
+    <li>The uniqueness or originality of generated beats</li>
+    <li>The absence of similarity to existing copyrighted works</li>
+    <li>The suitability of generated content for any particular commercial or artistic purpose</li>
+  </ul>
+  <p>You are solely responsible for reviewing generated content before use and for ensuring your use complies with applicable copyright law. StemForge is not liable for any third-party claims arising from your use of AI-generated content.</p>
+</section>
+
+<section>
+  <h2>8. Disclaimer of Warranties</h2>
+  <p>THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. WE DO NOT WARRANT THAT THE SERVICE WILL BE UNINTERRUPTED, ERROR-FREE, OR FREE OF HARMFUL COMPONENTS.</p>
+</section>
+
+<section>
+  <h2>9. Limitation of Liability</h2>
+  <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, STEMFORGE AND ITS OFFICERS, DIRECTORS, EMPLOYEES, AND AGENTS SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, INCLUDING LOST PROFITS, LOSS OF DATA, OR BUSINESS INTERRUPTION, ARISING FROM YOUR USE OF OR INABILITY TO USE THE SERVICE, EVEN IF WE HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.</p>
+  <p>Our total liability to you for any claims arising from these Terms or the Service shall not exceed the amount you paid to StemForge in the 12 months preceding the claim.</p>
+</section>
+
+<section>
+  <h2>10. Indemnification</h2>
+  <p>You agree to indemnify, defend, and hold harmless StemForge and its affiliates, officers, agents, and employees from any claims, liabilities, damages, losses, and expenses (including reasonable legal fees) arising from: (a) your use of the Service; (b) your violation of these Terms; (c) your violation of any third-party rights; or (d) content you submit or generate through the Service.</p>
+</section>
+
+<section>
+  <h2>11. Termination</h2>
+  <p>We may suspend or terminate your account and access to the Service at any time, with or without notice, for any reason, including your violation of these Terms. Upon termination, your right to use the Service ceases immediately. Provisions that by their nature should survive termination (including intellectual property, disclaimers, and limitation of liability) will survive.</p>
+</section>
+
+<section>
+  <h2>12. Governing Law</h2>
+  <p>These Terms are governed by and construed in accordance with the laws of the United States, without regard to conflict of law principles. Any disputes arising from these Terms shall be resolved through binding arbitration in accordance with the American Arbitration Association rules, except that either party may seek injunctive relief in a court of competent jurisdiction.</p>
+</section>
+
+<section>
+  <h2>13. Contact</h2>
+  <p>If you have any questions about these Terms, please contact us:</p>
+  <ul>
+    <li>Email: <a href="mailto:legal@stemforge.com">legal@stemforge.com</a></li>
+    <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
+  </ul>
+</section>
+`)
+}
+
+// ─── PRIVACY POLICY ───────────────────────────────────────────────────────────
+function privacyPage() {
+  return legalShell('Privacy Policy', 'June 7, 2025', `
+<section>
+  <h2>1. Introduction</h2>
+  <p>StemForge ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your personal information when you use our website and beat generation platform ("Service"). Please read this policy carefully. By using the Service, you consent to the practices described here.</p>
+</section>
+
+<section>
+  <h2>2. Information We Collect</h2>
+  <h3>2.1 Information You Provide</h3>
+  <ul>
+    <li><strong>Account information:</strong> When you register, we collect your name, email address, and password (stored as a hashed value — we never store plaintext passwords).</li>
+    <li><strong>Google OAuth:</strong> If you sign in with Google, we receive your Google profile name, email address, and profile photo URL from Google's API.</li>
+    <li><strong>Payment information:</strong> We process payments via Stripe. We do not store full credit card numbers on our servers — Stripe handles all payment data under their own PCI-compliant systems.</li>
+    <li><strong>Generation inputs:</strong> Prompts, lyrics, style descriptors, BPM values, and other inputs you provide to generate beats.</li>
+    <li><strong>Communications:</strong> If you contact us by email or through the platform, we retain your messages to respond and improve the Service.</li>
+  </ul>
+
+  <h3>2.2 Information Collected Automatically</h3>
+  <ul>
+    <li><strong>Session data:</strong> We use HttpOnly session cookies to maintain your authenticated session. Session tokens are stored securely in our Cloudflare D1 database.</li>
+    <li><strong>Usage data:</strong> We collect information about how you interact with the Service, including pages visited, features used, and generation history.</li>
+    <li><strong>Device & browser data:</strong> IP address, browser type, operating system, and referring URLs, collected via standard server logs.</li>
+  </ul>
+
+  <h3>2.3 Information from Third Parties</h3>
+  <ul>
+    <li><strong>Google:</strong> If you authenticate via Google OAuth, we receive the profile information described above, subject to your Google account privacy settings.</li>
+    <li><strong>Stripe:</strong> We receive transaction status, customer ID, and subscription information from Stripe to manage your billing.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>3. How We Use Your Information</h2>
+  <p>We use your information to:</p>
+  <ul>
+    <li>Create and manage your account and authenticate your identity</li>
+    <li>Provide and improve the beat generation Service</li>
+    <li>Process payments, manage subscriptions, and track generation usage</li>
+    <li>Personalize your experience (profile photo, name, plan status)</li>
+    <li>Send transactional emails (account creation, payment receipts, subscription changes)</li>
+    <li>Detect and prevent fraud, abuse, and violations of our Terms of Service</li>
+    <li>Comply with legal obligations and enforce our agreements</li>
+    <li>Analyze usage patterns to improve platform performance and features</li>
+  </ul>
+  <p>We do <strong>not</strong> sell your personal information to third parties. We do not use your prompts or generated beats to train AI models without your explicit consent.</p>
+</section>
+
+<section>
+  <h2>4. Cookies & Tracking</h2>
+  <h3>4.1 Session Cookies</h3>
+  <p>We use a single HttpOnly, Secure, SameSite session cookie (<code>sf_session</code>) to keep you logged in for up to 30 days. This cookie does not track you across other websites.</p>
+
+  <h3>4.2 Local Storage</h3>
+  <p>We use browser localStorage to save your theme preference (dark/light mode) locally on your device. No personal data is stored in localStorage.</p>
+
+  <h3>4.3 Third-Party Services</h3>
+  <p>Our Service integrates with third-party providers that may set their own cookies or tracking mechanisms:</p>
+  <ul>
+    <li><strong>Stripe:</strong> For payment processing. <a href="https://stripe.com/privacy" target="_blank">Stripe Privacy Policy</a></li>
+    <li><strong>Google OAuth:</strong> For optional sign-in. <a href="https://policies.google.com/privacy" target="_blank">Google Privacy Policy</a></li>
+    <li><strong>Cloudflare:</strong> For hosting and edge delivery. <a href="https://www.cloudflare.com/privacypolicy/" target="_blank">Cloudflare Privacy Policy</a></li>
+  </ul>
+</section>
+
+<section>
+  <h2>5. How We Share Your Information</h2>
+  <p>We do not sell or rent your personal information. We share data only in these limited circumstances:</p>
+  <ul>
+    <li><strong>Service providers:</strong> We share necessary data with Stripe (payments), Cloudflare (hosting), OpenAI (blueprint generation), and Mureka AI (audio generation) to operate the Service. These providers process data on our behalf under data processing agreements.</li>
+    <li><strong>Legal requirements:</strong> We may disclose your information if required by law, court order, or governmental authority, or to protect the rights, safety, or property of StemForge or others.</li>
+    <li><strong>Business transfers:</strong> If StemForge is acquired or merges with another entity, your information may be transferred as part of that transaction. We will notify you via email or a prominent notice before your data is subject to a different privacy policy.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>6. Data Retention</h2>
+  <p>We retain your account information and generation history for as long as your account is active or as needed to provide the Service. If you delete your account, we will delete or anonymize your personal data within 30 days, except where retention is required by law or for legitimate business purposes (e.g., financial records required for tax compliance).</p>
+  <p>Session tokens expire after 30 days of inactivity. Generation job data is retained to power your dashboard and project history.</p>
+</section>
+
+<section>
+  <h2>7. Data Security</h2>
+  <p>We take reasonable technical and organizational measures to protect your personal information:</p>
+  <ul>
+    <li>Passwords are hashed using PBKDF2 with SHA-256 and a unique salt per user — we cannot recover your plaintext password</li>
+    <li>Session cookies are HttpOnly and Secure — they cannot be accessed by JavaScript and are only sent over HTTPS</li>
+    <li>All data is stored on Cloudflare's infrastructure with enterprise-grade security</li>
+    <li>Payment processing is fully handled by Stripe — we never touch raw card data</li>
+    <li>API keys and secrets are stored as environment variables, never in source code</li>
+  </ul>
+  <p>No system is 100% secure. In the event of a data breach affecting your rights, we will notify you as required by applicable law.</p>
+</section>
+
+<section>
+  <h2>8. Your Rights & Choices</h2>
+  <p>Depending on your location, you may have the following rights regarding your personal data:</p>
+  <ul>
+    <li><strong>Access:</strong> Request a copy of the personal data we hold about you</li>
+    <li><strong>Correction:</strong> Request correction of inaccurate or incomplete data</li>
+    <li><strong>Deletion:</strong> Request deletion of your account and associated personal data ("right to be forgotten")</li>
+    <li><strong>Portability:</strong> Request your data in a portable format</li>
+    <li><strong>Objection:</strong> Object to certain types of processing (e.g., marketing)</li>
+    <li><strong>Restriction:</strong> Request restriction of processing in certain circumstances</li>
+  </ul>
+  <p>To exercise any of these rights, email us at <a href="mailto:privacy@stemforge.com">privacy@stemforge.com</a>. We will respond within 30 days. We may need to verify your identity before processing your request.</p>
+  <p><strong>California residents (CCPA):</strong> You have the right to know what personal information we collect, to delete it, and to opt out of its sale. We do not sell personal information.</p>
+  <p><strong>EEA/UK residents (GDPR):</strong> Our legal basis for processing your data includes contract performance (providing the Service), legitimate interests (fraud prevention, improving the Service), and legal compliance. You may also lodge a complaint with your local data protection authority.</p>
+</section>
+
+<section>
+  <h2>9. Children's Privacy</h2>
+  <p>The Service is not directed to children under 13 years of age. We do not knowingly collect personal information from children under 13. If we discover we have collected data from a child under 13, we will delete it promptly. If you believe we have collected such data, please contact us at <a href="mailto:privacy@stemforge.com">privacy@stemforge.com</a>.</p>
+</section>
+
+<section>
+  <h2>10. International Data Transfers</h2>
+  <p>StemForge operates primarily through Cloudflare's global edge network. Your data may be processed in data centers located in the United States and other countries. By using the Service, you consent to the transfer of your information to countries that may have different data protection laws than your country of residence. We take steps to ensure appropriate safeguards are in place for any such transfers.</p>
+</section>
+
+<section>
+  <h2>11. Changes to This Policy</h2>
+  <p>We may update this Privacy Policy from time to time. When we do, we will update the "Last Updated" date at the top of this page and, for material changes, notify registered users by email. Your continued use of the Service after any changes constitutes acceptance of the revised policy.</p>
+</section>
+
+<section>
+  <h2>12. Contact Us</h2>
+  <p>If you have questions, concerns, or requests about this Privacy Policy or how we handle your data, please contact us:</p>
+  <ul>
+    <li>Email: <a href="mailto:privacy@stemforge.com">privacy@stemforge.com</a></li>
+    <li>General: <a href="mailto:legal@stemforge.com">legal@stemforge.com</a></li>
+    <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
+  </ul>
+</section>
+`)
 }
 
 export default app
