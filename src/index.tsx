@@ -1207,12 +1207,38 @@ function globalSidebar() {
     <span class="gs-sidebar__logo-text">Stem<span class="accent">Forge</span></span>
   </a>
 
-  <!-- User identity (populated by JS when logged in) -->
-  <div class="gs-sidebar__user" id="gs-user-block" style="display:none">
-    <div class="gs-sidebar__avatar" id="gs-avatar">?</div>
-    <div class="gs-sidebar__user-info">
-      <span class="gs-sidebar__username" id="gs-username">Loading...</span>
-      <span class="gs-sidebar__plan plan-badge" id="gs-plan-badge">Free</span>
+  <!-- User identity block — click to open dropdown menu -->
+  <div class="gs-sidebar__user-wrap" id="gs-user-block" style="display:none">
+    <button class="gs-sidebar__user" id="gs-user-btn" aria-haspopup="true" aria-expanded="false">
+      <div class="gs-sidebar__avatar" id="gs-avatar">?</div>
+      <div class="gs-sidebar__user-info">
+        <span class="gs-sidebar__username" id="gs-username">Loading...</span>
+        <span class="gs-sidebar__plan plan-badge" id="gs-plan-badge">Free</span>
+      </div>
+      <i class="fas fa-chevron-up gs-sidebar__user-caret" id="gs-user-caret"></i>
+    </button>
+
+    <!-- Dropdown panel — shown when user block is clicked -->
+    <div class="gs-user-dropdown" id="gs-user-dropdown" aria-hidden="true">
+      <a href="/profile" class="gs-user-dropdown__item">
+        <i class="fas fa-user"></i> Profile
+      </a>
+      <a href="/subscription" class="gs-user-dropdown__item">
+        <i class="fas fa-credit-card"></i> Subscription
+      </a>
+      <a href="/account" class="gs-user-dropdown__item">
+        <i class="fas fa-cog"></i> Account Settings
+      </a>
+      <div class="gs-user-dropdown__divider"></div>
+      <button class="gs-user-dropdown__item gs-user-dropdown__item--btn" id="gs-theme-btn">
+        <i class="fas fa-moon" id="gs-theme-icon"></i>
+        <span id="gs-theme-label">Dark mode</span>
+        <span class="gs-theme-pill" id="gs-theme-pill"></span>
+      </button>
+      <div class="gs-user-dropdown__divider"></div>
+      <button class="gs-user-dropdown__item gs-user-dropdown__item--btn gs-user-dropdown__item--danger" id="gs-signout-btn">
+        <i class="fas fa-sign-out-alt"></i> Sign out
+      </button>
     </div>
   </div>
 

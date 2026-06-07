@@ -322,13 +322,76 @@ document.addEventListener('DOMContentLoaded', () => {
         gsGensBar.style.width = pct + '%';
       }
 
+      // ── Sidebar user dropdown toggle ──────────────────────────
+      const gsUserBtn      = document.getElementById('gs-user-btn');
+      const gsUserDropdown = document.getElementById('gs-user-dropdown');
+      if (gsUserBtn && gsUserDropdown) {
+        gsUserBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          const wrap = gsUserBtn.closest('.gs-sidebar__user-wrap');
+          const isOpen = wrap.classList.toggle('open');
+          gsUserBtn.setAttribute('aria-expanded', isOpen);
+          gsUserDropdown.setAttribute('aria-hidden', !isOpen);
+        });
+        // Close when clicking anywhere outside the sidebar user block
+        document.addEventListener('click', e => {
+          const wrap = document.querySelector('.gs-sidebar__user-wrap');
+          if (wrap && !wrap.contains(e.target)) {
+            wrap.classList.remove('open');
+            gsUserBtn.setAttribute('aria-expanded', 'false');
+            gsUserDropdown.setAttribute('aria-hidden', 'true');
+          }
+        });
+      }
+
+      // ── Theme toggle (sidebar dropdown) ──────────────────────
+      const gsThemeBtn   = document.getElementById('gs-theme-btn');
+      const gsThemeIcon  = document.getElementById('gs-theme-icon');
+      const gsThemeLabel = document.getElementById('gs-theme-label');
+      function applyThemeUI(isLight) {
+        if (gsThemeIcon)  gsThemeIcon.className = isLight ? 'fas fa-sun' : 'fas fa-moon';
+        if (gsThemeLabel) gsThemeLabel.textContent = isLight ? 'Light mode' : 'Dark mode';
+        // Legacy top-nav theme elements (kept for compat)
+        const legacyIcon  = document.getElementById('theme-icon');
+        const legacyLabel = document.getElementById('theme-label');
+        if (legacyIcon)  legacyIcon.className = isLight ? 'fas fa-sun' : 'fas fa-moon';
+        if (legacyLabel) legacyLabel.textContent = isLight ? 'Light mode' : 'Dark mode';
+      }
+      applyThemeUI(savedTheme === 'light');
+      if (gsThemeBtn) {
+        gsThemeBtn.addEventListener('click', () => {
+          const isLight = document.body.classList.toggle('light');
+          localStorage.setItem('sf-theme', isLight ? 'light' : 'dark');
+          applyThemeUI(isLight);
+        });
+      }
+      // Legacy top-nav theme button (kept for compat)
+      const legacyThemeBtn = document.getElementById('theme-toggle-btn');
+      if (legacyThemeBtn) {
+        legacyThemeBtn.addEventListener('click', () => {
+          const isLight = document.body.classList.toggle('light');
+          localStorage.setItem('sf-theme', isLight ? 'light' : 'dark');
+          applyThemeUI(isLight);
+        });
+      }
+
+      // ── Sign out (sidebar dropdown + legacy top-nav) ──────────
+      async function doSignOut() {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        window.location.href = '/';
+      }
+      const gsSignoutBtn  = document.getElementById('gs-signout-btn');
+      const legacySignout = document.getElementById('nav-signout-btn');
+      if (gsSignoutBtn)  gsSignoutBtn.addEventListener('click', doSignOut);
+      if (legacySignout) legacySignout.addEventListener('click', doSignOut);
+
       // ── Show track-list only for creator/pro plans ────────────
       const trackListEl = document.getElementById('track-list');
       if (trackListEl && (user.plan === 'creator' || user.plan === 'pro')) {
         trackListEl.style.display = 'block';
       }
 
-      // ── Hide guest links, show user nav menu ─────────────────
+      // ── Hide guest links, show user nav menu (legacy top nav) ─
       document.querySelectorAll('.nav-guest-only').forEach(el => el.style.display = 'none');
       document.querySelectorAll('.nav-auth-only').forEach(el => el.style.display = '');
       const navUserMenu = document.getElementById('nav-user-menu');
@@ -345,7 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (nameEl) nameEl.textContent = user.name.split(' ')[0];
 
-      // Dropdown toggle
+      // Legacy top-nav dropdown toggle
       const avatarBtn = document.getElementById('nav-avatar-btn');
       const dropdown  = document.getElementById('nav-dropdown');
       if (avatarBtn && dropdown) {
@@ -355,31 +418,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         document.addEventListener('click', () => dropdown.classList.remove('open'));
       }
-
-      // Theme toggle
-      const themeBtn   = document.getElementById('theme-toggle-btn');
-      const themeIcon  = document.getElementById('theme-icon');
-      const themeLabel = document.getElementById('theme-label');
-      if (savedTheme === 'light') {
-        if (themeIcon) themeIcon.className = 'fas fa-sun';
-        if (themeLabel) themeLabel.textContent = 'Light mode';
-      }
-      if (themeBtn) {
-        themeBtn.addEventListener('click', () => {
-          const isLight = document.body.classList.toggle('light');
-          localStorage.setItem('sf-theme', isLight ? 'light' : 'dark');
-          if (themeIcon) themeIcon.className = isLight ? 'fas fa-sun' : 'fas fa-moon';
-          if (themeLabel) themeLabel.textContent = isLight ? 'Light mode' : 'Dark mode';
-        });
-      }
-
-      // Sign out
-      const signoutBtn = document.getElementById('nav-signout-btn');
-      async function doSignOut() {
-        await fetch('/api/auth/logout', { method: 'POST' });
-        window.location.href = '/';
-      }
-      if (signoutBtn) signoutBtn.addEventListener('click', doSignOut);
 
       // Legacy dashboard fields (kept for compat)
       const dashAvatar    = document.getElementById('dash-avatar');
