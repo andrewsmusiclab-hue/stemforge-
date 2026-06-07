@@ -606,9 +606,9 @@ async function startPipeline(jobId: string, env: Bindings) {
   }
 }
 
-// Step 2b+3: called on each POST /api/poll/:id from the frontend
-// Does ONE Mureka status check. If done, runs stem extraction and marks ready.
-async function advancePipeline(jobId: string, env: Bindings): Promise<Job | null> {
+// Step 2b+3: called on each POST /api/poll/:id from the frontend.
+// skipStems=true (free plan) — skip the $0.06 /song/stem call; user only gets stereo mix.
+async function advancePipeline(jobId: string, env: Bindings, skipStems = false): Promise<Job | null> {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return null
@@ -630,23 +630,33 @@ async function advancePipeline(jobId: string, env: Bindings): Promise<Job | null
       return job
     }
 
-    // Mureka is done — run stem extraction (~5-10 s, synchronous)
+    // Mureka instrumental is done — save stereo URL
     job.stereo_url = stereoUrl
-    job.status = 'extracting'
-    await setJob(db, { ...job })
 
-    const zipUrl = await extractStems(stereoUrl, env.MUREKA_API_KEY)
-    job.zip_url = zipUrl
-    job.tracks = STEM_CONFIG.map(s => ({
-      name: s.name,
-      stem: s.stem,
-      family: s.family,
-      status: 'ready' as const,
-      zip_url: zipUrl,
-      color: s.color
-    }))
-    job.status = 'ready'
-    await setJob(db, { ...job })
+    if (skipStems) {
+      // Free tier: skip the $0.06 stem-separation call — stereo mix only
+      job.zip_url = null
+      job.tracks = []
+      job.status = 'ready'
+      await setJob(db, { ...job })
+    } else {
+      // Paid tier: run stem extraction (~5-10 s, synchronous)
+      job.status = 'extracting'
+      await setJob(db, { ...job })
+
+      const zipUrl = await extractStems(stereoUrl, env.MUREKA_API_KEY)
+      job.zip_url = zipUrl
+      job.tracks = STEM_CONFIG.map(s => ({
+        name: s.name,
+        stem: s.stem,
+        family: s.family,
+        status: 'ready' as const,
+        zip_url: zipUrl,
+        color: s.color
+      }))
+      job.status = 'ready'
+      await setJob(db, { ...job })
+    }
 
   } catch (err: any) {
     job.status = 'error'
@@ -711,11 +721,18 @@ app.post('/api/generate', async (c) => {
 })
 
 // POST /api/poll/:id — called by frontend every ~5s while status=generating
-// Does one Mureka status check; if done, runs stem extraction and marks ready.
+// Does one Mureka status check; if done, runs stem extraction (paid plans) or skips it (free).
 // Returns the same shape as GET /api/job/:id.
 app.post('/api/poll/:id', async (c) => {
   const id = c.req.param('id')
-  const job = await advancePipeline(id, c.env)
+  // Determine user plan to decide whether to run stem separation
+  let skipStems = false
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!user || user.plan === 'free') skipStems = true
+  }
+  const job = await advancePipeline(id, c.env, skipStems)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   return c.json({
@@ -2354,7 +2371,7 @@ function legalShell(title: string, lastUpdated: string, content: string) {
       ${content}
     </div>
     <div class="legal-footer">
-      <p>Questions? Email us at <a href="mailto:legal@stemforge.com">legal@stemforge.com</a></p>
+      <p>Questions? Email us at <a href="mailto:support@stemforge.com">support@stemforge.com</a></p>
       <div class="legal-footer__links">
         <a href="/terms">Terms of Service</a>
         <a href="/privacy">Privacy Policy</a>
@@ -2416,7 +2433,7 @@ function termsPage() {
   <p>Paid plans are billed monthly via Stripe. Subscriptions automatically renew unless cancelled before the next billing date. You authorize us to charge your payment method on file for recurring subscription fees and any overage charges.</p>
 
   <h3>4.4 Refunds</h3>
-  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation credits consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:billing@stemforge.com">billing@stemforge.com</a> and we will review your case.</p>
+  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation credits consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:support@stemforge.com">support@stemforge.com</a> and we will review your case.</p>
 
   <h3>4.5 Cancellation</h3>
   <p>You may cancel your subscription at any time through the Subscription page in your account or via the Stripe billing portal. Cancellation takes effect at the end of your current billing period. You retain access to your plan until then.</p>
@@ -2499,7 +2516,7 @@ function termsPage() {
   <h2>13. Contact</h2>
   <p>If you have any questions about these Terms, please contact us:</p>
   <ul>
-    <li>Email: <a href="mailto:legal@stemforge.com">legal@stemforge.com</a></li>
+    <li>Email: <a href="mailto:support@stemforge.com">support@stemforge.com</a></li>
     <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
   </ul>
 </section>
@@ -2612,14 +2629,14 @@ function privacyPage() {
     <li><strong>Objection:</strong> Object to certain types of processing (e.g., marketing)</li>
     <li><strong>Restriction:</strong> Request restriction of processing in certain circumstances</li>
   </ul>
-  <p>To exercise any of these rights, email us at <a href="mailto:privacy@stemforge.com">privacy@stemforge.com</a>. We will respond within 30 days. We may need to verify your identity before processing your request.</p>
+  <p>To exercise any of these rights, email us at <a href="mailto:support@stemforge.com">support@stemforge.com</a>. We will respond within 30 days. We may need to verify your identity before processing your request.</p>
   <p><strong>California residents (CCPA):</strong> You have the right to know what personal information we collect, to delete it, and to opt out of its sale. We do not sell personal information.</p>
   <p><strong>EEA/UK residents (GDPR):</strong> Our legal basis for processing your data includes contract performance (providing the Service), legitimate interests (fraud prevention, improving the Service), and legal compliance. You may also lodge a complaint with your local data protection authority.</p>
 </section>
 
 <section>
   <h2>9. Children's Privacy</h2>
-  <p>The Service is not directed to children under 13 years of age. We do not knowingly collect personal information from children under 13. If we discover we have collected data from a child under 13, we will delete it promptly. If you believe we have collected such data, please contact us at <a href="mailto:privacy@stemforge.com">privacy@stemforge.com</a>.</p>
+  <p>The Service is not directed to children under 13 years of age. We do not knowingly collect personal information from children under 13. If we discover we have collected data from a child under 13, we will delete it promptly. If you believe we have collected such data, please contact us at <a href="mailto:support@stemforge.com">support@stemforge.com</a>.</p>
 </section>
 
 <section>
@@ -2636,8 +2653,8 @@ function privacyPage() {
   <h2>12. Contact Us</h2>
   <p>If you have questions, concerns, or requests about this Privacy Policy or how we handle your data, please contact us:</p>
   <ul>
-    <li>Email: <a href="mailto:privacy@stemforge.com">privacy@stemforge.com</a></li>
-    <li>General: <a href="mailto:legal@stemforge.com">legal@stemforge.com</a></li>
+    <li>Email: <a href="mailto:support@stemforge.com">support@stemforge.com</a></li>
+    <li>General: <a href="mailto:support@stemforge.com">support@stemforge.com</a></li>
     <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
   </ul>
 </section>
