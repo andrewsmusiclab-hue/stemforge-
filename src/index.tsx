@@ -323,7 +323,14 @@ async function exchangeGoogleCode(code: string, clientId: string, clientSecret: 
 
 // ── Helper: check if secrets are configured ───────────────────
 function authConfigured(env: Bindings): boolean {
-  return !!(env.GOOGLE_CLIENT_ID && env.STRIPE_SECRET_KEY && env.SESSION_SECRET)
+  return !!(env.SESSION_SECRET && !env.SESSION_SECRET.includes('PASTE_'))
+}
+function stripeConfigured(env: Bindings): boolean {
+  return !!(env.STRIPE_SECRET_KEY && !env.STRIPE_SECRET_KEY.includes('PASTE_'))
+}
+function googleConfigured(env: Bindings): boolean {
+  return !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.SITE_URL &&
+            !env.GOOGLE_CLIENT_ID.includes('PASTE_'))
 }
 
 // ── Plan name from Stripe price ID ───────────────────────────
@@ -865,7 +872,7 @@ app.get('/api/auth/me', async (c) => {
 
 // GET /api/auth/google — start Google OAuth flow
 app.get('/api/auth/google', (c) => {
-  if (!c.env.GOOGLE_CLIENT_ID || !c.env.SITE_URL) {
+  if (!googleConfigured(c.env)) {
     return c.html(`<p style="font-family:sans-serif;padding:2rem">
       <strong>Google OAuth not configured yet.</strong><br/><br/>
       To enable Google sign-in, add these secrets via your deployment panel:<br/>
@@ -886,7 +893,7 @@ app.get('/api/auth/google/callback', async (c) => {
   if (error || !code) {
     return c.redirect('/signup?error=google_denied')
   }
-  if (!c.env.GOOGLE_CLIENT_ID || !c.env.GOOGLE_CLIENT_SECRET || !c.env.SITE_URL) {
+  if (!googleConfigured(c.env)) {
     return c.redirect('/signup?error=not_configured')
   }
 
@@ -928,8 +935,8 @@ app.get('/api/auth/google/callback', async (c) => {
 
 // POST /api/stripe/checkout — create Stripe Checkout session and redirect
 app.post('/api/stripe/checkout', async (c) => {
-  if (!c.env.STRIPE_SECRET_KEY || !c.env.SITE_URL) {
-    return c.json({ error: 'Stripe not configured. Add STRIPE_SECRET_KEY and SITE_URL to secrets.' }, 503)
+  if (!stripeConfigured(c.env)) {
+    return c.json({ error: 'Stripe not configured yet. Check back soon — payments are being set up.' }, 503)
   }
   try {
     const { plan } = await c.req.json()
@@ -956,10 +963,8 @@ app.post('/api/stripe/checkout', async (c) => {
 })
 
 // POST /api/stripe/webhook — Stripe sends subscription events here
-// Stripe Dashboard → Webhooks → Add endpoint: https://your-site.com/api/stripe/webhook
-// Events to listen for: checkout.session.completed, customer.subscription.deleted
 app.post('/api/stripe/webhook', async (c) => {
-  if (!c.env.STRIPE_WEBHOOK_SECRET) {
+  if (!c.env.STRIPE_WEBHOOK_SECRET || c.env.STRIPE_WEBHOOK_SECRET.includes('PASTE_')) {
     return c.json({ error: 'Webhook secret not configured' }, 503)
   }
   try {
