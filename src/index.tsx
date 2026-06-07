@@ -13,7 +13,6 @@ type Bindings = {
   STRIPE_WEBHOOK_SECRET: string     // Stripe webhook signing secret
   STRIPE_CREATOR_PRICE_ID: string   // Stripe Price ID for Creator $19/mo
   STRIPE_PRO_PRICE_ID: string       // Stripe Price ID for Pro Artist $39/mo
-  STRIPE_STUDIO_PRICE_ID: string    // Stripe Price ID for Studio $79/mo
   SESSION_SECRET: string            // 32+ char random string for session HMAC
   SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
 }
@@ -82,7 +81,7 @@ interface User {
   email: string
   name: string
   avatar?: string
-  plan: 'free' | 'creator' | 'pro' | 'studio'
+  plan: 'free' | 'creator' | 'pro'
   gens_used: number
   gens_limit: number
   stripe_customer_id?: string
@@ -214,7 +213,7 @@ async function createUser(db: D1Database, data: {
   password_hash?: string, google_id?: string, plan?: string
 }): Promise<void> {
   await ensureAuthTables(db)
-  const planLimits: Record<string, number> = { free:3, creator:50, pro:150, studio:400 }
+  const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
   const plan = data.plan || 'free'
   await db.prepare(
     `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, created_at)
@@ -225,7 +224,7 @@ async function createUser(db: D1Database, data: {
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:3, creator:50, pro:150, studio:400 }
+  const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
   await db.prepare(
     `UPDATE users SET plan=?, gens_limit=?, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?`
   ).bind(plan, planLimits[plan] || 3, stripeCustomerId, stripeSubId, userId).run()
@@ -337,7 +336,6 @@ function googleConfigured(env: Bindings): boolean {
 function planFromPriceId(env: Bindings, priceId: string): string {
   if (priceId === env.STRIPE_CREATOR_PRICE_ID) return 'creator'
   if (priceId === env.STRIPE_PRO_PRICE_ID) return 'pro'
-  if (priceId === env.STRIPE_STUDIO_PRICE_ID) return 'studio'
   return 'free'
 }
 
@@ -943,10 +941,9 @@ app.post('/api/stripe/checkout', async (c) => {
     const priceMap: Record<string, string> = {
       creator: c.env.STRIPE_CREATOR_PRICE_ID,
       pro: c.env.STRIPE_PRO_PRICE_ID,
-      studio: c.env.STRIPE_STUDIO_PRICE_ID,
     }
     const priceId = priceMap[plan]
-    if (!priceId) return c.json({ error: 'Invalid plan. Must be creator, pro, or studio.' }, 400)
+    if (!priceId) return c.json({ error: 'Invalid plan. Must be creator or pro.' }, 400)
 
     // Get current session user
     const token = getSessionCookie(c.req.raw)
@@ -1550,21 +1547,7 @@ function pricingPage() {
         </ul>
         <a href="/signup?plan=pro" class="btn btn--outline btn--full">Start Pro Artist — $39/mo</a>
       </div>
-      <div class="plan-card">
-        <div class="plan-card__tier">Studio</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$79</span><span>/month</span></div>
-        <p class="plan-card__desc">For labels, studios, and power producers.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 400 generations/month</div>
-        <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Everything in Pro Artist</li>
-          <li><i class="fas fa-check"></i> Team seat (up to 3 users)</li>
-          <li><i class="fas fa-check"></i> Highest priority queue</li>
-          <li><i class="fas fa-check"></i> Bulk export</li>
-          <li><i class="fas fa-check"></i> API access (coming soon)</li>
-          <li><i class="fas fa-check"></i> +$0.39 per extra generation</li>
-        </ul>
-        <a href="/signup?plan=studio" class="btn btn--outline btn--full">Start Studio — $79/mo</a>
-      </div>
+
     </div>
 
     <div class="credit-table-wrap">
@@ -1581,7 +1564,6 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-plus-circle"></i> Extra generation (Creator / Pro)</span><span class="credit-val">$0.49</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-plus-circle"></i> Extra generation (Studio)</span><span class="credit-val">$0.39</span><span class="tier-badge tier-badge--pro">Studio</span></div>
       </div>
     </div>
 
@@ -1589,9 +1571,9 @@ function pricingPage() {
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: GPT-4o builds the blueprint, Mureka renders the instrumental, and stems are extracted — all included. You get the stereo mix + a 5-stem ZIP from that single generation.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Studio plans get $0.39/gen. Free plan users must upgrade to continue after 3 generations.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Free plan users must upgrade to continue after 3 generations.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator, Pro Artist, and Studio exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes. Cancel anytime from account settings. No cancellation fees. You keep access until the end of your billing period.</div></div>
       </div>
@@ -1696,7 +1678,6 @@ function signupPage() {
               <label class="plan-radio"><input type="radio" name="plan" value="free" checked/><span>Free — $0</span></label>
               <label class="plan-radio"><input type="radio" name="plan" value="creator"/><span>Creator — $19/mo</span></label>
               <label class="plan-radio"><input type="radio" name="plan" value="pro"/><span>Pro Artist — $39/mo</span></label>
-              <label class="plan-radio"><input type="radio" name="plan" value="studio"/><span>Studio — $79/mo</span></label>
             </div>
           </div>
           <div class="form-group form-group--check">

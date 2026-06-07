@@ -198,7 +198,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const planMeta = {
       creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 generations/month', 'Stereo + 5-stem ZIP download', 'Commercial use rights', '+$0.49 per extra generation'] },
       pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 generations/month', 'Everything in Creator', 'Individual track download', 'Priority queue', '+$0.49 per extra generation'] },
-      studio:  { name: 'Studio Plan', price: '$79', total: '$79.00', features: ['400 generations/month', 'Everything in Pro Artist', 'Team seat (3 users)', 'Bulk export + API access', '+$0.39 per extra generation'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
