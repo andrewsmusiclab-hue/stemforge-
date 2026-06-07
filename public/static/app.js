@@ -254,25 +254,89 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ── Nav: check auth state, show user menu ─────────────────────
+  // ── Apply saved theme immediately ────────────────────────────
+  const savedTheme = localStorage.getItem('sf-theme') || 'dark';
+  if (savedTheme === 'light') document.body.classList.add('light');
+
+  // ── Mark active sidebar nav item ─────────────────────────────
+  const currentPath = window.location.pathname;
+  document.querySelectorAll('.gs-sidebar__nav-item').forEach(link => {
+    link.classList.remove('active');
+    const page = link.dataset.page;
+    if (page === 'home' && currentPath === '/') link.classList.add('active');
+    if (page === 'generator' && currentPath.startsWith('/generator')) link.classList.add('active');
+    if (page === 'dashboard' && currentPath.startsWith('/dashboard')) link.classList.add('active');
+  });
+
+  // ── Mobile sidebar toggle ─────────────────────────────────────
+  const gsMobileToggle = document.getElementById('gs-mobile-toggle');
+  const gsSidebar = document.getElementById('gs-sidebar');
+  if (gsMobileToggle && gsSidebar) {
+    gsMobileToggle.addEventListener('click', () => gsSidebar.classList.toggle('open'));
+    document.addEventListener('click', e => {
+      if (!gsSidebar.contains(e.target)) gsSidebar.classList.remove('open');
+    });
+  }
+
+  // ── Global auth state: populate sidebar + top nav ─────────────
+  window._sfUser = null;
   (async () => {
     try {
       const res = await fetch('/api/auth/me');
       if (!res.ok) return;
       const { user } = await res.json();
       if (!user) return;
+      window._sfUser = user;
 
-      // Hide guest links, show user menu
+      // ── Populate global sidebar ───────────────────────────────
+      const gsUserBlock = document.getElementById('gs-user-block');
+      const gsAvatar    = document.getElementById('gs-avatar');
+      const gsUsername  = document.getElementById('gs-username');
+      const gsPlanBadge = document.getElementById('gs-plan-badge');
+      const gsCredits   = document.getElementById('gs-credits-block');
+      const gsGensVal   = document.getElementById('gs-gens-val');
+      const gsGensBar   = document.getElementById('gs-gens-bar');
+
+      if (gsUserBlock) gsUserBlock.style.display = 'flex';
+      if (gsCredits) gsCredits.style.display = 'block';
+
+      const initials = user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2);
+      if (gsAvatar) {
+        if (user.avatar) {
+          gsAvatar.style.cssText += ';overflow:hidden;padding:0';
+          gsAvatar.innerHTML = `<img src="${user.avatar}" alt="${user.name}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
+        } else {
+          gsAvatar.textContent = initials;
+        }
+      }
+      if (gsUsername) gsUsername.textContent = user.name;
+      if (gsPlanBadge) {
+        const planMap = { free: 'Free', creator: 'Creator', pro: 'Pro Artist' };
+        const classMap = { creator: 'plan-badge--creator', pro: 'plan-badge--pro' };
+        gsPlanBadge.textContent = planMap[user.plan] || 'Free';
+        if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
+      }
+      if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
+      if (gsGensBar) {
+        const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
+        gsGensBar.style.width = pct + '%';
+      }
+
+      // ── Show track-list only for creator/pro plans ────────────
+      const trackListEl = document.getElementById('track-list');
+      if (trackListEl && (user.plan === 'creator' || user.plan === 'pro')) {
+        trackListEl.style.display = 'block';
+      }
+
+      // ── Hide guest links, show user nav menu ─────────────────
       document.querySelectorAll('.nav-guest-only').forEach(el => el.style.display = 'none');
       document.querySelectorAll('.nav-auth-only').forEach(el => el.style.display = '');
       const navUserMenu = document.getElementById('nav-user-menu');
       if (navUserMenu) navUserMenu.style.display = 'flex';
 
-      // Populate avatar + name
       const avatarEl = document.getElementById('nav-avatar-text');
       const nameEl   = document.getElementById('nav-username-text');
       if (avatarEl) {
-        const initials = user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2);
         if (user.avatar) {
           avatarEl.innerHTML = `<img src="${user.avatar}" alt="${user.name}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
         } else {
@@ -296,9 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const themeBtn   = document.getElementById('theme-toggle-btn');
       const themeIcon  = document.getElementById('theme-icon');
       const themeLabel = document.getElementById('theme-label');
-      const savedTheme = localStorage.getItem('sf-theme') || 'dark';
       if (savedTheme === 'light') {
-        document.body.classList.add('light');
         if (themeIcon) themeIcon.className = 'fas fa-sun';
         if (themeLabel) themeLabel.textContent = 'Light mode';
       }
@@ -313,44 +375,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Sign out
       const signoutBtn = document.getElementById('nav-signout-btn');
-      const mobileSignout = document.getElementById('mobile-signout');
       async function doSignOut() {
         await fetch('/api/auth/logout', { method: 'POST' });
         window.location.href = '/';
       }
       if (signoutBtn) signoutBtn.addEventListener('click', doSignOut);
-      if (mobileSignout) mobileSignout.addEventListener('click', doSignOut);
 
-      // Dashboard: populate user info
-      const dashAvatar   = document.getElementById('dash-avatar');
-      const dashUsername = document.getElementById('dash-username');
-      const dashPlanBadge= document.getElementById('dash-plan-badge');
-      const dashGensVal  = document.getElementById('dash-gens-val');
-      const dashGensBar  = document.getElementById('dash-gens-bar');
-      const dashUpgrade  = document.getElementById('dash-upgrade-btn');
+      // Legacy dashboard fields (kept for compat)
+      const dashAvatar    = document.getElementById('dash-avatar');
+      const dashUsername  = document.getElementById('dash-username');
+      const dashPlanBadge = document.getElementById('dash-plan-badge');
+      const dashGensVal   = document.getElementById('dash-gens-val');
+      const dashGensBar   = document.getElementById('dash-gens-bar');
       if (dashAvatar) {
-        const initials = user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2);
-        if (user.avatar) {
-          dashAvatar.style.cssText = 'overflow:hidden;padding:0';
-          dashAvatar.innerHTML = `<img src="${user.avatar}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`;
-        } else {
-          dashAvatar.textContent = initials;
-        }
+        if (user.avatar) { dashAvatar.style.cssText='overflow:hidden;padding:0'; dashAvatar.innerHTML=`<img src="${user.avatar}" style="width:100%;height:100%;object-fit:cover;border-radius:50%"/>`; }
+        else dashAvatar.textContent = initials;
       }
       if (dashUsername) dashUsername.textContent = user.name;
       if (dashPlanBadge) {
-        const planMap = { free: 'Free', creator: 'Creator', pro: 'Pro Artist' };
-        const classMap = { creator: 'plan-badge--creator', pro: 'plan-badge--pro' };
-        dashPlanBadge.textContent = planMap[user.plan] || 'Free';
-        if (classMap[user.plan]) dashPlanBadge.classList.add(classMap[user.plan]);
+        const planMap2 = { free:'Free', creator:'Creator', pro:'Pro Artist' };
+        const classMap2 = { creator:'plan-badge--creator', pro:'plan-badge--pro' };
+        dashPlanBadge.textContent = planMap2[user.plan] || 'Free';
+        if (classMap2[user.plan]) dashPlanBadge.classList.add(classMap2[user.plan]);
       }
       if (dashGensVal) dashGensVal.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit} gen</small>`;
       if (dashGensBar) {
-        const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
-        dashGensBar.style.width = pct + '%';
-      }
-      if (dashUpgrade && user.plan !== 'free') {
-        dashUpgrade.textContent = 'View subscription';
+        const pct2 = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
+        dashGensBar.style.width = pct2 + '%';
       }
     } catch(e) {}
   })();
@@ -398,16 +449,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const genre = p.blueprint ? p.blueprint.genre : '';
             const dur   = p.blueprint ? Math.round(p.blueprint.duration_seconds / 60) + ':' + String(p.blueprint.duration_seconds % 60).padStart(2,'0') : '';
             const label = p.prompt ? p.prompt.slice(0, 32) + (p.prompt.length > 32 ? '…' : '') : 'Beat';
-            const title = p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label;
-            const sub   = [bpm, genre, dur].filter(Boolean).join(' · ');
+            const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label);
+            const sub   = [bpm, dur].filter(Boolean).join(' · ');
+            const pJson = encodeURIComponent(JSON.stringify(p));
             html += `
               <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}">
                 <div class="project-card__art" style="background:linear-gradient(135deg,${color}33 0%,${color}88 100%)">
                   <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
                 </div>
                 <div class="project-card__body">
-                  <h4>${title}</h4>
-                  <p>${sub || label}</p>
+                  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
+                    <h4 style="margin:0;flex:1">${rawTitle}</h4>
+                    <button class="song-dots-btn" title="Edit" onclick="event.stopPropagation();openSongEditModal(null,'${p.id}')" style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
+                  </div>
+                  <p>${sub || genre || label}</p>
                   <div class="project-card__tags">
                     ${p.stereo_url ? '<span class="export-badge export-badge--stereo">Stereo</span>' : ''}
                     ${p.zip_url ? '<span class="export-badge">Stems</span>' : ''}
@@ -633,32 +688,28 @@ document.addEventListener('DOMContentLoaded', () => {
   let pollInterval = null;
 
   function getInputs() {
-    // Read from the new Suno-style fields
     const lyrics      = document.getElementById('gen-lyrics')?.value?.trim() || '';
     const prompt      = document.getElementById('gen-prompt')?.value?.trim() || '';
     const style       = document.getElementById('gen-style')?.value?.trim() || '';
     const bpm         = document.getElementById('gen-bpm')?.value || '90';
     const instrumental= document.getElementById('gen-instrumental')?.checked || false;
-    const energy      = document.querySelector('#gen-energy .toggle-btn.active')?.dataset.val || 'medium';
-    const include     = [...document.querySelectorAll('.inst-tag.active:not(.inst-tag--exclude)')].map(t=>t.dataset.instr);
+    const instruments = document.getElementById('gen-instruments')?.value?.trim() || '';
     const title       = document.getElementById('gen-title')?.value?.trim() || '';
 
-    // Build the combined prompt
+    // Build the combined prompt — genre/style MUST come first so GPT honours it
     const parts = [];
+    if (style) parts.push(style);  // genre first
     if (activeTab === 'write' && lyrics) parts.push('lyrics: ' + lyrics);
     if (prompt) parts.push(prompt);
-    if (style)  parts.push('style: ' + style);
     if (instrumental) parts.push('instrumental only, no vocals');
-    if (include.length) parts.push('include: ' + include.join(', '));
-    if (energy !== 'medium') parts.push('energy: ' + energy);
+    if (instruments) parts.push('include instruments: ' + instruments);
 
     return {
       genre: style || '',
       bpm,
       prompt: parts.join('. '),
       vocal_space: instrumental ? 'none' : 'high',
-      energy,
-      instruments_include: include,
+      instruments_include: instruments ? instruments.split(',').map(s=>s.trim()).filter(Boolean) : [],
       instruments_exclude: [],
       title,
       instrumental
@@ -786,12 +837,10 @@ document.addEventListener('DOMContentLoaded', () => {
                        document.getElementById('gen-style')?.value?.trim() ||
                        document.getElementById('gen-instrumental')?.checked;
     if (!hasContent) {
-      // Shake the left panel to indicate input needed
       const left = document.getElementById('suno-left');
       if (left) { left.style.animation = 'shake .3s ease'; setTimeout(() => left.style.animation = '', 400); }
-      // Flash the create bar
-      const bar = document.querySelector('.suno-create-bar');
-      if (bar) { bar.style.background = 'rgba(239,68,68,.15)'; setTimeout(() => bar.style.background = '', 600); }
+      const inlineBtn = document.querySelector('.suno-create-inline');
+      if (inlineBtn) { inlineBtn.style.background = 'rgba(239,68,68,.1)'; setTimeout(() => inlineBtn.style.background = '', 600); }
       return;
     }
 
@@ -852,13 +901,17 @@ document.addEventListener('DOMContentLoaded', () => {
           const job = await pollRes.json();
 
           // Update pipeline steps
+          // Update spinner message based on status
+          const spinnerMsg = document.getElementById('pipeline-spinner-msg');
           if (job.status === 'blueprint' && lastStatus !== 'blueprint') {
             setStep('blueprint', 'active');
+            if (spinnerMsg) spinnerMsg.textContent = 'Analyzing your prompt...';
             lastStatus = 'blueprint';
           }
           if (job.status === 'generating' && lastStatus !== 'generating') {
             setStep('blueprint', 'done');
             setStep('generating', 'active');
+            if (spinnerMsg) spinnerMsg.textContent = 'Composing your beat...';
             if (job.blueprint) showBlueprint(job.blueprint);
             lastStatus = 'generating';
           }
@@ -866,6 +919,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('blueprint', 'done');
             setStep('generating', 'done');
             setStep('extracting', 'active');
+            if (spinnerMsg) spinnerMsg.textContent = 'Extracting stems...';
             if (job.blueprint) showBlueprint(job.blueprint);
 
             // Show stereo player immediately (available once generating is done)
@@ -930,6 +984,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (genResult) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
+            // Show 3-dot edit button on result
+            const dotsBtn = document.getElementById('gen-result-dots');
+            if (dotsBtn) {
+              dotsBtn.style.display = 'flex';
+              dotsBtn.onclick = () => openSongEditModal(job, null);
+            }
             setTimeout(() => {
               genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
             }, 3000);
@@ -969,6 +1029,126 @@ document.addEventListener('DOMContentLoaded', () => {
 // The ZIP contains: drums.wav, bass.wav, vocals.wav, other.wav,
 //                   instrumental.wav, song.wav, song.mp3
 window.downloadStem = function(zipUrl, stemName) {
-  // For now, open the full ZIP (individual extraction requires Pro)
   if (zipUrl) window.open(zipUrl, '_blank');
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  SONG EDIT MODAL
+// ═══════════════════════════════════════════════════════════════
+
+// Cache of loaded projects for the modal
+window._sfProjects = {};
+
+window.openSongEditModal = function(jobData, jobId) {
+  const modal = document.getElementById('song-edit-modal');
+  if (!modal) return;
+
+  // Reset fields
+  document.getElementById('edit-job-id').value = '';
+  document.getElementById('edit-title').value = '';
+  document.getElementById('edit-lyrics').value = '';
+  document.getElementById('edit-bpm').value = '';
+  document.getElementById('edit-genre').value = '';
+  document.getElementById('edit-description').value = '';
+  const infoBlock = document.getElementById('edit-info-block');
+  if (infoBlock) infoBlock.style.display = 'none';
+
+  if (jobData) {
+    // Opened from generator result
+    document.getElementById('edit-job-id').value = jobData.id || '';
+    document.getElementById('edit-title').value = jobData.title || (jobData.blueprint ? jobData.blueprint.genre : '');
+    document.getElementById('edit-lyrics').value = jobData.user_lyrics || '';
+    document.getElementById('edit-bpm').value = jobData.blueprint ? jobData.blueprint.bpm : '';
+    document.getElementById('edit-genre').value = jobData.blueprint ? jobData.blueprint.genre : '';
+    document.getElementById('edit-description').value = jobData.blueprint ? jobData.blueprint.arrangement || '' : '';
+    window._sfProjects[jobData.id] = jobData;
+
+    // Show read-only info
+    if (jobData.blueprint && infoBlock) {
+      infoBlock.style.display = 'grid';
+      document.getElementById('edit-info-key').textContent = (jobData.blueprint.key || '—') + ' ' + (jobData.blueprint.scale || '');
+      document.getElementById('edit-info-scale').textContent = jobData.blueprint.scale || '—';
+      document.getElementById('edit-info-mood').textContent = jobData.blueprint.mood || '—';
+      const dur = jobData.blueprint.duration_seconds;
+      document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+    }
+  } else if (jobId) {
+    // Opened from project card — need to fetch job data
+    document.getElementById('edit-job-id').value = jobId;
+    // Show modal immediately with spinner, populate once data arrives
+    fetch('/api/job/' + jobId).then(r => r.json()).then(job => {
+      if (!job || job.error) return;
+      document.getElementById('edit-title').value = job.title || (job.blueprint ? job.blueprint.genre : '');
+      document.getElementById('edit-lyrics').value = job.user_lyrics || '';
+      document.getElementById('edit-bpm').value = job.blueprint ? job.blueprint.bpm : '';
+      document.getElementById('edit-genre').value = job.blueprint ? job.blueprint.genre : '';
+      document.getElementById('edit-description').value = job.blueprint ? job.blueprint.arrangement || '' : '';
+      if (job.blueprint && infoBlock) {
+        infoBlock.style.display = 'grid';
+        document.getElementById('edit-info-key').textContent = (job.blueprint.key || '—') + ' ' + (job.blueprint.scale || '');
+        document.getElementById('edit-info-scale').textContent = job.blueprint.scale || '—';
+        document.getElementById('edit-info-mood').textContent = job.blueprint.mood || '—';
+        const dur = job.blueprint.duration_seconds;
+        document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+      }
+      window._sfProjects[jobId] = job;
+    }).catch(() => {});
+  }
+
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+};
+
+window.closeSongEditModal = function() {
+  const modal = document.getElementById('song-edit-modal');
+  if (modal) modal.style.display = 'none';
+  document.body.style.overflow = '';
+};
+
+window.saveSongEdit = function() {
+  const jobId    = document.getElementById('edit-job-id').value;
+  const title    = document.getElementById('edit-title').value.trim();
+  const lyrics   = document.getElementById('edit-lyrics').value.trim();
+  const bpm      = document.getElementById('edit-bpm').value;
+  const genre    = document.getElementById('edit-genre').value.trim();
+  const desc     = document.getElementById('edit-description').value.trim();
+  const saveBtn  = document.getElementById('edit-save-btn');
+
+  if (!jobId) { closeSongEditModal(); return; }
+
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...'; }
+
+  fetch('/api/job/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: jobId, title, lyrics, bpm: bpm ? parseInt(bpm) : null, genre, description: desc })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> Save changes'; }
+    if (data.ok) {
+      // Update title in result header if on generator page
+      const titleEl = document.getElementById('gen-result-title');
+      if (titleEl && title) titleEl.textContent = title;
+
+      // Update card title in project grid if on dashboard
+      const card = document.querySelector(`.project-card[data-id="${jobId}"] h4`);
+      if (card && title) card.textContent = title;
+
+      closeSongEditModal();
+      // Show brief success toast
+      const toast = document.createElement('div');
+      toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4)';
+      toast.innerHTML = '<i class="fas fa-check"></i> Changes saved';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 2500);
+    } else {
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> Save changes'; }
+      alert(data.error || 'Could not save changes.');
+    }
+  })
+  .catch(() => {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> Save changes'; }
+    alert('Network error. Please try again.');
+  });
 };

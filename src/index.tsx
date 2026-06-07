@@ -416,25 +416,27 @@ function makeJobId(): string {
 // ═══════════════════════════════════════════════════════════════
 
 async function generateBlueprint(prompt: string, apiKey: string): Promise<Blueprint> {
-  const systemPrompt = `You are a professional music producer and composer. 
-Given a user's beat description, you output a detailed composition blueprint as JSON.
-Be specific and practical. The blueprint will be used to generate individual instrument tracks via AI.
+  const systemPrompt = `You are a professional music producer and composer.
+Given a user's beat description, output a detailed composition blueprint as JSON.
+CRITICAL RULE: You MUST preserve the exact genre the user specifies. If the user says "hip hop", the genre field MUST be "hip hop" (or a sub-genre like "boom bap", "trap", etc.) — never substitute a different genre like R&B, soul, or pop. The mureka_prompt must also clearly start with the user's stated genre.
 Always output valid JSON only, no markdown, no explanation.`
 
   const userPrompt = `Create a composition blueprint for this beat: "${prompt}"
+
+IMPORTANT: If the user specifies a genre (e.g. "hip hop", "drill", "trap", "afrobeats"), you MUST use that exact genre. Do NOT change or substitute genres.
 
 Return ONLY this JSON structure:
 {
   "bpm": <number 60-180>,
   "key": <"C" | "D" | "E" | "F" | "G" | "A" | "B" with optional "b" or "#">,
   "scale": <"minor" | "major" | "minor pentatonic" | "major pentatonic">,
-  "genre": <specific genre string>,
+  "genre": <MUST match user's stated genre exactly, e.g. if they said "hip hop" use "hip hop">,
   "mood": <mood string>,
   "energy": <"low" | "medium" | "high">,
   "duration_seconds": <90 | 120 | 150 | 180>,
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing the arrangement density and feel>,
-  "mureka_prompt": <a detailed Mureka-optimized prompt string for the full instrumental, max 200 chars>,
+  "mureka_prompt": <a detailed Mureka-optimized prompt string — MUST start with the user's genre, max 200 chars>,
   "instruments": [
     {
       "name": <instrument display name, e.g. "Kick", "Snare", "Hi-hats", "Bass", "Rhodes", "Guitar", "Pad", "FX">,
@@ -448,10 +450,10 @@ Return ONLY this JSON structure:
 Rules:
 - instruments array must have 6-10 items
 - every beat must have kick, snare, hi-hats, bass as minimum
-- add melodic/harmonic instruments based on genre and prompt
+- add melodic/harmonic instruments typical of the stated genre
 - mureka_track_type must be one of: vocals, accompaniment, bass, drums
 - map kick/snare/hats → "drums", bass → "bass", keys/guitar/pad/strings/brass/woodwind → "accompaniment", fx/vocals → "vocals"
-- mureka_prompt should describe the full instrumental feel in detail for best AI generation results`
+- mureka_prompt MUST reflect the user's stated genre prominently`
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -758,6 +760,8 @@ app.get('/api/job/:id', async (c) => {
     status: job.status,
     created_at: job.created_at,
     prompt: job.prompt,
+    title: (job as any).title || null,
+    user_lyrics: (job as any).user_lyrics || null,
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -1057,6 +1061,32 @@ app.get('/account', async (c) => {
   return c.html(accountPage(user))
 })
 
+// POST /api/job/update — save title/lyrics/bpm/genre edits
+app.post('/api/job/update', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token && c.env.SESSION_SECRET ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { job_id, title, lyrics, bpm, genre, description } = await c.req.json<any>()
+  if (!job_id) return c.json({ error: 'Missing job_id' }, 400)
+  try {
+    const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?').bind(job_id).first<{ data: string; user_id: string | null }>()
+    if (!row) return c.json({ error: 'Job not found' }, 404)
+    if (row.user_id && row.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+    const job = JSON.parse(row.data) as Job
+    // Apply edits
+    if (title !== undefined) (job as any).title = title
+    if (lyrics !== undefined) (job as any).user_lyrics = lyrics
+    if (bpm && job.blueprint) job.blueprint.bpm = parseInt(bpm)
+    if (genre && job.blueprint) job.blueprint.genre = genre
+    if (description && job.blueprint) (job.blueprint as any).arrangement = description
+    await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?').bind(JSON.stringify(job), job_id).run()
+    return c.json({ ok: true })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Update failed' }, 500)
+  }
+})
+
 // GET /api/projects — return logged-in user's completed jobs
 app.get('/api/projects', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ projects: [] })
@@ -1073,6 +1103,7 @@ app.get('/api/projects', async (c) => {
       return {
         id: d.id,
         prompt: d.prompt,
+        title: (d as any).title || null,
         created_at: d.created_at,
         stereo_url: d.stereo_url || null,
         zip_url: d.zip_url || null,
@@ -1081,7 +1112,9 @@ app.get('/api/projects', async (c) => {
           key: d.blueprint.key,
           scale: d.blueprint.scale,
           genre: d.blueprint.genre,
-          duration_seconds: d.blueprint.duration_seconds
+          mood: d.blueprint.mood,
+          duration_seconds: d.blueprint.duration_seconds,
+          arrangement: (d.blueprint as any).arrangement || null
         } : null
       }
     })
@@ -1126,31 +1159,130 @@ function shell(title: string, body: string, extraHead = '') {
 ${extraHead}
 </head>
 <body>
-${nav()}
+${globalSidebar()}
+<div class="gs-page-wrap">
 ${body}
-${footer()}
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>`
 }
 
+// ─── GLOBAL LEFT SIDEBAR — shown on every page ─────────────────────────────
+function globalSidebar() {
+  return `<aside class="gs-sidebar" id="gs-sidebar">
+  <!-- Logo -->
+  <a href="/" class="gs-sidebar__logo">
+    <span class="gs-sidebar__logo-icon"><i class="fas fa-wave-square"></i></span>
+    <span class="gs-sidebar__logo-text">Stem<span class="accent">Forge</span></span>
+  </a>
+
+  <!-- User identity (populated by JS when logged in) -->
+  <div class="gs-sidebar__user" id="gs-user-block" style="display:none">
+    <div class="gs-sidebar__avatar" id="gs-avatar">?</div>
+    <div class="gs-sidebar__user-info">
+      <span class="gs-sidebar__username" id="gs-username">Loading...</span>
+      <span class="gs-sidebar__plan plan-badge" id="gs-plan-badge">Free</span>
+    </div>
+  </div>
+
+  <!-- Navigation -->
+  <nav class="gs-sidebar__nav">
+    <a href="/" class="gs-sidebar__nav-item" data-page="home">
+      <i class="fas fa-home"></i>
+      <span>Home</span>
+    </a>
+    <a href="/generator" class="gs-sidebar__nav-item" data-page="generator">
+      <i class="fas fa-music"></i>
+      <span>Create</span>
+    </a>
+    <a href="/dashboard" class="gs-sidebar__nav-item" data-page="dashboard">
+      <i class="fas fa-th-large"></i>
+      <span>My Projects</span>
+    </a>
+  </nav>
+
+  <!-- Spacer -->
+  <div class="gs-sidebar__spacer"></div>
+
+  <!-- Generation credits (shown when logged in) -->
+  <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
+    <div class="gs-credits__label">Generations</div>
+    <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
+    <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
+  </div>
+
+  <!-- Bottom links -->
+  <div class="gs-sidebar__footer">
+    <a href="/terms" class="gs-sidebar__footer-link">Terms of Service</a>
+    <a href="/privacy" class="gs-sidebar__footer-link">Privacy Policy</a>
+  </div>
+
+  <!-- Mobile hamburger toggle -->
+  <button class="gs-sidebar__mobile-toggle" id="gs-mobile-toggle" aria-label="Menu">
+    <i class="fas fa-bars"></i>
+  </button>
+</aside>
+
+<!-- ── Song Edit Modal — rendered globally so it works on every page ── -->
+<div class="song-edit-modal" id="song-edit-modal" style="display:none">
+  <div class="song-edit-modal__backdrop" onclick="closeSongEditModal()"></div>
+  <div class="song-edit-modal__panel">
+    <div class="song-edit-modal__header">
+      <h3><i class="fas fa-edit"></i> Edit Song</h3>
+      <button class="song-edit-modal__close" onclick="closeSongEditModal()"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="song-edit-modal__body">
+      <input type="hidden" id="edit-job-id"/>
+      <div class="form-group">
+        <label>Song Title</label>
+        <input type="text" id="edit-title" placeholder="Song title" style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;width:100%;box-sizing:border-box;color:var(--text);font-family:inherit;font-size:.9rem"/>
+      </div>
+      <div class="form-group">
+        <label>Lyrics / Notes</label>
+        <textarea id="edit-lyrics" class="suno-textarea" rows="4" placeholder="Lyrics or notes about this track..."></textarea>
+      </div>
+      <div class="form-group" style="display:flex;gap:12px">
+        <div style="flex:1">
+          <label>BPM</label>
+          <input type="number" id="edit-bpm" min="60" max="200" placeholder="90" style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;width:100%;box-sizing:border-box;color:var(--text);font-family:inherit;font-size:.9rem"/>
+        </div>
+        <div style="flex:2">
+          <label>Genre / Style</label>
+          <input type="text" id="edit-genre" placeholder="e.g. hip hop, trap..." style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;width:100%;box-sizing:border-box;color:var(--text);font-family:inherit;font-size:.9rem"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea id="edit-description" class="suno-textarea" rows="2" placeholder="Notes about this beat..."></textarea>
+      </div>
+      <div class="song-edit-modal__info" id="edit-info-block" style="display:none">
+        <div class="song-edit-modal__info-row"><span>Key</span><strong id="edit-info-key">—</strong></div>
+        <div class="song-edit-modal__info-row"><span>Scale</span><strong id="edit-info-scale">—</strong></div>
+        <div class="song-edit-modal__info-row"><span>Mood</span><strong id="edit-info-mood">—</strong></div>
+        <div class="song-edit-modal__info-row"><span>Duration</span><strong id="edit-info-duration">—</strong></div>
+      </div>
+    </div>
+    <div class="song-edit-modal__footer">
+      <button class="btn btn--outline" onclick="closeSongEditModal()">Cancel</button>
+      <button class="btn btn--primary" id="edit-save-btn" onclick="saveSongEdit()"><i class="fas fa-save"></i> Save changes</button>
+    </div>
+  </div>
+</div>`
+}
+
 function nav() {
+  // Top bar — only shown on marketing/public pages that need it
   return `<header class="sf-nav" id="sf-nav">
   <div class="sf-nav__inner">
-    <a href="/" class="sf-nav__logo">
-      <span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span>
-      <span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
-    </a>
     <nav class="sf-nav__links">
       <a href="/#features">Features</a>
       <a href="/pricing">Pricing</a>
       <a href="/#how">How it works</a>
     </nav>
     <div class="sf-nav__actions">
-      <!-- Guest links (hidden when logged in) -->
       <a href="/login" class="btn btn--ghost btn--sm nav-guest-only">Log in</a>
       <a href="/signup" class="btn btn--primary btn--sm nav-guest-only">Start free</a>
-      <!-- Auth user menu (hidden when logged out) -->
       <div class="nav-user-menu" id="nav-user-menu" style="display:none">
         <button class="nav-avatar-btn" id="nav-avatar-btn">
           <span class="nav-avatar" id="nav-avatar-text">?</span>
@@ -1161,7 +1293,6 @@ function nav() {
           <a href="/profile" class="nav-dropdown__item"><i class="fas fa-user"></i> Profile</a>
           <a href="/subscription" class="nav-dropdown__item"><i class="fas fa-credit-card"></i> Subscription</a>
           <a href="/account" class="nav-dropdown__item"><i class="fas fa-cog"></i> Account</a>
-          <a href="/dashboard" class="nav-dropdown__item"><i class="fas fa-th-large"></i> My Projects</a>
           <div class="nav-dropdown__divider"></div>
           <button class="nav-dropdown__item" id="theme-toggle-btn">
             <i class="fas fa-moon" id="theme-icon"></i>
@@ -1173,20 +1304,6 @@ function nav() {
         </div>
       </div>
     </div>
-    <button class="sf-nav__hamburger" id="hamburger" aria-label="Menu">
-      <span></span><span></span><span></span>
-    </button>
-  </div>
-  <div class="sf-nav__mobile" id="mobile-menu">
-    <a href="/#features">Features</a>
-    <a href="/pricing">Pricing</a>
-    <a href="/#how">How it works</a>
-    <a href="/login" class="nav-guest-only">Log in</a>
-    <a href="/signup" class="btn btn--primary nav-guest-only">Start free</a>
-    <a href="/dashboard" class="nav-auth-only" style="display:none">My Projects</a>
-    <a href="/profile" class="nav-auth-only" style="display:none">Profile</a>
-    <a href="/subscription" class="nav-auth-only" style="display:none">Subscription</a>
-    <button id="mobile-signout" class="btn btn--outline nav-auth-only" style="display:none">Sign out</button>
   </div>
 </header>`
 }
@@ -1442,6 +1559,7 @@ function homePage() {
 // ─── GENERATOR PAGE (real pipeline UI) ───────────────────────────────────────
 function generatorPage() {
   return shell('Generator', `
+<div class="gs-content gs-content--gen">
 <!-- Suno-style generator layout: left panel = controls, right panel = result -->
 <div class="suno-gen-page">
 
@@ -1558,30 +1676,12 @@ function generatorPage() {
             <button class="suno-chip suno-chip--sm" data-bpm="140">Hard (140)</button>
           </div>
         </div>
-        <!-- Energy -->
+        <!-- Instruments (prompt-based, optional) -->
         <div class="suno-option-row">
-          <label class="suno-option-label">Energy</label>
-          <div class="toggle-group" id="gen-energy">
-            <button class="toggle-btn" data-val="low">Low</button>
-            <button class="toggle-btn active" data-val="medium">Medium</button>
-            <button class="toggle-btn" data-val="high">High</button>
-          </div>
-        </div>
-        <!-- Instruments -->
-        <div class="suno-option-row">
-          <label class="suno-option-label">Include instruments</label>
-          <div class="tag-group">
-            <span class="inst-tag" data-instr="Rhodes">Rhodes</span>
-            <span class="inst-tag" data-instr="Bass">Bass</span>
-            <span class="inst-tag" data-instr="Flute">Flute</span>
-            <span class="inst-tag" data-instr="Guitar">Guitar</span>
-            <span class="inst-tag" data-instr="Violin">Violin</span>
-            <span class="inst-tag" data-instr="Trumpet">Trumpet</span>
-            <span class="inst-tag" data-instr="Piano">Piano</span>
-            <span class="inst-tag" data-instr="Synth">Synth</span>
-            <span class="inst-tag" data-instr="Strings">Strings</span>
-            <span class="inst-tag" data-instr="Choir">Choir</span>
-          </div>
+          <label class="suno-option-label">Include instruments <span class="suno-optional-tag">Optional</span></label>
+          <textarea class="suno-textarea suno-textarea--sm" id="gen-instruments"
+            rows="2"
+            placeholder="e.g. Rhodes piano, flute, violin, guitar... describe any instruments you want included"></textarea>
         </div>
       </div>
     </div>
@@ -1607,34 +1707,16 @@ function generatorPage() {
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
   <div class="suno-right">
 
-    <!-- Pipeline status -->
+    <!-- Pipeline status - simple spinner, no step details shown -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
-      <div class="pipeline-steps">
-        <div class="pipeline-step" id="step-blueprint">
-          <div class="pipeline-step__icon"><i class="fas fa-brain"></i></div>
-          <div class="pipeline-step__body">
-            <strong>Building blueprint</strong>
-            <span>GPT-4o analyzing your prompt...</span>
-          </div>
-          <div class="pipeline-step__indicator" id="ind-blueprint"></div>
-        </div>
-        <div class="pipeline-step" id="step-generating">
-          <div class="pipeline-step__icon"><i class="fas fa-music"></i></div>
-          <div class="pipeline-step__body">
-            <strong>Generating instrumental</strong>
-            <span>Mureka AI composing your beat...</span>
-          </div>
-          <div class="pipeline-step__indicator" id="ind-generating"></div>
-        </div>
-        <div class="pipeline-step" id="step-extracting">
-          <div class="pipeline-step__icon"><i class="fas fa-layer-group"></i></div>
-          <div class="pipeline-step__body">
-            <strong>Extracting individual tracks</strong>
-            <span>Separating each instrument...</span>
-          </div>
-          <div class="pipeline-step__indicator" id="ind-extracting"></div>
-        </div>
+      <div class="pipeline-spinner-wrap">
+        <div class="pipeline-spinner"></div>
+        <p class="pipeline-spinner-msg" id="pipeline-spinner-msg">Crafting your beat...</p>
       </div>
+      <!-- hidden step trackers for JS logic only (not shown to user) -->
+      <div style="display:none" id="step-blueprint"><div id="ind-blueprint"></div></div>
+      <div style="display:none" id="step-generating"><div id="ind-generating"></div></div>
+      <div style="display:none" id="step-extracting"><div id="ind-extracting"></div></div>
       <div class="pipeline-blueprint" id="pipeline-blueprint" style="display:none">
         <div class="blueprint-pills" id="blueprint-pills"></div>
       </div>
@@ -1647,8 +1729,13 @@ function generatorPage() {
           <h3 id="gen-result-title">Beat Ready</h3>
           <p id="gen-result-sub">Loading track info...</p>
         </div>
-        <div class="gen-result__status">
-          <span class="status-dot status-dot--ready"></span> Ready
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="gen-result__status">
+            <span class="status-dot status-dot--ready"></span> Ready
+          </div>
+          <button class="song-dots-btn" id="gen-result-dots" title="Options" onclick="openSongEditModal(null)" style="display:none">
+            <i class="fas fa-ellipsis-h"></i>
+          </button>
         </div>
       </div>
       <!-- Stereo player -->
@@ -1659,8 +1746,8 @@ function generatorPage() {
           <i class="fas fa-download"></i> Download stereo mix
         </a>
       </div>
-      <!-- Track list -->
-      <div class="track-list" id="track-list"></div>
+      <!-- Track list (hidden for free tier, shown for Creator/Pro) -->
+      <div class="track-list" id="track-list" style="display:none"></div>
       <!-- Export panel -->
       <div class="export-panel">
         <h4>Export options</h4>
@@ -1693,16 +1780,15 @@ function generatorPage() {
   </div><!-- /suno-right -->
 
 </div><!-- /suno-gen-page -->
+</div><!-- /gs-content--gen -->
 
-`, `<style>
-  .sf-nav,.sf-footer{display:none}
-</style>`)
+`, `<style>.sf-nav,.sf-footer{display:none}</style>`)
 }
 
 // ─── PRICING PAGE ────────────────────────────────────────────────────────────
 function pricingPage() {
   return shell('Pricing', `
-<main class="inner-page">
+<main class="inner-page gs-content">
 <section class="inner-hero">
   <div class="container">
     <div class="section-tag">Pricing</div>
@@ -1798,41 +1884,18 @@ function pricingPage() {
 // ─── REMAINING PAGES (Dashboard, Project, Auth) ───────────────────────────────
 function dashboardPage() {
   return shell('Dashboard', `
-<main class="inner-page app-shell">
-<div class="app-sidebar app-sidebar--dash">
-  <div class="dash-user">
-    <div class="dash-user__avatar" id="dash-avatar">?</div>
-    <div>
-      <strong id="dash-username">Loading...</strong>
-      <span class="dash-user__plan plan-badge" id="dash-plan-badge">Free</span>
-    </div>
-  </div>
-  <nav class="dash-nav">
-    <a href="/dashboard" class="dash-nav__item active"><i class="fas fa-th-large"></i> Projects</a>
-    <a href="/generator" class="dash-nav__item"><i class="fas fa-play-circle"></i> New beat</a>
-    <a href="/subscription" class="dash-nav__item"><i class="fas fa-chart-bar"></i> Usage</a>
-    <a href="/account" class="dash-nav__item"><i class="fas fa-cog"></i> Settings</a>
-  </nav>
-  <div class="dash-credits-card">
-    <div class="dash-credits-card__label">Generations used</div>
-    <div class="dash-credits-card__val" id="dash-gens-val">0 <small>/ 3 gen</small></div>
-    <div class="dash-credits-card__bar"><div id="dash-gens-bar" style="width:0%"></div></div>
-    <a href="/pricing" class="btn btn--primary btn--sm btn--full" id="dash-upgrade-btn" style="margin-top:12px">Upgrade plan</a>
-  </div>
-</div>
-<div class="app-main">
+<main class="inner-page gs-content">
   <div class="dash-header"><h2>My Projects</h2><a href="/generator" class="btn btn--primary"><i class="fas fa-plus"></i> New beat</a></div>
   <div class="project-grid" id="project-grid">
     <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading projects...</div>
   </div>
-</div>
 </main>`, `<style>.sf-nav{display:none}</style>`)
 }
 
 function projectPage() {
   return shell('Project Export', `
-<main class="inner-page app-shell">
-<div class="app-sidebar app-sidebar--dash">
+<main class="inner-page gs-content">
+<div style="display:none" class="app-sidebar app-sidebar--dash">
   <nav class="dash-nav"><a href="/dashboard" class="dash-nav__item"><i class="fas fa-arrow-left"></i> Back</a></nav>
   <div class="project-meta-card"><div class="project-meta-card__art project-card__art--1"></div><h4>Surf Noir Trap</h4><p>90 BPM · D Minor · 2:14</p><div class="project-meta-card__plan plan-badge plan-badge--creator">Creator plan</div></div>
   <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Generations used</div><div class="dash-credits-card__val">32 <small>/ 50 gen</small></div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Upgrade plan</a></div>
@@ -2035,7 +2098,7 @@ function checkoutPage() {
 // ─── PROFILE PAGE ────────────────────────────────────────────────────────────
 function profilePage(user: User | null) {
   if (!user) {
-    return shell('Profile', `<main class="inner-page"><div class="container" style="text-align:center;padding:80px 20px">
+    return shell('Profile', `<main class="inner-page gs-content"><div class="container" style="text-align:center;padding:80px 20px">
       <h2>Sign in to view your profile</h2>
       <a href="/login" class="btn btn--primary" style="margin-top:20px">Log in</a>
     </div></main>`)
@@ -2045,7 +2108,7 @@ function profilePage(user: User | null) {
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const memberSince = new Date(user.created_at).toLocaleDateString('en-US',{year:'numeric',month:'long'})
   return shell('Profile', `
-<main class="inner-page profile-page">
+<main class="inner-page gs-content profile-page">
   <div class="container">
     <div class="profile-wrap">
       <div class="profile-cover"></div>
@@ -2109,7 +2172,7 @@ function subscriptionPage(user: User, env: Bindings) {
     : 'N/A'
   const stripeOk = stripeConfigured(env)
   return shell('Subscription', `
-<main class="inner-page sub-page">
+<main class="inner-page gs-content sub-page">
   <div class="container">
     <div class="sub-header">
       <h1>Subscription</h1>
@@ -2205,7 +2268,7 @@ function accountPage(user: User) {
   const hasGoogle = !!(user as any).google_id
   const initials = user.name.split(' ').map((n:string)=>n[0]).join('').toUpperCase().slice(0,2)
   return shell('Account Settings', `
-<main class="inner-page account-page">
+<main class="inner-page gs-content account-page">
   <div class="container">
     <h1>Account Settings</h1>
     <div class="account-grid">
@@ -2280,7 +2343,7 @@ function accountPage(user: User) {
 // ─── LEGAL PAGES HELPER ──────────────────────────────────────────────────────
 function legalShell(title: string, lastUpdated: string, content: string) {
   return shell(title, `
-<main class="inner-page">
+<main class="inner-page gs-content">
   <div class="legal-wrap">
     <div class="legal-header">
       <div class="legal-header__tag">Legal</div>
