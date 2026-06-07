@@ -975,10 +975,25 @@ p  { color: var(--sub); }
   padding: 11px; border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--border-2);
   color: var(--text); font-size: .9rem; font-weight: 600; cursor: pointer;
+  text-decoration: none;
   transition: all var(--transition);
 }
-.oauth-btn:hover { border-color: var(--primary); background: var(--surface-2); }
+.oauth-btn:hover { border-color: var(--primary); background: var(--surface-2); color: var(--text); }
+.oauth-btn--google:hover { border-color: #4285f4; background: rgba(66,133,244,.08); }
 .oauth-btn i { font-size: 1rem; }
+.auth-error {
+  background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.3);
+  color: #f87171; border-radius: 8px; padding: 10px 14px;
+  font-size: .875rem; font-weight: 500; margin-bottom: 16px;
+}
+.stripe-badge {
+  display: flex; align-items: flex-start; gap: 10px;
+  background: var(--surface); border: 1px solid var(--border-2);
+  border-radius: 10px; padding: 14px 16px;
+  font-size: .875rem; color: var(--sub);
+}
+.stripe-badge i { color: #635bff; font-size: 1.2rem; flex-shrink: 0; margin-top: 1px; }
+.checkout-stripe-info { margin-top: 8px; }
 .auth-divider {
   display: flex; align-items: center; gap: 12px; margin: 4px 0 20px;
 }

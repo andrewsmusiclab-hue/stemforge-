@@ -90,42 +90,169 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ── Card formatting ────────────────────────────────────────────
-  const cardNum = document.getElementById('card-num');
-  if (cardNum) cardNum.addEventListener('input', e => {
-    let v = e.target.value.replace(/\D/g,'').substring(0,16);
-    e.target.value = v.replace(/(.{4})/g,'$1 ').trim();
-  });
-  const cardExp = document.getElementById('card-exp');
-  if (cardExp) cardExp.addEventListener('input', e => {
-    let v = e.target.value.replace(/\D/g,'').substring(0,4);
-    if (v.length >= 2) v = v.slice(0,2) + ' / ' + v.slice(2);
-    e.target.value = v;
-  });
+  // ── Auth helper ────────────────────────────────────────────────
+  function showAuthError(id, msg) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+  }
+  function hideAuthError(id) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
+  function setLoading(btn, loading, text) {
+    btn.disabled = loading;
+    btn.innerHTML = loading
+      ? '<i class="fas fa-spinner fa-spin"></i> ' + (text || 'Please wait...')
+      : btn.dataset.orig || btn.innerHTML;
+  }
 
-  // ── Auth forms ─────────────────────────────────────────────────
+  // ── Signup form — real API call ────────────────────────────────
   const signupForm = document.getElementById('signup-form');
-  if (signupForm) signupForm.addEventListener('submit', e => {
-    e.preventDefault();
-    const plan = signupForm.querySelector('input[name="plan"]:checked')?.value;
-    window.location.href = plan === 'free' ? '/dashboard' : '/checkout';
-  });
-  const loginForm = document.getElementById('login-form');
-  if (loginForm) loginForm.addEventListener('submit', e => { e.preventDefault(); window.location.href = '/dashboard'; });
-  const checkoutForm = document.getElementById('checkout-form');
-  const checkoutSubmit = document.getElementById('checkout-submit');
-  if (checkoutForm && checkoutSubmit) {
-    checkoutForm.addEventListener('submit', e => {
+  if (signupForm) {
+    const signupBtn = document.getElementById('signup-btn');
+    signupBtn.dataset.orig = signupBtn.innerHTML;
+
+    signupForm.addEventListener('submit', async e => {
       e.preventDefault();
-      const orig = checkoutSubmit.innerHTML;
-      checkoutSubmit.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
-      checkoutSubmit.disabled = true;
-      setTimeout(() => {
-        checkoutSubmit.innerHTML = '<i class="fas fa-check"></i> Success!';
-        checkoutSubmit.style.background = '#10b981';
-        setTimeout(() => window.location.href = '/dashboard', 1200);
-      }, 2000);
+      hideAuthError('auth-error');
+
+      const name = signupForm.querySelector('[name=name]')?.value?.trim();
+      const email = signupForm.querySelector('[name=email]')?.value?.trim();
+      const password = signupForm.querySelector('[name=password]')?.value;
+      const plan = signupForm.querySelector('input[name=plan]:checked')?.value || 'free';
+      const terms = document.getElementById('su-terms')?.checked;
+
+      if (!name) return showAuthError('auth-error', 'Please enter your full name.');
+      if (!email) return showAuthError('auth-error', 'Please enter your email.');
+      if (!password || password.length < 8) return showAuthError('auth-error', 'Password must be at least 8 characters.');
+      if (!terms) return showAuthError('auth-error', 'Please agree to the Terms and Privacy Policy.');
+
+      setLoading(signupBtn, true, 'Creating account...');
+      try {
+        const res = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, password, plan })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showAuthError('auth-error', data.error || 'Signup failed. Please try again.');
+          setLoading(signupBtn, false);
+          return;
+        }
+        // Account created — redirect
+        signupBtn.innerHTML = '<i class="fas fa-check"></i> Account created!';
+        signupBtn.style.background = '#10b981';
+        setTimeout(() => window.location.href = data.redirect || '/dashboard', 800);
+      } catch (err) {
+        showAuthError('auth-error', 'Network error. Please try again.');
+        setLoading(signupBtn, false);
+      }
     });
+  }
+
+  // ── Login form — real API call ─────────────────────────────────
+  const loginForm = document.getElementById('login-form');
+  if (loginForm) {
+    const loginBtn = document.getElementById('login-btn');
+    loginBtn.dataset.orig = loginBtn.innerHTML;
+
+    loginForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      hideAuthError('auth-error');
+
+      const email = loginForm.querySelector('[name=email]')?.value?.trim();
+      const password = loginForm.querySelector('[name=password]')?.value;
+
+      if (!email) return showAuthError('auth-error', 'Please enter your email.');
+      if (!password) return showAuthError('auth-error', 'Please enter your password.');
+
+      setLoading(loginBtn, true, 'Logging in...');
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showAuthError('auth-error', data.error || 'Login failed. Check your email and password.');
+          setLoading(loginBtn, false);
+          return;
+        }
+        loginBtn.innerHTML = '<i class="fas fa-check"></i> Logged in!';
+        loginBtn.style.background = '#10b981';
+        setTimeout(() => window.location.href = data.redirect || '/dashboard', 800);
+      } catch (err) {
+        showAuthError('auth-error', 'Network error. Please try again.');
+        setLoading(loginBtn, false);
+      }
+    });
+  }
+
+  // ── Checkout page — Stripe redirect ───────────────────────────
+  const checkoutSubmit = document.getElementById('checkout-submit');
+  if (checkoutSubmit) {
+    // Read plan from URL param
+    const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
+    const planMeta = {
+      creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 generations/month', 'Stereo + 5-stem ZIP download', 'Commercial use rights', '+$0.49 per extra generation'] },
+      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 generations/month', 'Everything in Creator', 'Individual track download', 'Priority queue', '+$0.49 per extra generation'] },
+      studio:  { name: 'Studio Plan', price: '$79', total: '$79.00', features: ['400 generations/month', 'Everything in Pro Artist', 'Team seat (3 users)', 'Bulk export + API access', '+$0.39 per extra generation'] },
+    };
+    const meta = planMeta[urlPlan] || planMeta.creator;
+
+    // Update UI with plan details
+    const coName = document.getElementById('co-plan-name');
+    const coPrice = document.getElementById('co-plan-price');
+    const coTotal = document.getElementById('co-plan-total');
+    const coFeatures = document.getElementById('co-plan-features');
+    const coBtnText = document.getElementById('co-btn-text');
+    if (coName) coName.textContent = meta.name;
+    if (coPrice) coPrice.textContent = meta.price;
+    if (coTotal) coTotal.textContent = meta.total;
+    if (coFeatures) coFeatures.innerHTML = meta.features.map(f => `<li><i class="fas fa-check"></i> ${f}</li>`).join('');
+    if (coBtnText) coBtnText.textContent = `Continue to payment — ${meta.price}/mo`;
+
+    checkoutSubmit.dataset.orig = checkoutSubmit.innerHTML;
+    checkoutSubmit.addEventListener('click', async () => {
+      const coError = document.getElementById('co-error');
+      if (coError) coError.style.display = 'none';
+      setLoading(checkoutSubmit, true, 'Redirecting to Stripe...');
+
+      try {
+        const res = await fetch('/api/stripe/checkout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan: urlPlan })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (data.redirect) { window.location.href = data.redirect; return; }
+          if (coError) { coError.textContent = data.error || 'Checkout failed. Please try again.'; coError.style.display = 'block'; }
+          setLoading(checkoutSubmit, false);
+          return;
+        }
+        // Redirect to Stripe hosted checkout
+        window.location.href = data.url;
+      } catch (err) {
+        if (coError) { coError.textContent = 'Network error. Please try again.'; coError.style.display = 'block'; }
+        setLoading(checkoutSubmit, false);
+      }
+    });
+  }
+
+  // ── Dashboard payment=success banner ──────────────────────────
+  if (window.location.pathname === '/dashboard') {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('payment') === 'success') {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:16px;right:16px;background:#10b981;color:#fff;padding:14px 20px;border-radius:10px;font-weight:600;z-index:9999;box-shadow:0 4px 20px rgba(16,185,129,.4);display:flex;align-items:center;gap:10px';
+      banner.innerHTML = '<i class="fas fa-check-circle"></i> Subscription activated! Welcome to StemForge.';
+      document.body.appendChild(banner);
+      setTimeout(() => banner.remove(), 5000);
+      window.history.replaceState({}, '', '/dashboard');
+    }
   }
 
   // ── Scroll fade-in ─────────────────────────────────────────────

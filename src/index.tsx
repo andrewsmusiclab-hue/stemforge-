@@ -6,6 +6,16 @@ type Bindings = {
   OPENAI_API_KEY: string
   MUREKA_API_KEY: string
   DB: D1Database             // Cloudflare D1 for persistent job storage
+  // Auth + Payments (set via gsk hosted deploy or wrangler secret put)
+  GOOGLE_CLIENT_ID: string          // Google OAuth App client ID
+  GOOGLE_CLIENT_SECRET: string      // Google OAuth App client secret
+  STRIPE_SECRET_KEY: string         // Stripe secret key (sk_live_... or sk_test_...)
+  STRIPE_WEBHOOK_SECRET: string     // Stripe webhook signing secret
+  STRIPE_CREATOR_PRICE_ID: string   // Stripe Price ID for Creator $19/mo
+  STRIPE_PRO_PRICE_ID: string       // Stripe Price ID for Pro Artist $39/mo
+  STRIPE_STUDIO_PRICE_ID: string    // Stripe Price ID for Studio $79/mo
+  SESSION_SECRET: string            // 32+ char random string for session HMAC
+  SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -59,6 +69,269 @@ async function setJob(db: D1Database | undefined, job: Job): Promise<void> {
   } else {
     memJobs.set(job.id, job)
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  AUTH — Users, Sessions, Google OAuth, Email/Password
+//  Uses D1 for persistence. Falls back gracefully if secrets
+//  are not yet configured (returns 503 with setup message).
+// ═══════════════════════════════════════════════════════════════
+
+interface User {
+  id: string
+  email: string
+  name: string
+  avatar?: string
+  plan: 'free' | 'creator' | 'pro' | 'studio'
+  gens_used: number
+  gens_limit: number
+  stripe_customer_id?: string
+  stripe_subscription_id?: string
+  created_at: number
+}
+
+// ── D1 table bootstrap ────────────────────────────────────────
+async function ensureAuthTables(db: D1Database): Promise<void> {
+  await db.batch([
+    db.prepare(`CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      avatar TEXT,
+      plan TEXT NOT NULL DEFAULT 'free',
+      gens_used INTEGER NOT NULL DEFAULT 0,
+      gens_limit INTEGER NOT NULL DEFAULT 3,
+      password_hash TEXT,
+      google_id TEXT,
+      stripe_customer_id TEXT,
+      stripe_subscription_id TEXT,
+      created_at INTEGER NOT NULL
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    )`),
+  ])
+}
+
+// ── Crypto helpers (Web Crypto API — works in CF Workers) ─────
+async function hashPassword(password: string): Promise<string> {
+  const enc = new TextEncoder()
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']
+  )
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 },
+    keyMaterial, 256
+  )
+  const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2,'0')).join('')
+  const hashHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2,'0')).join('')
+  return `pbkdf2:${saltHex}:${hashHex}`
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  try {
+    const [, saltHex, hashHex] = stored.split(':')
+    const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map(b => parseInt(b, 16)))
+    const enc = new TextEncoder()
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']
+    )
+    const bits = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 },
+      keyMaterial, 256
+    )
+    const newHex = Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2,'0')).join('')
+    return newHex === hashHex
+  } catch { return false }
+}
+
+function generateToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map(b => b.toString(16).padStart(2,'0')).join('')
+}
+
+function generateId(): string {
+  return 'u_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)
+}
+
+// ── Session helpers ───────────────────────────────────────────
+const SESSION_TTL = 30 * 24 * 60 * 60 * 1000  // 30 days
+
+async function createSession(db: D1Database, userId: string): Promise<string> {
+  await ensureAuthTables(db)
+  const token = generateToken()
+  const now = Date.now()
+  await db.prepare(
+    `INSERT INTO sessions (token, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+  ).bind(token, userId, now + SESSION_TTL, now).run()
+  return token
+}
+
+async function getSessionUser(db: D1Database, token: string): Promise<User | null> {
+  if (!token) return null
+  try {
+    const row = await db.prepare(
+      `SELECT u.* FROM sessions s JOIN users u ON s.user_id = u.id
+       WHERE s.token = ? AND s.expires_at > ?`
+    ).bind(token, Date.now()).first<any>()
+    if (!row) return null
+    return {
+      id: row.id, email: row.email, name: row.name, avatar: row.avatar,
+      plan: row.plan, gens_used: row.gens_used, gens_limit: row.gens_limit,
+      stripe_customer_id: row.stripe_customer_id,
+      stripe_subscription_id: row.stripe_subscription_id,
+      created_at: row.created_at
+    }
+  } catch { return null }
+}
+
+function getSessionCookie(req: Request): string {
+  const cookie = req.headers.get('Cookie') || ''
+  const match = cookie.match(/sf_session=([a-f0-9]{64})/)
+  return match ? match[1] : ''
+}
+
+function setSessionCookie(token: string, siteUrl: string): string {
+  const secure = siteUrl.startsWith('https') ? '; Secure' : ''
+  return `sf_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${30*24*3600}${secure}`
+}
+
+function clearSessionCookie(): string {
+  return `sf_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
+}
+
+// ── User DB helpers ───────────────────────────────────────────
+async function getUserByEmail(db: D1Database, email: string): Promise<any | null> {
+  return db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<any>()
+}
+
+async function createUser(db: D1Database, data: {
+  id: string, email: string, name: string, avatar?: string,
+  password_hash?: string, google_id?: string, plan?: string
+}): Promise<void> {
+  await ensureAuthTables(db)
+  const planLimits: Record<string, number> = { free:3, creator:50, pro:150, studio:400 }
+  const plan = data.plan || 'free'
+  await db.prepare(
+    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+  ).bind(data.id, data.email, data.name, data.avatar || null, plan,
+    planLimits[plan] || 3, data.password_hash || null, data.google_id || null, Date.now()).run()
+}
+
+async function updateUserPlan(db: D1Database, userId: string, plan: string,
+  stripeCustomerId: string, stripeSubId: string): Promise<void> {
+  const planLimits: Record<string, number> = { free:3, creator:50, pro:150, studio:400 }
+  await db.prepare(
+    `UPDATE users SET plan=?, gens_limit=?, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?`
+  ).bind(plan, planLimits[plan] || 3, stripeCustomerId, stripeSubId, userId).run()
+}
+
+// ── Stripe helpers ────────────────────────────────────────────
+const STRIPE_BASE = 'https://api.stripe.com/v1'
+
+async function stripeRequest(method: string, path: string, body: Record<string,string>, key: string): Promise<any> {
+  const res = await fetch(`${STRIPE_BASE}${path}`, {
+    method,
+    headers: {
+      'Authorization': `Bearer ${key}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: method !== 'GET' ? new URLSearchParams(body).toString() : undefined,
+  })
+  const data = await res.json() as any
+  if (!res.ok) throw new Error(data?.error?.message || `Stripe error ${res.status}`)
+  return data
+}
+
+async function createStripeCheckoutSession(
+  stripeKey: string, priceId: string, customerEmail: string,
+  userId: string, siteUrl: string
+): Promise<string> {
+  const data = await stripeRequest('POST', '/checkout/sessions', {
+    'payment_method_types[]': 'card',
+    'line_items[0][price]': priceId,
+    'line_items[0][quantity]': '1',
+    mode: 'subscription',
+    customer_email: customerEmail,
+    'metadata[user_id]': userId,
+    success_url: `${siteUrl}/dashboard?payment=success`,
+    cancel_url: `${siteUrl}/pricing`,
+    'allow_promotion_codes': 'true',
+  }, stripeKey)
+  return data.url as string
+}
+
+async function verifyStripeWebhook(payload: string, sigHeader: string, secret: string): Promise<any> {
+  const parts = sigHeader.split(',').reduce((acc: Record<string,string>, part) => {
+    const [k, v] = part.split('='); acc[k] = v; return acc
+  }, {})
+  const timestamp = parts['t']
+  const signature = parts['v1']
+  if (!timestamp || !signature) throw new Error('Invalid stripe-signature header')
+
+  const enc = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  )
+  const signed = await crypto.subtle.sign('HMAC', key, enc.encode(`${timestamp}.${payload}`))
+  const computed = Array.from(new Uint8Array(signed)).map(b => b.toString(16).padStart(2,'0')).join('')
+  if (computed !== signature) throw new Error('Webhook signature mismatch')
+  return JSON.parse(payload)
+}
+
+// ── Google OAuth helpers ──────────────────────────────────────
+function googleAuthUrl(clientId: string, siteUrl: string, state: string): string {
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: `${siteUrl}/api/auth/google/callback`,
+    response_type: 'code',
+    scope: 'openid email profile',
+    state,
+    access_type: 'offline',
+    prompt: 'select_account',
+  })
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params}`
+}
+
+async function exchangeGoogleCode(code: string, clientId: string, clientSecret: string, siteUrl: string): Promise<{
+  email: string, name: string, picture: string, sub: string
+}> {
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code, client_id: clientId, client_secret: clientSecret,
+      redirect_uri: `${siteUrl}/api/auth/google/callback`,
+      grant_type: 'authorization_code',
+    }).toString()
+  })
+  const tokens = await tokenRes.json() as any
+  if (!tokenRes.ok) throw new Error(tokens.error_description || 'Google token exchange failed')
+
+  const infoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${tokens.access_token}` }
+  })
+  const info = await infoRes.json() as any
+  if (!infoRes.ok) throw new Error('Failed to fetch Google user info')
+  return { email: info.email, name: info.name, picture: info.picture, sub: info.id }
+}
+
+// ── Helper: check if secrets are configured ───────────────────
+function authConfigured(env: Bindings): boolean {
+  return !!(env.GOOGLE_CLIENT_ID && env.STRIPE_SECRET_KEY && env.SESSION_SECRET)
+}
+
+// ── Plan name from Stripe price ID ───────────────────────────
+function planFromPriceId(env: Bindings, priceId: string): string {
+  if (priceId === env.STRIPE_CREATOR_PRICE_ID) return 'creator'
+  if (priceId === env.STRIPE_PRO_PRICE_ID) return 'pro'
+  if (priceId === env.STRIPE_STUDIO_PRICE_ID) return 'studio'
+  return 'free'
 }
 
 // Mureka /v1/song/stem returns these stem names inside the ZIP
@@ -491,6 +764,239 @@ app.get('/api/job/:id', async (c) => {
 
 // GET /api/health
 app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
+
+// ═══════════════════════════════════════════════════════════════
+//  AUTH API ROUTES
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/auth/signup — email/password registration
+app.post('/api/auth/signup', async (c) => {
+  if (!authConfigured(c.env)) {
+    return c.json({ error: 'Auth not configured. Add GOOGLE_CLIENT_ID, STRIPE_SECRET_KEY, SESSION_SECRET to secrets.' }, 503)
+  }
+  try {
+    const { name, email, password, plan } = await c.req.json()
+    if (!name || !email || !password) return c.json({ error: 'name, email and password required' }, 400)
+    if (password.length < 8) return c.json({ error: 'Password must be at least 8 characters' }, 400)
+
+    await ensureAuthTables(c.env.DB)
+    const existing = await getUserByEmail(c.env.DB, email.toLowerCase())
+    if (existing) return c.json({ error: 'An account with that email already exists' }, 409)
+
+    const passwordHash = await hashPassword(password)
+    const userId = generateId()
+    await createUser(c.env.DB, {
+      id: userId, email: email.toLowerCase(), name: name.trim(),
+      password_hash: passwordHash, plan: plan || 'free'
+    })
+
+    const token = await createSession(c.env.DB, userId)
+    const siteUrl = c.env.SITE_URL || ''
+
+    return new Response(JSON.stringify({ ok: true, redirect: plan && plan !== 'free' ? '/checkout?plan=' + plan : '/dashboard' }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': setSessionCookie(token, siteUrl)
+      }
+    })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Signup failed' }, 500)
+  }
+})
+
+// POST /api/auth/login — email/password login
+app.post('/api/auth/login', async (c) => {
+  if (!authConfigured(c.env)) {
+    return c.json({ error: 'Auth not configured' }, 503)
+  }
+  try {
+    const { email, password } = await c.req.json()
+    if (!email || !password) return c.json({ error: 'email and password required' }, 400)
+
+    await ensureAuthTables(c.env.DB)
+    const user = await getUserByEmail(c.env.DB, email.toLowerCase())
+    if (!user || !user.password_hash) return c.json({ error: 'Invalid email or password' }, 401)
+
+    const valid = await verifyPassword(password, user.password_hash)
+    if (!valid) return c.json({ error: 'Invalid email or password' }, 401)
+
+    const token = await createSession(c.env.DB, user.id)
+    const siteUrl = c.env.SITE_URL || ''
+
+    return new Response(JSON.stringify({ ok: true, redirect: '/dashboard' }), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': setSessionCookie(token, siteUrl)
+      }
+    })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Login failed' }, 500)
+  }
+})
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', async (c) => {
+  const token = getSessionCookie(c.req.raw)
+  if (token && c.env.DB) {
+    try { await c.env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run() } catch {}
+  }
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json', 'Set-Cookie': clearSessionCookie() }
+  })
+})
+
+// GET /api/auth/me — return current user (used by frontend to check session)
+app.get('/api/auth/me', async (c) => {
+  const token = getSessionCookie(c.req.raw)
+  if (!token || !c.env.DB) return c.json({ user: null })
+  const user = await getSessionUser(c.env.DB, token)
+  if (!user) return c.json({ user: null })
+  return c.json({
+    user: {
+      id: user.id, name: user.name, email: user.email,
+      avatar: user.avatar, plan: user.plan,
+      gens_used: user.gens_used, gens_limit: user.gens_limit
+    }
+  })
+})
+
+// GET /api/auth/google — start Google OAuth flow
+app.get('/api/auth/google', (c) => {
+  if (!c.env.GOOGLE_CLIENT_ID || !c.env.SITE_URL) {
+    return c.html(`<p style="font-family:sans-serif;padding:2rem">
+      <strong>Google OAuth not configured yet.</strong><br/><br/>
+      To enable Google sign-in, add these secrets via your deployment panel:<br/>
+      <code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code>, <code>SITE_URL</code><br/><br/>
+      <a href="/signup">← Back to signup</a>
+    </p>`)
+  }
+  const state = generateToken().slice(0, 16)
+  const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, c.env.SITE_URL, state)
+  return c.redirect(url)
+})
+
+// GET /api/auth/google/callback — Google OAuth callback
+app.get('/api/auth/google/callback', async (c) => {
+  const code = c.req.query('code')
+  const error = c.req.query('error')
+
+  if (error || !code) {
+    return c.redirect('/signup?error=google_denied')
+  }
+  if (!c.env.GOOGLE_CLIENT_ID || !c.env.GOOGLE_CLIENT_SECRET || !c.env.SITE_URL) {
+    return c.redirect('/signup?error=not_configured')
+  }
+
+  try {
+    const profile = await exchangeGoogleCode(
+      code, c.env.GOOGLE_CLIENT_ID, c.env.GOOGLE_CLIENT_SECRET, c.env.SITE_URL
+    )
+    await ensureAuthTables(c.env.DB)
+
+    let user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
+    if (!user) {
+      const userId = generateId()
+      await createUser(c.env.DB, {
+        id: userId, email: profile.email.toLowerCase(),
+        name: profile.name, avatar: profile.picture, google_id: profile.sub
+      })
+      user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
+    } else if (!user.google_id) {
+      await c.env.DB.prepare('UPDATE users SET google_id=?, avatar=? WHERE id=?')
+        .bind(profile.sub, profile.picture, user.id).run()
+    }
+
+    const token = await createSession(c.env.DB, user.id)
+    return new Response(null, {
+      status: 302,
+      headers: {
+        'Location': '/dashboard',
+        'Set-Cookie': setSessionCookie(token, c.env.SITE_URL)
+      }
+    })
+  } catch (err: any) {
+    return c.redirect('/signup?error=google_failed')
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  STRIPE PAYMENT ROUTES
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/stripe/checkout — create Stripe Checkout session and redirect
+app.post('/api/stripe/checkout', async (c) => {
+  if (!c.env.STRIPE_SECRET_KEY || !c.env.SITE_URL) {
+    return c.json({ error: 'Stripe not configured. Add STRIPE_SECRET_KEY and SITE_URL to secrets.' }, 503)
+  }
+  try {
+    const { plan } = await c.req.json()
+    const priceMap: Record<string, string> = {
+      creator: c.env.STRIPE_CREATOR_PRICE_ID,
+      pro: c.env.STRIPE_PRO_PRICE_ID,
+      studio: c.env.STRIPE_STUDIO_PRICE_ID,
+    }
+    const priceId = priceMap[plan]
+    if (!priceId) return c.json({ error: 'Invalid plan. Must be creator, pro, or studio.' }, 400)
+
+    // Get current session user
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!user) return c.json({ error: 'Must be logged in to subscribe', redirect: '/login' }, 401)
+
+    const checkoutUrl = await createStripeCheckoutSession(
+      c.env.STRIPE_SECRET_KEY, priceId, user.email, user.id, c.env.SITE_URL
+    )
+    return c.json({ url: checkoutUrl })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Checkout creation failed' }, 500)
+  }
+})
+
+// POST /api/stripe/webhook — Stripe sends subscription events here
+// Stripe Dashboard → Webhooks → Add endpoint: https://your-site.com/api/stripe/webhook
+// Events to listen for: checkout.session.completed, customer.subscription.deleted
+app.post('/api/stripe/webhook', async (c) => {
+  if (!c.env.STRIPE_WEBHOOK_SECRET) {
+    return c.json({ error: 'Webhook secret not configured' }, 503)
+  }
+  try {
+    const payload = await c.req.text()
+    const sig = c.req.header('stripe-signature') || ''
+    const event = await verifyStripeWebhook(payload, sig, c.env.STRIPE_WEBHOOK_SECRET)
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object
+      const userId = session.metadata?.user_id
+      const subId = session.subscription
+      const customerId = session.customer
+
+      if (userId && subId) {
+        // Get subscription details to find price ID
+        const sub = await stripeRequest('GET', `/subscriptions/${subId}`, {}, c.env.STRIPE_SECRET_KEY)
+        const priceId = sub.items?.data?.[0]?.price?.id
+        const plan = planFromPriceId(c.env, priceId)
+        await updateUserPlan(c.env.DB, userId, plan, customerId, subId)
+      }
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      const sub = event.data.object
+      const customerId = sub.customer
+      if (customerId) {
+        await c.env.DB.prepare(
+          `UPDATE users SET plan='free', gens_limit=3, stripe_subscription_id=NULL WHERE stripe_customer_id=?`
+        ).bind(customerId).run()
+      }
+    }
+
+    return c.json({ received: true })
+  } catch (err: any) {
+    return c.json({ error: err?.message }, 400)
+  }
+})
 
 // ═══════════════════════════════════════════════════════════════
 //  PAGE ROUTES
@@ -1147,9 +1653,9 @@ function signupPage() {
       <a href="/" class="sf-nav__logo auth-logo"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
       <h1>Start generating.<br/>Keep every track.</h1>
       <ul class="auth-benefits">
-        <li><i class="fas fa-check-circle"></i> 150 free credits, no card needed</li>
+        <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
         <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
-        <li><i class="fas fa-check-circle"></i> Individual track export on Pro</li>
+        <li><i class="fas fa-check-circle"></i> Individual track export on Pro Artist</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
     </div>
@@ -1157,18 +1663,43 @@ function signupPage() {
       <div class="auth-card">
         <h2>Create your account</h2>
         <p class="auth-card__sub">Already have one? <a href="/login">Log in</a></p>
+        <div id="auth-error" class="auth-error" style="display:none"></div>
         <div class="oauth-btns">
-          <button class="oauth-btn"><i class="fab fa-google"></i> Continue with Google</button>
-          <button class="oauth-btn"><i class="fab fa-apple"></i> Continue with Apple</button>
+          <a href="/api/auth/google" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
         </div>
         <div class="auth-divider"><span>or sign up with email</span></div>
-        <form class="auth-form" id="signup-form">
-          <div class="form-group"><label>Full name</label><input type="text" placeholder="Your name"/></div>
-          <div class="form-group"><label>Email</label><input type="email" placeholder="you@example.com"/></div>
-          <div class="form-group"><label>Password</label><div class="input-icon-wrap"><input type="password" id="pw-input" placeholder="At least 8 characters"/><button type="button" class="input-icon-btn" id="pw-toggle"><i class="fas fa-eye" id="pw-eye"></i></button></div><div class="pw-strength" id="pw-strength"></div></div>
-          <div class="form-group"><label>Plan</label><div class="plan-radio-group"><label class="plan-radio"><input type="radio" name="plan" value="free" checked/><span>Free — $0</span></label><label class="plan-radio"><input type="radio" name="plan" value="creator"/><span>Creator — $19/mo</span></label><label class="plan-radio"><input type="radio" name="plan" value="pro"/><span>Pro Artist — $39/mo</span></label><label class="plan-radio"><input type="radio" name="plan" value="studio"/><span>Studio — $79/mo</span></label></div></div>
-          <div class="form-group form-group--check"><label class="checkbox-label"><input type="checkbox" required/> I agree to the <a href="#">Terms</a> and <a href="#">Privacy Policy</a></label></div>
-          <button type="submit" class="btn btn--primary btn--full btn--lg">Create account <i class="fas fa-arrow-right"></i></button>
+        <form class="auth-form" id="signup-form" novalidate>
+          <div class="form-group">
+            <label for="su-name">Full name</label>
+            <input id="su-name" type="text" name="name" placeholder="Your name" autocomplete="name" required/>
+          </div>
+          <div class="form-group">
+            <label for="su-email">Email</label>
+            <input id="su-email" type="email" name="email" placeholder="you@example.com" autocomplete="email" required/>
+          </div>
+          <div class="form-group">
+            <label for="pw-input">Password</label>
+            <div class="input-icon-wrap">
+              <input id="pw-input" type="password" name="password" placeholder="At least 8 characters" autocomplete="new-password" required minlength="8"/>
+              <button type="button" class="input-icon-btn" id="pw-toggle"><i class="fas fa-eye" id="pw-eye"></i></button>
+            </div>
+            <div class="pw-strength" id="pw-strength"></div>
+          </div>
+          <div class="form-group">
+            <label>Plan</label>
+            <div class="plan-radio-group">
+              <label class="plan-radio"><input type="radio" name="plan" value="free" checked/><span>Free — $0</span></label>
+              <label class="plan-radio"><input type="radio" name="plan" value="creator"/><span>Creator — $19/mo</span></label>
+              <label class="plan-radio"><input type="radio" name="plan" value="pro"/><span>Pro Artist — $39/mo</span></label>
+              <label class="plan-radio"><input type="radio" name="plan" value="studio"/><span>Studio — $79/mo</span></label>
+            </div>
+          </div>
+          <div class="form-group form-group--check">
+            <label class="checkbox-label"><input type="checkbox" id="su-terms" required/> I agree to the <a href="#">Terms</a> and <a href="#">Privacy Policy</a></label>
+          </div>
+          <button type="submit" class="btn btn--primary btn--full btn--lg" id="signup-btn">
+            Create account <i class="fas fa-arrow-right"></i>
+          </button>
         </form>
       </div>
     </div>
@@ -1183,18 +1714,37 @@ function loginPage() {
     <div class="auth-split__left">
       <a href="/" class="sf-nav__logo auth-logo"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
       <h1>Welcome back.<br/>Your tracks are waiting.</h1>
-      <ul class="auth-benefits"><li><i class="fas fa-check-circle"></i> Access all your projects</li><li><i class="fas fa-check-circle"></i> Download your exports</li><li><i class="fas fa-check-circle"></i> Continue generating</li></ul>
+      <ul class="auth-benefits">
+        <li><i class="fas fa-check-circle"></i> Access all your projects</li>
+        <li><i class="fas fa-check-circle"></i> Download your exports</li>
+        <li><i class="fas fa-check-circle"></i> Continue generating</li>
+      </ul>
     </div>
     <div class="auth-split__right">
       <div class="auth-card">
         <h2>Log in</h2>
         <p class="auth-card__sub">Don't have an account? <a href="/signup">Sign up free</a></p>
-        <div class="oauth-btns"><button class="oauth-btn"><i class="fab fa-google"></i> Continue with Google</button><button class="oauth-btn"><i class="fab fa-apple"></i> Continue with Apple</button></div>
+        <div id="auth-error" class="auth-error" style="display:none"></div>
+        <div class="oauth-btns">
+          <a href="/api/auth/google" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
+        </div>
         <div class="auth-divider"><span>or log in with email</span></div>
-        <form class="auth-form" id="login-form">
-          <div class="form-group"><label>Email</label><input type="email" placeholder="you@example.com"/></div>
-          <div class="form-group"><label>Password</label><div class="input-icon-wrap"><input type="password" id="pw-input" placeholder="Your password"/><button type="button" class="input-icon-btn" id="pw-toggle"><i class="fas fa-eye" id="pw-eye"></i></button></div><div class="form-group__hint"><a href="#">Forgot password?</a></div></div>
-          <button type="submit" class="btn btn--primary btn--full btn--lg">Log in <i class="fas fa-arrow-right"></i></button>
+        <form class="auth-form" id="login-form" novalidate>
+          <div class="form-group">
+            <label for="li-email">Email</label>
+            <input id="li-email" type="email" name="email" placeholder="you@example.com" autocomplete="email" required/>
+          </div>
+          <div class="form-group">
+            <label for="pw-input">Password</label>
+            <div class="input-icon-wrap">
+              <input id="pw-input" type="password" name="password" placeholder="Your password" autocomplete="current-password" required/>
+              <button type="button" class="input-icon-btn" id="pw-toggle"><i class="fas fa-eye" id="pw-eye"></i></button>
+            </div>
+            <div class="form-group__hint"><a href="#">Forgot password?</a></div>
+          </div>
+          <button type="submit" class="btn btn--primary btn--full btn--lg" id="login-btn">
+            Log in <i class="fas fa-arrow-right"></i>
+          </button>
         </form>
       </div>
     </div>
@@ -1203,27 +1753,48 @@ function loginPage() {
 }
 
 function checkoutPage() {
+  // Plan details for display — frontend JS reads ?plan= from URL
   return shell('Checkout', `
 <main class="auth-page">
   <div class="checkout-wrap">
     <div class="checkout-left">
-      <a href="/" class="sf-nav__logo auth-logo" style="margin-bottom:32px;display:inline-flex"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
-      <div class="checkout-plan-summary">
-        <div class="checkout-plan-summary__header"><div><h3>Creator Plan</h3><p>Billed monthly · Cancel anytime</p></div><div class="checkout-plan-summary__price">$19<span>/mo</span></div></div>
-        <ul class="checkout-plan-summary__features"><li><i class="fas fa-check"></i> 50 generations/month</li><li><i class="fas fa-check"></i> Stereo + 5-stem ZIP download</li><li><i class="fas fa-check"></i> Commercial use rights</li></ul>
-        <div class="checkout-plan-summary__total"><span>Total today</span><strong>$19.00</strong></div>
+      <a href="/" class="sf-nav__logo auth-logo" style="margin-bottom:32px;display:inline-flex">
+        <span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span>
+        <span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
+      </a>
+      <div class="checkout-plan-summary" id="co-plan-summary">
+        <div class="checkout-plan-summary__header">
+          <div><h3 id="co-plan-name">Creator Plan</h3><p>Billed monthly · Cancel anytime</p></div>
+          <div class="checkout-plan-summary__price"><span id="co-plan-price">$19</span><span>/mo</span></div>
+        </div>
+        <ul class="checkout-plan-summary__features" id="co-plan-features">
+          <li><i class="fas fa-check"></i> 50 generations/month</li>
+          <li><i class="fas fa-check"></i> Stereo + 5-stem ZIP download</li>
+          <li><i class="fas fa-check"></i> Commercial use rights</li>
+        </ul>
+        <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$19.00</strong></div>
       </div>
-      <div class="checkout-trust"><span><i class="fas fa-lock"></i> Secure</span><span><i class="fas fa-shield-alt"></i> SSL</span><span><i class="fas fa-undo"></i> Cancel anytime</span></div>
+      <div class="checkout-trust">
+        <span><i class="fas fa-lock"></i> Secure checkout</span>
+        <span><i class="fas fa-shield-alt"></i> SSL encrypted</span>
+        <span><i class="fas fa-undo"></i> Cancel anytime</span>
+        <span><i class="fab fa-stripe"></i> Powered by Stripe</span>
+      </div>
     </div>
     <div class="checkout-right">
       <div class="auth-card">
-        <h2>Payment details</h2>
-        <form class="auth-form" id="checkout-form">
-          <div class="form-group"><label>Email</label><input type="email" placeholder="you@example.com"/></div>
-          <div class="form-group"><label>Card number</label><input type="text" placeholder="1234 5678 9012 3456" id="card-num" maxlength="19"/></div>
-          <div class="form-row-2"><div class="form-group"><label>Expiry</label><input type="text" placeholder="MM / YY" id="card-exp" maxlength="7"/></div><div class="form-group"><label>CVC</label><input type="text" placeholder="123" id="card-cvc" maxlength="4"/></div></div>
-          <button type="submit" class="btn btn--primary btn--full btn--lg" id="checkout-submit"><i class="fas fa-lock"></i> Start Creator — $19/month</button>
-        </form>
+        <h2>Subscribe to StemForge</h2>
+        <p class="auth-card__sub">You'll be taken to Stripe's secure checkout.</p>
+        <div id="co-error" class="auth-error" style="display:none"></div>
+        <div class="checkout-stripe-info">
+          <div class="stripe-badge"><i class="fab fa-stripe-s"></i><span>Payment processed by Stripe — your card info never touches our servers.</span></div>
+        </div>
+        <button class="btn btn--primary btn--full btn--lg" id="checkout-submit" style="margin-top:24px">
+          <i class="fas fa-lock"></i> <span id="co-btn-text">Continue to payment — $19/mo</span>
+        </button>
+        <p class="auth-card__sub" style="margin-top:16px;font-size:13px">
+          Not ready to pay? <a href="/signup">Try free (3 generations)</a>
+        </p>
       </div>
     </div>
   </div>
