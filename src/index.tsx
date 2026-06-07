@@ -679,6 +679,31 @@ app.post('/api/generate', async (c) => {
     return c.json({ error: 'prompt is required' }, 400)
   }
 
+  // ── Auth + generation limit check ────────────────────────────
+  let userId: string | undefined
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    try {
+      const token = getSessionCookie(c.req.raw)
+      if (token) {
+        const u = await getSessionUser(c.env.DB, token)
+        if (u) {
+          // Enforce per-plan generation limit
+          if (u.gens_used >= u.gens_limit) {
+            return c.json({
+              error: `Generation limit reached. You have used all ${u.gens_limit} generation${u.gens_limit === 1 ? '' : 's'} for this month. Upgrade your plan to continue.`,
+              limit_reached: true
+            }, 403)
+          }
+          userId = u.id
+          // Increment usage counter immediately so concurrent requests can't race past the limit
+          await c.env.DB.prepare(
+            `UPDATE users SET gens_used = gens_used + 1 WHERE id = ?`
+          ).bind(u.id).run()
+        }
+      }
+    } catch { /* session lookup failed — allow generation to proceed */ }
+  }
+
   // Build enriched prompt from all UI inputs
   const parts: string[] = []
   if (prompt) parts.push(prompt)
@@ -691,18 +716,6 @@ app.post('/api/generate', async (c) => {
 
   const fullPrompt = parts.join(', ')
   const jobId = makeJobId()
-
-  // Get user if logged in (to associate job with user)
-  let userId: string | undefined
-  if (c.env.DB && c.env.SESSION_SECRET) {
-    try {
-      const token = getSessionCookie(c.req.raw)
-      if (token) {
-        const u = await getSessionUser(c.env.DB, token)
-        if (u) userId = u.id
-      }
-    } catch { /* session lookup failed */ }
-  }
 
   const job: Job = {
     id: jobId,

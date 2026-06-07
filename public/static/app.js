@@ -879,6 +879,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (!res.ok) {
         const err = await res.json();
+        if (err.limit_reached) {
+          // Show upgrade prompt instead of generic error
+          genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
+          genBtn.disabled = false;
+          pipelineStatus.style.display = 'none';
+          const limitMsg = document.createElement('div');
+          limitMsg.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-top:16px;text-align:center';
+          limitMsg.innerHTML = `<i class="fas fa-lock" style="font-size:1.5rem;color:var(--accent);margin-bottom:10px;display:block"></i>
+            <strong style="display:block;margin-bottom:6px">Generation limit reached</strong>
+            <p style="color:var(--text-2);font-size:.9rem;margin-bottom:14px">${err.error}</p>
+            <a href="/pricing" class="btn btn--primary btn--sm"><i class="fas fa-arrow-up"></i> Upgrade plan</a>`;
+          const resultArea = document.getElementById('gen-result');
+          if (resultArea) resultArea.parentNode.insertBefore(limitMsg, resultArea);
+          else pipelineStatus.parentNode.appendChild(limitMsg);
+          return;
+        }
         throw new Error(err.error || 'Failed to start generation');
       }
 
@@ -984,6 +1000,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (genResult) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
+            // Refresh sidebar generation counter to reflect the new usage
+            fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
+              if (!user) return;
+              const gv = document.getElementById('gs-gens-val');
+              const gb = document.getElementById('gs-gens-bar');
+              if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
+              if (gb) {
+                const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
+                gb.style.width = pct + '%';
+              }
+            }).catch(() => {});
             // Show 3-dot edit button on result
             const dotsBtn = document.getElementById('gen-result-dots');
             if (dotsBtn) {
