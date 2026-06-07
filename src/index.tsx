@@ -44,6 +44,10 @@ async function ensureTable(db: D1Database): Promise<void> {
       created_at INTEGER NOT NULL
     )`
   ).run()
+  // Add user_id column if it doesn't exist (migration-safe)
+  try {
+    await db.prepare(`ALTER TABLE jobs ADD COLUMN user_id TEXT`).run()
+  } catch { /* column already exists */ }
 }
 
 async function getJob(db: D1Database | undefined, id: string): Promise<Job | null> {
@@ -58,13 +62,13 @@ async function getJob(db: D1Database | undefined, id: string): Promise<Job | nul
   return memJobs.get(id) ?? null
 }
 
-async function setJob(db: D1Database | undefined, job: Job): Promise<void> {
+async function setJob(db: D1Database | undefined, job: Job, userId?: string): Promise<void> {
   if (db) {
     await ensureTable(db)
     await db.prepare(
-      `INSERT INTO jobs (id, data, created_at) VALUES (?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET data = excluded.data`
-    ).bind(job.id, JSON.stringify(job), job.created_at).run()
+      `INSERT INTO jobs (id, data, created_at, user_id) VALUES (?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET data = excluded.data, user_id = COALESCE(excluded.user_id, jobs.user_id)`
+    ).bind(job.id, JSON.stringify(job), job.created_at, userId || null).run()
   } else {
     memJobs.set(job.id, job)
   }
@@ -676,6 +680,18 @@ app.post('/api/generate', async (c) => {
   const fullPrompt = parts.join(', ')
   const jobId = makeJobId()
 
+  // Get user if logged in (to associate job with user)
+  let userId: string | undefined
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    try {
+      const token = getSessionCookie(c.req.raw)
+      if (token) {
+        const u = await getSessionUser(c.env.DB, token)
+        if (u) userId = u.id
+      }
+    } catch { /* session lookup failed */ }
+  }
+
   const job: Job = {
     id: jobId,
     status: 'pending',
@@ -683,7 +699,7 @@ app.post('/api/generate', async (c) => {
     prompt: fullPrompt,
     tracks: []
   }
-  await setJob(c.env.DB, job)
+  await setJob(c.env.DB, job, userId)
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
@@ -1010,8 +1026,87 @@ app.get('/generator', (c) => c.html(generatorPage()))
 app.get('/dashboard', (c) => c.html(dashboardPage()))
 app.get('/project', (c) => c.html(projectPage()))
 app.get('/signup', (c) => c.html(signupPage()))
+app.get('/register', (c) => c.html(registerPage()))
 app.get('/login', (c) => c.html(loginPage()))
 app.get('/checkout', (c) => c.html(checkoutPage()))
+
+app.get('/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.html(profilePage(null))
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  return c.html(profilePage(user))
+})
+
+app.get('/subscription', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) {
+    return c.redirect('/login')
+  }
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  return c.html(subscriptionPage(user, c.env))
+})
+
+app.get('/account', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  return c.html(accountPage(user))
+})
+
+// GET /api/projects — return logged-in user's completed jobs
+app.get('/api/projects', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ projects: [] })
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  try {
+    await ensureTable(c.env.DB)
+    const rows = await c.env.DB.prepare(
+      `SELECT id, data, created_at FROM jobs WHERE user_id = ? AND json_extract(data,'$.status') = 'ready' ORDER BY created_at DESC LIMIT 50`
+    ).bind(user.id).all<{ id: string; data: string; created_at: number }>()
+    const projects = (rows.results || []).map(r => {
+      const d = JSON.parse(r.data) as Job
+      return {
+        id: d.id,
+        prompt: d.prompt,
+        created_at: d.created_at,
+        stereo_url: d.stereo_url || null,
+        zip_url: d.zip_url || null,
+        blueprint: d.blueprint ? {
+          bpm: d.blueprint.bpm,
+          key: d.blueprint.key,
+          scale: d.blueprint.scale,
+          genre: d.blueprint.genre,
+          duration_seconds: d.blueprint.duration_seconds
+        } : null
+      }
+    })
+    return c.json({ projects })
+  } catch (e: any) {
+    return c.json({ projects: [], error: e?.message })
+  }
+})
+
+// GET /api/stripe/portal — redirect to Stripe billing portal
+app.get('/api/stripe/portal', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  if (!stripeConfigured(c.env)) return c.redirect('/subscription')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  if (!user.stripe_customer_id) return c.redirect('/subscription')
+  try {
+    const session = await stripeRequest('POST', '/billing_portal/sessions', {
+      customer: user.stripe_customer_id,
+      return_url: `${c.env.SITE_URL}/subscription`,
+    }, c.env.STRIPE_SECRET_KEY)
+    return c.redirect(session.url)
+  } catch (e: any) {
+    return c.redirect('/subscription?error=' + encodeURIComponent(e.message || 'Portal error'))
+  }
+})
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 function shell(title: string, body: string, extraHead = '') {
@@ -1050,8 +1145,31 @@ function nav() {
       <a href="/#how">How it works</a>
     </nav>
     <div class="sf-nav__actions">
-      <a href="/login" class="btn btn--ghost btn--sm">Log in</a>
-      <a href="/signup" class="btn btn--primary btn--sm">Start free</a>
+      <!-- Guest links (hidden when logged in) -->
+      <a href="/login" class="btn btn--ghost btn--sm nav-guest-only">Log in</a>
+      <a href="/signup" class="btn btn--primary btn--sm nav-guest-only">Start free</a>
+      <!-- Auth user menu (hidden when logged out) -->
+      <div class="nav-user-menu" id="nav-user-menu" style="display:none">
+        <button class="nav-avatar-btn" id="nav-avatar-btn">
+          <span class="nav-avatar" id="nav-avatar-text">?</span>
+          <span class="nav-username" id="nav-username-text"></span>
+          <i class="fas fa-chevron-down" style="font-size:10px;opacity:.6"></i>
+        </button>
+        <div class="nav-dropdown" id="nav-dropdown">
+          <a href="/profile" class="nav-dropdown__item"><i class="fas fa-user"></i> Profile</a>
+          <a href="/subscription" class="nav-dropdown__item"><i class="fas fa-credit-card"></i> Subscription</a>
+          <a href="/account" class="nav-dropdown__item"><i class="fas fa-cog"></i> Account</a>
+          <a href="/dashboard" class="nav-dropdown__item"><i class="fas fa-th-large"></i> My Projects</a>
+          <div class="nav-dropdown__divider"></div>
+          <button class="nav-dropdown__item" id="theme-toggle-btn">
+            <i class="fas fa-moon" id="theme-icon"></i>
+            <span id="theme-label">Dark mode</span>
+          </button>
+          <button class="nav-dropdown__item nav-dropdown__item--danger" id="nav-signout-btn">
+            <i class="fas fa-sign-out-alt"></i> Sign out
+          </button>
+        </div>
+      </div>
     </div>
     <button class="sf-nav__hamburger" id="hamburger" aria-label="Menu">
       <span></span><span></span><span></span>
@@ -1061,8 +1179,12 @@ function nav() {
     <a href="/#features">Features</a>
     <a href="/pricing">Pricing</a>
     <a href="/#how">How it works</a>
-    <a href="/login">Log in</a>
-    <a href="/signup" class="btn btn--primary">Start free</a>
+    <a href="/login" class="nav-guest-only">Log in</a>
+    <a href="/signup" class="btn btn--primary nav-guest-only">Start free</a>
+    <a href="/dashboard" class="nav-auth-only" style="display:none">My Projects</a>
+    <a href="/profile" class="nav-auth-only" style="display:none">Profile</a>
+    <a href="/subscription" class="nav-auth-only" style="display:none">Subscription</a>
+    <button id="mobile-signout" class="btn btn--outline nav-auth-only" style="display:none">Sign out</button>
   </div>
 </header>`
 }
@@ -1588,26 +1710,30 @@ function dashboardPage() {
   return shell('Dashboard', `
 <main class="inner-page app-shell">
 <div class="app-sidebar app-sidebar--dash">
-  <div class="dash-user"><div class="dash-user__avatar">KD</div><div><strong>Kay D.</strong><span class="dash-user__plan plan-badge plan-badge--creator">Creator</span></div></div>
+  <div class="dash-user">
+    <div class="dash-user__avatar" id="dash-avatar">?</div>
+    <div>
+      <strong id="dash-username">Loading...</strong>
+      <span class="dash-user__plan plan-badge" id="dash-plan-badge">Free</span>
+    </div>
+  </div>
   <nav class="dash-nav">
     <a href="/dashboard" class="dash-nav__item active"><i class="fas fa-th-large"></i> Projects</a>
     <a href="/generator" class="dash-nav__item"><i class="fas fa-play-circle"></i> New beat</a>
-    <a href="#" class="dash-nav__item"><i class="fas fa-chart-bar"></i> Usage</a>
-    <a href="#" class="dash-nav__item"><i class="fas fa-cog"></i> Settings</a>
+    <a href="/subscription" class="dash-nav__item"><i class="fas fa-chart-bar"></i> Usage</a>
+    <a href="/account" class="dash-nav__item"><i class="fas fa-cog"></i> Settings</a>
   </nav>
   <div class="dash-credits-card">
     <div class="dash-credits-card__label">Generations used</div>
-    <div class="dash-credits-card__val">32 <small>/ 50 gen</small></div>
-    <div class="dash-credits-card__bar"><div style="width:64%"></div></div>
-    <a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:12px">Upgrade to Pro Artist</a>
+    <div class="dash-credits-card__val" id="dash-gens-val">0 <small>/ 3 gen</small></div>
+    <div class="dash-credits-card__bar"><div id="dash-gens-bar" style="width:0%"></div></div>
+    <a href="/pricing" class="btn btn--primary btn--sm btn--full" id="dash-upgrade-btn" style="margin-top:12px">Upgrade plan</a>
   </div>
 </div>
 <div class="app-main">
   <div class="dash-header"><h2>My Projects</h2><a href="/generator" class="btn btn--primary"><i class="fas fa-plus"></i> New beat</a></div>
-  <div class="project-grid">
-    <a href="/project" class="project-card"><div class="project-card__art project-card__art--1"><div class="project-card__play"><i class="fas fa-play"></i></div></div><div class="project-card__body"><h4>Surf Noir Trap</h4><p>90 BPM · 8 tracks · 2:14</p><div class="project-card__tags"><span class="export-badge export-badge--stereo">Stereo</span></div></div></a>
-    <a href="/project" class="project-card"><div class="project-card__art project-card__art--2"><div class="project-card__play"><i class="fas fa-play"></i></div></div><div class="project-card__body"><h4>Dark Drill Night</h4><p>140 BPM · 10 tracks · 3:01</p><div class="project-card__tags"><span class="export-badge export-badge--stereo">Stereo</span></div></div></a>
-    <div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>
+  <div class="project-grid" id="project-grid">
+    <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading projects...</div>
   </div>
 </div>
 </main>`, `<style>.sf-nav{display:none}</style>`)
@@ -1654,7 +1780,36 @@ function signupPage() {
         <div class="oauth-btns">
           <a href="/api/auth/google" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
         </div>
-        <div class="auth-divider"><span>or sign up with email</span></div>
+        <div class="auth-divider"><span>or</span></div>
+        <a href="/register" class="btn btn--outline btn--full btn--lg" style="margin-top:8px">
+          <i class="fas fa-envelope"></i> Sign up with email
+        </a>
+        <p class="auth-card__sub" style="margin-top:20px;font-size:13px">By continuing you agree to our <a href="#">Terms</a> and <a href="#">Privacy Policy</a>.</p>
+      </div>
+    </div>
+  </div>
+</main>`, `<style>.sf-nav,.sf-footer{display:none}</style>`)
+}
+
+function registerPage() {
+  return shell('Create account', `
+<main class="auth-page">
+  <div class="auth-split">
+    <div class="auth-split__left">
+      <a href="/" class="sf-nav__logo auth-logo"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
+      <h1>Start generating.<br/>Keep every track.</h1>
+      <ul class="auth-benefits">
+        <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
+        <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
+        <li><i class="fas fa-check-circle"></i> Individual track export on Pro Artist</li>
+        <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
+      </ul>
+    </div>
+    <div class="auth-split__right">
+      <div class="auth-card">
+        <h2>Create your account</h2>
+        <p class="auth-card__sub">Already have one? <a href="/login">Log in</a> · <a href="/signup">Other options</a></p>
+        <div id="auth-error" class="auth-error" style="display:none"></div>
         <form class="auth-form" id="signup-form" novalidate>
           <div class="form-group">
             <label for="su-name">Full name</label>
@@ -1785,6 +1940,251 @@ function checkoutPage() {
     </div>
   </div>
 </main>`, `<style>.sf-nav,.sf-footer{display:none}</style>`)
+}
+
+// ─── PROFILE PAGE ────────────────────────────────────────────────────────────
+function profilePage(user: User | null) {
+  if (!user) {
+    return shell('Profile', `<main class="inner-page"><div class="container" style="text-align:center;padding:80px 20px">
+      <h2>Sign in to view your profile</h2>
+      <a href="/login" class="btn btn--primary" style="margin-top:20px">Log in</a>
+    </div></main>`)
+  }
+  const initials = user.name.split(' ').map((n:string)=>n[0]).join('').toUpperCase().slice(0,2)
+  const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
+  const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
+  const memberSince = new Date(user.created_at).toLocaleDateString('en-US',{year:'numeric',month:'long'})
+  return shell('Profile', `
+<main class="inner-page profile-page">
+  <div class="container">
+    <div class="profile-wrap">
+      <div class="profile-cover"></div>
+      <div class="profile-body">
+        <div class="profile-avatar-wrap">
+          ${user.avatar
+            ? `<img src="${user.avatar}" class="profile-avatar" alt="${user.name}"/>`
+            : `<div class="profile-avatar profile-avatar--initials">${initials}</div>`
+          }
+        </div>
+        <div class="profile-info">
+          <div class="profile-info__top">
+            <div>
+              <h1 class="profile-name">${user.name}</h1>
+              <p class="profile-handle">@${user.email.split('@')[0]}</p>
+            </div>
+            <div class="profile-actions">
+              <span class="plan-badge ${planClass}">${planLabel}</span>
+              <a href="/account" class="btn btn--outline btn--sm"><i class="fas fa-pencil-alt"></i> Edit</a>
+            </div>
+          </div>
+          <div class="profile-stats">
+            <div class="profile-stat">
+              <span class="profile-stat__val">${user.gens_used}</span>
+              <span class="profile-stat__label">Beats generated</span>
+            </div>
+            <div class="profile-stat">
+              <span class="profile-stat__val">${Math.max(0, user.gens_limit - user.gens_used)}</span>
+              <span class="profile-stat__label">Remaining</span>
+            </div>
+            <div class="profile-stat">
+              <span class="profile-stat__val">${memberSince}</span>
+              <span class="profile-stat__label">Member since</span>
+            </div>
+          </div>
+        </div>
+        <div class="profile-section">
+          <h3>Quick links</h3>
+          <div class="profile-links">
+            <a href="/dashboard" class="profile-link-card"><i class="fas fa-th-large"></i><span>My Projects</span></a>
+            <a href="/generator" class="profile-link-card"><i class="fas fa-play-circle"></i><span>New Beat</span></a>
+            <a href="/subscription" class="profile-link-card"><i class="fas fa-credit-card"></i><span>Subscription</span></a>
+            <a href="/account" class="profile-link-card"><i class="fas fa-cog"></i><span>Settings</span></a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>`)
+}
+
+// ─── SUBSCRIPTION PAGE ────────────────────────────────────────────────────────
+function subscriptionPage(user: User, env: Bindings) {
+  const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
+  const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
+  const planPrice = user.plan === 'pro' ? '$39' : user.plan === 'creator' ? '$19' : '$0'
+  const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
+  const billingPeriod = user.plan === 'free' ? 'N/A' : 'Monthly'
+  const nextBilling = user.stripe_subscription_id
+    ? new Date(Date.now() + 30*24*3600*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
+    : 'N/A'
+  const stripeOk = stripeConfigured(env)
+  return shell('Subscription', `
+<main class="inner-page sub-page">
+  <div class="container">
+    <div class="sub-header">
+      <h1>Subscription</h1>
+      <p>Manage your plan, billing, and usage.</p>
+    </div>
+    <div class="sub-stats-bar">
+      <div class="sub-stat">
+        <span class="sub-stat__label">Current Plan</span>
+        <span class="sub-stat__val"><span class="plan-badge ${planClass}">${planLabel}</span></span>
+      </div>
+      <div class="sub-stat">
+        <span class="sub-stat__label">Billing Period</span>
+        <span class="sub-stat__val">${billingPeriod}</span>
+      </div>
+      <div class="sub-stat">
+        <span class="sub-stat__label">Next Billing Date</span>
+        <span class="sub-stat__val">${nextBilling}</span>
+      </div>
+      <div class="sub-stat">
+        <span class="sub-stat__label">Credits Remaining</span>
+        <span class="sub-stat__val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit} gen</span>
+      </div>
+      ${user.plan !== 'free' && stripeOk ? `
+      <div class="sub-stat sub-stat--manage">
+        <button class="btn btn--outline btn--sm" id="sub-manage-btn">Manage <i class="fas fa-chevron-down"></i></button>
+        <div class="sub-manage-dropdown" id="sub-manage-dropdown" style="display:none">
+          <a href="/api/stripe/portal" class="sub-manage-item"><i class="fas fa-credit-card"></i> Update payment method</a>
+          <a href="/api/stripe/portal" class="sub-manage-item sub-manage-item--danger"><i class="fas fa-times-circle"></i> Cancel subscription</a>
+        </div>
+      </div>` : ''}
+    </div>
+    <div class="sub-usage-card">
+      <div class="sub-usage-header">
+        <h3>Generation Usage</h3>
+        <span class="sub-usage-count">${user.gens_used} / ${user.gens_limit} used</span>
+      </div>
+      <div class="sub-usage-bar"><div class="sub-usage-bar__fill" style="width:${pct}%"></div></div>
+      <p class="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
+      ${user.plan !== 'free' && stripeOk ? `<a href="/api/stripe/portal" class="btn btn--outline btn--sm" style="margin-top:16px"><i class="fas fa-plus"></i> Buy more credits</a>` : ''}
+    </div>
+    <div class="sub-plans-section">
+      <h3>Available Plans</h3>
+      <div class="sub-plans-grid">
+        <div class="sub-plan-card ${user.plan === 'free' ? 'sub-plan-card--current' : ''}">
+          <div class="sub-plan-card__top">
+            <div><h4>Free</h4><p>Try the engine</p></div>
+            <div class="sub-plan-card__price">$0<span>/mo</span></div>
+          </div>
+          <ul>
+            <li><i class="fas fa-check"></i> 3 generations/month</li>
+            <li><i class="fas fa-check"></i> Stereo + stem ZIP</li>
+          </ul>
+          ${user.plan === 'free' ? '<span class="sub-current-badge">Current plan</span>' : ''}
+        </div>
+        <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}">
+          <div class="sub-plan-card__top">
+            <div><h4>Creator</h4><p>For rappers &amp; creators</p></div>
+            <div class="sub-plan-card__price">$19<span>/mo</span></div>
+          </div>
+          <ul>
+            <li><i class="fas fa-check"></i> 50 generations/month</li>
+            <li><i class="fas fa-check"></i> Commercial use rights</li>
+            <li><i class="fas fa-check"></i> +$0.49/extra gen</li>
+          </ul>
+          ${user.plan === 'creator'
+            ? '<span class="sub-current-badge">Current plan</span>'
+            : `<a href="/checkout?plan=creator" class="btn btn--primary btn--sm">Upgrade — $19/mo</a>`
+          }
+        </div>
+        <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}">
+          <div class="sub-plan-card__top">
+            <div><h4>Pro Artist</h4><p>Every track, clean</p></div>
+            <div class="sub-plan-card__price">$39<span>/mo</span></div>
+          </div>
+          <ul>
+            <li><i class="fas fa-check"></i> 150 generations/month</li>
+            <li><i class="fas fa-check"></i> Individual track download</li>
+            <li><i class="fas fa-check"></i> Priority queue</li>
+          </ul>
+          ${user.plan === 'pro'
+            ? '<span class="sub-current-badge">Current plan</span>'
+            : `<a href="/checkout?plan=pro" class="btn btn--outline btn--sm">Upgrade — $39/mo</a>`
+          }
+        </div>
+      </div>
+    </div>
+  </div>
+</main>`)
+}
+
+// ─── ACCOUNT PAGE ─────────────────────────────────────────────────────────────
+function accountPage(user: User) {
+  const hasGoogle = !!(user as any).google_id
+  const initials = user.name.split(' ').map((n:string)=>n[0]).join('').toUpperCase().slice(0,2)
+  return shell('Account Settings', `
+<main class="inner-page account-page">
+  <div class="container">
+    <h1>Account Settings</h1>
+    <div class="account-grid">
+      <div class="account-card">
+        <h3>Profile</h3>
+        <div class="account-avatar-row">
+          ${user.avatar
+            ? `<img src="${user.avatar}" class="account-avatar" alt="${user.name}"/>`
+            : `<div class="account-avatar account-avatar--initials">${initials}</div>`
+          }
+          <div>
+            <strong>${user.name}</strong>
+            <p style="margin:2px 0 0;font-size:13px;color:var(--muted)">${user.email}</p>
+          </div>
+        </div>
+        <div class="account-field">
+          <label>Email</label>
+          <div class="account-field__val">${user.email}</div>
+        </div>
+        <div class="account-field">
+          <label>Member since</label>
+          <div class="account-field__val">${new Date(user.created_at).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div>
+        </div>
+      </div>
+      <div class="account-card">
+        <h3>Connected accounts</h3>
+        <div class="account-connected">
+          <div class="account-connected__item ${hasGoogle ? 'account-connected__item--active' : ''}">
+            <i class="fab fa-google" style="font-size:20px;color:#4285f4"></i>
+            <div>
+              <strong>Google</strong>
+              <p>${hasGoogle ? user.email : 'Not connected'}</p>
+            </div>
+            ${hasGoogle
+              ? '<span class="connected-badge"><i class="fas fa-check"></i> Connected</span>'
+              : `<a href="/api/auth/google" class="btn btn--outline btn--sm">Connect</a>`
+            }
+          </div>
+        </div>
+      </div>
+      <div class="account-card">
+        <h3>Subscription</h3>
+        <div class="account-field">
+          <label>Current plan</label>
+          <div class="account-field__val">
+            <span class="plan-badge ${user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''}">
+              ${user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'}
+            </span>
+          </div>
+        </div>
+        <a href="/subscription" class="btn btn--outline btn--sm" style="margin-top:12px">Manage subscription</a>
+      </div>
+      <div class="account-card">
+        <h3>Security</h3>
+        <div class="account-field">
+          <label>Password</label>
+          <div class="account-field__val">••••••••</div>
+        </div>
+        <p style="font-size:13px;color:var(--muted);margin-top:8px">Password changes via email reset coming soon.</p>
+        <div class="account-danger">
+          <h4>Danger zone</h4>
+          <button class="btn btn--outline btn--sm" style="border-color:var(--danger);color:var(--danger)" id="signout-all-btn">
+            <i class="fas fa-sign-out-alt"></i> Sign out everywhere
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>`)
 }
 
 export default app
