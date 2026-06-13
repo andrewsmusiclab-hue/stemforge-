@@ -820,7 +820,7 @@ app.post('/api/poll/:id', async (c) => {
     prompt: job.prompt,
     title: (job as any).title || null,
     thumbnail_seed: job.thumbnail_seed || null,
-    image_url: (job as any).image_url || null,
+    image_url: (job as any).image_url || (job.blueprint ? buildCoverImageUrl(job) : null),
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -861,7 +861,8 @@ app.get('/api/job/:id', async (c) => {
     title: (job as any).title || null,
     user_lyrics: (job as any).user_lyrics || null,
     thumbnail_seed: job.thumbnail_seed || null,
-    image_url: (job as any).image_url || null,
+    // Generate image_url on-the-fly for old jobs that don't have one stored
+    image_url: (job as any).image_url || (job.blueprint ? buildCoverImageUrl(job) : null),
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -885,6 +886,37 @@ app.get('/api/job/:id', async (c) => {
     })),
     error: job.error || null
   })
+})
+
+// GET /api/zip-proxy?url=... — server-side proxy to fetch ZIP files from CDN
+// Needed to avoid CORS issues when browser fetches Mureka CDN ZIPs directly
+app.get('/api/zip-proxy', async (c) => {
+  const url = c.req.query('url')
+  if (!url) return c.json({ error: 'url param required' }, 400)
+
+  // Only allow proxying from known CDN domains for security
+  const allowed = ['mureka.ai', 'cdn.mureka.ai', 'storage.googleapis.com', 'amazonaws.com', 'cloudflare.com']
+  let hostname = ''
+  try { hostname = new URL(url).hostname } catch { return c.json({ error: 'Invalid URL' }, 400) }
+  if (!allowed.some(d => hostname === d || hostname.endsWith('.' + d))) {
+    return c.json({ error: 'URL not allowed' }, 403)
+  }
+
+  try {
+    const upstream = await fetch(url, { headers: { 'User-Agent': 'StemForge/1.0' } })
+    if (!upstream.ok) return c.json({ error: `Upstream ${upstream.status}` }, upstream.status as any)
+    const data = await upstream.arrayBuffer()
+    return new Response(data, {
+      headers: {
+        'Content-Type': 'application/zip',
+        'Content-Length': String(data.byteLength),
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600'
+      }
+    })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Proxy fetch failed' }, 502)
+  }
 })
 
 // GET /api/health
@@ -2149,11 +2181,23 @@ function populateHero(job) {
   const grad = 'linear-gradient(135deg,hsl('+hue+',65%,28%) 0%,hsl('+h2+',75%,20%) 55%,hsl('+h3+',60%,15%) 100%)';
   artEl.style.cssText = 'background:'+grad+';background-size:cover;background-position:center;';
   if (job.image_url) {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => { artEl.style.backgroundImage = 'url(\''+job.image_url+'\'),'+grad; artEl.style.backgroundSize='cover,cover'; };
-    img.onerror = () => {};
-    img.src = job.image_url;
+    // Retry with backoff — Pollinations.ai can be slow (10-30s)
+    function tryHeroImg(url, attempt) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        artEl.style.backgroundImage = 'url(\''+url+'\'),'+grad;
+        artEl.style.backgroundSize='cover,cover';
+      };
+      img.onerror = () => {
+        const delays = [4000,8000,12000,18000,25000];
+        if (attempt < delays.length) {
+          setTimeout(() => tryHeroImg(url+'&_r='+attempt, attempt+1), delays[attempt]);
+        }
+      };
+      img.src = url;
+    }
+    tryHeroImg(job.image_url, 0);
   }
 
   if (job.zip_url) {
@@ -2172,6 +2216,7 @@ async function buildStemsPlayer(job) {
   const zipUrl = job.zip_url;
   const tracks = job.tracks || [];
 
+  // Build stem rows immediately — player shows without waiting for audio
   const listEl = document.getElementById('stems-list');
   listEl.innerHTML = '';
   tracks.forEach(t => {
@@ -2179,89 +2224,134 @@ async function buildStemsPlayer(job) {
     stemMuted[t.stem] = false;
     stemSolo[t.stem]  = false;
     stemGains[t.stem] = 1.0;
+    // Show a loading indicator on each waveform canvas while audio loads
+    drawLoadingWaveform(t.stem, t.color);
   });
 
+  // Show player UI immediately — don't wait for ZIP/audio
+  showState('player');
+  setVIMode('vocals');
+
+  // Load audio in background (non-blocking)
+  loadStemsAudio(zipUrl, tracks).catch(e => {
+    console.error('[StemForge] background audio load failed:', e);
+  });
+
+  // Seek bar
+  const seekEl = document.getElementById('stems-seek');
+  if (seekEl) {
+    seekEl.addEventListener('mousedown', () => seekEl._dragging = true);
+    seekEl.addEventListener('touchstart', () => seekEl._dragging = true);
+    seekEl.addEventListener('change', () => {
+      seekEl._dragging = false;
+      Object.values(stemAudios).forEach(a => { if (a.duration) a.currentTime = (seekEl.value/100)*a.duration; });
+    });
+  }
+
+  // Master volume
+  const volEl = document.getElementById('stems-master-vol');
+  if (volEl) volEl.addEventListener('input', () => { masterVolume = volEl.value/100; applyVolumes(); });
+}
+
+// ── Load stems audio in background (after player UI is shown) ─
+async function loadStemsAudio(zipUrl, tracks) {
+  // Proxy the ZIP through our server to avoid CORS issues with Mureka CDN
+  const proxyUrl = '/api/zip-proxy?url=' + encodeURIComponent(zipUrl);
+  let resp;
   try {
-    const resp = await fetch(zipUrl);
-    if (!resp.ok) throw new Error('ZIP fetch ' + resp.status);
-    const zipData = await resp.arrayBuffer();
-    stemZipCache  = zipData;
-    const JSZipLib = await loadJSZip();
-    const zip = await JSZipLib.loadAsync(zipData);
+    resp = await fetch(proxyUrl);
+    if (!resp.ok) {
+      // If proxy fails, try direct (some CDNs allow cross-origin)
+      resp = await fetch(zipUrl);
+    }
+  } catch(e) {
+    // Try direct as fallback
+    resp = await fetch(zipUrl);
+  }
+  if (!resp || !resp.ok) throw new Error('ZIP fetch failed: ' + (resp ? resp.status : 'network error'));
 
-    // Inventory ZIP contents
-    const zipFiles = [];
-    zip.forEach(p => zipFiles.push(p));
-    console.log('[StemForge] ZIP files:', zipFiles);
+  const zipData = await resp.arrayBuffer();
+  stemZipCache  = zipData;
+  const JSZipLib = await loadJSZip();
+  const zip = await JSZipLib.loadAsync(zipData);
 
-    const ctx = getAudioCtx();
-    let primaryStem = null;
+  // Inventory ZIP contents
+  const zipFiles = [];
+  zip.forEach(p => zipFiles.push(p));
+  console.log('[StemForge] ZIP files:', zipFiles);
 
-    for (const t of tracks) {
-      const sl = t.stem.toLowerCase(), nl = t.name.toLowerCase();
+  // Only init AudioContext on first audio load (requires no user gesture for this path)
+  let ctx = null;
+  try { ctx = getAudioCtx(); } catch(ae) { console.warn('[StemForge] AudioContext init failed:', ae); }
 
-      // 1. Exact candidates
-      const cands = [
-        sl+'.wav', sl+'.mp3', nl+'.wav', nl+'.mp3',
-        'stem_'+sl+'.wav', 'stem_'+sl+'.mp3',
-        sl+'_stem.wav', sl+'_stem.mp3',
-      ];
-      let entry = null;
-      for (const c of cands) {
-        entry = zip.file(c) || zip.file(c.replace(/\s+/g,'_')) || zip.file(c.replace(/_/g,' ')) || zip.file(c.replace(/_/g,'-'));
-        if (entry) { console.log('[StemForge] exact match:', t.stem, '→', c); break; }
-      }
+  let primaryStem = null;
 
-      // 2. Fuzzy — any audio file containing the stem keyword
-      if (!entry) {
-        for (const p of zipFiles) {
-          const pl = p.toLowerCase();
-          if ((pl.endsWith('.wav')||pl.endsWith('.mp3')) &&
-              (pl.includes(sl) || (sl==='other' && (pl.includes('melody')||pl.includes('synth')||pl.includes('other'))))) {
-            entry = zip.file(p);
-            if (entry) { console.log('[StemForge] fuzzy:', t.stem, '→', p); break; }
-          }
+  for (const t of tracks) {
+    const sl = t.stem.toLowerCase(), nl = t.name.toLowerCase();
+
+    // 1. Exact candidates
+    const cands = [
+      sl+'.wav', sl+'.mp3', nl+'.wav', nl+'.mp3',
+      'stem_'+sl+'.wav', 'stem_'+sl+'.mp3',
+      sl+'_stem.wav', sl+'_stem.mp3',
+    ];
+    let entry = null;
+    for (const c of cands) {
+      entry = zip.file(c) || zip.file(c.replace(/\s+/g,'_')) || zip.file(c.replace(/_/g,' ')) || zip.file(c.replace(/_/g,'-'));
+      if (entry) { console.log('[StemForge] exact match:', t.stem, '→', c); break; }
+    }
+
+    // 2. Fuzzy — any audio file containing the stem keyword
+    if (!entry) {
+      for (const p of zipFiles) {
+        const pl = p.toLowerCase();
+        if ((pl.endsWith('.wav')||pl.endsWith('.mp3')) &&
+            (pl.includes(sl) || (sl==='other' && (pl.includes('melody')||pl.includes('synth')||pl.includes('other'))))) {
+          entry = zip.file(p);
+          if (entry) { console.log('[StemForge] fuzzy:', t.stem, '→', p); break; }
         }
       }
+    }
 
-      // 3. Index fallback
-      if (!entry) {
-        const audioFiles = zipFiles.filter(p => p.toLowerCase().endsWith('.wav')||p.toLowerCase().endsWith('.mp3'));
-        const idx = tracks.indexOf(t);
-        if (idx < audioFiles.length) {
-          entry = zip.file(audioFiles[idx]);
-          if (entry) console.log('[StemForge] index-map:', t.stem, '→', audioFiles[idx]);
-        }
+    // 3. Index fallback
+    if (!entry) {
+      const audioFiles = zipFiles.filter(p => p.toLowerCase().endsWith('.wav')||p.toLowerCase().endsWith('.mp3'));
+      const idx = tracks.indexOf(t);
+      if (idx < audioFiles.length) {
+        entry = zip.file(audioFiles[idx]);
+        if (entry) console.log('[StemForge] index-map:', t.stem, '→', audioFiles[idx]);
       }
+    }
 
-      if (!entry) { console.warn('[StemForge] no file for', t.stem); continue; }
+    if (!entry) { console.warn('[StemForge] no file for', t.stem); continue; }
 
-      const arrayBuf = await entry.async('arraybuffer');
-      const blob = new Blob([arrayBuf], { type: 'audio/wav' });
-      const url  = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.volume  = masterVolume;
-      audio.preload = 'auto';
-      stemAudios[t.stem] = audio;
+    const arrayBuf = await entry.async('arraybuffer');
+    const blob = new Blob([arrayBuf], { type: 'audio/wav' });
+    const url  = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.volume  = masterVolume;
+    audio.preload = 'auto';
+    stemAudios[t.stem] = audio;
 
-      if (!primaryStem) {
-        primaryStem = t.stem;
-        audio.addEventListener('timeupdate', () => {
-          if (!audio.duration) return;
-          const pct = (audio.currentTime / audio.duration) * 100;
-          const seekEl = document.getElementById('stems-seek');
-          if (seekEl && !seekEl._dragging) seekEl.value = pct;
-          document.getElementById('stems-time-cur').textContent = fmtTime(audio.currentTime);
-          document.getElementById('stems-time-dur').textContent = fmtTime(audio.duration);
-        });
-        audio.addEventListener('ended', () => {
-          isPlaying = false;
-          document.getElementById('stems-play-icon').className = 'fas fa-play';
-          document.querySelectorAll('.stem-row__play i').forEach(i => i.className = 'fas fa-play');
-        });
-      }
+    if (!primaryStem) {
+      primaryStem = t.stem;
+      audio.addEventListener('timeupdate', () => {
+        if (!audio.duration) return;
+        const pct = (audio.currentTime / audio.duration) * 100;
+        const seekEl = document.getElementById('stems-seek');
+        if (seekEl && !seekEl._dragging) seekEl.value = pct;
+        document.getElementById('stems-time-cur').textContent = fmtTime(audio.currentTime);
+        document.getElementById('stems-time-dur').textContent = fmtTime(audio.duration);
+      });
+      audio.addEventListener('ended', () => {
+        isPlaying = false;
+        document.getElementById('stems-play-icon').className = 'fas fa-play';
+        document.querySelectorAll('.stem-row__play i').forEach(i => i.className = 'fas fa-play');
+      });
+    }
 
-      // Wire analyser
+    // Wire analyser (only if AudioContext is available)
+    if (ctx) {
       try {
         const src = ctx.createMediaElementSource(audio);
         const analyser = ctx.createAnalyser();
@@ -2278,33 +2368,36 @@ async function buildStemsPlayer(job) {
         const decoded = await ctx.decodeAudioData(arrayBuf.slice(0));
         drawStaticWaveform(t.stem, decoded, t.color);
       } catch(de) { drawRandomWaveform(t.stem, t.color); }
+    } else {
+      drawRandomWaveform(t.stem, t.color);
     }
-
-    const anyAudio = Object.keys(stemAudios).length > 0;
-    showState('player');
-    if (!anyAudio) listEl.querySelectorAll('.stem-row__play').forEach(b => b.style.opacity='0.3');
-
-  } catch(zipErr) {
-    console.error('[StemForge] ZIP error:', zipErr);
-    showState('player');
   }
 
-  // Seek bar
-  const seekEl = document.getElementById('stems-seek');
-  if (seekEl) {
-    seekEl.addEventListener('mousedown', () => seekEl._dragging = true);
-    seekEl.addEventListener('touchstart', () => seekEl._dragging = true);
-    seekEl.addEventListener('change', () => {
-      seekEl._dragging = false;
-      Object.values(stemAudios).forEach(a => { if (a.duration) a.currentTime = (seekEl.value/100)*a.duration; });
-    });
+  // Update play buttons to show audio is ready
+  const anyAudio = Object.keys(stemAudios).length > 0;
+  if (!anyAudio) {
+    document.querySelectorAll('.stem-row__play').forEach(b => b.style.opacity='0.3');
   }
+  console.log('[StemForge] Audio loaded for stems:', Object.keys(stemAudios));
+}
 
-  // Master volume
-  const volEl = document.getElementById('stems-master-vol');
-  if (volEl) volEl.addEventListener('input', () => { masterVolume = volEl.value/100; applyVolumes(); });
-
-  setVIMode('vocals');
+// ── Loading waveform placeholder ──────────────────────────────
+function drawLoadingWaveform(stem, color) {
+  const canvas = document.getElementById('wave-' + stem);
+  if (!canvas) return;
+  const W = canvas.width || 300, H = canvas.height || 48;
+  const ctx2 = canvas.getContext('2d');
+  if (!ctx2) return;
+  ctx2.clearRect(0, 0, W, H);
+  // Draw subtle bars to indicate loading
+  const bars = 40;
+  const bw = Math.max(1, W/bars - 1);
+  ctx2.fillStyle = color + '33';
+  for (let i = 0; i < bars; i++) {
+    const h = H * 0.15 + (H * 0.25 * Math.sin(i * 0.5));
+    const x = i * (W / bars);
+    ctx2.fillRect(x, (H - h) / 2, bw, h);
+  }
 }
 
 // ── Track color map ───────────────────────────────────────────
