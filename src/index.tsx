@@ -1629,8 +1629,8 @@ app.get('/api/projects', async (c) => {
         id: d.id,
         prompt: d.prompt,
         title: (d as any).title || null,
-        thumbnail_seed: d.thumbnail_seed || null,
-        image_url: (d as any).image_url || null,
+        thumbnail_seed: d.thumbnail_seed || (d.id.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0) % 360),
+        image_url: (d as any).image_url || (d.blueprint ? buildCoverImageUrl(d) : null),
         created_at: d.created_at,
         stereo_url: d.stereo_url || null,
         zip_url: d.zip_url || null,
@@ -2395,7 +2395,9 @@ async function buildStemsPlayer(job) {
     { stem: 'vocals', name: 'Vocals',         family: 'vocals', color: '#ec4899', status: 'ready' },
     { stem: 'other',  name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6', status: 'ready' },
   ];
-  const tracks = (job.tracks && job.tracks.length > 0) ? job.tracks : defaultTracks;
+  const tracks = (job.tracks && job.tracks.length > 0)
+    ? job.tracks.filter((t: any) => t.stem !== 'instrumental')
+    : defaultTracks;
 
   // Build stem rows immediately — player shows without waiting for audio
   const listEl = document.getElementById('stems-list');

@@ -517,7 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
                           : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
                       : ''}
                     ${p.stereo_url
-                      ? `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Open stems player"><i class="fas fa-layer-group"></i> Get Stems</a>`
+                      ? `<a class="export-badge export-badge--stems-cta" href="#" onclick="event.preventDefault();event.stopPropagation();openStemsPopup('${p.id}')" title="Get stems"><i class="fas fa-layer-group"></i> Get Stems</a>`
                       : ''}
                   </div>
                 </div>
@@ -1431,6 +1431,84 @@ window.closeSongEditModal = function() {
   const modal = document.getElementById('song-edit-modal');
   if (modal) modal.style.display = 'none';
   document.body.style.overflow = '';
+};
+
+// ── Stems popup modal — shown when user clicks "Get Stems" on a library card ──
+window.openStemsPopup = async function(jobId) {
+  // Remove stale modal if exists
+  const old = document.getElementById('sf-stems-popup');
+  if (old) old.remove();
+
+  // Build modal
+  const modal = document.createElement('div');
+  modal.id = 'sf-stems-popup';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);backdrop-filter:blur(6px)';
+
+  // Placeholder while we fetch plan
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
+      <button onclick="document.getElementById('sf-stems-popup').remove()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+      <div id="sf-stems-popup-body" style="min-height:120px;display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-spinner fa-spin" style="font-size:1.6rem;color:var(--primary)"></i>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  // Close on backdrop click
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+  // Fetch user plan
+  let plan = 'creator';
+  try {
+    const me = await fetch('/api/auth/me');
+    const md = await me.json();
+    plan = md.user?.plan || 'creator';
+    if (!md.user || plan === 'free') {
+      document.getElementById('sf-stems-popup-body').innerHTML = `
+        <div>
+          <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-lock"></i></div>
+          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Stems require a paid plan</h3>
+          <p style="color:var(--muted);font-size:.9rem;margin-bottom:20px;line-height:1.5">Extract individual stems with a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <a href="/pricing?plan=creator" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem"><i class="fas fa-crown"></i> Creator — $19/mo</a>
+            <a href="/pricing?plan=pro" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem"><i class="fas fa-star"></i> Pro Artist — $39/mo</a>
+          </div>
+        </div>`;
+      return;
+    }
+  } catch(e) { /* ignore — show default creator copy */ }
+
+  const isPro = plan === 'pro';
+  const creditCost = isPro ? 10 : 2;
+  const stemCount  = isPro ? 'up to 12 stems' : '5 stems';
+  const planLabel  = isPro ? 'Pro Artist' : 'Creator';
+
+  document.getElementById('sf-stems-popup-body').innerHTML = `
+    <div style="width:100%">
+      <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-layer-group"></i></div>
+      <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Extract Stems</h3>
+      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track — Drums, Bass, Vocals, and more — to preview and download each one individually.</p>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px"><strong>${creditCost} download credits</strong> will be used from your ${planLabel} plan.</p>
+      <div style="display:flex;gap:10px;justify-content:center">
+        <button id="sf-stems-popup-go" onclick="sfStemsGo('${jobId}')" style="flex:1;padding:11px 16px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:.92rem">
+          <i class="fas fa-layer-group"></i> Extract Stems — ${creditCost} Credits
+        </button>
+        <button onclick="document.getElementById('sf-stems-popup').remove()" style="padding:11px 18px;background:var(--surface-2,#1e2130);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:600;cursor:pointer;font-size:.92rem">
+          <i class="fas fa-times"></i> Cancel
+        </button>
+      </div>
+      <div id="sf-stems-popup-status" style="margin-top:14px;font-size:.85rem;display:none;padding:10px 14px;border-radius:10px"></div>
+    </div>`;
+};
+
+window.sfStemsGo = async function(jobId) {
+  const btn    = document.getElementById('sf-stems-popup-go');
+  const status = document.getElementById('sf-stems-popup-status');
+  if (!btn) return;
+
+  // Just navigate to the stems page — stemsInit() will handle extraction if needed
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening stems player...';
+  window.location.href = '/stems/' + jobId;
 };
 
 // Request stems on-demand — called from "Get Stems" button in 3-dot modal
