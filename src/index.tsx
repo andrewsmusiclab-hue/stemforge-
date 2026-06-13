@@ -229,9 +229,30 @@ async function createUser(db: D1Database, data: {
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
   const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
+  // Apply rollover: unused downloads carry over, capped at 500
+  const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
+  const newLimit = planLimits[plan] || 3
+  let rolledLimit = newLimit
+  if (currentUser) {
+    const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
+    rolledLimit = Math.min(500, newLimit + unused)
+  }
   await db.prepare(
-    `UPDATE users SET plan=?, gens_limit=?, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?`
-  ).bind(plan, planLimits[plan] || 3, stripeCustomerId, stripeSubId, userId).run()
+    `UPDATE users SET plan=?, gens_limit=?, gens_used=0, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?`
+  ).bind(plan, rolledLimit, stripeCustomerId, stripeSubId, userId).run()
+}
+
+// ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
+async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
+  const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
+  const newMonthBase = planLimits[plan] || 3
+  const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
+  if (!currentUser) return
+  const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
+  const rolledLimit = Math.min(500, newMonthBase + unused)
+  await db.prepare(
+    `UPDATE users SET gens_used=0, gens_limit=? WHERE stripe_customer_id=?`
+  ).bind(rolledLimit, customerId).run()
 }
 
 // ── Stripe helpers ────────────────────────────────────────────
@@ -605,24 +626,27 @@ async function extractStems(songUrl: string, apiKey: string, model: 'audio-separ
 // ═══════════════════════════════════════════════════════════════
 
 const STEM_CONFIG: Array<{ stem: MurekaStem; name: string; family: string; color: string }> = [
-  { stem: 'drums',        name: 'Drums',         family: 'drums',  color: '#ef4444' },
-  { stem: 'bass',         name: 'Bass',           family: 'bass',   color: '#3b82f6' },
-  { stem: 'vocals',       name: 'Vocals',         family: 'vocals', color: '#ec4899' },
-  { stem: 'other',        name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6' },
-  { stem: 'instrumental', name: 'Instrumental',   family: 'mix',    color: '#10b981' },
+  { stem: 'drums',   name: 'Drums',         family: 'drums',  color: '#ef4444' },
+  { stem: 'bass',    name: 'Bass',           family: 'bass',   color: '#3b82f6' },
+  { stem: 'vocals',  name: 'Vocals',         family: 'vocals', color: '#ec4899' },
+  { stem: 'other',   name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6' },
+  // Note: 'instrumental' stem removed — we surface this as a toggle (vocals/instrumental mix)
+  // on the stems page rather than as a stem track.
 ]
 
 // Build a Pollinations.ai cover art URL from the job's blueprint/title.
-// Pollinations generates on-demand from the URL — no API key needed.
+// Uses Flux model — deterministic from seed so same job always returns same image.
 function buildCoverImageUrl(job: Job): string {
   const bp = job.blueprint
   const genre = bp?.genre || 'music'
   const mood  = (bp as any)?.mood  || 'atmospheric'
   const title = (job as any).title  || genre
-  // Craft a cinematic prompt for a square album-cover photo
-  const prompt = `${genre} music album cover art, ${mood} mood, cinematic lighting, professional photography, dark background, dramatic, high quality, ${title}`
+  const energy = (bp as any)?.energy || 'medium'
+  // Craft a detailed album-cover art prompt for best visual results
+  const prompt = `${genre} music album cover, ${mood} atmosphere, ${energy} energy, cinematic composition, professional studio photography, moody dark background, dramatic lighting, artistic, 4K high quality, ${title}`
   const seed   = job.thumbnail_seed ?? 42
-  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&seed=${seed}&nologo=true&model=flux`
+  // Use nologo=true&enhance=true for better quality
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&seed=${seed}&nologo=true&enhance=true&model=flux`
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
@@ -886,9 +910,16 @@ app.post('/api/job/stems', async (c) => {
   const { job_id } = await c.req.json()
   if (!job_id) return c.json({ error: 'job_id required' }, 400)
 
-  const job = await getJob(c.env.DB, job_id)
+  // Fetch job AND its owner user_id from the DB row (user_id is NOT in JSON blob)
+  let job: Job | null = null
+  let jobOwnerId: string | null = null
+  try {
+    const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?').bind(job_id).first<{data:string,user_id:string|null}>()
+    if (row) { job = JSON.parse(row.data) as Job; jobOwnerId = row.user_id }
+  } catch { /* fall through */ }
   if (!job) return c.json({ error: 'Job not found' }, 404)
-  if (job.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+  // Allow if owner matches — but also allow if jobOwnerId is null (legacy unowned jobs)
+  if (jobOwnerId && jobOwnerId !== user.id) return c.json({ error: 'Forbidden' }, 403)
   if (job.status !== 'ready') return c.json({ error: 'Beat is not ready yet' }, 400)
   if (!job.stereo_url) return c.json({ error: 'No stereo audio available' }, 400)
 
@@ -915,25 +946,62 @@ app.post('/api/job/stems', async (c) => {
     const model = user.plan === 'pro' ? 'audio-separation-2' : 'audio-separation-1'
     const { zip_url, midi_zip_url } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, model)
 
-    // Build track list based on model
-    const stemList = user.plan === 'pro'
+    // Full candidate list per model — we'll probe the ZIP to filter to only detected stems
+    const candidateList = user.plan === 'pro'
       ? [
-          { stem: 'drums',          name: 'Drums',            family: 'drums',  color: '#ef4444' },
-          { stem: 'bass',           name: 'Bass',             family: 'bass',   color: '#3b82f6' },
-          { stem: 'vocals',         name: 'Vocals',           family: 'vocals', color: '#ec4899' },
-          { stem: 'other',          name: 'Other (Melody)',   family: 'synth',  color: '#8b5cf6' },
-          { stem: 'instrumental',   name: 'Instrumental',     family: 'mix',    color: '#10b981' },
-          { stem: 'piano',          name: 'Piano',            family: 'keys',   color: '#f59e0b' },
-          { stem: 'guitar',         name: 'Guitar',           family: 'guitar', color: '#84cc16' },
-          { stem: 'strings',        name: 'Strings',          family: 'strings',color: '#06b6d4' },
-          { stem: 'synth',          name: 'Synth',            family: 'synth',  color: '#a78bfa' },
-          { stem: 'brass',          name: 'Brass',            family: 'brass',  color: '#fb923c' },
-          { stem: 'woodwind',       name: 'Woodwind',         family: 'wind',   color: '#34d399' },
-          { stem: 'fx',             name: 'FX',               family: 'fx',     color: '#f87171' },
+          { stem: 'drums',    name: 'Drums',          family: 'drums',   color: '#ef4444' },
+          { stem: 'bass',     name: 'Bass',            family: 'bass',    color: '#3b82f6' },
+          { stem: 'vocals',   name: 'Vocals',          family: 'vocals',  color: '#ec4899' },
+          { stem: 'other',    name: 'Other (Melody)',  family: 'synth',   color: '#8b5cf6' },
+          { stem: 'piano',    name: 'Piano',           family: 'keys',    color: '#f59e0b' },
+          { stem: 'guitar',   name: 'Guitar',          family: 'guitar',  color: '#84cc16' },
+          { stem: 'strings',  name: 'Strings',         family: 'strings', color: '#06b6d4' },
+          { stem: 'synth',    name: 'Synth',           family: 'synth',   color: '#a78bfa' },
+          { stem: 'brass',    name: 'Brass',           family: 'brass',   color: '#fb923c' },
+          { stem: 'woodwind', name: 'Woodwind',        family: 'wind',    color: '#34d399' },
+          { stem: 'fx',       name: 'FX',              family: 'fx',      color: '#f87171' },
         ]
-      : STEM_CONFIG
+      : STEM_CONFIG  // V1: drums, bass, vocals, other
 
-    const tracks = stemList.map(s => ({
+    // Probe the ZIP to discover which stems are actually present
+    // (skips undetected instruments — no silent/empty stems)
+    let detectedStems: typeof candidateList = candidateList
+    try {
+      const zipResp = await fetch(zip_url)
+      const zipBuf  = await zipResp.arrayBuffer()
+      // Simple ZIP central directory scan: collect all filenames
+      const view = new DataView(zipBuf)
+      const zipFiles: string[] = []
+      // End of central directory signature: 0x06054b50
+      for (let i = zipBuf.byteLength - 22; i >= 0; i--) {
+        if (view.getUint32(i, true) === 0x06054b50) {
+          const cdOffset = view.getUint32(i + 16, true)
+          const cdSize   = view.getUint32(i + 12, true)
+          let pos = cdOffset
+          while (pos < cdOffset + cdSize) {
+            if (view.getUint32(pos, true) !== 0x02014b50) break
+            const fnLen  = view.getUint16(pos + 28, true)
+            const extLen = view.getUint16(pos + 30, true)
+            const cmtLen = view.getUint16(pos + 32, true)
+            const fnBytes = new Uint8Array(zipBuf, pos + 46, fnLen)
+            const fn = new TextDecoder().decode(fnBytes).toLowerCase()
+            zipFiles.push(fn)
+            pos += 46 + fnLen + extLen + cmtLen
+          }
+          break
+        }
+      }
+      if (zipFiles.length > 0) {
+        // Keep only stems whose filename appears in the ZIP
+        detectedStems = candidateList.filter(s =>
+          zipFiles.some(f => f.includes(s.stem.toLowerCase()) && (f.endsWith('.wav') || f.endsWith('.mp3')))
+        )
+        // Fallback: if filter left nothing, keep all candidates
+        if (detectedStems.length === 0) detectedStems = candidateList
+      }
+    } catch { /* zip probe failed — use full candidate list */ }
+
+    const tracks = detectedStems.map(s => ({
       name: s.name,
       stem: s.stem,
       family: s.family,
@@ -942,7 +1010,7 @@ app.post('/api/job/stems', async (c) => {
       color: s.color
     }))
 
-    // Save stems back to job
+    // Save stems back to job — include instrumental_url separately for toggle
     const updatedJob = { ...job, zip_url, tracks } as any
     if (midi_zip_url) updatedJob.midi_zip_url = midi_zip_url
     await setJob(c.env.DB, updatedJob)
@@ -1185,6 +1253,18 @@ app.post('/api/stripe/webhook', async (c) => {
         const priceId = sub.items?.data?.[0]?.price?.id
         const plan = planFromPriceId(c.env, priceId)
         await updateUserPlan(c.env.DB, userId, plan, customerId, subId)
+      }
+    }
+
+    if (event.type === 'invoice.paid') {
+      const invoice = event.data.object
+      const customerId = invoice.customer
+      if (customerId && invoice.billing_reason === 'subscription_cycle') {
+        // Monthly renewal — reset with rollover
+        const sub = await stripeRequest('GET', `/subscriptions/${invoice.subscription}`, {}, c.env.STRIPE_SECRET_KEY)
+        const priceId = sub.items?.data?.[0]?.price?.id
+        const plan = planFromPriceId(c.env, priceId)
+        await resetMonthlyDownloads(c.env.DB, customerId, plan)
       }
     }
 
@@ -1500,7 +1580,7 @@ function globalSidebar() {
     </a>
     <a href="/dashboard" class="gs-sidebar__nav-item" data-page="dashboard">
       <i class="fas fa-th-large"></i>
-      <span>My Projects</span>
+      <span>Library</span>
     </a>
   </nav>
 
@@ -1872,7 +1952,7 @@ function stemsPage(jobId: string) {
     <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
     <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
     <p style="color:var(--muted);margin-bottom:24px">Extract stems from your beat to play and download them individually.</p>
-    <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
+    <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsConfirmExtract()">
       <i class="fas fa-layer-group"></i> Get Stems
     </button>
     <div id="stems-extract-status" style="margin-top:16px;font-size:.88rem;display:none"></div>
@@ -1881,6 +1961,16 @@ function stemsPage(jobId: string) {
     <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:var(--danger);margin-bottom:16px;display:block"></i>
     <p id="stems-error-msg">Could not load stems.</p>
     <button class="btn btn--outline" style="margin-top:16px" onclick="stemsInit()">Retry</button>
+  </div>
+
+  <!-- Vocals / Instrumental toggle strip (shown with player) -->
+  <div id="stems-vi-toggle" style="display:none" class="stems-vi-strip">
+    <button class="stems-vi-btn stems-vi-btn--active" id="vi-vocals-btn" onclick="setVIMode('vocals')">
+      <i class="fas fa-microphone"></i> Vocals
+    </button>
+    <button class="stems-vi-btn" id="vi-instrumental-btn" onclick="setVIMode('instrumental')">
+      <i class="fas fa-drum"></i> Instrumental
+    </button>
   </div>
 
   <!-- Master transport -->
@@ -1913,31 +2003,48 @@ function stemsPage(jobId: string) {
     <a href="/pricing" class="btn btn--primary btn--sm">View Plans</a>
   </div>
 
+  <!-- Confirm extract modal -->
+  <div id="stems-confirm-modal" class="stems-confirm-overlay" style="display:none" onclick="if(event.target===this)closeStemsConfirm()">
+    <div class="stems-confirm-box">
+      <div class="stems-confirm-icon"><i class="fas fa-layer-group"></i></div>
+      <h3 id="stems-confirm-title">Extract Stems</h3>
+      <p id="stems-confirm-body" style="margin:12px 0;color:var(--muted);font-size:.92rem;line-height:1.6"></p>
+      <div class="stems-confirm-btns">
+        <button class="btn btn--outline" onclick="closeStemsConfirm()">Cancel</button>
+        <button class="btn btn--primary" id="stems-confirm-ok" onclick="closeStemsConfirm();stemsExtract()">OK — Extract</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
 // ═══════════════════════════════════════════════════════════════
-//  STEMS PLAYER — Web Audio API per-stem playback
+//  STEMS PLAYER — Web Audio API, real waveform, VI toggle
 // ═══════════════════════════════════════════════════════════════
 
 const STEMS_JOB_ID = '${jobId}';
 
-// State
-let stemsJob       = null;      // full job data
-let stemAudios     = {};        // { stemName: HTMLAudioElement }
-let stemMuted      = {};        // { stemName: bool }
-let stemSolo       = {};        // { stemName: bool }
-let stemGains      = {};        // { stemName: float 0-1 }
+// ── State ─────────────────────────────────────────────────────
+let stemsJob       = null;
+let stemAudios     = {};   // { stem: HTMLAudioElement }
+let stemMuted      = {};   // { stem: bool }
+let stemSolo       = {};   // { stem: bool }
+let stemGains      = {};   // { stem: float }
 let hasSoloActive  = false;
 let isPlaying      = false;
 let masterVolume   = 0.8;
-let stemZipCache   = null;      // ArrayBuffer of zip
-let JSZipLoaded    = false;
-let JSZip          = null;
+let stemZipCache   = null; // ArrayBuffer
+let audioCtx       = null;
+let stemAnalysers  = {};   // { stem: AnalyserNode }
+let stemSources    = {};   // { stem: MediaElementSourceNode }
+let waveRAF        = {};   // { stem: rAF id }
+let viMode         = 'vocals'; // 'vocals' | 'instrumental'
+let _planForConfirm = 'creator';
 
-// ── Load JSZip from CDN ───────────────────────────────────────
+// ── JSZip loader ─────────────────────────────────────────────
 function loadJSZip() {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     if (window.JSZip) { resolve(window.JSZip); return; }
     const s = document.createElement('script');
     s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
@@ -1946,114 +2053,125 @@ function loadJSZip() {
   });
 }
 
-// ── Format time ──────────────────────────────────────────────
-function fmtTime(secs) {
-  if (!secs || isNaN(secs)) return '0:00';
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return m + ':' + String(s).padStart(2,'0');
+// ── AudioContext ──────────────────────────────────────────────
+function getAudioCtx() {
+  if (!audioCtx || audioCtx.state === 'closed')
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
 }
 
-// ── Show/hide loading states ──────────────────────────────────
-function showState(state) { // 'loading' | 'no-stems' | 'error' | 'player'
-  document.getElementById('stems-loading').style.display    = state === 'loading' ? 'block' : 'none';
-  document.getElementById('stems-no-stems').style.display   = state === 'no-stems' ? 'block' : 'none';
-  document.getElementById('stems-error').style.display      = state === 'error' ? 'block' : 'none';
-  document.getElementById('stems-transport').style.display  = state === 'player' ? 'flex' : 'none';
-  document.getElementById('stems-list').style.display       = state === 'player' ? 'block' : 'none';
-  document.getElementById('stems-upgrade-nudge').style.display = state === 'upgrade' ? 'block' : 'none';
+// ── Time formatter ────────────────────────────────────────────
+function fmtTime(s) {
+  if (!s || isNaN(s)) return '0:00';
+  return Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0');
 }
 
-// ── Init ─────────────────────────────────────────────────────
+// ── UI state switcher ─────────────────────────────────────────
+function showState(state) {
+  document.getElementById('stems-loading').style.display   = state==='loading'  ? 'block' : 'none';
+  document.getElementById('stems-no-stems').style.display  = state==='no-stems' ? 'block' : 'none';
+  document.getElementById('stems-error').style.display     = state==='error'    ? 'block' : 'none';
+  document.getElementById('stems-transport').style.display = state==='player'   ? 'flex'  : 'none';
+  document.getElementById('stems-list').style.display      = state==='player'   ? 'block' : 'none';
+  document.getElementById('stems-upgrade-nudge').style.display = state==='upgrade' ? 'block' : 'none';
+  const viStrip = document.getElementById('stems-vi-toggle');
+  if (viStrip) viStrip.style.display = state==='player' ? 'flex' : 'none';
+}
+
+// ── Vocals / Instrumental toggle ──────────────────────────────
+function setVIMode(mode) {
+  viMode = mode;
+  document.getElementById('vi-vocals-btn').classList.toggle('stems-vi-btn--active', mode==='vocals');
+  document.getElementById('vi-instrumental-btn').classList.toggle('stems-vi-btn--active', mode==='instrumental');
+  applyVolumes();
+}
+
+// ── Confirm dialog ────────────────────────────────────────────
+function stemsConfirmExtract() {
+  const isPro = _planForConfirm === 'pro';
+  document.getElementById('stems-confirm-title').textContent =
+    isPro ? 'Extract up to 12 Stems' : 'Extract 5 Stems';
+  document.getElementById('stems-confirm-body').innerHTML = isPro
+    ? '<strong>10 download credits</strong> will be used from your Pro plan to extract up to 12 individual stems from this track.<br><br>Continue?'
+    : '<strong>2 download credits</strong> will be used from your Creator plan to extract 5 stems from this track.<br><br>Continue?';
+  document.getElementById('stems-confirm-ok').innerHTML = isPro
+    ? '<i class="fas fa-layer-group"></i> OK — Use 10 Credits'
+    : '<i class="fas fa-layer-group"></i> OK — Use 2 Credits';
+  document.getElementById('stems-confirm-modal').style.display = 'flex';
+}
+function closeStemsConfirm() {
+  document.getElementById('stems-confirm-modal').style.display = 'none';
+}
+
+// ── Init ──────────────────────────────────────────────────────
 async function stemsInit() {
   showState('loading');
   try {
-    const res  = await fetch('/api/job/' + STEMS_JOB_ID);
-    const job  = await res.json();
-    if (!res.ok || job.error) { throw new Error(job.error || 'Job not found'); }
+    const res = await fetch('/api/job/' + STEMS_JOB_ID);
+    const job = await res.json();
+    if (!res.ok || job.error) throw new Error(job.error || 'Job not found');
     stemsJob = job;
-
-    // Populate hero
     populateHero(job);
 
-    // Check stems availability
     if (!job.zip_url) {
-      // Check user plan
       const meRes  = await fetch('/api/auth/me');
       const meData = await meRes.json();
       const user   = meData.user;
-      if (!user || user.plan === 'free') {
-        showState('upgrade');
-        return;
-      }
-      // Creator/Pro — show extract button
+      if (!user || user.plan === 'free') { showState('upgrade'); return; }
+      _planForConfirm = user.plan || 'creator';
       showState('no-stems');
       const extBtn = document.getElementById('stems-extract-btn');
-      if (extBtn && user) {
-        const isPro = user.plan === 'pro';
-        extBtn.innerHTML = isPro
-          ? '<i class="fas fa-layer-group"></i> Get 12 Stems (10 credits)'
-          : '<i class="fas fa-layer-group"></i> Get 5 Stems (2 credits)';
-      }
+      if (extBtn) extBtn.innerHTML = user.plan === 'pro'
+        ? '<i class="fas fa-layer-group"></i> Get 12 Stems'
+        : '<i class="fas fa-layer-group"></i> Get 5 Stems';
       return;
     }
 
-    // Has stems — build player
     await buildStemsPlayer(job);
-
-  } catch (e) {
+  } catch(e) {
     document.getElementById('stems-error-msg').textContent = e.message || 'Could not load stems.';
     showState('error');
   }
 }
 
-// ── Populate hero banner ──────────────────────────────────────
+// ── Hero banner ───────────────────────────────────────────────
 function populateHero(job) {
-  const title    = job.title || (job.blueprint ? job.blueprint.genre + ' — ' + job.blueprint.key : 'Beat');
-  const meta     = job.blueprint ? (job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + job.blueprint.genre) : '';
+  const title = job.title || (job.blueprint ? job.blueprint.genre + ' — ' + job.blueprint.key : 'Beat');
+  const meta  = job.blueprint ? (job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + job.blueprint.genre) : '';
   document.getElementById('stems-track-title').textContent = title;
   document.getElementById('stems-hero-title').textContent  = title;
   document.getElementById('stems-hero-meta').textContent   = meta;
 
-  // Art
   const artEl = document.getElementById('stems-hero-art');
   const hue = job.thumbnail_seed || 180;
-  const h2  = (hue + 55) % 360;
-  const h3  = (hue + 120) % 360;
-  artEl.style.backgroundImage  = 'linear-gradient(135deg,hsl(' + hue + ',65%,28%) 0%,hsl(' + h2 + ',75%,20%) 55%,hsl(' + h3 + ',60%,15%) 100%)';
-  artEl.style.backgroundSize   = 'cover';
-  artEl.style.backgroundPosition = 'center';
+  const h2  = (hue + 55) % 360, h3 = (hue + 120) % 360;
+  const grad = 'linear-gradient(135deg,hsl('+hue+',65%,28%) 0%,hsl('+h2+',75%,20%) 55%,hsl('+h3+',60%,15%) 100%)';
+  artEl.style.cssText = 'background:'+grad+';background-size:cover;background-position:center;';
   if (job.image_url) {
     const img = new Image();
-    img.onload = () => {
-      artEl.style.backgroundImage = 'url(\\'' + job.image_url + '\\'),linear-gradient(135deg,hsl(' + hue + ',65%,28%) 0%,hsl(' + h2 + ',75%,20%) 55%,hsl(' + h3 + ',60%,15%) 100%)';
-    };
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { artEl.style.backgroundImage = 'url(\''+job.image_url+'\'),'+grad; artEl.style.backgroundSize='cover,cover'; };
+    img.onerror = () => {};
     img.src = job.image_url;
   }
 
-  // ZIP download button
   if (job.zip_url) {
     const zipBtn = document.getElementById('stems-download-zip-btn');
     if (zipBtn) {
       zipBtn.style.display = '';
-      const safeTitle = title.replace(/[^a-zA-Z0-9\\s\\-_]/g,'').replace(/\\s+/g,'_').toLowerCase() || 'stemforge_beat';
-      zipBtn.onclick = () => {
-        const a = document.createElement('a');
-        a.href = job.zip_url;
-        a.download = safeTitle + '_stems.zip';
-        document.body.appendChild(a); a.click(); a.remove();
-      };
+      const safe = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'stems';
+      zipBtn.onclick = () => { const a=document.createElement('a'); a.href=job.zip_url; a.download=safe+'_stems.zip'; document.body.appendChild(a); a.click(); a.remove(); };
     }
   }
 }
 
-// ── Build the stems player ────────────────────────────────────
+// ── Build player ──────────────────────────────────────────────
 async function buildStemsPlayer(job) {
   showState('loading');
   const zipUrl = job.zip_url;
   const tracks = job.tracks || [];
 
-  // Build track rows first (no audio yet)
   const listEl = document.getElementById('stems-list');
   listEl.innerHTML = '';
   tracks.forEach(t => {
@@ -2063,55 +2181,71 @@ async function buildStemsPlayer(job) {
     stemGains[t.stem] = 1.0;
   });
 
-  // Fetch ZIP and extract audio blobs
   try {
-    const zipData = await (await fetch(zipUrl)).arrayBuffer();
+    const resp = await fetch(zipUrl);
+    if (!resp.ok) throw new Error('ZIP fetch ' + resp.status);
+    const zipData = await resp.arrayBuffer();
     stemZipCache  = zipData;
     const JSZipLib = await loadJSZip();
-    const zip     = await JSZipLib.loadAsync(zipData);
+    const zip = await JSZipLib.loadAsync(zipData);
 
-    const audioPromises = tracks.map(async (t) => {
-      // Try common filename patterns from Mureka ZIP
-      const candidates = [
-        t.stem + '.wav', t.stem + '.mp3',
-        t.stem.toLowerCase() + '.wav', t.stem.toLowerCase() + '.mp3',
-        t.name + '.wav', t.name + '.mp3',
+    // Inventory ZIP contents
+    const zipFiles = [];
+    zip.forEach(p => zipFiles.push(p));
+    console.log('[StemForge] ZIP files:', zipFiles);
+
+    const ctx = getAudioCtx();
+    let primaryStem = null;
+
+    for (const t of tracks) {
+      const sl = t.stem.toLowerCase(), nl = t.name.toLowerCase();
+
+      // 1. Exact candidates
+      const cands = [
+        sl+'.wav', sl+'.mp3', nl+'.wav', nl+'.mp3',
+        'stem_'+sl+'.wav', 'stem_'+sl+'.mp3',
+        sl+'_stem.wav', sl+'_stem.mp3',
       ];
-      let blob = null;
-      for (const name of candidates) {
-        const entry = zip.file(name) || zip.file(name.replace(/\\s+/g,'_')) || zip.file(name.replace(/_/g,' '));
-        if (entry) { blob = await entry.async('blob'); break; }
+      let entry = null;
+      for (const c of cands) {
+        entry = zip.file(c) || zip.file(c.replace(/\s+/g,'_')) || zip.file(c.replace(/_/g,' ')) || zip.file(c.replace(/_/g,'-'));
+        if (entry) { console.log('[StemForge] exact match:', t.stem, '→', c); break; }
       }
-      // Fallback: find any wav/mp3 file that contains the stem name
-      if (!blob) {
-        zip.forEach((relPath, entry) => {
-          if (!blob && !entry.dir) {
-            const lower = relPath.toLowerCase();
-            if (lower.includes(t.stem.toLowerCase()) && (lower.endsWith('.wav') || lower.endsWith('.mp3'))) {
-              blob = entry.async('blob');
-            }
+
+      // 2. Fuzzy — any audio file containing the stem keyword
+      if (!entry) {
+        for (const p of zipFiles) {
+          const pl = p.toLowerCase();
+          if ((pl.endsWith('.wav')||pl.endsWith('.mp3')) &&
+              (pl.includes(sl) || (sl==='other' && (pl.includes('melody')||pl.includes('synth')||pl.includes('other'))))) {
+            entry = zip.file(p);
+            if (entry) { console.log('[StemForge] fuzzy:', t.stem, '→', p); break; }
           }
-        });
-        if (blob && blob.then) blob = await blob;
+        }
       }
-      return { stem: t.stem, blob };
-    });
 
-    const results = await Promise.allSettled(audioPromises);
+      // 3. Index fallback
+      if (!entry) {
+        const audioFiles = zipFiles.filter(p => p.toLowerCase().endsWith('.wav')||p.toLowerCase().endsWith('.mp3'));
+        const idx = tracks.indexOf(t);
+        if (idx < audioFiles.length) {
+          entry = zip.file(audioFiles[idx]);
+          if (entry) console.log('[StemForge] index-map:', t.stem, '→', audioFiles[idx]);
+        }
+      }
 
-    let anyAudio = false;
-    results.forEach(r => {
-      if (r.status !== 'fulfilled' || !r.value.blob) return;
-      const { stem, blob } = r.value;
-      const url   = URL.createObjectURL(blob);
+      if (!entry) { console.warn('[StemForge] no file for', t.stem); continue; }
+
+      const arrayBuf = await entry.async('arraybuffer');
+      const blob = new Blob([arrayBuf], { type: 'audio/wav' });
+      const url  = URL.createObjectURL(blob);
       const audio = new Audio(url);
-      audio.volume = masterVolume;
+      audio.volume  = masterVolume;
       audio.preload = 'auto';
-      stemAudios[stem] = audio;
-      anyAudio = true;
+      stemAudios[t.stem] = audio;
 
-      // Sync seek on timeupdate of primary stem (first one)
-      if (Object.keys(stemAudios).length === 1) {
+      if (!primaryStem) {
+        primaryStem = t.stem;
         audio.addEventListener('timeupdate', () => {
           if (!audio.duration) return;
           const pct = (audio.currentTime / audio.duration) * 100;
@@ -2123,22 +2257,35 @@ async function buildStemsPlayer(job) {
         audio.addEventListener('ended', () => {
           isPlaying = false;
           document.getElementById('stems-play-icon').className = 'fas fa-play';
+          document.querySelectorAll('.stem-row__play i').forEach(i => i.className = 'fas fa-play');
         });
       }
-    });
 
-    if (anyAudio) showState('player');
-    else {
-      // ZIP loaded but audio extraction failed — show tracks with ZIP download only
-      showState('player');
-      document.getElementById('stems-list').querySelectorAll('.stem-row__play').forEach(b => {
-        b.style.display = 'none';
-      });
+      // Wire analyser
+      try {
+        const src = ctx.createMediaElementSource(audio);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        src.connect(analyser);
+        analyser.connect(ctx.destination);
+        stemAnalysers[t.stem] = analyser;
+        stemSources[t.stem]   = src;
+      } catch(ae) { console.warn('[StemForge] analyser fail', t.stem, ae); }
+
+      // Decode and draw static waveform
+      try {
+        const decoded = await ctx.decodeAudioData(arrayBuf.slice(0));
+        drawStaticWaveform(t.stem, decoded, t.color);
+      } catch(de) { drawRandomWaveform(t.stem, t.color); }
     }
 
-  } catch (zipErr) {
-    console.warn('ZIP extraction failed:', zipErr);
-    // Fallback: show tracks with only ZIP download
+    const anyAudio = Object.keys(stemAudios).length > 0;
+    showState('player');
+    if (!anyAudio) listEl.querySelectorAll('.stem-row__play').forEach(b => b.style.opacity='0.3');
+
+  } catch(zipErr) {
+    console.error('[StemForge] ZIP error:', zipErr);
     showState('player');
   }
 
@@ -2149,41 +2296,136 @@ async function buildStemsPlayer(job) {
     seekEl.addEventListener('touchstart', () => seekEl._dragging = true);
     seekEl.addEventListener('change', () => {
       seekEl._dragging = false;
-      Object.values(stemAudios).forEach(a => {
-        if (a.duration) a.currentTime = (seekEl.value / 100) * a.duration;
-      });
+      Object.values(stemAudios).forEach(a => { if (a.duration) a.currentTime = (seekEl.value/100)*a.duration; });
     });
   }
 
   // Master volume
   const volEl = document.getElementById('stems-master-vol');
-  if (volEl) {
-    volEl.addEventListener('input', () => {
-      masterVolume = volEl.value / 100;
-      applyVolumes();
-    });
+  if (volEl) volEl.addEventListener('input', () => { masterVolume = volEl.value/100; applyVolumes(); });
+
+  setVIMode('vocals');
+}
+
+// ── Track color map ───────────────────────────────────────────
+function trackColor(stem) {
+  return ({drums:'#ef4444',bass:'#3b82f6',vocals:'#ec4899',other:'#8b5cf6',
+    piano:'#f59e0b',guitar:'#10b981',strings:'#06b6d4',synth:'#8b5cf6',
+    brass:'#f97316',woodwind:'#84cc16',fx:'#a78bfa'})[stem] || '#6366f1';
+}
+
+// ── Static waveform from decoded AudioBuffer ──────────────────
+function drawStaticWaveform(stem, buf, color) {
+  const waveEl = document.getElementById('stem-wave-' + stem);
+  if (!waveEl) return;
+  waveEl.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.width  = waveEl.offsetWidth || 300;
+  canvas.height = 32;
+  canvas.style.cssText = 'width:100%;height:32px;display:block;';
+  waveEl.appendChild(canvas);
+
+  const data = buf.getChannelData(0);
+  const step = Math.max(1, Math.floor(data.length / canvas.width));
+  const peaks = [];
+  for (let i = 0; i < canvas.width; i++) {
+    let mx = 0;
+    for (let j = 0; j < step; j++) { const v = Math.abs(data[i*step+j]||0); if(v>mx) mx=v; }
+    peaks.push(mx);
+  }
+  canvas._peaks   = peaks;
+  canvas._color   = color;
+  canvas._stemKey = stem;
+  renderWaveCanvas(canvas, 0);
+  if (stemAnalysers[stem]) startWaveAnimation(stem, canvas);
+}
+
+// ── Render wave canvas ────────────────────────────────────────
+function renderWaveCanvas(canvas, progress) {
+  const peaks = canvas._peaks;
+  if (!peaks) return;
+  const ctx2 = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
+  const color = canvas._color || '#6366f1', mid = H/2;
+  const played = Math.floor(W * (progress||0));
+  ctx2.clearRect(0,0,W,H);
+  for (let x = 0; x < W; x++) {
+    const peak = peaks[x]||0, barH = Math.max(2, peak*H*0.9);
+    ctx2.fillStyle = x < played ? color : color+'44';
+    ctx2.fillRect(x, mid - barH/2, 1, barH);
   }
 }
 
-// ── Build one stem row ────────────────────────────────────────
+// ── Random fallback waveform ──────────────────────────────────
+function drawRandomWaveform(stem, color) {
+  const waveEl = document.getElementById('stem-wave-' + stem);
+  if (!waveEl) return;
+  waveEl.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.width = waveEl.offsetWidth || 300; canvas.height = 32;
+  canvas.style.cssText = 'width:100%;height:32px;display:block;';
+  canvas._peaks   = Array.from({length:canvas.width}, () => Math.random()*0.6+0.1);
+  canvas._color   = color;
+  canvas._stemKey = stem;
+  waveEl.appendChild(canvas);
+  renderWaveCanvas(canvas, 0);
+  if (stemAnalysers[stem]) startWaveAnimation(stem, canvas);
+}
+
+// ── Live waveform animation ───────────────────────────────────
+function startWaveAnimation(stem, canvas) {
+  if (waveRAF[stem]) cancelAnimationFrame(waveRAF[stem]);
+  const analyser = stemAnalysers[stem], audio = stemAudios[stem];
+  if (!analyser || !audio) return;
+  const dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+  function tick() {
+    waveRAF[stem] = requestAnimationFrame(tick);
+    const prog = audio.duration ? audio.currentTime / audio.duration : 0;
+    if (audio.paused && !isPlaying) { renderWaveCanvas(canvas, prog); return; }
+
+    analyser.getByteTimeDomainData(dataArr);
+    const ctx2 = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
+    const color = canvas._color || '#6366f1', mid = H/2;
+    const played = Math.floor(W * prog);
+
+    ctx2.clearRect(0,0,W,H);
+    if (canvas._peaks) {
+      for (let x=0; x<W; x++) {
+        const pk = canvas._peaks[x]||0, bh = Math.max(1, pk*H*0.9);
+        ctx2.fillStyle = x < played ? color+'cc' : color+'33';
+        ctx2.fillRect(x, mid-bh/2, 1, bh);
+      }
+    }
+    // Live waveform overlay on played region
+    if (played > 4) {
+      ctx2.beginPath();
+      ctx2.strokeStyle = color;
+      ctx2.lineWidth = 1.5;
+      const sw = played / dataArr.length;
+      for (let i=0; i<dataArr.length; i++) {
+        const y = (dataArr[i]/128.0) * mid;
+        const px = Math.floor(i * sw);
+        i===0 ? ctx2.moveTo(px,y) : ctx2.lineTo(px,y);
+      }
+      ctx2.stroke();
+    }
+    // Playhead
+    if (played > 0) { ctx2.fillStyle='rgba(255,255,255,0.9)'; ctx2.fillRect(played-1,0,2,H); }
+  }
+  tick();
+}
+
+// ── Build stem row ────────────────────────────────────────────
 function buildStemRow(track) {
-  const el   = document.createElement('div');
-  el.className = 'stem-row';
-  el.dataset.stem = track.stem;
-
-  const iconMap = {
-    drums:'fa-drum', bass:'fa-guitar', vocals:'fa-microphone',
-    other:'fa-wave-square', instrumental:'fa-music', mix:'fa-compact-disc',
-    piano:'fa-piano', guitar:'fa-guitar', strings:'fa-violin',
-    synth:'fa-wave-square', brass:'fa-trumpet', woodwind:'fa-music', fx:'fa-magic'
-  };
+  const el = document.createElement('div');
+  el.className = 'stem-row'; el.dataset.stem = track.stem;
+  const iconMap = {drums:'fa-drum',bass:'fa-guitar',vocals:'fa-microphone',other:'fa-wave-square',
+    mix:'fa-compact-disc',piano:'fa-piano',guitar:'fa-guitar',strings:'fa-violin',
+    synth:'fa-wave-square',brass:'fa-trumpet',woodwind:'fa-music',fx:'fa-magic'};
   const icon = iconMap[track.family] || iconMap[track.stem] || 'fa-music';
-
   el.innerHTML = \`
     <div class="stem-row__left">
-      <div class="stem-row__icon" style="background:\${track.color}">
-        <i class="fas \${icon}"></i>
-      </div>
+      <div class="stem-row__icon" style="background:\${track.color}"><i class="fas \${icon}"></i></div>
       <div class="stem-row__info">
         <div class="stem-row__name" id="stem-name-\${track.stem}">\${track.name}</div>
         <div class="stem-row__filename">\${track.stem}.wav</div>
@@ -2191,76 +2433,47 @@ function buildStemRow(track) {
     </div>
     <div class="stem-row__wave" id="stem-wave-\${track.stem}"></div>
     <div class="stem-row__controls">
-      <button class="stem-ctrl-btn stem-row__play" id="stem-play-\${track.stem}"
-        onclick="stemPlayPause('\${track.stem}')" title="Play/Pause">
-        <i class="fas fa-play"></i>
-      </button>
-      <button class="stem-ctrl-btn stem-row__mute \${stemMuted[track.stem]?'active':''}" id="stem-mute-\${track.stem}"
-        onclick="stemToggleMute('\${track.stem}')" title="Mute">
-        <i class="fas fa-volume-mute"></i>
-      </button>
-      <button class="stem-ctrl-btn stem-row__solo" id="stem-solo-\${track.stem}"
-        onclick="stemToggleSolo('\${track.stem}')" title="Solo">
-        <span style="font-size:.7rem;font-weight:700">S</span>
-      </button>
-      <button class="stem-ctrl-btn" onclick="stemRename('\${track.stem}')" title="Rename">
-        <i class="fas fa-pen" style="font-size:.7rem"></i>
-      </button>
-      <button class="stem-ctrl-btn stem-row__dl" onclick="stemDownload('\${track.stem}', '\${track.name}')" title="Download">
-        <i class="fas fa-download"></i>
-      </button>
-    </div>
-  \`;
-
-  // Waveform bars
-  const wave = el.querySelector('.stem-row__wave');
-  for (let i = 0; i < 80; i++) {
-    const b = document.createElement('div');
-    const h = Math.random()*24+4;
-    b.style.cssText = 'width:2px;height:' + h + 'px;border-radius:1px;background:' + track.color + ';opacity:' + (0.35+Math.random()*0.5) + ';flex-shrink:0;';
-    wave.appendChild(b);
-  }
-
+      <button class="stem-ctrl-btn stem-row__play" id="stem-play-\${track.stem}" onclick="stemPlayPause('\${track.stem}')" title="Play/Pause"><i class="fas fa-play"></i></button>
+      <button class="stem-ctrl-btn stem-row__mute" id="stem-mute-\${track.stem}" onclick="stemToggleMute('\${track.stem}')" title="Mute"><i class="fas fa-volume-mute"></i></button>
+      <button class="stem-ctrl-btn stem-row__solo" id="stem-solo-\${track.stem}" onclick="stemToggleSolo('\${track.stem}')" title="Solo"><span style="font-size:.7rem;font-weight:700">S</span></button>
+      <button class="stem-ctrl-btn" onclick="stemRename('\${track.stem}')" title="Rename"><i class="fas fa-pen" style="font-size:.7rem"></i></button>
+      <button class="stem-ctrl-btn stem-row__dl" onclick="stemDownload('\${track.stem}','\${track.name}')" title="Download"><i class="fas fa-download"></i></button>
+    </div>\`;
   return el;
 }
 
-// ── Play/Pause all stems ──────────────────────────────────────
+// ── Play All ──────────────────────────────────────────────────
 function stemsTogglePlayAll() {
+  getAudioCtx();
   if (isPlaying) {
     Object.values(stemAudios).forEach(a => a.pause());
     isPlaying = false;
     document.getElementById('stems-play-icon').className = 'fas fa-play';
+    document.querySelectorAll('.stem-row__play i').forEach(i => i.className = 'fas fa-play');
   } else {
     const audios = Object.values(stemAudios);
     if (!audios.length) return;
-    // Sync all to first audio's position
     const ref = audios[0];
     audios.forEach(a => { a.currentTime = ref.currentTime; a.play().catch(()=>{}); });
     isPlaying = true;
     document.getElementById('stems-play-icon').className = 'fas fa-pause';
+    document.querySelectorAll('.stem-row__play i').forEach(i => i.className = 'fas fa-pause');
   }
 }
 
-// ── Play/Pause individual stem ────────────────────────────────
+// ── Individual play/pause ─────────────────────────────────────
 function stemPlayPause(stem) {
-  const audio = stemAudios[stem];
-  if (!audio) return;
-  const btn = document.getElementById('stem-play-' + stem);
-  const icon = btn?.querySelector('i');
-  if (audio.paused) {
-    audio.play().catch(()=>{});
-    if (icon) icon.className = 'fas fa-pause';
-  } else {
-    audio.pause();
-    if (icon) icon.className = 'fas fa-play';
-  }
+  const audio = stemAudios[stem]; if (!audio) return;
+  getAudioCtx();
+  const icon = document.getElementById('stem-play-'+stem)?.querySelector('i');
+  if (audio.paused) { audio.play().catch(()=>{}); if(icon) icon.className='fas fa-pause'; }
+  else { audio.pause(); if(icon) icon.className='fas fa-play'; }
 }
 
-// ── Mute/Unmute ───────────────────────────────────────────────
+// ── Mute ──────────────────────────────────────────────────────
 function stemToggleMute(stem) {
   stemMuted[stem] = !stemMuted[stem];
-  const btn = document.getElementById('stem-mute-' + stem);
-  if (btn) btn.classList.toggle('active', stemMuted[stem]);
+  document.getElementById('stem-mute-'+stem)?.classList.toggle('active', stemMuted[stem]);
   applyVolumes();
 }
 
@@ -2270,17 +2483,18 @@ function stemToggleSolo(stem) {
   hasSoloActive  = Object.values(stemSolo).some(v => v);
   document.querySelectorAll('.stem-row__solo').forEach(b => {
     const s = b.closest('.stem-row')?.dataset.stem;
-    if (s) b.classList.toggle('active', stemSolo[s]);
+    if (s) b.classList.toggle('active', !!stemSolo[s]);
   });
   applyVolumes();
 }
 
-// ── Apply volumes based on mute/solo state ────────────────────
+// ── Apply volumes ─────────────────────────────────────────────
 function applyVolumes() {
   Object.entries(stemAudios).forEach(([stem, audio]) => {
     const muted  = stemMuted[stem];
     const soloed = hasSoloActive && !stemSolo[stem];
-    audio.volume = (muted || soloed) ? 0 : masterVolume * stemGains[stem];
+    const viMuted = viMode === 'instrumental' && stem === 'vocals';
+    audio.volume = (muted || soloed || viMuted) ? 0 : masterVolume * stemGains[stem];
   });
 }
 
@@ -2288,111 +2502,82 @@ function applyVolumes() {
 async function stemDownload(stem, name) {
   const job = stemsJob;
   if (!job?.zip_url) return;
-
-  const safeTitle = (job.title || stem).replace(/[^a-zA-Z0-9\\s\\-_]/g,'').replace(/\\s+/g,'_').toLowerCase() || 'beat';
-
-  // If audio blob already loaded — download it directly
+  const safe = (job.title||stem).replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'beat';
   const audio = stemAudios[stem];
-  if (audio && audio.src && audio.src.startsWith('blob:')) {
-    const a = document.createElement('a');
-    a.href = audio.src;
-    a.download = safeTitle + '_' + stem + '.wav';
-    document.body.appendChild(a); a.click(); a.remove();
-    return;
+  if (audio?.src?.startsWith('blob:')) {
+    const a = document.createElement('a'); a.href=audio.src; a.download=safe+'_'+stem+'.wav';
+    document.body.appendChild(a); a.click(); a.remove(); return;
   }
-
-  // Otherwise, fetch ZIP and extract the stem
   try {
-    const btn = document.querySelector(\`.stem-row[data-stem="\${stem}"] .stem-row__dl\`);
-    if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="font-size:.7rem"></i>'; btn.disabled = true; }
-
+    const btn = document.querySelector('.stem-row[data-stem="'+stem+'"] .stem-row__dl');
+    if (btn) { btn.innerHTML='<i class="fas fa-spinner fa-spin" style="font-size:.7rem"></i>'; btn.disabled=true; }
     const JSZipLib = await loadJSZip();
     let zipData = stemZipCache;
-    if (!zipData) {
-      zipData = await (await fetch(job.zip_url)).arrayBuffer();
-      stemZipCache = zipData;
-    }
+    if (!zipData) { zipData = await (await fetch(job.zip_url)).arrayBuffer(); stemZipCache = zipData; }
     const zip = await JSZipLib.loadAsync(zipData);
-    const candidates = [stem + '.wav', stem + '.mp3', stem.toLowerCase() + '.wav', stem.toLowerCase() + '.mp3'];
+    const sl = stem.toLowerCase();
+    const cands = [sl+'.wav', sl+'.mp3', stem+'.wav', stem+'.mp3'];
     let blob = null;
-    for (const name of candidates) {
-      const entry = zip.file(name);
-      if (entry) { blob = await entry.async('blob'); break; }
-    }
+    for (const c of cands) { const e=zip.file(c); if(e){blob=await e.async('blob');break;} }
     if (!blob) {
-      zip.forEach((path, entry) => {
-        if (!blob && !entry.dir && path.toLowerCase().includes(stem.toLowerCase()) && (path.endsWith('.wav')||path.endsWith('.mp3')))
-          blob = entry.async('blob');
-      });
-      if (blob?.then) blob = await blob;
+      const files=[]; zip.forEach(p=>files.push(p));
+      for (const p of files) {
+        if ((p.toLowerCase().endsWith('.wav')||p.toLowerCase().endsWith('.mp3')) && p.toLowerCase().includes(sl)) {
+          blob = await zip.file(p).async('blob'); break;
+        }
+      }
     }
-    if (blob) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = safeTitle + '_' + stem + '.wav';
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-    }
-    if (btn) { btn.innerHTML = '<i class="fas fa-download"></i>'; btn.disabled = false; }
-  } catch(e) {
-    alert('Could not extract stem from ZIP. Try downloading the full ZIP instead.');
-  }
+    if (blob) { const u=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=u; a.download=safe+'_'+stem+'.wav'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(u),5000); }
+    if (btn) { btn.innerHTML='<i class="fas fa-download"></i>'; btn.disabled=false; }
+  } catch(e) { alert('Could not extract stem. Try downloading the full ZIP.'); }
 }
 
 // ── Rename stem ───────────────────────────────────────────────
 function stemRename(stem) {
-  const nameEl = document.getElementById('stem-name-' + stem);
-  if (!nameEl) return;
-  const current = nameEl.textContent;
-  const input   = document.createElement('input');
-  input.type = 'text'; input.value = current;
-  input.style.cssText = 'background:var(--surface);border:1px solid var(--primary);border-radius:6px;padding:2px 8px;color:var(--text);font-size:.9rem;font-weight:600;width:100%;max-width:140px;font-family:inherit';
-  nameEl.replaceWith(input);
-  input.focus(); input.select();
+  const nameEl = document.getElementById('stem-name-'+stem); if(!nameEl) return;
+  const cur = nameEl.textContent;
+  const inp = document.createElement('input');
+  inp.type='text'; inp.value=cur;
+  inp.style.cssText='background:var(--surface);border:1px solid var(--primary);border-radius:6px;padding:2px 8px;color:var(--text);font-size:.9rem;font-weight:600;width:100%;max-width:140px;font-family:inherit';
+  nameEl.replaceWith(inp); inp.focus(); inp.select();
   function save() {
-    const span = document.createElement('div');
-    span.className = 'stem-row__name';
-    span.id = 'stem-name-' + stem;
-    span.textContent = input.value.trim() || current;
-    input.replaceWith(span);
+    const span=document.createElement('div'); span.className='stem-row__name'; span.id='stem-name-'+stem;
+    span.textContent=inp.value.trim()||cur; inp.replaceWith(span);
   }
-  input.addEventListener('blur', save);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } if (e.key === 'Escape') { input.value = current; save(); } });
+  inp.addEventListener('blur', save);
+  inp.addEventListener('keydown', e => { if(e.key==='Enter'){e.preventDefault();save();} if(e.key==='Escape'){inp.value=cur;save();} });
 }
 
-// ── Extract stems flow ────────────────────────────────────────
+// ── Extract stems ─────────────────────────────────────────────
 async function stemsExtract() {
   const btn    = document.getElementById('stems-extract-btn');
   const status = document.getElementById('stems-extract-status');
   if (!btn) return;
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
-  if (status) { status.style.display = 'block'; status.textContent = '⏳ Extracting stems — this takes ~15 seconds...'; status.style.color = 'var(--muted)'; }
+  if (status) { status.style.display='block'; status.textContent='⏳ Extracting stems — this takes ~15 seconds...'; status.style.color='var(--muted)'; }
   try {
     const res  = await fetch('/api/job/stems', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ job_id: STEMS_JOB_ID })
     });
     const data = await res.json();
     if (!res.ok || data.error) {
-      if (status) { status.textContent = '❌ ' + (data.error || 'Extraction failed.'); status.style.color = 'var(--danger)'; }
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry';
+      if (status) { status.textContent='❌ '+(data.error||'Extraction failed.'); status.style.color='var(--danger)'; }
+      btn.disabled=false; btn.innerHTML='<i class="fas fa-layer-group"></i> Retry';
       return;
     }
-    if (status) { status.textContent = '✅ Done! Stems extracted. Building player...'; status.style.color = 'var(--accent-2)'; }
+    if (status) { status.textContent='✅ Done! Building player...'; status.style.color='var(--accent-2)'; }
     stemsJob.zip_url = data.zip_url;
     stemsJob.tracks  = data.tracks || stemsJob.tracks;
     populateHero(stemsJob);
     await buildStemsPlayer(stemsJob);
   } catch(e) {
-    if (status) { status.textContent = '❌ Network error. Please try again.'; status.style.color = 'var(--danger)'; }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry'; }
+    if (status) { status.textContent='❌ Network error.'; status.style.color='var(--danger)'; }
+    if (btn) { btn.disabled=false; btn.innerHTML='<i class="fas fa-layer-group"></i> Retry'; }
   }
 }
 
-// ── Boot ─────────────────────────────────────────────────────
 stemsInit();
 </script>
 `, `<style>
@@ -2415,20 +2600,38 @@ stemsInit();
 .stems-hero {
   display: flex; align-items: center; gap: 24px;
   padding: 24px 28px; border-bottom: 1px solid var(--border);
-  background: var(--bg-3);
+  background: rgba(15,15,30,0.35);
 }
 .stems-hero__art {
   width: 96px; height: 96px; border-radius: 12px; flex-shrink: 0;
-  background: #1a1a2e; background-size: cover; background-position: center;
-  overflow: hidden;
+  background: #1a1a2e; background-size: cover; background-position: center; overflow: hidden;
 }
 .stems-hero__title { font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; }
 .stems-hero__meta  { font-size: .82rem; color: var(--muted); margin-bottom: 8px; }
 .stems-hero__badge { display: inline-block; font-size: .72rem; font-weight: 700;
   padding: 2px 8px; border-radius: 99px; background: rgba(99,102,241,.15); color: #a78bfa; }
 
+/* Vocals / Instrumental toggle strip */
+.stems-vi-strip {
+  display: flex; align-items: center; justify-content: center; gap: 0;
+  padding: 14px 28px; border-bottom: 1px solid var(--border);
+  background: rgba(15,15,30,0.35);
+}
+.stems-vi-btn {
+  padding: 8px 24px; border: 1px solid var(--border); background: none;
+  color: var(--muted); font-size: .9rem; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; gap: 8px; transition: all .18s;
+}
+.stems-vi-btn:first-child { border-radius: 8px 0 0 8px; border-right: none; }
+.stems-vi-btn:last-child  { border-radius: 0 8px 8px 0; border-left: 1px solid var(--border); }
+.stems-vi-btn--active {
+  background: var(--primary); border-color: var(--primary); color: #fff;
+}
+.stems-vi-btn:not(.stems-vi-btn--active):hover { border-color: var(--primary); color: var(--primary); }
+
 .stems-transport {
-  padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--surface);
+  padding: 16px 28px; border-bottom: 1px solid var(--border);
+  background: rgba(15,15,30,0.35);
   flex-direction: column; gap: 10px;
 }
 .stems-play-all-btn {
@@ -2439,26 +2642,20 @@ stemsInit();
 }
 .stems-play-all-btn:hover { background: var(--primary-dark, #3b89ff); transform: scale(1.05); }
 
-.stems-list { padding: 0 0 40px; }
+.stems-list { padding: 0 0 40px; background: rgba(10,10,20,0.35); }
 
 .stem-row {
   display: grid; grid-template-columns: 240px 1fr 200px;
   align-items: center; gap: 16px; padding: 14px 28px;
   border-bottom: 1px solid var(--border); transition: background .15s;
 }
-.stem-row:hover { background: rgba(255,255,255,.02); }
+.stem-row:hover { background: rgba(255,255,255,.03); }
 .stem-row:last-child { border-bottom: none; }
 .stem-row__left  { display: flex; align-items: center; gap: 12px; }
-.stem-row__icon  {
-  width: 36px; height: 36px; border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: .85rem; color: #fff; flex-shrink: 0;
-}
+.stem-row__icon  { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: .85rem; color: #fff; flex-shrink: 0; }
 .stem-row__name { font-size: .92rem; font-weight: 600; }
 .stem-row__filename { font-size: .74rem; color: var(--muted); }
-.stem-row__wave {
-  height: 32px; display: flex; align-items: center; gap: 1.5px; overflow: hidden;
-}
+.stem-row__wave { height: 32px; overflow: hidden; }
 .stem-row__controls { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
 .stem-ctrl-btn {
   width: 32px; height: 32px; border-radius: 8px;
@@ -2470,16 +2667,34 @@ stemsInit();
 .stem-ctrl-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .stem-ctrl-btn.active { background: rgba(99,102,241,.2); border-color: #6366f1; color: #a78bfa; }
 .stem-row__mute.active { background: rgba(239,68,68,.15); border-color: #ef4444; color: #f87171; }
+/* Solo button — YELLOW when active */
+.stem-row__solo.active { background: rgba(251,191,36,.18); border-color: #fbbf24; color: #fbbf24; }
 .stem-row__dl { background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.3); color: #34d399; }
 .stem-row__dl:hover { background: rgba(16,185,129,.2); border-color: #34d399; color: #10b981; }
+
+/* Confirm modal */
+.stems-confirm-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+}
+.stems-confirm-box {
+  background: var(--surface, #1a1a2e); border: 1px solid var(--border);
+  border-radius: 18px; padding: 36px 32px; max-width: 400px; width: 90%;
+  text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.6);
+}
+.stems-confirm-icon { font-size: 2.2rem; color: var(--primary, #6366f1); margin-bottom: 14px; }
+.stems-confirm-box h3 { margin: 0 0 4px; font-size: 1.15rem; }
+.stems-confirm-btns { display: flex; gap: 12px; justify-content: center; margin-top: 22px; }
 
 @media (max-width: 700px) {
   .stem-row { grid-template-columns: 1fr 130px; }
   .stem-row__wave { display: none; }
   .stems-hero { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .stems-vi-strip { padding: 12px 16px; }
 }
 </style>`)
 }
+
 
 // ─── GENERATOR PAGE (real pipeline UI) ───────────────────────────────────────
 function generatorPage() {
@@ -2659,7 +2874,7 @@ function generatorPage() {
         <div class="stereo-player__label"><i class="fas fa-music"></i> Full stereo mix</div>
         <audio id="stereo-audio" controls style="width:100%;margin-top:8px;"></audio>
         <a id="stereo-download" class="btn btn--outline btn--sm" style="margin-top:10px" download>
-          <i class="fas fa-download"></i> Download stereo mix
+          <i class="fas fa-download"></i> Download
         </a>
       </div>
       <!-- Track list (hidden for free tier, shown for Creator/Pro) -->
@@ -2801,7 +3016,7 @@ function pricingPage() {
 function dashboardPage() {
   return shell('Dashboard', `
 <main class="inner-page gs-content">
-  <div class="dash-header"><h2>My Projects</h2><a href="/generator" class="btn btn--primary"><i class="fas fa-plus"></i> New beat</a></div>
+  <div class="dash-header"><h2>Library</h2><a href="/generator" class="btn btn--primary"><i class="fas fa-plus"></i> New beat</a></div>
   <div class="project-grid" id="project-grid">
     <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading projects...</div>
   </div>
@@ -3067,7 +3282,7 @@ function profilePage(user: User | null) {
         <div class="profile-section">
           <h3>Quick links</h3>
           <div class="profile-links">
-            <a href="/dashboard" class="profile-link-card"><i class="fas fa-th-large"></i><span>My Projects</span></a>
+            <a href="/dashboard" class="profile-link-card"><i class="fas fa-th-large"></i><span>Library</span></a>
             <a href="/generator" class="profile-link-card"><i class="fas fa-play-circle"></i><span>New Beat</span></a>
             <a href="/subscription" class="profile-link-card"><i class="fas fa-credit-card"></i><span>Subscription</span></a>
             <a href="/account" class="profile-link-card"><i class="fas fa-cog"></i><span>Settings</span></a>

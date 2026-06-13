@@ -495,12 +495,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label);
             const sub   = [bpm, dur].filter(Boolean).join(' · ');
             const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g,'_').toLowerCase();
-            // Build art style: gradient base + real image on top if available
-            const artStyle = p.image_url
-              ? `background:${thumbBg};background-image:url('${p.image_url}');background-size:cover;background-position:center`
-              : thumbBg;
+            // Build art style: gradient base always shown first; image loaded lazily
+            const artStyle = thumbBg;
+            const artImageUrl = p.image_url || '';
             html += `
-              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}">
+              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}" data-art="${artImageUrl.replace(/"/g,'&quot;')}">
                 <div class="project-card__art" style="${artStyle}">
                   <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
                   <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
@@ -534,6 +533,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
         projectGrid.innerHTML = html;
+
+        // Lazy-load Pollinations cover art for each card (image takes 10-30s to generate)
+        projectGrid.querySelectorAll('.project-card[data-art]').forEach(card => {
+          const imgUrl = card.dataset.art;
+          if (!imgUrl) return;
+          const artEl = card.querySelector('.project-card__art');
+          if (!artEl) return;
+          const existingBg = artEl.style.background || artEl.style.backgroundImage || '';
+          function tryCardImg(url, attempt) {
+            const img = new Image();
+            img.onload = () => {
+              artEl.style.backgroundImage = `url('${url}'), ${existingBg}`;
+              artEl.style.backgroundSize = 'cover, cover';
+              artEl.style.backgroundPosition = 'center, center';
+            };
+            img.onerror = () => {
+              if (attempt < 4) {
+                const delay = [5000, 10000, 15000, 20000][attempt] || 20000;
+                setTimeout(() => tryCardImg(url, attempt + 1), delay);
+              }
+            };
+            img.src = url;
+          }
+          tryCardImg(imgUrl, 0);
+        });
 
         // Inject dashboard upgrade modal if not already present
         if (!document.getElementById('sf-dash-upgrade')) {
@@ -1094,7 +1118,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                   stereoDownload.href = job.stereo_url;
                   stereoDownload.setAttribute('download', safeFilename + '_stereo.mp3');
-                  stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download stereo mix';
+                  stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download';
                   stereoDownload.style.opacity = '';
                 }
               }
@@ -1183,18 +1207,26 @@ document.addEventListener('DOMContentLoaded', () => {
               thumbEl.style.display = 'flex';
               if (thumbLabel) thumbLabel.textContent = finalTitle;
 
-              // Layer real image on top when loaded (Pollinations.ai can be slow)
+              // Layer real image on top when loaded (Pollinations.ai can be slow — retry with backoff)
               const imgUrl = job.image_url;
               if (imgUrl) {
-                const img = new Image();
-                img.onload = () => {
-                  // Use background shorthand to set image over gradient
-                  thumbEl.style.backgroundImage = `url('${imgUrl}'), ${gradientBg}`;
-                  thumbEl.style.backgroundSize = 'cover, cover';
-                  thumbEl.style.backgroundPosition = 'center, center';
-                };
-                img.onerror = () => { /* keep gradient fallback */ };
-                img.src = imgUrl;
+                function tryLoadCoverImage(url, attempt) {
+                  const img = new Image();
+                  img.onload = () => {
+                    thumbEl.style.backgroundImage = `url('${url}'), ${gradientBg}`;
+                    thumbEl.style.backgroundSize = 'cover, cover';
+                    thumbEl.style.backgroundPosition = 'center, center';
+                  };
+                  img.onerror = () => {
+                    // Retry up to 5 times with increasing delays (Pollinations can take 30s+)
+                    if (attempt < 5) {
+                      const delay = [3000, 6000, 10000, 15000, 20000][attempt] || 20000;
+                      setTimeout(() => tryLoadCoverImage(url + '&_r=' + attempt, attempt + 1), delay);
+                    }
+                  };
+                  img.src = url + (attempt > 0 ? '' : '');
+                }
+                tryLoadCoverImage(imgUrl, 0);
               }
             }
 
