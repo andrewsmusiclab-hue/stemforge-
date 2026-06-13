@@ -56,11 +56,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Instrument tags ────────────────────────────────────────────
   document.querySelectorAll('.inst-tag').forEach(tag => tag.addEventListener('click', () => tag.classList.toggle('active')));
 
-  // ── BPM slider ─────────────────────────────────────────────────
-  const bpmSlider = document.getElementById('gen-bpm');
-  const bpmVal    = document.getElementById('gen-bpm-val');
-  if (bpmSlider && bpmVal) bpmSlider.addEventListener('input', () => bpmVal.textContent = bpmSlider.value + ' BPM');
-
   // ── Password toggle ────────────────────────────────────────────
   const pwToggle = document.getElementById('pw-toggle');
   const pwInput  = document.getElementById('pw-input');
@@ -674,19 +669,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // ── BPM presets ───────────────────────────────────────────────
-  const bpmSliderEl = document.getElementById('gen-bpm');
-  const bpmValEl    = document.getElementById('gen-bpm-val');
-  document.querySelectorAll('.suno-chip[data-bpm]').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const val = parseInt(chip.dataset.bpm);
-      if (bpmSliderEl) { bpmSliderEl.value = val; }
-      if (bpmValEl) bpmValEl.textContent = val + ' BPM';
-      document.querySelectorAll('.suno-chip[data-bpm]').forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-    });
-  });
-
   // ── More Options collapse ─────────────────────────────────────
   const moreToggle = document.getElementById('more-options-toggle');
   const moreBody   = document.getElementById('more-body');
@@ -772,7 +754,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const lyrics      = document.getElementById('gen-lyrics')?.value?.trim() || '';
     const prompt      = document.getElementById('gen-prompt')?.value?.trim() || '';
     const style       = document.getElementById('gen-style')?.value?.trim() || '';
-    const bpm         = document.getElementById('gen-bpm')?.value || '90';
     const instrumental= document.getElementById('gen-instrumental')?.checked || false;
     const instruments = document.getElementById('gen-instruments')?.value?.trim() || '';
     const title       = document.getElementById('gen-title')?.value?.trim() || '';
@@ -787,7 +768,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     return {
       genre: style || '',
-      bpm,
       prompt: parts.join('. '),
       vocal_space: instrumental ? 'none' : 'high',
       instruments_include: instruments ? instruments.split(',').map(s=>s.trim()).filter(Boolean) : [],
@@ -950,7 +930,6 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({
           prompt: inputs.prompt,
           genre: inputs.genre,
-          bpm: inputs.bpm,
           vocal_space: inputs.vocal_space,
           energy: inputs.energy,
           instruments_include: inputs.instruments_include,

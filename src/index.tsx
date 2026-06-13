@@ -1239,6 +1239,52 @@ app.get('/api/stripe/portal', async (c) => {
   }
 })
 
+// POST /api/subscription/downgrade — schedule plan downgrade at next billing cycle
+app.post('/api/subscription/downgrade', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan === 'free') return c.json({ error: 'Already on free plan' }, 400)
+  if (!user.stripe_subscription_id) return c.json({ error: 'No active subscription' }, 400)
+
+  const { target_plan } = await c.req.json<{ target_plan: string }>()
+  // Validate downgrade path: pro→creator, pro→free, creator→free
+  const validTargets: Record<string, string[]> = { pro: ['creator', 'free'], creator: ['free'] }
+  if (!target_plan || !validTargets[user.plan]?.includes(target_plan)) {
+    return c.json({ error: 'Invalid downgrade target' }, 400)
+  }
+
+  try {
+    if (target_plan === 'free') {
+      // Cancel subscription at period end — user stays on current plan until cycle ends
+      await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
+        cancel_at_period_end: 'true',
+      }, c.env.STRIPE_SECRET_KEY)
+      return c.json({ ok: true, message: 'Your subscription will cancel at the end of the billing period. You will move to the Free plan then.' })
+    } else {
+      // Downgrade to creator: update subscription to creator price, prorated at cycle end
+      const newPriceId = target_plan === 'creator' ? c.env.STRIPE_CREATOR_PRICE_ID : ''
+      if (!newPriceId) return c.json({ error: 'Price not configured' }, 500)
+      // Get current subscription to find the item ID
+      const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+      const itemId = sub.items?.data?.[0]?.id
+      if (!itemId) return c.json({ error: 'Could not find subscription item' }, 500)
+      // Schedule the price change at period end (no proration, takes effect next cycle)
+      await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
+        'items[0][id]': itemId,
+        'items[0][price]': newPriceId,
+        proration_behavior: 'none',
+        billing_cycle_anchor: 'unchanged',
+      }, c.env.STRIPE_SECRET_KEY)
+      return c.json({ ok: true, message: `Your plan will change to Creator at the next billing cycle.` })
+    }
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Downgrade failed' }, 500)
+  }
+})
+
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -1485,11 +1531,7 @@ function homePage() {
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
       <a href="/pricing" class="btn btn--outline btn--lg"><i class="fas fa-tags"></i> See pricing</a>
     </div>
-    <div class="hero__proof">
-      <span><i class="fas fa-check-circle"></i> No credit card required</span>
-      <span><i class="fas fa-check-circle"></i> 3 free generations</span>
-      <span><i class="fas fa-check-circle"></i> Real AI generation</span>
-    </div>
+
   </div>
   <div class="hero__wave-wrap">
     <div class="waveform-demo">
@@ -1745,20 +1787,6 @@ function generatorPage() {
         <span class="suno-card__title">More Options</span>
       </div>
       <div class="suno-card__body" id="more-body" style="display:none">
-        <!-- BPM -->
-        <div class="suno-option-row">
-          <label class="suno-option-label">Tempo</label>
-          <div class="suno-bpm-row">
-            <input type="range" class="suno-range" id="gen-bpm" min="60" max="200" value="90"/>
-            <span class="suno-bpm-val" id="gen-bpm-val">90 BPM</span>
-          </div>
-          <div class="suno-bpm-presets">
-            <button class="suno-chip suno-chip--sm" data-bpm="70">Slow (70)</button>
-            <button class="suno-chip suno-chip--sm" data-bpm="90">Mid (90)</button>
-            <button class="suno-chip suno-chip--sm" data-bpm="120">Fast (120)</button>
-            <button class="suno-chip suno-chip--sm" data-bpm="140">Hard (140)</button>
-          </div>
-        </div>
         <!-- Instruments (prompt-based, optional) -->
         <div class="suno-option-row">
           <label class="suno-option-label">Include instruments <span class="suno-optional-tag">Optional</span></label>
@@ -1782,7 +1810,7 @@ function generatorPage() {
       <button class="suno-create-btn" id="gen-full-btn">
         <i class="fas fa-music"></i> Create
       </button>
-      <p class="suno-create-note">1 generation · stereo mix + 5-stem ZIP</p>
+
     </div>
 
   </div><!-- /suno-left -->
@@ -2252,13 +2280,20 @@ function profilePage(user: User | null) {
 function subscriptionPage(user: User, env: Bindings) {
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
-  const planPrice = user.plan === 'pro' ? '$39' : user.plan === 'creator' ? '$19' : '$0'
   const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
   const billingPeriod = user.plan === 'free' ? 'N/A' : 'Monthly'
   const nextBilling = user.stripe_subscription_id
     ? new Date(Date.now() + 30*24*3600*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
     : 'N/A'
   const stripeOk = stripeConfigured(env)
+  // Downgrade options based on current plan
+  const canDowngrade = user.plan !== 'free' && stripeOk && !!user.stripe_subscription_id
+  const downgradeOptions = user.plan === 'pro'
+    ? [{ value: 'creator', label: 'Creator — $19/mo' }, { value: 'free', label: 'Free — $0/mo (cancel)' }]
+    : user.plan === 'creator'
+    ? [{ value: 'free', label: 'Free — $0/mo (cancel)' }]
+    : []
+
   return shell('Subscription', `
 <main class="inner-page gs-content sub-page">
   <div class="container">
@@ -2311,7 +2346,7 @@ function subscriptionPage(user: User, env: Bindings) {
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 3 generations/month</li>
-            <li><i class="fas fa-check"></i> Stereo + stem ZIP</li>
+            <li><i class="fas fa-check"></i> Stereo mix</li>
           </ul>
           ${user.plan === 'free' ? '<span class="sub-current-badge">Current plan</span>' : ''}
         </div>
@@ -2327,7 +2362,9 @@ function subscriptionPage(user: User, env: Bindings) {
           </ul>
           ${user.plan === 'creator'
             ? '<span class="sub-current-badge">Current plan</span>'
-            : `<a href="/checkout?plan=creator" class="btn btn--primary btn--sm">Upgrade — $19/mo</a>`
+            : user.plan === 'pro'
+              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator">Downgrade to Creator</button>`
+              : `<a href="/checkout?plan=creator" class="btn btn--primary btn--sm">Upgrade — $19/mo</a>`
           }
         </div>
         <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}">
@@ -2346,9 +2383,90 @@ function subscriptionPage(user: User, env: Bindings) {
           }
         </div>
       </div>
+      ${canDowngrade ? `
+      <div class="sub-downgrade-section">
+        <h4>Downgrade Plan</h4>
+        <p>Changes take effect at the end of your current billing cycle. You keep all features until then.</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
+          ${downgradeOptions.map(opt => `
+          <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="${opt.value}" style="border-color:rgba(255,100,100,.4);color:#ff6464;">
+            <i class="fas fa-arrow-down"></i> ${opt.label}
+          </button>`).join('')}
+        </div>
+      </div>` : ''}
     </div>
   </div>
-</main>`)
+</main>
+<!-- Downgrade confirm modal -->
+<div id="sub-downgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;max-width:420px;width:90%;text-align:center">
+    <i class="fas fa-arrow-down" style="font-size:2rem;color:#ff6464;margin-bottom:16px"></i>
+    <h3 style="margin-bottom:8px">Confirm Downgrade</h3>
+    <p id="sub-downgrade-msg" style="color:var(--muted);margin-bottom:24px;line-height:1.5"></p>
+    <div style="display:flex;gap:12px;justify-content:center">
+      <button class="btn btn--outline btn--sm" onclick="document.getElementById('sub-downgrade-modal').style.display='none'">Cancel</button>
+      <button class="btn btn--sm" id="sub-downgrade-confirm" style="background:#ff4444;border:none;color:white">Confirm Downgrade</button>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  // Manage dropdown toggle
+  const manageBtn = document.getElementById('sub-manage-btn');
+  const manageDrop = document.getElementById('sub-manage-dropdown');
+  if (manageBtn && manageDrop) {
+    manageBtn.addEventListener('click', () => {
+      manageDrop.style.display = manageDrop.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', e => {
+      if (!manageBtn.contains(e.target) && !manageDrop.contains(e.target)) manageDrop.style.display = 'none';
+    });
+  }
+  // Downgrade buttons
+  let pendingTarget = null;
+  document.querySelectorAll('.sub-downgrade-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pendingTarget = btn.dataset.target;
+      const modal = document.getElementById('sub-downgrade-modal');
+      const msg = document.getElementById('sub-downgrade-msg');
+      if (pendingTarget === 'free') {
+        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (3 gen/month) after that.';
+      } else if (pendingTarget === 'creator') {
+        msg.textContent = 'You will be downgraded to the Creator plan ($19/mo, 50 gen/month) at the end of your current billing cycle.';
+      }
+      modal.style.display = 'flex';
+    });
+  });
+  const confirmBtn = document.getElementById('sub-downgrade-confirm');
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', async () => {
+      if (!pendingTarget) return;
+      confirmBtn.disabled = true;
+      confirmBtn.textContent = 'Processing…';
+      try {
+        const res = await fetch('/api/subscription/downgrade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_plan: pendingTarget })
+        });
+        const data = await res.json();
+        document.getElementById('sub-downgrade-modal').style.display = 'none';
+        if (data.ok) {
+          alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.');
+          window.location.reload();
+        } else {
+          alert('Error: ' + (data.error || 'Downgrade failed'));
+        }
+      } catch(e) {
+        alert('Network error. Please try again.');
+      } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = 'Confirm Downgrade';
+      }
+    });
+  }
+})();
+</script>`)
 }
 
 // ─── ACCOUNT PAGE ─────────────────────────────────────────────────────────────

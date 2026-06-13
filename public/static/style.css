@@ -857,7 +857,7 @@ p  { color: var(--sub); }
 }
 .project-card:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--border-2); }
 .project-card__art {
-  height: 120px; position: relative; overflow: hidden;
+  width: 100%; aspect-ratio: 1/1; position: relative; overflow: hidden;
   background: linear-gradient(135deg, #1a2a48, #0d1528);
 }
 .project-card__art--1 { background: linear-gradient(135deg, #1e3a5f, #0a1a30); }
@@ -1362,6 +1362,15 @@ p  { color: var(--sub); }
   border-radius: 99px; font-size: .75rem; font-weight: 700;
   background: rgba(78,159,255,.15); color: var(--primary); border: 1px solid rgba(78,159,255,.3);
 }
+.sub-downgrade-section {
+  margin-top: 28px;
+  padding: 20px 24px;
+  background: rgba(255,80,80,.05);
+  border: 1px solid rgba(255,80,80,.15);
+  border-radius: 12px;
+}
+.sub-downgrade-section h4 { margin: 0 0 6px; font-size: .95rem; font-weight: 700; color: #ff7070; }
+.sub-downgrade-section p { margin: 0; font-size: .82rem; color: var(--muted); line-height: 1.5; }
 
 /* ══════════════════════════════════════════════════════════════
    ACCOUNT PAGE
@@ -2565,66 +2574,76 @@ body.light .gs-theme-pill::after {
   background: #fff;
 }
 
-/* ── Beat Thumbnail (generator result — Suno-style top banner) ── */
+/* ── Beat Thumbnail (generator result — full square album cover) ── */
 .gen-result__thumb {
   width: 100%;
-  height: 160px;
+  aspect-ratio: 1 / 1;
   position: relative;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  /* border-radius from parent overflow:hidden clips the top corners */
+  background: #1a1a2e; /* fallback until JS sets gradient */
 }
 .gen-result__thumb::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(to bottom, rgba(0,0,0,0) 40%, rgba(0,0,0,.55) 100%);
+  background: linear-gradient(to bottom, rgba(0,0,0,0) 50%, rgba(0,0,0,.7) 100%);
   z-index: 1;
 }
 .gen-result__thumb-icon {
-  font-size: 3rem;
-  color: rgba(255,255,255,.35);
+  font-size: 5rem;
+  color: rgba(255,255,255,.18);
   position: relative;
   z-index: 2;
   pointer-events: none;
 }
 .gen-result__thumb-label {
   position: absolute;
-  bottom: 12px;
-  left: 16px;
-  right: 16px;
+  bottom: 20px;
+  left: 20px;
+  right: 20px;
   z-index: 2;
-  font-size: .85rem;
-  font-weight: 600;
-  color: rgba(255,255,255,.9);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: rgba(255,255,255,.95);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 4px rgba(0,0,0,.6);
+  text-shadow: 0 2px 8px rgba(0,0,0,.8);
+  letter-spacing: .01em;
 }
 
 /* ── Project card art icon ─────────────────────────────────── */
 .project-card__art {
   position: relative;
-  height: 130px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   border-radius: 12px 12px 0 0;
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: #1a1a2e; /* fallback */
+}
+.project-card__art::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to bottom, rgba(0,0,0,0) 50%, rgba(0,0,0,.65) 100%);
+  z-index: 0;
 }
 .project-card__art-icon {
   position: absolute;
-  font-size: 2rem;
-  color: rgba(255,255,255,.2);
+  font-size: 3rem;
+  color: rgba(255,255,255,.15);
   z-index: 0;
 }
 .project-card__play {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   width: 44px;
   height: 44px;
   border-radius: 50%;
