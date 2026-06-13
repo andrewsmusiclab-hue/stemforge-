@@ -813,6 +813,18 @@ p  { color: var(--sub); }
 .export-btn small { color: var(--muted); font-size: .72rem; }
 .export-btn:hover:not(.export-btn--locked) { border-color: var(--primary); }
 .export-btn--locked { opacity: .5; cursor: not-allowed; }
+.export-btn--get-stems {
+  background: rgba(99,102,241,.12);
+  border-color: rgba(99,102,241,.35);
+  color: #a78bfa;
+}
+.export-btn--get-stems i { color: #a78bfa; }
+.export-btn--get-stems small { color: rgba(167,139,250,.7); }
+.export-btn--get-stems:hover {
+  background: rgba(99,102,241,.22);
+  border-color: rgba(167,139,250,.6);
+  color: #c4b5fd;
+}
 .upgrade-nudge {
   font-size: .82rem; color: var(--accent); text-decoration: none;
   display: flex; align-items: center; gap: 6px;
@@ -2599,10 +2611,10 @@ body.light .gs-theme-pill::after {
   background: #fff;
 }
 
-/* ── Beat Thumbnail (generator result — full square album cover) ── */
+/* ── Beat Thumbnail (generator result — compact album banner) ── */
 .gen-result__thumb {
   width: 100%;
-  aspect-ratio: 1 / 1;
+  height: 220px;
   position: relative;
   overflow: hidden;
   display: flex;

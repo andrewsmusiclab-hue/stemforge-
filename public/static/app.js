@@ -518,7 +518,7 @@ document.addEventListener('DOMContentLoaded', () => {
                           : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
                       : ''}
                     ${p.zip_url
-                      ? `<a class="export-badge" href="${p.zip_url}" download="${safeFilename}_stems.zip" onclick="event.stopPropagation()">⬇ Stems</a>`
+                      ? `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Open stems player"><i class="fas fa-layer-group"></i> Stems</a>`
                       : (window._sfUser && window._sfUser.plan !== 'free'
                           ? `<span class="export-badge export-badge--stems-cta" onclick="event.stopPropagation();openSongEditModal(null,'${p.id}')" title="Get stems" style="cursor:pointer"><i class="fas fa-layer-group"></i> Get Stems</span>`
                           : '')}
@@ -585,7 +585,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div style="font-size:13px;font-weight:600;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${card.querySelector('h4').textContent}</div>
         <input type="range" id="dash-seek" min="0" max="100" value="0" step="0.1" style="width:100%;accent-color:var(--primary);cursor:pointer"/>
       </div>
-      ${stereoUrl ? `<a href="${stereoUrl}" download style="font-size:18px;color:var(--muted)"><i class="fas fa-download"></i></a>` : ''}
+      ${stereoUrl ? `<a href="${stereoUrl}" download="${(trackTitle||'beat').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase()}_stereo.mp3" style="font-size:18px;color:var(--muted)"><i class="fas fa-download"></i></a>` : ''}
       <button onclick="document.getElementById('dash-mini-player').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px"><i class="fas fa-times"></i></button>
     `;
     document.body.appendChild(player);
@@ -1031,8 +1031,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // ── Resolve final track title ─────────────────────────
             const finalTitle = job.title ||
               (job.blueprint ? (job.blueprint.genre + ' — ' + job.blueprint.key + ' ' + job.blueprint.scale) : 'Beat Ready');
-            // Sanitize for filename: replace special chars with underscores
-            const safeFilename = finalTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g, '_').toLowerCase();
+            // Sanitize for filename: replace special chars with underscores, ensure non-empty
+            const safeFilename = (finalTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g, '_').toLowerCase().replace(/^_+|_+$/g, '')) || 'stemforge_beat';
 
             // Final update of all tracks (or build if not yet rendered)
             if (trackList) {
@@ -1119,25 +1119,31 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // ZIP download button for grouped stems — named after track, locked for free
+            // Get Stems button — opens stems player page
             const zipBtn = document.getElementById('exp-stems');
             if (zipBtn) {
               if (isFree) {
                 zipBtn.classList.add('export-btn--locked');
-                zipBtn.querySelector('small').textContent = 'Creator+';
                 zipBtn.onclick = () => showUpgradePrompt();
-              } else if (job.zip_url) {
-                zipBtn.onclick = () => {
-                  const a = document.createElement('a');
-                  a.href = job.zip_url;
-                  a.download = safeFilename + '_stems.zip';
-                  document.body.appendChild(a);
-                  a.click();
-                  a.remove();
-                };
+              } else {
                 zipBtn.classList.remove('export-btn--locked');
-                zipBtn.querySelector('small').textContent = 'ZIP';
-                zipBtn.title = 'Download all stems (ZIP)';
+                zipBtn.onclick = () => {
+                  window.location.href = '/stems/' + job.id;
+                };
+              }
+            }
+
+            // "Get up to 12 stems" button — same stems page
+            const tracksBtn = document.getElementById('exp-tracks');
+            if (tracksBtn) {
+              if (isFree) {
+                tracksBtn.classList.add('export-btn--locked');
+                tracksBtn.onclick = () => showUpgradePrompt();
+              } else {
+                tracksBtn.classList.remove('export-btn--locked');
+                tracksBtn.onclick = () => {
+                  window.location.href = '/stems/' + job.id;
+                };
               }
             }
 
@@ -1170,41 +1176,48 @@ document.addEventListener('DOMContentLoaded', () => {
               const hue = job.thumbnail_seed ?? 180;
               const hue2 = (hue + 55) % 360;
               const hue3 = (hue + 120) % 360;
-              thumbEl.style.background = `linear-gradient(135deg, hsl(${hue},65%,28%) 0%, hsl(${hue2},75%,20%) 55%, hsl(${hue3},60%,15%) 100%)`;
+              const gradientBg = `linear-gradient(135deg, hsl(${hue},65%,28%) 0%, hsl(${hue2},75%,20%) 55%, hsl(${hue3},60%,15%) 100%)`;
+              thumbEl.style.backgroundImage = gradientBg;
+              thumbEl.style.backgroundSize = 'cover';
+              thumbEl.style.backgroundPosition = 'center';
               thumbEl.style.display = 'flex';
               if (thumbLabel) thumbLabel.textContent = finalTitle;
 
-              // Layer real image on top via background-image if available
-              if (job.image_url) {
+              // Layer real image on top when loaded (Pollinations.ai can be slow)
+              const imgUrl = job.image_url;
+              if (imgUrl) {
                 const img = new Image();
                 img.onload = () => {
-                  thumbEl.style.backgroundImage = `url('${job.image_url}')`;
-                  thumbEl.style.backgroundSize = 'cover';
-                  thumbEl.style.backgroundPosition = 'center';
+                  // Use background shorthand to set image over gradient
+                  thumbEl.style.backgroundImage = `url('${imgUrl}'), ${gradientBg}`;
+                  thumbEl.style.backgroundSize = 'cover, cover';
+                  thumbEl.style.backgroundPosition = 'center, center';
                 };
                 img.onerror = () => { /* keep gradient fallback */ };
-                img.src = job.image_url;
+                img.src = imgUrl;
               }
             }
 
             if (genResult) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
-            // Refresh sidebar generation counter to reflect the new usage
+            // Refresh sidebar downloads counter to reflect the new usage
             fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
               if (!user) return;
+              // Update global user object
+              if (window._sfUser) {
+                window._sfUser.gens_used  = user.gens_used;
+                window._sfUser.gens_limit = user.gens_limit;
+                window._sfUser.plan       = user.plan;
+              }
               const gv = document.getElementById('gs-gens-val');
               const gb = document.getElementById('gs-gens-bar');
-              const plan = user.plan || 'free';
-              if (plan === 'free') {
-                if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
-              } else {
-                // Show credits (gens * 50 credits per gen for creator, gens * 50 for pro)
-                const creditsPerGen = plan === 'pro' ? 67 : 60;
-                const creditsUsed = user.gens_used * creditsPerGen;
-                const creditsTotal = user.gens_limit * creditsPerGen;
-                if (gv) gv.innerHTML = `${creditsUsed} <small>/ ${creditsTotal} credits</small>`;
-              }
+              const cl = document.getElementById('gs-credits-label');
+              if (cl) cl.textContent = 'Downloads';
+              // Always show downloads used / limit directly
+              const limitMap = { free: 3, creator: 50, pro: 150 };
+              const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
+              if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
               if (gb) {
                 const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
                 gb.style.width = pct + '%';
@@ -1283,12 +1296,16 @@ function showStemsSection(job) {
   const desc = document.getElementById('edit-stems-desc');
   if (!sec) return;
 
-  // Already extracted — show download links immediately
+  // Already extracted — link to stems player page
   if (job && job.zip_url) {
     sec.style.display = 'block';
-    if (desc) desc.textContent = 'Stems already extracted — download below.';
+    if (desc) desc.textContent = 'Stems extracted — open the stems player to preview and download.';
     const btn = document.getElementById('edit-get-stems-btn');
-    if (btn) btn.style.display = 'none';
+    if (btn) {
+      btn.innerHTML = '<i class="fas fa-play-circle"></i> Open Stems Player';
+      btn.onclick = () => { window.location.href = '/stems/' + job.id; };
+      btn.style.display = '';
+    }
     const result = document.getElementById('edit-stems-result');
     const zipLink = document.getElementById('edit-stems-zip-link');
     if (result && zipLink) {
@@ -1413,36 +1430,25 @@ window.requestStems = async function() {
       return;
     }
 
-    // Success
-    btn.style.display = 'none';
-    if (status) { status.style.background = 'rgba(16,185,129,.12)'; status.style.color = '#34d399'; status.textContent = `✅ Done! ${data.plan === 'pro' ? 'Up to 12 stems' : '5 stems'} extracted · ${data.credits_used} credits used.`; }
-
-    // Show download buttons
-    const zipLink  = document.getElementById('edit-stems-zip-link');
-    const midiLink = document.getElementById('edit-stems-midi-link');
-    if (zipLink && data.zip_url) {
-      zipLink.href = data.zip_url;
-      const job = window._sfProjects && window._sfProjects[jobId];
-      const title = (job?.title || job?.blueprint?.genre || 'beat').replace(/[^a-zA-Z0-9 \-_]/g,'').replace(/\s+/g,'_').toLowerCase();
-      zipLink.download = title + '_stems.zip';
-    }
-    if (midiLink && data.midi_zip_url) {
-      midiLink.href = data.midi_zip_url;
-      midiLink.style.display = 'inline-flex';
-    }
-    if (result) result.style.display = 'flex';
-
-    // Update cached job + dashboard card
-    if (window._sfProjects && window._sfProjects[jobId]) {
-      window._sfProjects[jobId].zip_url = data.zip_url;
-    }
-    // Update sidebar credit display
+    // Success — update sidebar credits
     if (window._sfUser) {
       const cost = data.credits_used || 0;
       window._sfUser.gens_used = (window._sfUser.gens_used || 0) + cost;
       const gsGensVal = document.getElementById('gs-gens-val');
-      if (gsGensVal) gsGensVal.innerHTML = `${window._sfUser.gens_used} <small>/ ${window._sfUser.gens_limit}</small>`;
+      const limitMap  = { free: 3, creator: 50, pro: 150 };
+      const lim = window._sfUser.gens_limit || limitMap[window._sfUser.plan] || 3;
+      if (gsGensVal) gsGensVal.innerHTML = `${window._sfUser.gens_used} <small>/ ${lim}</small>`;
     }
+
+    // Update cached job
+    if (window._sfProjects && window._sfProjects[jobId]) {
+      window._sfProjects[jobId].zip_url = data.zip_url;
+    }
+
+    // Redirect to stems player page
+    if (status) { status.style.background = 'rgba(16,185,129,.12)'; status.style.color = '#34d399'; status.textContent = `✅ Done! Redirecting to stems player...`; }
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening...';
+    setTimeout(() => { window.location.href = '/stems/' + jobId; }, 800);
 
   } catch(e) {
     if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ Network error. Please try again.'; }

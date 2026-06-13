@@ -1246,6 +1246,18 @@ app.get('/checkout', async (c) => {
 app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
 
+// ── Stems player page ─────────────────────────────────────────
+app.get('/stems/:id', async (c) => {
+  const id = c.req.param('id')
+  // Auth check
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!user) return c.redirect('/login?next=/stems/' + id)
+  }
+  return c.html(stemsPage(id))
+})
+
 app.get('/profile', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.html(profilePage(null))
   const token = getSessionCookie(c.req.raw)
@@ -1825,6 +1837,650 @@ function homePage() {
 </main>`)
 }
 
+// ─── STEMS PLAYER PAGE ───────────────────────────────────────────────────────
+function stemsPage(jobId: string) {
+  return shell('Stems Player', `
+<div class="gs-content stems-page" id="stems-page" data-job-id="${jobId}">
+
+  <!-- Back nav -->
+  <div class="stems-topbar">
+    <button onclick="history.back()" class="stems-back-btn"><i class="fas fa-arrow-left"></i> Back</button>
+    <div class="stems-topbar__title" id="stems-track-title">Loading stems...</div>
+    <div class="stems-topbar__actions">
+      <button class="btn btn--outline btn--sm" id="stems-download-zip-btn" style="display:none">
+        <i class="fas fa-file-archive"></i> Download ZIP
+      </button>
+    </div>
+  </div>
+
+  <!-- Cover + info -->
+  <div class="stems-hero" id="stems-hero">
+    <div class="stems-hero__art" id="stems-hero-art"></div>
+    <div class="stems-hero__info">
+      <div class="stems-hero__title" id="stems-hero-title">—</div>
+      <div class="stems-hero__meta" id="stems-hero-meta">—</div>
+      <div class="stems-hero__badge" id="stems-plan-badge"></div>
+    </div>
+  </div>
+
+  <!-- Loading / error states -->
+  <div id="stems-loading" style="text-align:center;padding:60px 20px;color:var(--muted)">
+    <i class="fas fa-spinner fa-spin" style="font-size:2rem;margin-bottom:16px;display:block"></i>
+    <p>Loading stems...</p>
+  </div>
+  <div id="stems-no-stems" style="display:none;text-align:center;padding:60px 20px">
+    <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
+    <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
+    <p style="color:var(--muted);margin-bottom:24px">Extract stems from your beat to play and download them individually.</p>
+    <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
+      <i class="fas fa-layer-group"></i> Get Stems
+    </button>
+    <div id="stems-extract-status" style="margin-top:16px;font-size:.88rem;display:none"></div>
+  </div>
+  <div id="stems-error" style="display:none;text-align:center;padding:60px 20px">
+    <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:var(--danger);margin-bottom:16px;display:block"></i>
+    <p id="stems-error-msg">Could not load stems.</p>
+    <button class="btn btn--outline" style="margin-top:16px" onclick="stemsInit()">Retry</button>
+  </div>
+
+  <!-- Master transport -->
+  <div id="stems-transport" style="display:none" class="stems-transport">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <button class="stems-play-all-btn" id="stems-play-all" onclick="stemsTogglePlayAll()">
+        <i class="fas fa-play" id="stems-play-icon"></i>
+      </button>
+      <div style="flex:1;min-width:160px">
+        <input type="range" id="stems-seek" min="0" max="100" value="0" step="0.1"
+          style="width:100%;accent-color:var(--primary);cursor:pointer"/>
+      </div>
+      <div style="font-size:.82rem;color:var(--muted);font-variant-numeric:tabular-nums;min-width:80px;text-align:right">
+        <span id="stems-time-cur">0:00</span> / <span id="stems-time-dur">0:00</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <i class="fas fa-volume-up" style="font-size:.8rem;color:var(--muted)"></i>
+        <input type="range" id="stems-master-vol" min="0" max="100" value="80"
+          style="width:80px;accent-color:var(--primary);cursor:pointer"/>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stem tracks -->
+  <div id="stems-list" style="display:none" class="stems-list"></div>
+
+  <!-- Extract flow for free users nudge -->
+  <div id="stems-upgrade-nudge" style="display:none;text-align:center;padding:24px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:14px;margin-top:20px">
+    <p style="margin-bottom:12px"><i class="fas fa-lock" style="color:var(--primary)"></i> <strong>Stems require a Creator or Pro plan</strong></p>
+    <a href="/pricing" class="btn btn--primary btn--sm">View Plans</a>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  STEMS PLAYER — Web Audio API per-stem playback
+// ═══════════════════════════════════════════════════════════════
+
+const STEMS_JOB_ID = '${jobId}';
+
+// State
+let stemsJob       = null;      // full job data
+let stemAudios     = {};        // { stemName: HTMLAudioElement }
+let stemMuted      = {};        // { stemName: bool }
+let stemSolo       = {};        // { stemName: bool }
+let stemGains      = {};        // { stemName: float 0-1 }
+let hasSoloActive  = false;
+let isPlaying      = false;
+let masterVolume   = 0.8;
+let stemZipCache   = null;      // ArrayBuffer of zip
+let JSZipLoaded    = false;
+let JSZip          = null;
+
+// ── Load JSZip from CDN ───────────────────────────────────────
+function loadJSZip() {
+  return new Promise((resolve) => {
+    if (window.JSZip) { resolve(window.JSZip); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+    s.onload = () => resolve(window.JSZip);
+    document.head.appendChild(s);
+  });
+}
+
+// ── Format time ──────────────────────────────────────────────
+function fmtTime(secs) {
+  if (!secs || isNaN(secs)) return '0:00';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return m + ':' + String(s).padStart(2,'0');
+}
+
+// ── Show/hide loading states ──────────────────────────────────
+function showState(state) { // 'loading' | 'no-stems' | 'error' | 'player'
+  document.getElementById('stems-loading').style.display    = state === 'loading' ? 'block' : 'none';
+  document.getElementById('stems-no-stems').style.display   = state === 'no-stems' ? 'block' : 'none';
+  document.getElementById('stems-error').style.display      = state === 'error' ? 'block' : 'none';
+  document.getElementById('stems-transport').style.display  = state === 'player' ? 'flex' : 'none';
+  document.getElementById('stems-list').style.display       = state === 'player' ? 'block' : 'none';
+  document.getElementById('stems-upgrade-nudge').style.display = state === 'upgrade' ? 'block' : 'none';
+}
+
+// ── Init ─────────────────────────────────────────────────────
+async function stemsInit() {
+  showState('loading');
+  try {
+    const res  = await fetch('/api/job/' + STEMS_JOB_ID);
+    const job  = await res.json();
+    if (!res.ok || job.error) { throw new Error(job.error || 'Job not found'); }
+    stemsJob = job;
+
+    // Populate hero
+    populateHero(job);
+
+    // Check stems availability
+    if (!job.zip_url) {
+      // Check user plan
+      const meRes  = await fetch('/api/auth/me');
+      const meData = await meRes.json();
+      const user   = meData.user;
+      if (!user || user.plan === 'free') {
+        showState('upgrade');
+        return;
+      }
+      // Creator/Pro — show extract button
+      showState('no-stems');
+      const extBtn = document.getElementById('stems-extract-btn');
+      if (extBtn && user) {
+        const isPro = user.plan === 'pro';
+        extBtn.innerHTML = isPro
+          ? '<i class="fas fa-layer-group"></i> Get 12 Stems (10 credits)'
+          : '<i class="fas fa-layer-group"></i> Get 5 Stems (2 credits)';
+      }
+      return;
+    }
+
+    // Has stems — build player
+    await buildStemsPlayer(job);
+
+  } catch (e) {
+    document.getElementById('stems-error-msg').textContent = e.message || 'Could not load stems.';
+    showState('error');
+  }
+}
+
+// ── Populate hero banner ──────────────────────────────────────
+function populateHero(job) {
+  const title    = job.title || (job.blueprint ? job.blueprint.genre + ' — ' + job.blueprint.key : 'Beat');
+  const meta     = job.blueprint ? (job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + job.blueprint.genre) : '';
+  document.getElementById('stems-track-title').textContent = title;
+  document.getElementById('stems-hero-title').textContent  = title;
+  document.getElementById('stems-hero-meta').textContent   = meta;
+
+  // Art
+  const artEl = document.getElementById('stems-hero-art');
+  const hue = job.thumbnail_seed || 180;
+  const h2  = (hue + 55) % 360;
+  const h3  = (hue + 120) % 360;
+  artEl.style.backgroundImage  = 'linear-gradient(135deg,hsl(' + hue + ',65%,28%) 0%,hsl(' + h2 + ',75%,20%) 55%,hsl(' + h3 + ',60%,15%) 100%)';
+  artEl.style.backgroundSize   = 'cover';
+  artEl.style.backgroundPosition = 'center';
+  if (job.image_url) {
+    const img = new Image();
+    img.onload = () => {
+      artEl.style.backgroundImage = 'url(\\'' + job.image_url + '\\'),linear-gradient(135deg,hsl(' + hue + ',65%,28%) 0%,hsl(' + h2 + ',75%,20%) 55%,hsl(' + h3 + ',60%,15%) 100%)';
+    };
+    img.src = job.image_url;
+  }
+
+  // ZIP download button
+  if (job.zip_url) {
+    const zipBtn = document.getElementById('stems-download-zip-btn');
+    if (zipBtn) {
+      zipBtn.style.display = '';
+      const safeTitle = title.replace(/[^a-zA-Z0-9\\s\\-_]/g,'').replace(/\\s+/g,'_').toLowerCase() || 'stemforge_beat';
+      zipBtn.onclick = () => {
+        const a = document.createElement('a');
+        a.href = job.zip_url;
+        a.download = safeTitle + '_stems.zip';
+        document.body.appendChild(a); a.click(); a.remove();
+      };
+    }
+  }
+}
+
+// ── Build the stems player ────────────────────────────────────
+async function buildStemsPlayer(job) {
+  showState('loading');
+  const zipUrl = job.zip_url;
+  const tracks = job.tracks || [];
+
+  // Build track rows first (no audio yet)
+  const listEl = document.getElementById('stems-list');
+  listEl.innerHTML = '';
+  tracks.forEach(t => {
+    listEl.appendChild(buildStemRow(t));
+    stemMuted[t.stem] = false;
+    stemSolo[t.stem]  = false;
+    stemGains[t.stem] = 1.0;
+  });
+
+  // Fetch ZIP and extract audio blobs
+  try {
+    const zipData = await (await fetch(zipUrl)).arrayBuffer();
+    stemZipCache  = zipData;
+    const JSZipLib = await loadJSZip();
+    const zip     = await JSZipLib.loadAsync(zipData);
+
+    const audioPromises = tracks.map(async (t) => {
+      // Try common filename patterns from Mureka ZIP
+      const candidates = [
+        t.stem + '.wav', t.stem + '.mp3',
+        t.stem.toLowerCase() + '.wav', t.stem.toLowerCase() + '.mp3',
+        t.name + '.wav', t.name + '.mp3',
+      ];
+      let blob = null;
+      for (const name of candidates) {
+        const entry = zip.file(name) || zip.file(name.replace(/\\s+/g,'_')) || zip.file(name.replace(/_/g,' '));
+        if (entry) { blob = await entry.async('blob'); break; }
+      }
+      // Fallback: find any wav/mp3 file that contains the stem name
+      if (!blob) {
+        zip.forEach((relPath, entry) => {
+          if (!blob && !entry.dir) {
+            const lower = relPath.toLowerCase();
+            if (lower.includes(t.stem.toLowerCase()) && (lower.endsWith('.wav') || lower.endsWith('.mp3'))) {
+              blob = entry.async('blob');
+            }
+          }
+        });
+        if (blob && blob.then) blob = await blob;
+      }
+      return { stem: t.stem, blob };
+    });
+
+    const results = await Promise.allSettled(audioPromises);
+
+    let anyAudio = false;
+    results.forEach(r => {
+      if (r.status !== 'fulfilled' || !r.value.blob) return;
+      const { stem, blob } = r.value;
+      const url   = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.volume = masterVolume;
+      audio.preload = 'auto';
+      stemAudios[stem] = audio;
+      anyAudio = true;
+
+      // Sync seek on timeupdate of primary stem (first one)
+      if (Object.keys(stemAudios).length === 1) {
+        audio.addEventListener('timeupdate', () => {
+          if (!audio.duration) return;
+          const pct = (audio.currentTime / audio.duration) * 100;
+          const seekEl = document.getElementById('stems-seek');
+          if (seekEl && !seekEl._dragging) seekEl.value = pct;
+          document.getElementById('stems-time-cur').textContent = fmtTime(audio.currentTime);
+          document.getElementById('stems-time-dur').textContent = fmtTime(audio.duration);
+        });
+        audio.addEventListener('ended', () => {
+          isPlaying = false;
+          document.getElementById('stems-play-icon').className = 'fas fa-play';
+        });
+      }
+    });
+
+    if (anyAudio) showState('player');
+    else {
+      // ZIP loaded but audio extraction failed — show tracks with ZIP download only
+      showState('player');
+      document.getElementById('stems-list').querySelectorAll('.stem-row__play').forEach(b => {
+        b.style.display = 'none';
+      });
+    }
+
+  } catch (zipErr) {
+    console.warn('ZIP extraction failed:', zipErr);
+    // Fallback: show tracks with only ZIP download
+    showState('player');
+  }
+
+  // Seek bar
+  const seekEl = document.getElementById('stems-seek');
+  if (seekEl) {
+    seekEl.addEventListener('mousedown', () => seekEl._dragging = true);
+    seekEl.addEventListener('touchstart', () => seekEl._dragging = true);
+    seekEl.addEventListener('change', () => {
+      seekEl._dragging = false;
+      Object.values(stemAudios).forEach(a => {
+        if (a.duration) a.currentTime = (seekEl.value / 100) * a.duration;
+      });
+    });
+  }
+
+  // Master volume
+  const volEl = document.getElementById('stems-master-vol');
+  if (volEl) {
+    volEl.addEventListener('input', () => {
+      masterVolume = volEl.value / 100;
+      applyVolumes();
+    });
+  }
+}
+
+// ── Build one stem row ────────────────────────────────────────
+function buildStemRow(track) {
+  const el   = document.createElement('div');
+  el.className = 'stem-row';
+  el.dataset.stem = track.stem;
+
+  const iconMap = {
+    drums:'fa-drum', bass:'fa-guitar', vocals:'fa-microphone',
+    other:'fa-wave-square', instrumental:'fa-music', mix:'fa-compact-disc',
+    piano:'fa-piano', guitar:'fa-guitar', strings:'fa-violin',
+    synth:'fa-wave-square', brass:'fa-trumpet', woodwind:'fa-music', fx:'fa-magic'
+  };
+  const icon = iconMap[track.family] || iconMap[track.stem] || 'fa-music';
+
+  el.innerHTML = \`
+    <div class="stem-row__left">
+      <div class="stem-row__icon" style="background:\${track.color}">
+        <i class="fas \${icon}"></i>
+      </div>
+      <div class="stem-row__info">
+        <div class="stem-row__name" id="stem-name-\${track.stem}">\${track.name}</div>
+        <div class="stem-row__filename">\${track.stem}.wav</div>
+      </div>
+    </div>
+    <div class="stem-row__wave" id="stem-wave-\${track.stem}"></div>
+    <div class="stem-row__controls">
+      <button class="stem-ctrl-btn stem-row__play" id="stem-play-\${track.stem}"
+        onclick="stemPlayPause('\${track.stem}')" title="Play/Pause">
+        <i class="fas fa-play"></i>
+      </button>
+      <button class="stem-ctrl-btn stem-row__mute \${stemMuted[track.stem]?'active':''}" id="stem-mute-\${track.stem}"
+        onclick="stemToggleMute('\${track.stem}')" title="Mute">
+        <i class="fas fa-volume-mute"></i>
+      </button>
+      <button class="stem-ctrl-btn stem-row__solo" id="stem-solo-\${track.stem}"
+        onclick="stemToggleSolo('\${track.stem}')" title="Solo">
+        <span style="font-size:.7rem;font-weight:700">S</span>
+      </button>
+      <button class="stem-ctrl-btn" onclick="stemRename('\${track.stem}')" title="Rename">
+        <i class="fas fa-pen" style="font-size:.7rem"></i>
+      </button>
+      <button class="stem-ctrl-btn stem-row__dl" onclick="stemDownload('\${track.stem}', '\${track.name}')" title="Download">
+        <i class="fas fa-download"></i>
+      </button>
+    </div>
+  \`;
+
+  // Waveform bars
+  const wave = el.querySelector('.stem-row__wave');
+  for (let i = 0; i < 80; i++) {
+    const b = document.createElement('div');
+    const h = Math.random()*24+4;
+    b.style.cssText = 'width:2px;height:' + h + 'px;border-radius:1px;background:' + track.color + ';opacity:' + (0.35+Math.random()*0.5) + ';flex-shrink:0;';
+    wave.appendChild(b);
+  }
+
+  return el;
+}
+
+// ── Play/Pause all stems ──────────────────────────────────────
+function stemsTogglePlayAll() {
+  if (isPlaying) {
+    Object.values(stemAudios).forEach(a => a.pause());
+    isPlaying = false;
+    document.getElementById('stems-play-icon').className = 'fas fa-play';
+  } else {
+    const audios = Object.values(stemAudios);
+    if (!audios.length) return;
+    // Sync all to first audio's position
+    const ref = audios[0];
+    audios.forEach(a => { a.currentTime = ref.currentTime; a.play().catch(()=>{}); });
+    isPlaying = true;
+    document.getElementById('stems-play-icon').className = 'fas fa-pause';
+  }
+}
+
+// ── Play/Pause individual stem ────────────────────────────────
+function stemPlayPause(stem) {
+  const audio = stemAudios[stem];
+  if (!audio) return;
+  const btn = document.getElementById('stem-play-' + stem);
+  const icon = btn?.querySelector('i');
+  if (audio.paused) {
+    audio.play().catch(()=>{});
+    if (icon) icon.className = 'fas fa-pause';
+  } else {
+    audio.pause();
+    if (icon) icon.className = 'fas fa-play';
+  }
+}
+
+// ── Mute/Unmute ───────────────────────────────────────────────
+function stemToggleMute(stem) {
+  stemMuted[stem] = !stemMuted[stem];
+  const btn = document.getElementById('stem-mute-' + stem);
+  if (btn) btn.classList.toggle('active', stemMuted[stem]);
+  applyVolumes();
+}
+
+// ── Solo ──────────────────────────────────────────────────────
+function stemToggleSolo(stem) {
+  stemSolo[stem] = !stemSolo[stem];
+  hasSoloActive  = Object.values(stemSolo).some(v => v);
+  document.querySelectorAll('.stem-row__solo').forEach(b => {
+    const s = b.closest('.stem-row')?.dataset.stem;
+    if (s) b.classList.toggle('active', stemSolo[s]);
+  });
+  applyVolumes();
+}
+
+// ── Apply volumes based on mute/solo state ────────────────────
+function applyVolumes() {
+  Object.entries(stemAudios).forEach(([stem, audio]) => {
+    const muted  = stemMuted[stem];
+    const soloed = hasSoloActive && !stemSolo[stem];
+    audio.volume = (muted || soloed) ? 0 : masterVolume * stemGains[stem];
+  });
+}
+
+// ── Download individual stem ──────────────────────────────────
+async function stemDownload(stem, name) {
+  const job = stemsJob;
+  if (!job?.zip_url) return;
+
+  const safeTitle = (job.title || stem).replace(/[^a-zA-Z0-9\\s\\-_]/g,'').replace(/\\s+/g,'_').toLowerCase() || 'beat';
+
+  // If audio blob already loaded — download it directly
+  const audio = stemAudios[stem];
+  if (audio && audio.src && audio.src.startsWith('blob:')) {
+    const a = document.createElement('a');
+    a.href = audio.src;
+    a.download = safeTitle + '_' + stem + '.wav';
+    document.body.appendChild(a); a.click(); a.remove();
+    return;
+  }
+
+  // Otherwise, fetch ZIP and extract the stem
+  try {
+    const btn = document.querySelector(\`.stem-row[data-stem="\${stem}"] .stem-row__dl\`);
+    if (btn) { btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="font-size:.7rem"></i>'; btn.disabled = true; }
+
+    const JSZipLib = await loadJSZip();
+    let zipData = stemZipCache;
+    if (!zipData) {
+      zipData = await (await fetch(job.zip_url)).arrayBuffer();
+      stemZipCache = zipData;
+    }
+    const zip = await JSZipLib.loadAsync(zipData);
+    const candidates = [stem + '.wav', stem + '.mp3', stem.toLowerCase() + '.wav', stem.toLowerCase() + '.mp3'];
+    let blob = null;
+    for (const name of candidates) {
+      const entry = zip.file(name);
+      if (entry) { blob = await entry.async('blob'); break; }
+    }
+    if (!blob) {
+      zip.forEach((path, entry) => {
+        if (!blob && !entry.dir && path.toLowerCase().includes(stem.toLowerCase()) && (path.endsWith('.wav')||path.endsWith('.mp3')))
+          blob = entry.async('blob');
+      });
+      if (blob?.then) blob = await blob;
+    }
+    if (blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = safeTitle + '_' + stem + '.wav';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+    if (btn) { btn.innerHTML = '<i class="fas fa-download"></i>'; btn.disabled = false; }
+  } catch(e) {
+    alert('Could not extract stem from ZIP. Try downloading the full ZIP instead.');
+  }
+}
+
+// ── Rename stem ───────────────────────────────────────────────
+function stemRename(stem) {
+  const nameEl = document.getElementById('stem-name-' + stem);
+  if (!nameEl) return;
+  const current = nameEl.textContent;
+  const input   = document.createElement('input');
+  input.type = 'text'; input.value = current;
+  input.style.cssText = 'background:var(--surface);border:1px solid var(--primary);border-radius:6px;padding:2px 8px;color:var(--text);font-size:.9rem;font-weight:600;width:100%;max-width:140px;font-family:inherit';
+  nameEl.replaceWith(input);
+  input.focus(); input.select();
+  function save() {
+    const span = document.createElement('div');
+    span.className = 'stem-row__name';
+    span.id = 'stem-name-' + stem;
+    span.textContent = input.value.trim() || current;
+    input.replaceWith(span);
+  }
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } if (e.key === 'Escape') { input.value = current; save(); } });
+}
+
+// ── Extract stems flow ────────────────────────────────────────
+async function stemsExtract() {
+  const btn    = document.getElementById('stems-extract-btn');
+  const status = document.getElementById('stems-extract-status');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
+  if (status) { status.style.display = 'block'; status.textContent = '⏳ Extracting stems — this takes ~15 seconds...'; status.style.color = 'var(--muted)'; }
+  try {
+    const res  = await fetch('/api/job/stems', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: STEMS_JOB_ID })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      if (status) { status.textContent = '❌ ' + (data.error || 'Extraction failed.'); status.style.color = 'var(--danger)'; }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry';
+      return;
+    }
+    if (status) { status.textContent = '✅ Done! Stems extracted. Building player...'; status.style.color = 'var(--accent-2)'; }
+    stemsJob.zip_url = data.zip_url;
+    stemsJob.tracks  = data.tracks || stemsJob.tracks;
+    populateHero(stemsJob);
+    await buildStemsPlayer(stemsJob);
+  } catch(e) {
+    if (status) { status.textContent = '❌ Network error. Please try again.'; status.style.color = 'var(--danger)'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry'; }
+  }
+}
+
+// ── Boot ─────────────────────────────────────────────────────
+stemsInit();
+</script>
+`, `<style>
+.stems-page { padding: 0; max-width: none; }
+
+.stems-topbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 28px; border-bottom: 1px solid var(--border);
+  background: var(--surface); position: sticky; top: 0; z-index: 10;
+}
+.stems-back-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: .9rem; display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px; border-radius: 8px; transition: color .2s, background .2s;
+}
+.stems-back-btn:hover { background: var(--border); color: var(--text); }
+.stems-topbar__title { flex: 1; font-size: 1rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stems-topbar__actions { flex-shrink: 0; }
+
+.stems-hero {
+  display: flex; align-items: center; gap: 24px;
+  padding: 24px 28px; border-bottom: 1px solid var(--border);
+  background: var(--bg-3);
+}
+.stems-hero__art {
+  width: 96px; height: 96px; border-radius: 12px; flex-shrink: 0;
+  background: #1a1a2e; background-size: cover; background-position: center;
+  overflow: hidden;
+}
+.stems-hero__title { font-size: 1.2rem; font-weight: 700; margin-bottom: 4px; }
+.stems-hero__meta  { font-size: .82rem; color: var(--muted); margin-bottom: 8px; }
+.stems-hero__badge { display: inline-block; font-size: .72rem; font-weight: 700;
+  padding: 2px 8px; border-radius: 99px; background: rgba(99,102,241,.15); color: #a78bfa; }
+
+.stems-transport {
+  padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--surface);
+  flex-direction: column; gap: 10px;
+}
+.stems-play-all-btn {
+  width: 46px; height: 46px; border-radius: 50%;
+  background: var(--primary); border: none; cursor: pointer;
+  color: #fff; font-size: 1.1rem; flex-shrink: 0; display: flex;
+  align-items: center; justify-content: center; transition: transform .1s, background .2s;
+}
+.stems-play-all-btn:hover { background: var(--primary-dark, #3b89ff); transform: scale(1.05); }
+
+.stems-list { padding: 0 0 40px; }
+
+.stem-row {
+  display: grid; grid-template-columns: 240px 1fr 200px;
+  align-items: center; gap: 16px; padding: 14px 28px;
+  border-bottom: 1px solid var(--border); transition: background .15s;
+}
+.stem-row:hover { background: rgba(255,255,255,.02); }
+.stem-row:last-child { border-bottom: none; }
+.stem-row__left  { display: flex; align-items: center; gap: 12px; }
+.stem-row__icon  {
+  width: 36px; height: 36px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .85rem; color: #fff; flex-shrink: 0;
+}
+.stem-row__name { font-size: .92rem; font-weight: 600; }
+.stem-row__filename { font-size: .74rem; color: var(--muted); }
+.stem-row__wave {
+  height: 32px; display: flex; align-items: center; gap: 1.5px; overflow: hidden;
+}
+.stem-row__controls { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.stem-ctrl-btn {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: none; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; font-size: .78rem;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+}
+.stem-ctrl-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.stem-ctrl-btn.active { background: rgba(99,102,241,.2); border-color: #6366f1; color: #a78bfa; }
+.stem-row__mute.active { background: rgba(239,68,68,.15); border-color: #ef4444; color: #f87171; }
+.stem-row__dl { background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.3); color: #34d399; }
+.stem-row__dl:hover { background: rgba(16,185,129,.2); border-color: #34d399; color: #10b981; }
+
+@media (max-width: 700px) {
+  .stem-row { grid-template-columns: 1fr 130px; }
+  .stem-row__wave { display: none; }
+  .stems-hero { flex-direction: column; align-items: flex-start; gap: 16px; }
+}
+</style>`)
+}
+
 // ─── GENERATOR PAGE (real pipeline UI) ───────────────────────────────────────
 function generatorPage() {
   return shell('Generator', `
@@ -2013,10 +2669,10 @@ function generatorPage() {
         <h4>Export options</h4>
         <div class="export-options">
           <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
-          <button class="export-btn" id="exp-stems"><i class="fas fa-layer-group"></i><span>Stem ZIP</span><small>Free</small></button>
-          <button class="export-btn export-btn--locked" id="exp-tracks"><i class="fas fa-list"></i><span>Individual tracks</span><small>Pro Artist</small></button>
+          <button class="export-btn export-btn--get-stems" id="exp-stems"><i class="fas fa-layer-group"></i><span>Get Stems</span><small>Creator+</small></button>
+          <button class="export-btn export-btn--get-stems" id="exp-tracks"><i class="fas fa-music"></i><span>Get up to 12 stems</span><small>Pro plan</small></button>
         </div>
-        <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Pro Artist to unlock individual track downloads</a>
+        <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to unlock stems</a>
       </div>
     </div>
 
