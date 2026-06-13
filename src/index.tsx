@@ -426,40 +426,58 @@ function pickRandomKey(): string {
 
 async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string): Promise<Blueprint & { suggested_title?: string }> {
   const suggestedKey = pickRandomKey()
-  const systemPrompt = `You are a professional music producer and composer.
-Given a user's beat description, output a detailed composition blueprint as JSON.
-CRITICAL RULES:
-1. You MUST preserve the exact genre the user specifies. If the user says "hip hop", the genre field MUST be "hip hop" — never substitute.
-2. KEY VARIETY: Use the suggested_key provided unless the user explicitly requests a different key. Never default to C minor every time — vary the key based on the suggestion.
-3. TRACK TITLE: If the user has not provided a title, generate a creative short track name (2-4 words) that fits the mood/genre/description — similar to how Suno names tracks. Put it in the "suggested_title" field.
-Always output valid JSON only, no markdown, no explanation.`
 
-  const userPrompt = `Create a composition blueprint for this beat: "${prompt}"
-${titleHint ? `User-provided title: "${titleHint}"` : 'User did NOT provide a title — generate a creative one in suggested_title.'}
+  // Extract genre/style from the front of the prompt if present (it's always prepended first)
+  const genreMatch = prompt.match(/^([^.]+?)[\.\,]/)
+  const detectedGenre = genreMatch ? genreMatch[1].trim() : ''
 
-SUGGESTED KEY for this beat: ${suggestedKey} (use this unless the user requested a specific key)
+  const systemPrompt = `You are a professional music producer AI that creates beat blueprints.
+You STRICTLY follow the user's genre, mood, and style — you NEVER substitute or drift.
 
-IMPORTANT RULES:
-- If the user specifies a genre, use that exact genre in the genre field.
-- Use the suggested key (${suggestedKey}) for variety unless user requested something else.
-- Generate a short creative title in suggested_title if user left title blank.
+ABSOLUTE RULES — violating any rule is a failure:
+1. GENRE LOCK: The genre field MUST exactly match whatever genre/style the user wrote. If user says "hip hop" → genre = "hip hop". If user says "pop" → genre = "pop". If user says "drill" → genre = "drill". NEVER change it to jazz, R&B, soul, or anything else unless that is what the user wrote.
+2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, mureka_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. Do NOT add jazz piano, brushed snares, or laid-back swing unless the user asked for that.
+3. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
+4. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
+5. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
+6. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars.
+Output valid JSON only — no markdown, no explanation.`
 
-Return ONLY this JSON structure:
+  const userPrompt = `Generate a beat blueprint for: "${prompt}"
+${titleHint ? `Track title provided by user: "${titleHint}"` : 'No title given — create a creative genre-fitting title in suggested_title.'}
+Suggested key: ${suggestedKey}
+
+GENRE DETECTED FROM INPUT: "${detectedGenre || 'use whatever genre the user specified in the prompt above'}"
+→ The entire blueprint MUST sound like this genre. Do not drift.
+
+Genre-to-sound mapping examples (follow these exactly for the detected genre):
+- "hip hop" → BPM 85–100, 808 bass, punchy kick, snappy snare, trap hi-hats, sampled chops or Rhodes, aggressive/confident mood
+- "trap" → BPM 130–145, sliding 808s, rapid triplet hi-hats, heavy kick, dark melody, energy=high
+- "drill" → BPM 140–145, sliding 808 glide, rolling hi-hats, dark minor piano, cold/menacing mood
+- "pop" → BPM 100–128, bright lead synth, 4-on-the-floor kick, punchy snare, catchy melodic hook, energy=high
+- "R&B" → BPM 65–95, silky pad, soft snare, soulful chords, intimate/smooth mood
+- "lo-fi" → BPM 70–90, mellow piano, dusty vinyl crackle, boom-bap kit, nostalgic/chill mood
+- "afrobeats" → BPM 100–115, talking drum pattern, afrobeats percussion, melodic guitar, energetic
+- "reggaeton" → BPM 95–105, dembow rhythm, heavy bass, brass stabs, perreo energy
+- "jazz" → BPM 90–140, swing feel, walking bass, ride cymbal, chord voicings
+- "cinematic" → BPM 60–100, orchestral strings, dramatic brass, epic pads, swelling dynamics
+
+Return ONLY this JSON:
 {
-  "bpm": <number 60-180>,
-  "key": <use ${suggestedKey} unless user requested otherwise — must be one of: C, C#, D, Eb, E, F, F#, G, Ab, A, Bb, B>,
-  "scale": <"minor" | "major" | "minor pentatonic" | "major pentatonic" — choose based on mood, not always minor>,
-  "genre": <MUST match user's stated genre exactly>,
-  "mood": <mood string>,
+  "bpm": <correct BPM for the genre>,
+  "key": <${suggestedKey} unless user specified otherwise>,
+  "scale": <choose based on genre mood — hip hop/trap/drill = minor, pop = major, R&B = minor/major pentatonic>,
+  "genre": <EXACT genre string from user input — do not change>,
+  "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
   "energy": <"low" | "medium" | "high">,
   "duration_seconds": <90 | 120 | 150 | 180>,
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
-  "arrangement": <one sentence describing the arrangement density and feel>,
-  "suggested_title": <2-4 word creative track name fitting the mood/genre — e.g. "Midnight Surf Noir", "Dark Satin Trap", "Golden Hour Boom Bap">,
-  "mureka_prompt": <a detailed Mureka-optimized prompt string — MUST start with the user's genre, max 200 chars>,
+  "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
+  "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
+  "mureka_prompt": <MUST start with exact genre name, then describe sound: instruments, energy, feel. Example: "hip hop beat, punchy 808 bass, trap hi-hats, sampled Rhodes chops, aggressive energy, dark mood" — max 200 chars>,
   "instruments": [
     {
-      "name": <instrument display name, e.g. "Kick", "Snare", "Hi-hats", "Bass", "Rhodes", "Guitar", "Pad", "FX">,
+      "name": <genre-appropriate instrument name>,
       "family": <"drums" | "bass" | "keys" | "guitar" | "strings" | "brass" | "woodwind" | "synth" | "fx">,
       "role": <"rhythmic" | "harmonic" | "melodic" | "textural" | "transitional">,
       "mureka_track_type": <"vocals" | "accompaniment" | "bass" | "drums">
@@ -467,14 +485,10 @@ Return ONLY this JSON structure:
   ]
 }
 
-Rules:
-- instruments array must have 6-10 items
-- every beat must have kick, snare, hi-hats, bass as minimum
-- add melodic/harmonic instruments typical of the stated genre
-- mureka_track_type must be one of: vocals, accompaniment, bass, drums
-- map kick/snare/hats → "drums", bass → "bass", keys/guitar/pad/strings/brass/woodwind → "accompaniment", fx/vocals → "vocals"
-- mureka_prompt MUST reflect the user's stated genre prominently
-- KEY: Do NOT always use C minor. Use the suggested key ${suggestedKey} and choose scale based on mood.`
+Instrument rules:
+- 6–10 instruments, always include kick + snare/hi-hats + bass at minimum
+- All instruments MUST be genre-appropriate (no jazz brushes in hip hop, no 808s in jazz, no grand piano in drill unless specified)
+- mureka_track_type: kick/snare/hats → "drums", 808/bass → "bass", keys/guitar/pad/strings → "accompaniment", fx/vox → "vocals"`
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -488,8 +502,8 @@ Rules:
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.7,
-      max_tokens: 1000,
+      temperature: 0.85,
+      max_tokens: 1200,
       response_format: { type: 'json_object' }
     })
   })
@@ -1832,8 +1846,11 @@ function generatorPage() {
 
     <!-- Result area -->
     <div class="gen-result" id="gen-result" style="display:none">
-      <!-- Beat thumbnail (Suno-style) -->
-      <div class="gen-result__thumb" id="gen-result-thumb" style="display:none"></div>
+      <!-- Beat thumbnail (Suno-style top banner) -->
+      <div class="gen-result__thumb" id="gen-result-thumb" style="display:none">
+        <i class="fas fa-wave-square gen-result__thumb-icon"></i>
+        <div class="gen-result__thumb-label" id="gen-result-thumb-label"></div>
+      </div>
       <div class="gen-result__header">
         <div>
           <h3 id="gen-result-title">Beat Ready</h3>

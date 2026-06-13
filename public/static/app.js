@@ -516,8 +516,16 @@ document.addEventListener('DOMContentLoaded', () => {
                   </div>
                   <p>${sub || genre || label}</p>
                   <div class="project-card__tags">
-                    ${p.stereo_url ? `<a class="export-badge export-badge--stereo" href="${p.stereo_url}" download="${safeFilename}_stereo.mp3" onclick="event.stopPropagation()">⬇ Stereo</a>` : ''}
-                    ${p.zip_url ? `<a class="export-badge" href="${p.zip_url}" download="${safeFilename}_stems.zip" onclick="event.stopPropagation()">⬇ Stems</a>` : ''}
+                    ${p.stereo_url
+                      ? (window._sfUser && window._sfUser.plan !== 'free'
+                          ? `<a class="export-badge export-badge--stereo" href="${p.stereo_url}" download="${safeFilename}_stereo.mp3" onclick="event.stopPropagation()">⬇ Stereo</a>`
+                          : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
+                      : ''}
+                    ${p.zip_url
+                      ? (window._sfUser && window._sfUser.plan !== 'free'
+                          ? `<a class="export-badge" href="${p.zip_url}" download="${safeFilename}_stems.zip" onclick="event.stopPropagation()">⬇ Stems</a>`
+                          : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stems</span>`)
+                      : ''}
                   </div>
                 </div>
               </div>`;
@@ -530,6 +538,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
         projectGrid.innerHTML = html;
+
+        // Inject dashboard upgrade modal if not already present
+        if (!document.getElementById('sf-dash-upgrade')) {
+          const m = document.createElement('div');
+          m.id = 'sf-dash-upgrade';
+          m.style.cssText = 'position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(6px)';
+          m.innerHTML = `
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
+              <button onclick="document.getElementById('sf-dash-upgrade').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+              <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-lock-open"></i></div>
+              <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+              <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
+              <div style="display:flex;flex-direction:column;gap:10px">
+                <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $19/mo · 50 beats</a>
+                <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $39/mo · 150 beats</a>
+              </div>
+              <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
+            </div>`;
+          document.body.appendChild(m);
+        }
       } catch(e) {
         projectGrid.innerHTML = `<div class="project-grid-loading" style="color:var(--muted)">Could not load projects.</div>
           <div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
@@ -992,13 +1020,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (spinnerMsg) spinnerMsg.textContent = 'Extracting stems...';
             if (job.blueprint) showBlueprint(job.blueprint);
 
-            // Show stereo player immediately (available once generating is done)
+            // Show stereo player immediately (audio player always shown; download gated by plan)
             if (job.stereo_url && stereoPlayer && stereoAudio) {
               stereoAudio.src = job.stereo_url;
               stereoPlayer.style.display = 'block';
               if (stereoDownload) {
-                stereoDownload.href = job.stereo_url;
-                stereoDownload.download = 'stemforge-stereo.mp3';
+                // Hide download link during extraction (will be finalized in 'ready' block)
+                stereoDownload.style.display = 'none';
               }
             }
 
@@ -1035,29 +1063,113 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // Stereo player — use track name in download filename
+            // ── Determine user plan for download gating ─────────
+            const currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
+            const isFree = currentPlan === 'free';
+
+            // Helper: show upgrade modal when free user tries to download
+            function showUpgradePrompt() {
+              let modal = document.getElementById('sf-upgrade-modal');
+              if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'sf-upgrade-modal';
+                modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(6px)';
+                modal.innerHTML = `
+                  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
+                    <button onclick="document.getElementById('sf-upgrade-modal').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+                    <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff">
+                      <i class="fas fa-lock-open"></i>
+                    </div>
+                    <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+                    <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen to your beat, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
+                    <div style="display:flex;flex-direction:column;gap:10px">
+                      <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+                        <i class="fas fa-crown"></i> Creator — $19/mo · 50 beats
+                      </a>
+                      <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+                        <i class="fas fa-star"></i> Pro Artist — $39/mo · 150 beats
+                      </a>
+                    </div>
+                    <p style="color:var(--muted);font-size:.78rem;margin-top:16px">You keep your generated beat — just upgrade anytime to download it.</p>
+                  </div>`;
+                document.body.appendChild(modal);
+              } else {
+                modal.style.display = 'flex';
+              }
+            }
+
+            // Stereo player — show audio player always, gate the download button
             if (job.stereo_url && stereoPlayer && stereoAudio) {
               stereoAudio.src = job.stereo_url;
               stereoPlayer.style.display = 'block';
               if (stereoDownload) {
-                stereoDownload.href = job.stereo_url;
-                stereoDownload.setAttribute('download', safeFilename + '_stereo.mp3');
+                stereoDownload.style.display = '';  // make visible again
+                if (isFree) {
+                  // Show lock state on download button
+                  stereoDownload.href = '#';
+                  stereoDownload.setAttribute('download', '');
+                  stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  stereoDownload.style.opacity = '0.7';
+                  stereoDownload.addEventListener('click', e => { e.preventDefault(); showUpgradePrompt(); });
+                } else {
+                  stereoDownload.href = job.stereo_url;
+                  stereoDownload.setAttribute('download', safeFilename + '_stereo.mp3');
+                  stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download stereo mix';
+                  stereoDownload.style.opacity = '';
+                }
               }
             }
 
-            // ZIP download button for grouped stems — named after track
+            // Export panel stereo button
+            const expStereoBtn = document.getElementById('exp-stereo');
+            if (expStereoBtn) {
+              if (isFree) {
+                expStereoBtn.classList.add('export-btn--locked');
+                expStereoBtn.querySelector('small').textContent = 'Creator+';
+                expStereoBtn.onclick = () => showUpgradePrompt();
+              } else {
+                expStereoBtn.classList.remove('export-btn--locked');
+                expStereoBtn.querySelector('small').textContent = 'Stereo';
+                expStereoBtn.onclick = () => {
+                  const a = document.createElement('a');
+                  a.href = job.stereo_url;
+                  a.download = safeFilename + '_stereo.mp3';
+                  document.body.appendChild(a); a.click(); a.remove();
+                };
+              }
+            }
+
+            // ZIP download button for grouped stems — named after track, locked for free
             const zipBtn = document.getElementById('exp-stems');
-            if (zipBtn && job.zip_url) {
-              zipBtn.onclick = () => {
-                const a = document.createElement('a');
-                a.href = job.zip_url;
-                a.download = safeFilename + '_stems.zip';
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-              };
-              zipBtn.classList.remove('export-btn--locked');
-              zipBtn.title = 'Download all stems (ZIP)';
+            if (zipBtn) {
+              if (isFree) {
+                zipBtn.classList.add('export-btn--locked');
+                zipBtn.querySelector('small').textContent = 'Creator+';
+                zipBtn.onclick = () => showUpgradePrompt();
+              } else if (job.zip_url) {
+                zipBtn.onclick = () => {
+                  const a = document.createElement('a');
+                  a.href = job.zip_url;
+                  a.download = safeFilename + '_stems.zip';
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                };
+                zipBtn.classList.remove('export-btn--locked');
+                zipBtn.querySelector('small').textContent = 'ZIP';
+                zipBtn.title = 'Download all stems (ZIP)';
+              }
+            }
+
+            // Show upgrade nudge below export panel for free users
+            const upgradeNudge = document.querySelector('.upgrade-nudge');
+            if (upgradeNudge) {
+              if (isFree) {
+                upgradeNudge.innerHTML = '<i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to download your beat';
+                upgradeNudge.style.display = 'block';
+              } else {
+                upgradeNudge.style.display = 'none';
+              }
             }
 
             // Update result header with AI-generated or user title
@@ -1070,12 +1182,16 @@ document.addEventListener('DOMContentLoaded', () => {
               subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + dur;
             }
 
-            // Show thumbnail on result card
+            // Show thumbnail on result card (Suno-style top banner)
             const thumbEl = document.getElementById('gen-result-thumb');
+            const thumbLabel = document.getElementById('gen-result-thumb-label');
             if (thumbEl && job.thumbnail_seed != null) {
               const hue = job.thumbnail_seed;
-              thumbEl.style.background = `linear-gradient(135deg, hsl(${hue},70%,35%) 0%, hsl(${(hue+60)%360},80%,25%) 100%)`;
-              thumbEl.style.display = 'block';
+              const hue2 = (hue + 55) % 360;
+              const hue3 = (hue + 120) % 360;
+              thumbEl.style.background = `linear-gradient(135deg, hsl(${hue},65%,28%) 0%, hsl(${hue2},75%,20%) 55%, hsl(${hue3},60%,15%) 100%)`;
+              thumbEl.style.display = 'flex';
+              if (thumbLabel) thumbLabel.textContent = finalTitle;
             }
 
             if (genResult) genResult.style.display = 'block';
