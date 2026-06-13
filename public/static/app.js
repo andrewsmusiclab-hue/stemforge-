@@ -517,9 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
                           : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
                       : ''}
                     ${p.stereo_url
-                      ? (p.zip_url
-                          ? `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Open stems player"><i class="fas fa-layer-group"></i> Stems</a>`
-                          : `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Get stems"><i class="fas fa-layer-group"></i> Get Stems</a>`)
+                      ? `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Open stems player"><i class="fas fa-layer-group"></i> Get Stems</a>`
                       : ''}
                   </div>
                 </div>

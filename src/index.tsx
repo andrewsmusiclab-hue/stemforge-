@@ -2174,10 +2174,16 @@ function stemsPage(jobId: string) {
   <div id="stems-no-stems" style="display:none;text-align:center;padding:60px 20px">
     <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
     <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
-    <p style="color:var(--muted);margin-bottom:24px">Extract stems from your beat to play and download them individually.</p>
-    <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsConfirmExtract()">
-      <i class="fas fa-layer-group"></i> Get Stems
-    </button>
+    <p style="color:var(--muted);margin-bottom:8px">Extract individual stems from your beat to preview and download each track separately.</p>
+    <p id="stems-cost-label" style="color:var(--muted);font-size:.88rem;margin-bottom:24px"></p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
+        <i class="fas fa-layer-group"></i> <span id="stems-extract-btn-label">Extract Stems</span>
+      </button>
+      <button class="btn btn--outline" onclick="history.back()">
+        <i class="fas fa-times"></i> Cancel
+      </button>
+    </div>
     <div id="stems-extract-status" style="margin-top:16px;font-size:.88rem;display:none"></div>
   </div>
   <div id="stems-error" style="display:none;text-align:center;padding:60px 20px">
@@ -2226,18 +2232,6 @@ function stemsPage(jobId: string) {
     <a href="/pricing" class="btn btn--primary btn--sm">View Plans</a>
   </div>
 
-  <!-- Confirm extract modal -->
-  <div id="stems-confirm-modal" class="stems-confirm-overlay" style="display:none" onclick="if(event.target===this)closeStemsConfirm()">
-    <div class="stems-confirm-box">
-      <div class="stems-confirm-icon"><i class="fas fa-layer-group"></i></div>
-      <h3 id="stems-confirm-title">Extract Stems</h3>
-      <p id="stems-confirm-body" style="margin:12px 0;color:var(--muted);font-size:.92rem;line-height:1.6"></p>
-      <div class="stems-confirm-btns">
-        <button class="btn btn--outline" onclick="closeStemsConfirm()">Cancel</button>
-        <button class="btn btn--primary" id="stems-confirm-ok" onclick="closeStemsConfirm();stemsExtract()">OK — Extract</button>
-      </div>
-    </div>
-  </div>
 
 </div>
 
@@ -2310,23 +2304,6 @@ function setVIMode(mode) {
   applyVolumes();
 }
 
-// ── Confirm dialog ────────────────────────────────────────────
-function stemsConfirmExtract() {
-  const isPro = _planForConfirm === 'pro';
-  document.getElementById('stems-confirm-title').textContent =
-    isPro ? 'Extract up to 12 Stems' : 'Extract 5 Stems';
-  document.getElementById('stems-confirm-body').innerHTML = isPro
-    ? '<strong>10 download credits</strong> will be used from your Pro plan to extract up to 12 individual stems from this track.<br><br>Continue?'
-    : '<strong>2 download credits</strong> will be used from your Creator plan to extract 5 stems from this track.<br><br>Continue?';
-  document.getElementById('stems-confirm-ok').innerHTML = isPro
-    ? '<i class="fas fa-layer-group"></i> OK — Use 10 Credits'
-    : '<i class="fas fa-layer-group"></i> OK — Use 2 Credits';
-  document.getElementById('stems-confirm-modal').style.display = 'flex';
-}
-function closeStemsConfirm() {
-  document.getElementById('stems-confirm-modal').style.display = 'none';
-}
-
 // ── Init ──────────────────────────────────────────────────────
 async function stemsInit() {
   showState('loading');
@@ -2344,10 +2321,15 @@ async function stemsInit() {
       if (!user || user.plan === 'free') { showState('upgrade'); return; }
       _planForConfirm = user.plan || 'creator';
       showState('no-stems');
-      const extBtn = document.getElementById('stems-extract-btn');
-      if (extBtn) extBtn.innerHTML = user.plan === 'pro'
-        ? '<i class="fas fa-layer-group"></i> Get 12 Stems'
-        : '<i class="fas fa-layer-group"></i> Get 5 Stems';
+      const isPro = user.plan === 'pro';
+      const costLabel = document.getElementById('stems-cost-label');
+      const btnLabel  = document.getElementById('stems-extract-btn-label');
+      if (costLabel) costLabel.textContent = isPro
+        ? 'Costs 10 download credits — extracts up to 12 stems'
+        : 'Costs 2 download credits — extracts 5 stems';
+      if (btnLabel) btnLabel.textContent = isPro
+        ? 'Extract Stems — 10 Credits'
+        : 'Extract Stems — 2 Credits';
       return;
     }
 
