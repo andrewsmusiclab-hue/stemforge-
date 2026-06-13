@@ -361,6 +361,7 @@ interface Job {
   title?: string          // User-provided or AI-generated title
   user_lyrics?: string    // User lyrics/notes
   thumbnail_seed?: number // Deterministic color seed for thumbnail gradient
+  image_url?: string      // Pollinations.ai generated cover art URL
 }
 
 interface Blueprint {
@@ -611,6 +612,19 @@ const STEM_CONFIG: Array<{ stem: MurekaStem; name: string; family: string; color
   { stem: 'instrumental', name: 'Instrumental',   family: 'mix',    color: '#10b981' },
 ]
 
+// Build a Pollinations.ai cover art URL from the job's blueprint/title.
+// Pollinations generates on-demand from the URL — no API key needed.
+function buildCoverImageUrl(job: Job): string {
+  const bp = job.blueprint
+  const genre = bp?.genre || 'music'
+  const mood  = (bp as any)?.mood  || 'atmospheric'
+  const title = (job as any).title  || genre
+  // Craft a cinematic prompt for a square album-cover photo
+  const prompt = `${genre} music album cover art, ${mood} mood, cinematic lighting, professional photography, dark background, dramatic, high quality, ${title}`
+  const seed   = job.thumbnail_seed ?? 42
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=512&height=512&seed=${seed}&nologo=true&model=flux`
+}
+
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
 async function startPipeline(jobId: string, env: Bindings) {
   const db = env.DB
@@ -677,6 +691,11 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = false):
 
     // Mureka instrumental is done — save stereo URL
     job.stereo_url = stereoUrl
+
+    // Generate cover art URL (Pollinations — deterministic, no fetch needed)
+    if (!(job as any).image_url) {
+      (job as any).image_url = buildCoverImageUrl(job)
+    }
 
     if (skipStems) {
       // Free tier: skip the $0.06 stem-separation call — stereo mix only
@@ -802,6 +821,7 @@ app.post('/api/poll/:id', async (c) => {
     prompt: job.prompt,
     title: (job as any).title || null,
     thumbnail_seed: job.thumbnail_seed || null,
+    image_url: (job as any).image_url || null,
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -842,6 +862,7 @@ app.get('/api/job/:id', async (c) => {
     title: (job as any).title || null,
     user_lyrics: (job as any).user_lyrics || null,
     thumbnail_seed: job.thumbnail_seed || null,
+    image_url: (job as any).image_url || null,
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -1200,6 +1221,7 @@ app.get('/api/projects', async (c) => {
         prompt: d.prompt,
         title: (d as any).title || null,
         thumbnail_seed: d.thumbnail_seed || null,
+        image_url: (d as any).image_url || null,
         created_at: d.created_at,
         stereo_url: d.stereo_url || null,
         zip_url: d.zip_url || null,

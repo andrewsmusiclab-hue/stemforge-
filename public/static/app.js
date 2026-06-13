@@ -498,9 +498,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label);
             const sub   = [bpm, dur].filter(Boolean).join(' · ');
             const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g,'_').toLowerCase();
+            // Build art style: gradient base + real image on top if available
+            const artStyle = p.image_url
+              ? `background:${thumbBg};background-image:url('${p.image_url}');background-size:cover;background-position:center`
+              : thumbBg;
             html += `
               <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}">
-                <div class="project-card__art" style="${thumbBg}">
+                <div class="project-card__art" style="${artStyle}">
                   <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
                   <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
                 </div>
@@ -1161,16 +1165,29 @@ document.addEventListener('DOMContentLoaded', () => {
               subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + dur;
             }
 
-            // Show thumbnail on result card (Suno-style top banner)
+            // Show thumbnail on result card — real AI image with gradient fallback
             const thumbEl = document.getElementById('gen-result-thumb');
             const thumbLabel = document.getElementById('gen-result-thumb-label');
-            if (thumbEl && job.thumbnail_seed != null) {
-              const hue = job.thumbnail_seed;
+            if (thumbEl) {
+              // Always set gradient as base background (shows instantly)
+              const hue = job.thumbnail_seed ?? 180;
               const hue2 = (hue + 55) % 360;
               const hue3 = (hue + 120) % 360;
               thumbEl.style.background = `linear-gradient(135deg, hsl(${hue},65%,28%) 0%, hsl(${hue2},75%,20%) 55%, hsl(${hue3},60%,15%) 100%)`;
               thumbEl.style.display = 'flex';
               if (thumbLabel) thumbLabel.textContent = finalTitle;
+
+              // Layer real image on top via background-image if available
+              if (job.image_url) {
+                const img = new Image();
+                img.onload = () => {
+                  thumbEl.style.backgroundImage = `url('${job.image_url}')`;
+                  thumbEl.style.backgroundSize = 'cover';
+                  thumbEl.style.backgroundPosition = 'center';
+                };
+                img.onerror = () => { /* keep gradient fallback */ };
+                img.src = job.image_url;
+              }
             }
 
             if (genResult) genResult.style.display = 'block';
