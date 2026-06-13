@@ -2448,6 +2448,29 @@ body.light .legal-body td {
   margin: 0 8px 8px;
 }
 
+/* Sign-in button shown when logged out */
+.gs-sidebar__signin-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 8px 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--primary);
+  color: #fff;
+  font-size: .88rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: background .15s, transform .1s;
+}
+.gs-sidebar__signin-btn:hover {
+  background: var(--primary-hover, #3a8eff);
+  transform: translateY(-1px);
+}
+.gs-sidebar__signin-btn i {
+  font-size: .95rem;
+}
+
 /* Make the user row a proper button */
 .gs-sidebar__user {
   display: flex;

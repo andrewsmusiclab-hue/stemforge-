@@ -1360,6 +1360,12 @@ function globalSidebar() {
     <span class="gs-sidebar__logo-text">Stem<span class="accent">Forge</span></span>
   </a>
 
+  <!-- Sign in button — shown when logged out -->
+  <a href="/login" class="gs-sidebar__signin-btn" id="gs-signin-btn">
+    <i class="fas fa-sign-in-alt"></i>
+    <span>Sign in</span>
+  </a>
+
   <!-- User identity block — click to open dropdown menu -->
   <div class="gs-sidebar__user-wrap" id="gs-user-block" style="display:none">
     <button class="gs-sidebar__user" id="gs-user-btn" aria-haspopup="true" aria-expanded="false">

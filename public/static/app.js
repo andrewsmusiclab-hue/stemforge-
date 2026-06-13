@@ -295,6 +295,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (gsUserBlock) gsUserBlock.style.display = 'flex';
       if (gsCredits) gsCredits.style.display = 'block';
+      // Hide the sign-in button now that we know the user is logged in
+      const gsSigninBtn = document.getElementById('gs-signin-btn');
+      if (gsSigninBtn) gsSigninBtn.style.display = 'none';
 
       const initials = user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2);
       if (gsAvatar) {
@@ -387,7 +390,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // ── Sign out (sidebar dropdown + legacy top-nav) ──────────
       async function doSignOut() {
         await fetch('/api/auth/logout', { method: 'POST' });
-        window.location.href = '/';
+        window.location.href = '/login';
       }
       const gsSignoutBtn  = document.getElementById('gs-signout-btn');
       const legacySignout = document.getElementById('nav-signout-btn');
