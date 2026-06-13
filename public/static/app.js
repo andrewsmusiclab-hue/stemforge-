@@ -516,11 +516,11 @@ document.addEventListener('DOMContentLoaded', () => {
                           ? `<a class="export-badge export-badge--stereo" href="${p.stereo_url}" download="${safeFilename}_stereo.mp3" onclick="event.stopPropagation()">⬇ Stereo</a>`
                           : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
                       : ''}
-                    ${p.zip_url
-                      ? `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Open stems player"><i class="fas fa-layer-group"></i> Stems</a>`
-                      : (window._sfUser && window._sfUser.plan !== 'free'
-                          ? `<span class="export-badge export-badge--stems-cta" onclick="event.stopPropagation();openSongEditModal(null,'${p.id}')" title="Get stems" style="cursor:pointer"><i class="fas fa-layer-group"></i> Get Stems</span>`
-                          : '')}
+                    ${p.stereo_url
+                      ? (p.zip_url
+                          ? `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Open stems player"><i class="fas fa-layer-group"></i> Stems</a>`
+                          : `<a class="export-badge export-badge--stems-cta" href="/stems/${p.id}" onclick="event.stopPropagation()" title="Get stems"><i class="fas fa-layer-group"></i> Get Stems</a>`)
+                      : ''}
                   </div>
                 </div>
               </div>`;

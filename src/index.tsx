@@ -894,21 +894,26 @@ app.get('/api/zip-proxy', async (c) => {
   const url = c.req.query('url')
   if (!url) return c.json({ error: 'url param required' }, 400)
 
-  // Only allow proxying from known CDN domains for security
-  const allowed = ['mureka.ai', 'cdn.mureka.ai', 'storage.googleapis.com', 'amazonaws.com', 'cloudflare.com']
-  let hostname = ''
-  try { hostname = new URL(url).hostname } catch { return c.json({ error: 'Invalid URL' }, 400) }
-  if (!allowed.some(d => hostname === d || hostname.endsWith('.' + d))) {
+  // Only allow https:// URLs to prevent SSRF against internal/local addresses
+  let parsed: URL
+  try { parsed = new URL(url) } catch { return c.json({ error: 'Invalid URL' }, 400) }
+  if (parsed.protocol !== 'https:') return c.json({ error: 'Only https URLs allowed' }, 400)
+  // Block internal/private addresses
+  const h = parsed.hostname
+  if (h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.') || h.startsWith('10.') || h.endsWith('.local')) {
     return c.json({ error: 'URL not allowed' }, 403)
   }
 
   try {
-    const upstream = await fetch(url, { headers: { 'User-Agent': 'StemForge/1.0' } })
-    if (!upstream.ok) return c.json({ error: `Upstream ${upstream.status}` }, upstream.status as any)
+    const upstream = await fetch(url, {
+      headers: { 'User-Agent': 'StemForge/1.0' },
+      // Cloudflare Workers: follow redirects by default
+    })
+    if (!upstream.ok) return c.json({ error: `Upstream ${upstream.status}: ${upstream.statusText}` }, upstream.status as any)
     const data = await upstream.arrayBuffer()
     return new Response(data, {
       headers: {
-        'Content-Type': 'application/zip',
+        'Content-Type': upstream.headers.get('Content-Type') || 'application/zip',
         'Content-Length': String(data.byteLength),
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'public, max-age=3600'
@@ -2214,7 +2219,15 @@ function populateHero(job) {
 async function buildStemsPlayer(job) {
   showState('loading');
   const zipUrl = job.zip_url;
-  const tracks = job.tracks || [];
+
+  // If tracks array is empty (old jobs), fall back to default 4-stem config
+  const defaultTracks = [
+    { stem: 'drums',  name: 'Drums',         family: 'drums',  color: '#ef4444', status: 'ready' },
+    { stem: 'bass',   name: 'Bass',           family: 'bass',   color: '#3b82f6', status: 'ready' },
+    { stem: 'vocals', name: 'Vocals',         family: 'vocals', color: '#ec4899', status: 'ready' },
+    { stem: 'other',  name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6', status: 'ready' },
+  ];
+  const tracks = (job.tracks && job.tracks.length > 0) ? job.tracks : defaultTracks;
 
   // Build stem rows immediately — player shows without waiting for audio
   const listEl = document.getElementById('stems-list');
@@ -2255,29 +2268,54 @@ async function buildStemsPlayer(job) {
 
 // ── Load stems audio in background (after player UI is shown) ─
 async function loadStemsAudio(zipUrl, tracks) {
-  // Proxy the ZIP through our server to avoid CORS issues with Mureka CDN
+  console.log('[StemForge] loadStemsAudio start, zipUrl:', zipUrl, 'tracks:', tracks.length);
+
+  // Try server-side proxy first (avoids CORS with Mureka CDN)
   const proxyUrl = '/api/zip-proxy?url=' + encodeURIComponent(zipUrl);
-  let resp;
+  let resp = null;
+  let fetchErr = null;
+
   try {
+    console.log('[StemForge] Fetching ZIP via proxy:', proxyUrl);
     resp = await fetch(proxyUrl);
+    console.log('[StemForge] Proxy response:', resp.status, resp.ok);
     if (!resp.ok) {
-      // If proxy fails, try direct (some CDNs allow cross-origin)
-      resp = await fetch(zipUrl);
+      console.warn('[StemForge] Proxy failed:', resp.status, await resp.text().catch(()=>''));
+      resp = null;
     }
   } catch(e) {
-    // Try direct as fallback
-    resp = await fetch(zipUrl);
+    console.warn('[StemForge] Proxy fetch threw:', e);
+    fetchErr = e;
+    resp = null;
   }
-  if (!resp || !resp.ok) throw new Error('ZIP fetch failed: ' + (resp ? resp.status : 'network error'));
+
+  // Fallback: try direct fetch
+  if (!resp) {
+    try {
+      console.log('[StemForge] Trying direct ZIP fetch:', zipUrl);
+      resp = await fetch(zipUrl);
+      console.log('[StemForge] Direct fetch response:', resp.status, resp.ok);
+      if (!resp.ok) {
+        console.warn('[StemForge] Direct fetch failed:', resp.status);
+        resp = null;
+      }
+    } catch(e) {
+      console.warn('[StemForge] Direct fetch threw:', e);
+      resp = null;
+    }
+  }
+
+  if (!resp) throw new Error('Could not fetch ZIP (proxy and direct both failed). ' + (fetchErr?.message || ''));
 
   const zipData = await resp.arrayBuffer();
+  console.log('[StemForge] ZIP downloaded, bytes:', zipData.byteLength);
   stemZipCache  = zipData;
   const JSZipLib = await loadJSZip();
   const zip = await JSZipLib.loadAsync(zipData);
 
   // Inventory ZIP contents
   const zipFiles = [];
-  zip.forEach(p => zipFiles.push(p));
+  zip.forEach((p, f) => { if (!f.dir) zipFiles.push(p); });
   console.log('[StemForge] ZIP files:', zipFiles);
 
   // Only init AudioContext on first audio load (requires no user gesture for this path)
