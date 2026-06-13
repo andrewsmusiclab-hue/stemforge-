@@ -2377,7 +2377,7 @@ function populateHero(job) {
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = () => {
-        artEl.style.backgroundImage = 'url(\''+url+'\'),'+grad;
+        artEl.style.backgroundImage = "url('"+url+"'),"+grad;
         artEl.style.backgroundSize='cover,cover';
       };
       img.onerror = () => {
@@ -2395,7 +2395,7 @@ function populateHero(job) {
     const zipBtn = document.getElementById('stems-download-zip-btn');
     if (zipBtn) {
       zipBtn.style.display = '';
-      const safe = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'stems';
+      const safe = title.replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ +/g,'_').toLowerCase() || 'stems';
       zipBtn.onclick = () => { const a=document.createElement('a'); a.href=job.zip_url; a.download=safe+'_stems.zip'; document.body.appendChild(a); a.click(); a.remove(); };
     }
   }
@@ -2752,7 +2752,7 @@ function applyVolumes() {
 async function stemDownload(stem, name) {
   const job = stemsJob;
   if (!job?.zip_url) return;
-  const safe = (job.title||stem).replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'beat';
+  const safe = (job.title||stem).replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ +/g,'_').toLowerCase() || 'beat';
   const audio = stemAudios[stem];
   if (audio?.src?.startsWith('blob:')) {
     const a = document.createElement('a'); a.href=audio.src; a.download=safe+'_'+stem+'.wav';
