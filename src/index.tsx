@@ -589,8 +589,8 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<s
 
 // ═══════════════════════════════════════════════════════════════
 //  STEP 3 — MUREKA STEM SEPARATION via /v1/song/stem
-//  V1 (audio-separation-1): 5 stems — $0.06  — Creator plan
-//  V2 (audio-separation-2): up to 12 stems + MIDI — $0.70 — Pro plan
+//  V2 (audio-separation-2): up to 12 stems + MIDI — both Creator & Pro
+//  Creator: 2 credits, Pro: 10 credits (Pro gets priority queue + MIDI)
 //  Returns { zip_url, midi_zip_url? } synchronously — no polling needed!
 // ═══════════════════════════════════════════════════════════════
 
@@ -1115,10 +1115,43 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/stems — on-demand stem extraction
-//  Creator plan: V1 (5 stems, $0.06) = 2 credits
-//  Pro plan:     V2 (up to 12 stems, $0.70) = 10 credits
-//  Free plan:    not allowed
+//  Both plans: V2 (up to 12 stems + MIDI)
+//  Creator: 2 credits — Pro: 10 credits (priority + MIDI export)
+//  Free plan: not allowed
 // ═══════════════════════════════════════════════════════════════
+
+// Blueprint-aware stem label helpers — give each stem its real instrument name
+function getBassLabel(instruments: string[]): string {
+  if (instruments.some(n => n.includes('808'))) return '808 Bass'
+  if (instruments.some(n => n.includes('sub'))) return 'Sub Bass'
+  if (instruments.some(n => n.includes('electric bass'))) return 'Electric Bass'
+  return 'Bass'
+}
+function getOtherLabel(instruments: string[]): string {
+  if (instruments.some(n => n.includes('rhodes'))) return 'Rhodes / Melody'
+  if (instruments.some(n => n.includes('flute'))) return 'Flute / Melody'
+  if (instruments.some(n => n.includes('lead'))) return 'Lead Melody'
+  if (instruments.some(n => n.includes('melody'))) return 'Melody'
+  return 'Other (Melody)'
+}
+function getPianoLabel(instruments: string[]): string {
+  if (instruments.some(n => n.includes('rhodes'))) return 'Rhodes'
+  if (instruments.some(n => n.includes('electric piano'))) return 'Electric Piano'
+  if (instruments.some(n => n.includes('keys'))) return 'Keys'
+  return 'Piano'
+}
+function getGuitarLabel(instruments: string[]): string {
+  if (instruments.some(n => n.includes('acoustic'))) return 'Acoustic Guitar'
+  if (instruments.some(n => n.includes('electric'))) return 'Electric Guitar'
+  return 'Guitar'
+}
+function getSynthLabel(instruments: string[]): string {
+  if (instruments.some(n => n.includes('pad'))) return 'Synth Pad'
+  if (instruments.some(n => n.includes('lead'))) return 'Synth Lead'
+  if (instruments.some(n => n.includes('arp'))) return 'Synth Arp'
+  return 'Synth'
+}
+
 app.post('/api/job/stems', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
 
@@ -1151,7 +1184,7 @@ app.post('/api/job/stems', async (c) => {
     return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, already_extracted: true })
   }
 
-  // Credit cost: Creator=2, Pro=10
+  // Credit cost: Creator=2, Pro=10 — both use V2 (12 stems)
   const creditCost = user.plan === 'pro' ? 10 : 2
   if (user.gens_used + creditCost > user.gens_limit) {
     return c.json({
@@ -1165,26 +1198,43 @@ app.post('/api/job/stems', async (c) => {
     .bind(creditCost, user.id).run()
 
   try {
-    // Pro = V2 (up to 12 stems), Creator = V1 (5 stems)
-    const model = user.plan === 'pro' ? 'audio-separation-2' : 'audio-separation-1'
+    // Both Creator and Pro use V2 (up to 12 stems + MIDI)
+    const model = 'audio-separation-2'
     const { zip_url, midi_zip_url } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, model)
 
-    // Full candidate list per model — we'll probe the ZIP to filter to only detected stems
-    const candidateList = user.plan === 'pro'
-      ? [
-          { stem: 'drums',    name: 'Drums',          family: 'drums',   color: '#ef4444' },
-          { stem: 'bass',     name: 'Bass',            family: 'bass',    color: '#3b82f6' },
-          { stem: 'vocals',   name: 'Vocals',          family: 'vocals',  color: '#ec4899' },
-          { stem: 'other',    name: 'Other (Melody)',  family: 'synth',   color: '#8b5cf6' },
-          { stem: 'piano',    name: 'Piano',           family: 'keys',    color: '#f59e0b' },
-          { stem: 'guitar',   name: 'Guitar',          family: 'guitar',  color: '#84cc16' },
-          { stem: 'strings',  name: 'Strings',         family: 'strings', color: '#06b6d4' },
-          { stem: 'synth',    name: 'Synth',           family: 'synth',   color: '#a78bfa' },
-          { stem: 'brass',    name: 'Brass',           family: 'brass',   color: '#fb923c' },
-          { stem: 'woodwind', name: 'Woodwind',        family: 'wind',    color: '#34d399' },
-          { stem: 'fx',       name: 'FX',              family: 'fx',      color: '#f87171' },
-        ]
-      : STEM_CONFIG  // V1: drums, bass, vocals, other
+    // Blueprint instruments — use to smartly label stems from the beat's own instrument list
+    const bp = job.blueprint as any
+    const bpInstruments: string[] = bp?.instruments?.map((i: any) => (i.name || '').toLowerCase()) || []
+
+    // Derive smart drum label from blueprint — kick, snare, hi-hats get their own label
+    // Mureka V2 returns one 'drums' stem; we label it from what the blueprint says is in it
+    function getDrumLabel(): string {
+      const hasKick  = bpInstruments.some(n => n.includes('kick') || n.includes('808'))
+      const hasSnare = bpInstruments.some(n => n.includes('snare') || n.includes('clap'))
+      const hasHats  = bpInstruments.some(n => n.includes('hat') || n.includes('hi-hat') || n.includes('hihat'))
+      const parts = []
+      if (hasKick)  parts.push('Kick')
+      if (hasSnare) parts.push('Snare')
+      if (hasHats)  parts.push('Hi-Hats')
+      if (parts.length === 0) return 'Drums'
+      if (parts.length >= 3)  return 'Drums (Kick / Snare / Hi-Hats)'
+      return 'Drums (' + parts.join(' / ') + ')'
+    }
+
+    // Full V2 candidate list — 12 stems, smartly labeled from blueprint
+    const candidateList = [
+      { stem: 'drums',    name: getDrumLabel(),    family: 'drums',   color: '#ef4444' },
+      { stem: 'bass',     name: getBassLabel(bpInstruments), family: 'bass', color: '#3b82f6' },
+      { stem: 'vocals',   name: 'Vocals',          family: 'vocals',  color: '#ec4899' },
+      { stem: 'other',    name: getOtherLabel(bpInstruments), family: 'synth', color: '#8b5cf6' },
+      { stem: 'piano',    name: getPianoLabel(bpInstruments), family: 'keys',  color: '#f59e0b' },
+      { stem: 'guitar',   name: getGuitarLabel(bpInstruments), family: 'guitar', color: '#84cc16' },
+      { stem: 'strings',  name: 'Strings',         family: 'strings', color: '#06b6d4' },
+      { stem: 'synth',    name: getSynthLabel(bpInstruments), family: 'synth', color: '#a78bfa' },
+      { stem: 'brass',    name: 'Brass',           family: 'brass',   color: '#fb923c' },
+      { stem: 'woodwind', name: 'Woodwind',        family: 'wind',    color: '#34d399' },
+      { stem: 'fx',       name: 'FX / Effects',    family: 'fx',      color: '#f87171' },
+    ]
 
     // Probe the ZIP to discover which stems are actually present
     // (skips undetected instruments — no silent/empty stems)
@@ -2174,7 +2224,7 @@ function stemsPage(jobId: string) {
   <div id="stems-no-stems" style="display:none;text-align:center;padding:60px 20px">
     <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
     <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
-    <p style="color:var(--muted);margin-bottom:8px">Extract individual stems from your beat to preview and download each track separately.</p>
+    <p style="color:var(--muted);margin-bottom:8px">Extract up to 12 individual stems — Kick/Snare/Hi-Hats, Bass, Melody, Synth, and more — from your beat to preview and download each track separately.</p>
     <p id="stems-cost-label" style="color:var(--muted);font-size:.88rem;margin-bottom:24px"></p>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
       <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
@@ -2325,8 +2375,8 @@ async function stemsInit() {
       const costLabel = document.getElementById('stems-cost-label');
       const btnLabel  = document.getElementById('stems-extract-btn-label');
       if (costLabel) costLabel.textContent = isPro
-        ? 'Costs 10 download credits — extracts up to 12 stems'
-        : 'Costs 2 download credits — extracts 5 stems';
+        ? 'Costs 10 download credits — extracts up to 12 stems + MIDI'
+        : 'Costs 2 download credits — extracts up to 12 stems';
       if (btnLabel) btnLabel.textContent = isPro
         ? 'Extract Stems — 10 Credits'
         : 'Extract Stems — 2 Credits';
@@ -3119,7 +3169,7 @@ function generatorPage() {
         <div class="export-options">
           <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
           <button class="export-btn export-btn--get-stems" id="exp-stems"><i class="fas fa-layer-group"></i><span>Get Stems</span><small>Creator+</small></button>
-          <button class="export-btn export-btn--get-stems" id="exp-tracks"><i class="fas fa-music"></i><span>Get up to 12 stems</span><small>Pro plan</small></button>
+          <button class="export-btn export-btn--get-stems" id="exp-tracks"><i class="fas fa-music"></i><span>Get up to 12 stems</span><small>Creator+</small></button>
         </div>
         <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to unlock stems</a>
       </div>
@@ -3188,7 +3238,7 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Stereo download</li>
-          <li><i class="fas fa-check"></i> Stem ZIP export (5 stems)</li>
+          <li><i class="fas fa-check"></i> Stem ZIP export (up to 12 stems)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
@@ -3222,7 +3272,7 @@ function pricingPage() {
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat (stereo + 5-stem ZIP)</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP (5 stems)</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP (up to 12 stems)</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-list"></i> Individual track download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
@@ -3233,7 +3283,7 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and extracts stems — all included. Creator and Pro Artist plans get the stereo mix + a 5-stem ZIP from that single generation.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and extracts stems — all included. Creator and Pro Artist plans get the stereo mix + up to 12 individually labeled stems (Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more).</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Free plan users must upgrade to continue after 3 generations.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>

@@ -875,11 +875,10 @@ document.addEventListener('DOMContentLoaded', () => {
       return `<span style="font-size:.78rem;color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Extracting...</span>`;
     }
     if (track.status === 'ready' && track.zip_url) {
-      // Download individual WAV stem from ZIP
-      // Note: Individual downloads are locked to Pro; ZIP download is shown in export panel
+      // Download individual WAV stem from ZIP — available to Creator+ plans
       return `
         <span class="stem-file-badge">${track.stem}.wav</span>
-        <span class="track-row__dl locked-pro" title="Pro Artist — download individual track"><i class="fas fa-lock"></i> Pro</span>`;
+        <span class="track-row__dl locked-pro" title="Creator+ — download individual track"><i class="fas fa-lock"></i> Creator+</span>`;
     }
     if (track.status === 'error') {
       return `<span style="font-size:.78rem;color:var(--danger)"><i class="fas fa-times"></i> Error</span>`;
@@ -1355,7 +1354,7 @@ function showStemsSection(job) {
   sec.style.display = 'block';
   const isPro = user.plan === 'pro';
   const cost  = isPro ? 10 : 2;
-  const stems = isPro ? 'up to 12 stems' : '5 stems';
+  const stems = 'up to 12 stems';
   if (desc) desc.textContent = `${stems} · costs ${cost} credits (you have ${user.gens_limit - user.gens_used} remaining)`;
   const btn = document.getElementById('edit-get-stems-btn');
   if (btn) btn.style.display = '';
@@ -1479,14 +1478,14 @@ window.openStemsPopup = async function(jobId) {
 
   const isPro = plan === 'pro';
   const creditCost = isPro ? 10 : 2;
-  const stemCount  = isPro ? 'up to 12 stems' : '5 stems';
+  const stemCount  = 'up to 12 stems';
   const planLabel  = isPro ? 'Pro Artist' : 'Creator';
 
   document.getElementById('sf-stems-popup-body').innerHTML = `
     <div style="width:100%">
       <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-layer-group"></i></div>
       <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Extract Stems</h3>
-      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track — Drums, Bass, Vocals, and more — to preview and download each one individually.</p>
+      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track — Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, and more — to preview and download each one individually.</p>
       <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px"><strong>${creditCost} download credits</strong> will be used from your ${planLabel} plan.</p>
       <div style="display:flex;gap:10px;justify-content:center">
         <button id="sf-stems-popup-go" onclick="sfStemsGo('${jobId}')" style="flex:1;padding:11px 16px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:.92rem">
