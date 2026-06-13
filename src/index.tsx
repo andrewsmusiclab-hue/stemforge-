@@ -754,7 +754,7 @@ app.post('/api/generate', async (c) => {
           // Enforce per-plan generation limit
           if (u.gens_used >= u.gens_limit) {
             return c.json({
-              error: `Generation limit reached. You have used all ${u.gens_limit} generation${u.gens_limit === 1 ? '' : 's'} for this month. Upgrade your plan to continue.`,
+              error: `Download limit reached. You have used all ${u.gens_limit} download${u.gens_limit === 1 ? '' : 's'} for this month. Upgrade your plan to continue.`,
               limit_reached: true
             }, 403)
           }
@@ -1424,7 +1424,7 @@ function globalSidebar() {
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
-    <div class="gs-credits__label" id="gs-credits-label">Generations</div>
+    <div class="gs-credits__label" id="gs-credits-label">Downloads</div>
     <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
     <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
   </div>
@@ -2367,8 +2367,8 @@ function subscriptionPage(user: User, env: Bindings) {
         <span class="sub-stat__val">${nextBilling}</span>
       </div>
       <div class="sub-stat">
-        <span class="sub-stat__label">Credits Remaining</span>
-        <span class="sub-stat__val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit} gen</span>
+        <span class="sub-stat__label">Downloads Remaining</span>
+        <span class="sub-stat__val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit}</span>
       </div>
       ${user.plan !== 'free' && stripeOk ? `
       <div class="sub-stat sub-stat--manage">
@@ -2381,7 +2381,7 @@ function subscriptionPage(user: User, env: Bindings) {
     </div>
     <div class="sub-usage-card">
       <div class="sub-usage-header">
-        <h3>Generation Usage</h3>
+        <h3>Download Usage</h3>
         <span class="sub-usage-count">${user.gens_used} / ${user.gens_limit} used</span>
       </div>
       <div class="sub-usage-bar"><div class="sub-usage-bar__fill" style="width:${pct}%"></div></div>

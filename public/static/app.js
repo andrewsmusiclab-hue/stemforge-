@@ -315,20 +315,13 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      // Free tier shows generations; paid tiers show credits
+      // All tiers show downloads used / limit directly (1 generation = 1 download)
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
-      if (plan === 'free') {
-        if (creditsLabel) creditsLabel.textContent = 'Generations';
-        if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
-      } else {
-        // Convert generations to credits (Creator: ~50 credits/gen, Pro: ~67 credits/gen)
-        const creditsPerGen = plan === 'pro' ? 67 : 60;
-        const creditsUsed = user.gens_used * creditsPerGen;
-        const creditsTotal = user.gens_limit * creditsPerGen;
-        if (creditsLabel) creditsLabel.textContent = 'Credits';
-        if (gsGensVal) gsGensVal.innerHTML = `${creditsUsed.toLocaleString()} <small>/ ${creditsTotal.toLocaleString()}</small>`;
-      }
+      const limitMap = { free: 3, creator: 50, pro: 150 };
+      const displayLimit = user.gens_limit || limitMap[plan] || 3;
+      if (creditsLabel) creditsLabel.textContent = 'Downloads';
+      if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         gsGensBar.style.width = pct + '%';
