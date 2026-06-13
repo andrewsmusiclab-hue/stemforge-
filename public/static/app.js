@@ -158,6 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const email = loginForm.querySelector('[name=email]')?.value?.trim();
       const password = loginForm.querySelector('[name=password]')?.value;
+      const next = loginForm.querySelector('[name=next]')?.value || '';
 
       if (!email) return showAuthError('auth-error', 'Please enter your email.');
       if (!password) return showAuthError('auth-error', 'Please enter your password.');
@@ -167,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
+          body: JSON.stringify({ email, password, next: next || undefined })
         });
         const data = await res.json();
         if (!res.ok) {

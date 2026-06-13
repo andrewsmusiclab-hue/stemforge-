@@ -937,7 +937,7 @@ app.post('/api/auth/login', async (c) => {
     return c.json({ error: 'Auth not configured' }, 503)
   }
   try {
-    const { email, password } = await c.req.json()
+    const { email, password, next } = await c.req.json()
     if (!email || !password) return c.json({ error: 'email and password required' }, 400)
 
     await ensureAuthTables(c.env.DB)
@@ -949,8 +949,10 @@ app.post('/api/auth/login', async (c) => {
 
     const token = await createSession(c.env.DB, user.id)
     const siteUrl = c.env.SITE_URL || ''
+    // Use the requested next URL if it's a safe relative path, otherwise default to dashboard
+    const redirectTo = (next && typeof next === 'string' && next.startsWith('/') && !next.startsWith('//')) ? next : '/dashboard'
 
-    return new Response(JSON.stringify({ ok: true, redirect: '/dashboard' }), {
+    return new Response(JSON.stringify({ ok: true, redirect: redirectTo }), {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
@@ -999,7 +1001,10 @@ app.get('/api/auth/google', (c) => {
       <a href="/signup">← Back to signup</a>
     </p>`)
   }
-  const state = generateToken().slice(0, 16)
+  // Encode optional next URL into state so callback can redirect there
+  const next = c.req.query('next') || ''
+  const randomPart = generateToken().slice(0, 16)
+  const state = next ? randomPart + '|' + next : randomPart
   const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, c.env.SITE_URL, state)
   return c.redirect(url)
 })
@@ -1008,6 +1013,11 @@ app.get('/api/auth/google', (c) => {
 app.get('/api/auth/google/callback', async (c) => {
   const code = c.req.query('code')
   const error = c.req.query('error')
+  // Extract next URL from state if present (format: randomPart|/next/path)
+  const rawState = c.req.query('state') || ''
+  const pipeIdx = rawState.indexOf('|')
+  const nextFromState = pipeIdx !== -1 ? rawState.slice(pipeIdx + 1) : ''
+  const redirectAfterLogin = (nextFromState && nextFromState.startsWith('/') && !nextFromState.startsWith('//')) ? nextFromState : '/dashboard'
 
   if (error || !code) {
     return c.redirect('/signup?error=google_denied')
@@ -1039,7 +1049,7 @@ app.get('/api/auth/google/callback', async (c) => {
     return new Response(null, {
       status: 302,
       headers: {
-        'Location': '/dashboard',
+        'Location': redirectAfterLogin,
         'Set-Cookie': setSessionCookie(token, c.env.SITE_URL)
       }
     })
@@ -1147,8 +1157,17 @@ app.get('/dashboard', async (c) => {
 app.get('/project', (c) => c.html(projectPage()))
 app.get('/signup', (c) => c.html(signupPage()))
 app.get('/register', (c) => c.html(registerPage()))
-app.get('/login', (c) => c.html(loginPage()))
-app.get('/checkout', (c) => c.html(checkoutPage()))
+app.get('/login', (c) => c.html(loginPage(c.req.query('next') || '')))
+app.get('/checkout', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) {
+    const plan = c.req.query('plan') || 'creator'
+    return c.redirect('/login?next=' + encodeURIComponent('/checkout?plan=' + plan))
+  }
+  return c.html(checkoutPage())
+})
 app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
 
@@ -2139,7 +2158,9 @@ function registerPage() {
 </main>`, `<style>.sf-nav,.sf-footer{display:none}</style>`)
 }
 
-function loginPage() {
+function loginPage(next = '') {
+  const googleHref = next ? `/api/auth/google?next=${encodeURIComponent(next)}` : '/api/auth/google'
+  const nextField = next ? `<input type="hidden" name="next" value="${next.replace(/"/g,'&quot;')}"/>` : ''
   return shell('Log in', `
 <main class="auth-page">
   <div class="auth-split">
@@ -2158,10 +2179,11 @@ function loginPage() {
         <p class="auth-card__sub">Don't have an account? <a href="/signup">Sign up free</a></p>
         <div id="auth-error" class="auth-error" style="display:none"></div>
         <div class="oauth-btns">
-          <a href="/api/auth/google" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
+          <a href="${googleHref}" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
         </div>
         <div class="auth-divider"><span>or log in with email</span></div>
         <form class="auth-form" id="login-form" novalidate>
+        ${nextField}
           <div class="form-group">
             <label for="li-email">Email</label>
             <input id="li-email" type="email" name="email" placeholder="you@example.com" autocomplete="email" required/>
