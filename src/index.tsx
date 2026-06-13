@@ -568,19 +568,19 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<s
 
 // ═══════════════════════════════════════════════════════════════
 //  STEP 3 — MUREKA STEM SEPARATION via /v1/song/stem
-//  Returns a zip_url synchronously — no polling needed!
-//  ZIP contains: vocals.wav, bass.wav, drums.wav, other.wav,
-//                instrumental.wav, song.wav, song.mp3
+//  V1 (audio-separation-1): 5 stems — $0.06  — Creator plan
+//  V2 (audio-separation-2): up to 12 stems + MIDI — $0.70 — Pro plan
+//  Returns { zip_url, midi_zip_url? } synchronously — no polling needed!
 // ═══════════════════════════════════════════════════════════════
 
-async function extractStems(songUrl: string, apiKey: string): Promise<string> {
+async function extractStems(songUrl: string, apiKey: string, model: 'audio-separation-1' | 'audio-separation-2' = 'audio-separation-1'): Promise<{ zip_url: string; midi_zip_url?: string }> {
   const res = await fetch(`${MUREKA_BASE}/song/stem`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({ url: songUrl })
+    body: JSON.stringify({ url: songUrl, model })
   })
 
   if (!res.ok) {
@@ -590,7 +590,7 @@ async function extractStems(songUrl: string, apiKey: string): Promise<string> {
 
   const data = await res.json() as any
   if (!data.zip_url) throw new Error('Stem extraction returned no zip_url')
-  return data.zip_url as string
+  return { zip_url: data.zip_url as string, midi_zip_url: data.midi_zip_url || undefined }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -666,8 +666,9 @@ async function startPipeline(jobId: string, env: Bindings) {
 }
 
 // Step 2b+3: called on each POST /api/poll/:id from the frontend.
-// skipStems=true (free plan) — skip the $0.06 /song/stem call; user only gets stereo mix.
-async function advancePipeline(jobId: string, env: Bindings, skipStems = false): Promise<Job | null> {
+// Stems are NEVER auto-generated on beat creation (all plans).
+// Users request stems on-demand via POST /api/job/stems — paid separately.
+async function advancePipeline(jobId: string, env: Bindings, skipStems = true): Promise<Job | null> {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return null
@@ -697,30 +698,11 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = false):
       (job as any).image_url = buildCoverImageUrl(job)
     }
 
-    if (skipStems) {
-      // Free tier: skip the $0.06 stem-separation call — stereo mix only
-      job.zip_url = null
-      job.tracks = []
-      job.status = 'ready'
-      await setJob(db, { ...job })
-    } else {
-      // Paid tier: run stem extraction (~5-10 s, synchronous)
-      job.status = 'extracting'
-      await setJob(db, { ...job })
-
-      const zipUrl = await extractStems(stereoUrl, env.MUREKA_API_KEY)
-      job.zip_url = zipUrl
-      job.tracks = STEM_CONFIG.map(s => ({
-        name: s.name,
-        stem: s.stem,
-        family: s.family,
-        status: 'ready' as const,
-        zip_url: zipUrl,
-        color: s.color
-      }))
-      job.status = 'ready'
-      await setJob(db, { ...job })
-    }
+    // All plans: stereo only on generation. Stems requested on-demand via /api/job/stems.
+    job.zip_url = null
+    job.tracks = []
+    job.status = 'ready'
+    await setJob(db, { ...job })
 
   } catch (err: any) {
     job.status = 'error'
@@ -800,18 +782,11 @@ app.post('/api/generate', async (c) => {
 })
 
 // POST /api/poll/:id — called by frontend every ~5s while status=generating
-// Does one Mureka status check; if done, runs stem extraction (paid plans) or skips it (free).
+// Does one Mureka status check; sets job to ready with stereo only (stems on-demand).
 // Returns the same shape as GET /api/job/:id.
 app.post('/api/poll/:id', async (c) => {
   const id = c.req.param('id')
-  // Determine user plan to decide whether to run stem separation
-  let skipStems = false
-  if (c.env.DB && c.env.SESSION_SECRET) {
-    const token = getSessionCookie(c.req.raw)
-    const user = token ? await getSessionUser(c.env.DB, token) : null
-    if (!user || user.plan === 'free') skipStems = true
-  }
-  const job = await advancePipeline(id, c.env, skipStems)
+  const job = await advancePipeline(id, c.env) // always skipStems=true
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   return c.json({
@@ -890,6 +865,104 @@ app.get('/api/job/:id', async (c) => {
 
 // GET /api/health
 app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
+
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/job/stems — on-demand stem extraction
+//  Creator plan: V1 (5 stems, $0.06) = 2 credits
+//  Pro plan:     V2 (up to 12 stems, $0.70) = 10 credits
+//  Free plan:    not allowed
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/job/stems', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Must be logged in', redirect: '/login' }, 401)
+
+  if (user.plan === 'free') {
+    return c.json({ error: 'Stem extraction requires a Creator or Pro Artist plan.', upgrade: true }, 403)
+  }
+
+  const { job_id } = await c.req.json()
+  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+
+  const job = await getJob(c.env.DB, job_id)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+  if (job.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+  if (job.status !== 'ready') return c.json({ error: 'Beat is not ready yet' }, 400)
+  if (!job.stereo_url) return c.json({ error: 'No stereo audio available' }, 400)
+
+  // Already has stems — return existing zip
+  if (job.zip_url) {
+    return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, already_extracted: true })
+  }
+
+  // Credit cost: Creator=2, Pro=10
+  const creditCost = user.plan === 'pro' ? 10 : 2
+  if (user.gens_used + creditCost > user.gens_limit) {
+    return c.json({
+      error: `Not enough downloads. This costs ${creditCost} credits and you only have ${user.gens_limit - user.gens_used} remaining.`,
+      limit_reached: true
+    }, 403)
+  }
+
+  // Deduct credits immediately to prevent double-spend
+  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`)
+    .bind(creditCost, user.id).run()
+
+  try {
+    // Pro = V2 (up to 12 stems), Creator = V1 (5 stems)
+    const model = user.plan === 'pro' ? 'audio-separation-2' : 'audio-separation-1'
+    const { zip_url, midi_zip_url } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, model)
+
+    // Build track list based on model
+    const stemList = user.plan === 'pro'
+      ? [
+          { stem: 'drums',          name: 'Drums',            family: 'drums',  color: '#ef4444' },
+          { stem: 'bass',           name: 'Bass',             family: 'bass',   color: '#3b82f6' },
+          { stem: 'vocals',         name: 'Vocals',           family: 'vocals', color: '#ec4899' },
+          { stem: 'other',          name: 'Other (Melody)',   family: 'synth',  color: '#8b5cf6' },
+          { stem: 'instrumental',   name: 'Instrumental',     family: 'mix',    color: '#10b981' },
+          { stem: 'piano',          name: 'Piano',            family: 'keys',   color: '#f59e0b' },
+          { stem: 'guitar',         name: 'Guitar',           family: 'guitar', color: '#84cc16' },
+          { stem: 'strings',        name: 'Strings',          family: 'strings',color: '#06b6d4' },
+          { stem: 'synth',          name: 'Synth',            family: 'synth',  color: '#a78bfa' },
+          { stem: 'brass',          name: 'Brass',            family: 'brass',  color: '#fb923c' },
+          { stem: 'woodwind',       name: 'Woodwind',         family: 'wind',   color: '#34d399' },
+          { stem: 'fx',             name: 'FX',               family: 'fx',     color: '#f87171' },
+        ]
+      : STEM_CONFIG
+
+    const tracks = stemList.map(s => ({
+      name: s.name,
+      stem: s.stem,
+      family: s.family,
+      status: 'ready' as const,
+      zip_url,
+      color: s.color
+    }))
+
+    // Save stems back to job
+    const updatedJob = { ...job, zip_url, tracks } as any
+    if (midi_zip_url) updatedJob.midi_zip_url = midi_zip_url
+    await setJob(c.env.DB, updatedJob)
+
+    return c.json({
+      ok: true,
+      zip_url,
+      midi_zip_url: midi_zip_url || null,
+      tracks,
+      credits_used: creditCost,
+      plan: user.plan
+    })
+
+  } catch (err: any) {
+    // Refund credits on failure
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`)
+      .bind(creditCost, user.id).run()
+    return c.json({ error: err?.message || 'Stem extraction failed' }, 500)
+  }
+})
 
 // ═══════════════════════════════════════════════════════════════
 //  AUTH API ROUTES
@@ -1478,6 +1551,28 @@ function globalSidebar() {
         <div class="song-edit-modal__info-row"><span>Scale</span><strong id="edit-info-scale">—</strong></div>
         <div class="song-edit-modal__info-row"><span>Mood</span><strong id="edit-info-mood">—</strong></div>
         <div class="song-edit-modal__info-row"><span>Duration</span><strong id="edit-info-duration">—</strong></div>
+      </div>
+
+      <!-- Get Stems section — shown for creator/pro plans only -->
+      <div id="edit-stems-section" style="display:none;margin-top:12px;padding:14px;background:var(--surface-2);border:1px solid var(--border);border-radius:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <div>
+            <div style="font-weight:700;font-size:.92rem"><i class="fas fa-layer-group" style="color:var(--primary);margin-right:6px"></i>Get Stems</div>
+            <div id="edit-stems-desc" style="font-size:.78rem;color:var(--muted);margin-top:2px"></div>
+          </div>
+          <button class="btn btn--primary btn--sm" id="edit-get-stems-btn" onclick="requestStems()">
+            <i class="fas fa-layer-group"></i> Extract
+          </button>
+        </div>
+        <div id="edit-stems-status" style="display:none;font-size:.82rem;margin-top:10px;padding:8px 12px;border-radius:8px"></div>
+        <div id="edit-stems-result" style="display:none;margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <a id="edit-stems-zip-link" href="#" download style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--primary);color:#fff;border-radius:8px;font-size:.85rem;font-weight:600;text-decoration:none">
+            <i class="fas fa-file-archive"></i> Download ZIP
+          </a>
+          <a id="edit-stems-midi-link" href="#" download style="display:none;align-items:center;gap:6px;padding:8px 14px;background:var(--surface-3,#2a2a3a);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:.85rem;font-weight:600;text-decoration:none">
+            <i class="fas fa-music"></i> MIDI ZIP
+          </a>
+        </div>
       </div>
     </div>
     <div class="song-edit-modal__footer">

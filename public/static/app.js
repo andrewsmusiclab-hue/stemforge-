@@ -518,10 +518,10 @@ document.addEventListener('DOMContentLoaded', () => {
                           : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
                       : ''}
                     ${p.zip_url
-                      ? (window._sfUser && window._sfUser.plan !== 'free'
-                          ? `<a class="export-badge" href="${p.zip_url}" download="${safeFilename}_stems.zip" onclick="event.stopPropagation()">⬇ Stems</a>`
-                          : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stems</span>`)
-                      : ''}
+                      ? `<a class="export-badge" href="${p.zip_url}" download="${safeFilename}_stems.zip" onclick="event.stopPropagation()">⬇ Stems</a>`
+                      : (window._sfUser && window._sfUser.plan !== 'free'
+                          ? `<span class="export-badge export-badge--stems-cta" onclick="event.stopPropagation();openSongEditModal(null,'${p.id}')" title="Get stems" style="cursor:pointer"><i class="fas fa-layer-group"></i> Get Stems</span>`
+                          : '')}
                   </div>
                 </div>
               </div>`;
@@ -1265,6 +1265,55 @@ window.downloadStem = function(zipUrl, stemName) {
 // Cache of loaded projects for the modal
 window._sfProjects = {};
 
+function resetStemsSection() {
+  const sec    = document.getElementById('edit-stems-section');
+  const status = document.getElementById('edit-stems-status');
+  const result = document.getElementById('edit-stems-result');
+  const btn    = document.getElementById('edit-get-stems-btn');
+  if (sec)    sec.style.display = 'none';
+  if (status) { status.style.display = 'none'; status.textContent = ''; }
+  if (result) result.style.display = 'none';
+  if (btn)    { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> Extract'; }
+}
+
+function showStemsSection(job) {
+  const user = window._sfUser;
+  if (!user || user.plan === 'free') return; // free plan — don't show
+  const sec  = document.getElementById('edit-stems-section');
+  const desc = document.getElementById('edit-stems-desc');
+  if (!sec) return;
+
+  // Already extracted — show download links immediately
+  if (job && job.zip_url) {
+    sec.style.display = 'block';
+    if (desc) desc.textContent = 'Stems already extracted — download below.';
+    const btn = document.getElementById('edit-get-stems-btn');
+    if (btn) btn.style.display = 'none';
+    const result = document.getElementById('edit-stems-result');
+    const zipLink = document.getElementById('edit-stems-zip-link');
+    if (result && zipLink) {
+      zipLink.href = job.zip_url;
+      const title = (job.title || job.blueprint?.genre || 'beat').replace(/[^a-zA-Z0-9 \-_]/g,'').replace(/\s+/g,'_').toLowerCase();
+      zipLink.download = title + '_stems.zip';
+      result.style.display = 'flex';
+    }
+    if (job.midi_zip_url) {
+      const midiLink = document.getElementById('edit-stems-midi-link');
+      if (midiLink) { midiLink.href = job.midi_zip_url; midiLink.style.display = 'inline-flex'; }
+    }
+    return;
+  }
+
+  // Not yet extracted — show cost info
+  sec.style.display = 'block';
+  const isPro = user.plan === 'pro';
+  const cost  = isPro ? 10 : 2;
+  const stems = isPro ? 'up to 12 stems' : '5 stems';
+  if (desc) desc.textContent = `${stems} · costs ${cost} credits (you have ${user.gens_limit - user.gens_used} remaining)`;
+  const btn = document.getElementById('edit-get-stems-btn');
+  if (btn) btn.style.display = '';
+}
+
 window.openSongEditModal = function(jobData, jobId) {
   const modal = document.getElementById('song-edit-modal');
   if (!modal) return;
@@ -1276,6 +1325,7 @@ window.openSongEditModal = function(jobData, jobId) {
   document.getElementById('edit-bpm').value = '';
   document.getElementById('edit-genre').value = '';
   document.getElementById('edit-description').value = '';
+  resetStemsSection();
   const infoBlock = document.getElementById('edit-info-block');
   if (infoBlock) infoBlock.style.display = 'none';
 
@@ -1298,6 +1348,9 @@ window.openSongEditModal = function(jobData, jobId) {
       const dur = jobData.blueprint.duration_seconds;
       document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
     }
+    // Show stems section if ready
+    if (jobData.status === 'ready' && jobData.stereo_url) showStemsSection(jobData);
+
   } else if (jobId) {
     // Opened from project card — need to fetch job data
     document.getElementById('edit-job-id').value = jobId;
@@ -1318,6 +1371,8 @@ window.openSongEditModal = function(jobData, jobId) {
         document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
       }
       window._sfProjects[jobId] = job;
+      // Show stems section if ready
+      if (job.status === 'ready' && job.stereo_url) showStemsSection(job);
     }).catch(() => {});
   }
 
@@ -1329,6 +1384,71 @@ window.closeSongEditModal = function() {
   const modal = document.getElementById('song-edit-modal');
   if (modal) modal.style.display = 'none';
   document.body.style.overflow = '';
+};
+
+// Request stems on-demand — called from "Get Stems" button in 3-dot modal
+window.requestStems = async function() {
+  const jobId  = document.getElementById('edit-job-id')?.value;
+  const btn    = document.getElementById('edit-get-stems-btn');
+  const status = document.getElementById('edit-stems-status');
+  const result = document.getElementById('edit-stems-result');
+  if (!jobId || !btn) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
+  if (status) { status.style.display = 'block'; status.style.background = 'rgba(99,102,241,.12)'; status.style.color = 'var(--text)'; status.textContent = '⏳ Extracting stems — this takes ~10 seconds...'; }
+
+  try {
+    const res  = await fetch('/api/job/stems', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId })
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ ' + (data.error || 'Stem extraction failed. Please try again.'); }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry';
+      return;
+    }
+
+    // Success
+    btn.style.display = 'none';
+    if (status) { status.style.background = 'rgba(16,185,129,.12)'; status.style.color = '#34d399'; status.textContent = `✅ Done! ${data.plan === 'pro' ? 'Up to 12 stems' : '5 stems'} extracted · ${data.credits_used} credits used.`; }
+
+    // Show download buttons
+    const zipLink  = document.getElementById('edit-stems-zip-link');
+    const midiLink = document.getElementById('edit-stems-midi-link');
+    if (zipLink && data.zip_url) {
+      zipLink.href = data.zip_url;
+      const job = window._sfProjects && window._sfProjects[jobId];
+      const title = (job?.title || job?.blueprint?.genre || 'beat').replace(/[^a-zA-Z0-9 \-_]/g,'').replace(/\s+/g,'_').toLowerCase();
+      zipLink.download = title + '_stems.zip';
+    }
+    if (midiLink && data.midi_zip_url) {
+      midiLink.href = data.midi_zip_url;
+      midiLink.style.display = 'inline-flex';
+    }
+    if (result) result.style.display = 'flex';
+
+    // Update cached job + dashboard card
+    if (window._sfProjects && window._sfProjects[jobId]) {
+      window._sfProjects[jobId].zip_url = data.zip_url;
+    }
+    // Update sidebar credit display
+    if (window._sfUser) {
+      const cost = data.credits_used || 0;
+      window._sfUser.gens_used = (window._sfUser.gens_used || 0) + cost;
+      const gsGensVal = document.getElementById('gs-gens-val');
+      if (gsGensVal) gsGensVal.innerHTML = `${window._sfUser.gens_used} <small>/ ${window._sfUser.gens_limit}</small>`;
+    }
+
+  } catch(e) {
+    if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ Network error. Please try again.'; }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry';
+  }
 };
 
 window.saveSongEdit = function() {
