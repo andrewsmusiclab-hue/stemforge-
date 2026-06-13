@@ -1159,12 +1159,14 @@ app.get('/signup', (c) => c.html(signupPage()))
 app.get('/register', (c) => c.html(registerPage()))
 app.get('/login', (c) => c.html(loginPage(c.req.query('next') || '')))
 app.get('/checkout', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) {
-    const plan = c.req.query('plan') || 'creator'
-    return c.redirect('/login?next=' + encodeURIComponent('/checkout?plan=' + plan))
+  // Only block if we actually have a DB — if misconfigured just show the page
+  if (c.env.DB) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!user) {
+      const plan = c.req.query('plan') || 'creator'
+      return c.redirect('/login?next=' + encodeURIComponent('/checkout?plan=' + plan))
+    }
   }
   return c.html(checkoutPage())
 })
@@ -1694,7 +1696,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
-        <a href="/signup?plan=creator" class="btn btn--primary btn--full">Start Creator</a>
+        <a href="/checkout?plan=creator" class="btn btn--primary btn--full">Start Creator</a>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
@@ -1707,7 +1709,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Regenerate one track</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
-        <a href="/signup?plan=pro" class="btn btn--outline btn--full">Start Pro Artist</a>
+        <a href="/checkout?plan=pro" class="btn btn--outline btn--full">Start Pro Artist</a>
       </div>
     </div>
     <div class="pricing-preview__cta">
@@ -1991,7 +1993,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
-        <a href="/signup?plan=creator" class="btn btn--primary btn--full">Start Creator — $19/mo</a>
+        <a href="/checkout?plan=creator" class="btn btn--primary btn--full">Start Creator — $19/mo</a>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
@@ -2006,7 +2008,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Priority queue</li>
           <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
         </ul>
-        <a href="/signup?plan=pro" class="btn btn--outline btn--full">Start Pro Artist — $39/mo</a>
+        <a href="/checkout?plan=pro" class="btn btn--outline btn--full">Start Pro Artist — $39/mo</a>
       </div>
 
     </div>
