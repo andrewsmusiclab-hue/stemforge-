@@ -2396,7 +2396,7 @@ async function buildStemsPlayer(job) {
     { stem: 'other',  name: 'Other (Melody)', family: 'synth',  color: '#8b5cf6', status: 'ready' },
   ];
   const tracks = (job.tracks && job.tracks.length > 0)
-    ? job.tracks.filter((t: any) => t.stem !== 'instrumental')
+    ? job.tracks.filter((t) => t.stem !== 'instrumental')
     : defaultTracks;
 
   // Build stem rows immediately — player shows without waiting for audio
