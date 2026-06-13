@@ -46,11 +46,16 @@
 html { scroll-behavior: smooth; }
 body {
   font-family: 'Inter', system-ui, sans-serif;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 10% 20%, rgba(79, 224, 255, 0.12), transparent 28%),
+    radial-gradient(circle at 90% 10%, rgba(142, 124, 255, 0.15), transparent 30%),
+    radial-gradient(circle at 60% 80%, rgba(95, 240, 192, 0.09), transparent 26%),
+    linear-gradient(180deg, #06101d 0%, #08162b 50%, #07111f 100%);
   color: var(--text);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+  min-height: 100vh;
 }
 a { color: var(--primary); text-decoration: none; transition: color var(--transition); }
 a:hover { color: #7ab8ff; }
@@ -1425,12 +1430,12 @@ p  { color: var(--sub); }
 /* ── Page wrapper: two-column on desktop, single-column on mobile */
 .suno-gen-page {
   display: grid;
-  grid-template-columns: 380px 1fr;
-  gap: 24px;
-  min-height: calc(100vh - 80px);
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 24px 20px 16px;
+  grid-template-columns: 360px 1fr;
+  gap: 0;
+  min-height: 100vh;
+  width: 100%;
+  margin: 0;
+  padding: 0;
 }
 
 /* ── Left column: stacked cards */
@@ -1438,11 +1443,15 @@ p  { color: var(--sub); }
   display: flex;
   flex-direction: column;
   gap: 12px;
+  padding: 20px 16px 20px 20px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  min-height: 100vh;
 }
 
 /* ── Right column: results / empty state */
 .suno-right {
-  padding-top: 0;
+  padding: 28px 32px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -1802,10 +1811,18 @@ p  { color: var(--sub); }
 @media (max-width: 900px) {
   .suno-gen-page {
     grid-template-columns: 1fr;
-    padding: 16px 12px;
-    gap: 16px;
+    padding: 0;
+    gap: 0;
   }
-  .suno-right { order: -1; } /* results above controls on mobile */
+  .suno-left {
+    min-height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .suno-right {
+    padding: 20px 16px;
+    order: -1; /* results above controls on mobile */
+  }
   .suno-tab { padding: 5px 8px; font-size: .72rem; }
   .suno-create-btn { border-radius: 12px; }
 }
@@ -2188,6 +2205,7 @@ body.light .legal-body td {
 .gs-content--gen {
   padding: 0;
   max-width: none;
+  width: 100%;
 }
 
 /* Suppress old nav/footer on app pages */
@@ -2446,24 +2464,24 @@ body.light .legal-body td {
   flex-shrink: 0;
 }
 .gs-sidebar__user-wrap.open .gs-sidebar__user-caret {
-  transform: rotate(180deg);
+  transform: rotate(-180deg);
   opacity: .9;
 }
 
 /* ── Dropdown panel ───────────────────────────────────────── */
 .gs-user-dropdown {
   position: absolute;
-  bottom: calc(100% + 6px);   /* pops UP above the user row */
+  top: calc(100% + 6px);   /* pops DOWN below the user row */
   left: 0;
   right: 0;
-  background: var(--surface-1);
+  background: var(--surface-1, #131f38);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 6px;
   box-shadow: 0 8px 32px rgba(0,0,0,.35);
   z-index: 200;
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateY(-6px);
   pointer-events: none;
   transition: opacity .18s, transform .18s;
 }
@@ -2543,4 +2561,85 @@ body.light .gs-theme-pill {
 body.light .gs-theme-pill::after {
   transform: translateX(14px);
   background: #fff;
+}
+
+/* ── Beat Thumbnail (generator result) ────────────────────── */
+.gen-result__thumb {
+  width: 100%;
+  height: 120px;
+  border-radius: 14px;
+  margin-bottom: 16px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gen-result__thumb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.3);
+  border-radius: 14px;
+}
+.gen-result__thumb::after {
+  content: '\f0c3';
+  font-family: 'Font Awesome 6 Free';
+  font-weight: 900;
+  font-size: 2.5rem;
+  color: rgba(255,255,255,.5);
+  position: relative;
+  z-index: 1;
+  /* wave-square icon */
+  content: '\f028';
+}
+
+/* ── Project card art icon ─────────────────────────────────── */
+.project-card__art {
+  position: relative;
+  height: 130px;
+  border-radius: 12px 12px 0 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.project-card__art-icon {
+  position: absolute;
+  font-size: 2rem;
+  color: rgba(255,255,255,.2);
+  z-index: 0;
+}
+.project-card__play {
+  position: relative;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.15);
+  border: 2px solid rgba(255,255,255,.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s, transform .15s;
+  backdrop-filter: blur(4px);
+}
+.project-card__play:hover {
+  background: rgba(255,255,255,.3);
+  transform: scale(1.08);
+}
+.project-card__play i {
+  color: #fff;
+  font-size: .9rem;
+  margin-left: 2px;
+}
+
+/* export-badge as link */
+a.export-badge {
+  cursor: pointer;
+  text-decoration: none;
+}
+a.export-badge:hover {
+  opacity: .8;
 }

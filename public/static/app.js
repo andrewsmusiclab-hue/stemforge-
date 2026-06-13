@@ -316,7 +316,20 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
+      // Free tier shows generations; paid tiers show credits
+      const plan = user.plan || 'free';
+      const creditsLabel = document.getElementById('gs-credits-label');
+      if (plan === 'free') {
+        if (creditsLabel) creditsLabel.textContent = 'Generations';
+        if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
+      } else {
+        // Convert generations to credits (Creator: ~50 credits/gen, Pro: ~67 credits/gen)
+        const creditsPerGen = plan === 'pro' ? 67 : 60;
+        const creditsUsed = user.gens_used * creditsPerGen;
+        const creditsTotal = user.gens_limit * creditsPerGen;
+        if (creditsLabel) creditsLabel.textContent = 'Credits';
+        if (gsGensVal) gsGensVal.innerHTML = `${creditsUsed.toLocaleString()} <small>/ ${creditsTotal.toLocaleString()}</small>`;
+      }
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         gsGensBar.style.width = pct + '%';
@@ -478,21 +491,22 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
         const { projects } = await res.json();
-        const artColors = ['#4e9fff','#8b5cf6','#ec4899','#10b981','#f97316','#ef4444','#eab308','#06b6d4'];
         let html = '';
         if (projects && projects.length > 0) {
           projects.forEach((p, i) => {
-            const color = artColors[i % artColors.length];
+            const hue = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
+            const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
             const bpm   = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
             const genre = p.blueprint ? p.blueprint.genre : '';
-            const dur   = p.blueprint ? Math.round(p.blueprint.duration_seconds / 60) + ':' + String(p.blueprint.duration_seconds % 60).padStart(2,'0') : '';
+            const dur   = p.blueprint ? Math.floor(p.blueprint.duration_seconds / 60) + ':' + String(p.blueprint.duration_seconds % 60).padStart(2,'0') : '';
             const label = p.prompt ? p.prompt.slice(0, 32) + (p.prompt.length > 32 ? '…' : '') : 'Beat';
             const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label);
             const sub   = [bpm, dur].filter(Boolean).join(' · ');
-            const pJson = encodeURIComponent(JSON.stringify(p));
+            const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g,'_').toLowerCase();
             html += `
-              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}">
-                <div class="project-card__art" style="background:linear-gradient(135deg,${color}33 0%,${color}88 100%)">
+              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}">
+                <div class="project-card__art" style="${thumbBg}">
+                  <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
                   <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
                 </div>
                 <div class="project-card__body">
@@ -502,8 +516,8 @@ document.addEventListener('DOMContentLoaded', () => {
                   </div>
                   <p>${sub || genre || label}</p>
                   <div class="project-card__tags">
-                    ${p.stereo_url ? '<span class="export-badge export-badge--stereo">Stereo</span>' : ''}
-                    ${p.zip_url ? '<span class="export-badge">Stems</span>' : ''}
+                    ${p.stereo_url ? `<a class="export-badge export-badge--stereo" href="${p.stereo_url}" download="${safeFilename}_stereo.mp3" onclick="event.stopPropagation()">⬇ Stereo</a>` : ''}
+                    ${p.zip_url ? `<a class="export-badge" href="${p.zip_url}" download="${safeFilename}_stems.zip" onclick="event.stopPropagation()">⬇ Stems</a>` : ''}
                   </div>
                 </div>
               </div>`;
@@ -527,6 +541,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.playDashProject = function(btn) {
     const card = btn.closest('.project-card');
     const stereoUrl = card.dataset.stereo;
+    const trackTitle = card.dataset.title || card.querySelector('h4')?.textContent || 'Beat';
     if (!stereoUrl) {
       btn.closest('.project-card__art').style.opacity = '0.5';
       setTimeout(() => btn.closest('.project-card__art').style.opacity = '', 800);
@@ -911,7 +926,8 @@ document.addEventListener('DOMContentLoaded', () => {
           vocal_space: inputs.vocal_space,
           energy: inputs.energy,
           instruments_include: inputs.instruments_include,
-          instruments_exclude: inputs.instruments_exclude
+          instruments_exclude: inputs.instruments_exclude,
+          title: inputs.title || ''
         })
       });
 
@@ -997,6 +1013,19 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('generating', 'done');
             setStep('extracting', 'done');
 
+            // ── Collapse the spinner window ──────────────────────
+            if (pipelineStatus) {
+              pipelineStatus.style.transition = 'opacity .4s ease';
+              pipelineStatus.style.opacity = '0';
+              setTimeout(() => { pipelineStatus.style.display = 'none'; pipelineStatus.style.opacity = '1'; }, 400);
+            }
+
+            // ── Resolve final track title ─────────────────────────
+            const finalTitle = job.title ||
+              (job.blueprint ? (job.blueprint.genre + ' — ' + job.blueprint.key + ' ' + job.blueprint.scale) : 'Beat Ready');
+            // Sanitize for filename: replace special chars with underscores
+            const safeFilename = finalTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g, '_').toLowerCase();
+
             // Final update of all tracks (or build if not yet rendered)
             if (trackList) {
               if (trackList.children.length === 0) {
@@ -1006,33 +1035,47 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // Stereo player
+            // Stereo player — use track name in download filename
             if (job.stereo_url && stereoPlayer && stereoAudio) {
               stereoAudio.src = job.stereo_url;
               stereoPlayer.style.display = 'block';
               if (stereoDownload) {
                 stereoDownload.href = job.stereo_url;
-                stereoDownload.download = 'stemforge-stereo.mp3';
+                stereoDownload.setAttribute('download', safeFilename + '_stereo.mp3');
               }
             }
 
-            // ZIP download button for grouped stems
+            // ZIP download button for grouped stems — named after track
             const zipBtn = document.getElementById('exp-stems');
             if (zipBtn && job.zip_url) {
-              zipBtn.onclick = () => window.open(job.zip_url, '_blank');
+              zipBtn.onclick = () => {
+                const a = document.createElement('a');
+                a.href = job.zip_url;
+                a.download = safeFilename + '_stems.zip';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+              };
               zipBtn.classList.remove('export-btn--locked');
               zipBtn.title = 'Download all stems (ZIP)';
             }
 
-            // Update result header
+            // Update result header with AI-generated or user title
             const titleEl = document.getElementById('gen-result-title');
             const subEl   = document.getElementById('gen-result-sub');
-            if (titleEl && job.blueprint) {
-              titleEl.textContent = job.blueprint.genre + ' — ' + job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
-            }
-            if (subEl) {
+            if (titleEl) titleEl.textContent = finalTitle;
+            if (subEl && job.blueprint) {
               const stemCount = job.tracks.length;
-              subEl.textContent = 'Ready · ' + stemCount + ' stems extracted · ' + Math.round((job.blueprint?.duration_seconds||120)/60) + ' min';
+              const dur = Math.floor((job.blueprint.duration_seconds||120)/60) + ':' + String((job.blueprint.duration_seconds||120)%60).padStart(2,'0');
+              subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + dur;
+            }
+
+            // Show thumbnail on result card
+            const thumbEl = document.getElementById('gen-result-thumb');
+            if (thumbEl && job.thumbnail_seed != null) {
+              const hue = job.thumbnail_seed;
+              thumbEl.style.background = `linear-gradient(135deg, hsl(${hue},70%,35%) 0%, hsl(${(hue+60)%360},80%,25%) 100%)`;
+              thumbEl.style.display = 'block';
             }
 
             if (genResult) genResult.style.display = 'block';
@@ -1043,7 +1086,16 @@ document.addEventListener('DOMContentLoaded', () => {
               if (!user) return;
               const gv = document.getElementById('gs-gens-val');
               const gb = document.getElementById('gs-gens-bar');
-              if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
+              const plan = user.plan || 'free';
+              if (plan === 'free') {
+                if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit}</small>`;
+              } else {
+                // Show credits (gens * 50 credits per gen for creator, gens * 50 for pro)
+                const creditsPerGen = plan === 'pro' ? 67 : 60;
+                const creditsUsed = user.gens_used * creditsPerGen;
+                const creditsTotal = user.gens_limit * creditsPerGen;
+                if (gv) gv.innerHTML = `${creditsUsed} <small>/ ${creditsTotal} credits</small>`;
+              }
               if (gb) {
                 const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
                 gb.style.width = pct + '%';

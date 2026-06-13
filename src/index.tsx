@@ -358,6 +358,9 @@ interface Job {
   tracks: Track[]         // Mapped stems for display
   error?: string
   prompt: string
+  title?: string          // User-provided or AI-generated title
+  user_lyrics?: string    // User lyrics/notes
+  thumbnail_seed?: number // Deterministic color seed for thumbnail gradient
 }
 
 interface Blueprint {
@@ -415,27 +418,44 @@ function makeJobId(): string {
 //  STEP 1 — OPENAI BLUEPRINT GENERATION
 // ═══════════════════════════════════════════════════════════════
 
-async function generateBlueprint(prompt: string, apiKey: string): Promise<Blueprint> {
+// Keys to rotate through for variety — seeded by current minute so same session gets same key but changes over time
+const ALL_KEYS = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B']
+function pickRandomKey(): string {
+  return ALL_KEYS[Math.floor(Math.random() * ALL_KEYS.length)]
+}
+
+async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string): Promise<Blueprint & { suggested_title?: string }> {
+  const suggestedKey = pickRandomKey()
   const systemPrompt = `You are a professional music producer and composer.
 Given a user's beat description, output a detailed composition blueprint as JSON.
-CRITICAL RULE: You MUST preserve the exact genre the user specifies. If the user says "hip hop", the genre field MUST be "hip hop" (or a sub-genre like "boom bap", "trap", etc.) — never substitute a different genre like R&B, soul, or pop. The mureka_prompt must also clearly start with the user's stated genre.
+CRITICAL RULES:
+1. You MUST preserve the exact genre the user specifies. If the user says "hip hop", the genre field MUST be "hip hop" — never substitute.
+2. KEY VARIETY: Use the suggested_key provided unless the user explicitly requests a different key. Never default to C minor every time — vary the key based on the suggestion.
+3. TRACK TITLE: If the user has not provided a title, generate a creative short track name (2-4 words) that fits the mood/genre/description — similar to how Suno names tracks. Put it in the "suggested_title" field.
 Always output valid JSON only, no markdown, no explanation.`
 
   const userPrompt = `Create a composition blueprint for this beat: "${prompt}"
+${titleHint ? `User-provided title: "${titleHint}"` : 'User did NOT provide a title — generate a creative one in suggested_title.'}
 
-IMPORTANT: If the user specifies a genre (e.g. "hip hop", "drill", "trap", "afrobeats"), you MUST use that exact genre. Do NOT change or substitute genres.
+SUGGESTED KEY for this beat: ${suggestedKey} (use this unless the user requested a specific key)
+
+IMPORTANT RULES:
+- If the user specifies a genre, use that exact genre in the genre field.
+- Use the suggested key (${suggestedKey}) for variety unless user requested something else.
+- Generate a short creative title in suggested_title if user left title blank.
 
 Return ONLY this JSON structure:
 {
   "bpm": <number 60-180>,
-  "key": <"C" | "D" | "E" | "F" | "G" | "A" | "B" with optional "b" or "#">,
-  "scale": <"minor" | "major" | "minor pentatonic" | "major pentatonic">,
-  "genre": <MUST match user's stated genre exactly, e.g. if they said "hip hop" use "hip hop">,
+  "key": <use ${suggestedKey} unless user requested otherwise — must be one of: C, C#, D, Eb, E, F, F#, G, Ab, A, Bb, B>,
+  "scale": <"minor" | "major" | "minor pentatonic" | "major pentatonic" — choose based on mood, not always minor>,
+  "genre": <MUST match user's stated genre exactly>,
   "mood": <mood string>,
   "energy": <"low" | "medium" | "high">,
   "duration_seconds": <90 | 120 | 150 | 180>,
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing the arrangement density and feel>,
+  "suggested_title": <2-4 word creative track name fitting the mood/genre — e.g. "Midnight Surf Noir", "Dark Satin Trap", "Golden Hour Boom Bap">,
   "mureka_prompt": <a detailed Mureka-optimized prompt string — MUST start with the user's genre, max 200 chars>,
   "instruments": [
     {
@@ -453,7 +473,8 @@ Rules:
 - add melodic/harmonic instruments typical of the stated genre
 - mureka_track_type must be one of: vocals, accompaniment, bass, drums
 - map kick/snare/hats → "drums", bass → "bass", keys/guitar/pad/strings/brass/woodwind → "accompaniment", fx/vocals → "vocals"
-- mureka_prompt MUST reflect the user's stated genre prominently`
+- mureka_prompt MUST reflect the user's stated genre prominently
+- KEY: Do NOT always use C minor. Use the suggested key ${suggestedKey} and choose scale based on mood.`
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -587,7 +608,17 @@ async function startPipeline(jobId: string, env: Bindings) {
     job.status = 'blueprint'
     await setJob(db, { ...job })
 
-    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY)
+    const userTitle = (job as any).title as string | undefined
+    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle)
+
+    // Auto-name the track if user left title blank
+    if (!userTitle && (blueprint as any).suggested_title) {
+      (job as any).title = (blueprint as any).suggested_title
+    }
+
+    // Generate deterministic thumbnail seed from job id
+    job.thumbnail_seed = job.thumbnail_seed || (job.id.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % 360)
+
     job.blueprint = blueprint
     job.tracks = []
 
@@ -673,7 +704,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = false):
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude, title } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -722,7 +753,9 @@ app.post('/api/generate', async (c) => {
     status: 'pending',
     created_at: Date.now(),
     prompt: fullPrompt,
-    tracks: []
+    tracks: [],
+    title: title || undefined,
+    thumbnail_seed: Math.floor(Math.random() * 360)
   }
   await setJob(c.env.DB, job, userId)
 
@@ -753,6 +786,8 @@ app.post('/api/poll/:id', async (c) => {
     status: job.status,
     created_at: job.created_at,
     prompt: job.prompt,
+    title: (job as any).title || null,
+    thumbnail_seed: job.thumbnail_seed || null,
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -792,6 +827,7 @@ app.get('/api/job/:id', async (c) => {
     prompt: job.prompt,
     title: (job as any).title || null,
     user_lyrics: (job as any).user_lyrics || null,
+    thumbnail_seed: job.thumbnail_seed || null,
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -1056,8 +1092,23 @@ app.post('/api/stripe/webhook', async (c) => {
 
 app.get('/', (c) => c.html(homePage()))
 app.get('/pricing', (c) => c.html(pricingPage()))
-app.get('/generator', (c) => c.html(generatorPage()))
-app.get('/dashboard', (c) => c.html(dashboardPage()))
+app.get('/generator', async (c) => {
+  // Require authentication — guests must sign up first
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!user) return c.redirect('/signup?next=/generator')
+  }
+  return c.html(generatorPage())
+})
+app.get('/dashboard', async (c) => {
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!user) return c.redirect('/signup?next=/dashboard')
+  }
+  return c.html(dashboardPage())
+})
 app.get('/project', (c) => c.html(projectPage()))
 app.get('/signup', (c) => c.html(signupPage()))
 app.get('/register', (c) => c.html(registerPage()))
@@ -1134,6 +1185,7 @@ app.get('/api/projects', async (c) => {
         id: d.id,
         prompt: d.prompt,
         title: (d as any).title || null,
+        thumbnail_seed: d.thumbnail_seed || null,
         created_at: d.created_at,
         stereo_url: d.stereo_url || null,
         zip_url: d.zip_url || null,
@@ -1215,7 +1267,7 @@ function globalSidebar() {
         <span class="gs-sidebar__username" id="gs-username">Loading...</span>
         <span class="gs-sidebar__plan plan-badge" id="gs-plan-badge">Free</span>
       </div>
-      <i class="fas fa-chevron-up gs-sidebar__user-caret" id="gs-user-caret"></i>
+      <i class="fas fa-chevron-down gs-sidebar__user-caret" id="gs-user-caret"></i>
     </button>
 
     <!-- Dropdown panel — shown when user block is clicked -->
@@ -1263,7 +1315,7 @@ function globalSidebar() {
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
-    <div class="gs-credits__label">Generations</div>
+    <div class="gs-credits__label" id="gs-credits-label">Generations</div>
     <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
     <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
   </div>
@@ -1780,6 +1832,8 @@ function generatorPage() {
 
     <!-- Result area -->
     <div class="gen-result" id="gen-result" style="display:none">
+      <!-- Beat thumbnail (Suno-style) -->
+      <div class="gen-result__thumb" id="gen-result-thumb" style="display:none"></div>
       <div class="gen-result__header">
         <div>
           <h3 id="gen-result-title">Beat Ready</h3>
