@@ -1400,7 +1400,7 @@ function nav() {
     <nav class="sf-nav__links">
       <a href="/#features">Features</a>
       <a href="/pricing">Pricing</a>
-      <a href="/#how">How it works</a>
+      <a href="/#features">Features</a>
     </nav>
     <div class="sf-nav__actions">
       <a href="/login" class="btn btn--ghost btn--sm nav-guest-only">Log in</a>
@@ -1487,7 +1487,7 @@ function homePage() {
     </div>
     <div class="hero__proof">
       <span><i class="fas fa-check-circle"></i> No credit card required</span>
-      <span><i class="fas fa-check-circle"></i> 150 free credits</span>
+      <span><i class="fas fa-check-circle"></i> 3 free generations</span>
       <span><i class="fas fa-check-circle"></i> Real AI generation</span>
     </div>
   </div>
@@ -1509,11 +1509,11 @@ function homePage() {
   <div class="container">
     <p class="logos-bar__label">Powered by industry-leading AI</p>
     <div class="logos-bar__items">
-      <span><i class="fas fa-brain"></i> OpenAI GPT-4o</span>
-      <span><i class="fas fa-music"></i> Mureka AI</span>
       <span><i class="fas fa-layer-group"></i> Multitrack Engine</span>
       <span><i class="fas fa-bolt"></i> Edge Deployed</span>
       <span><i class="fas fa-shield-alt"></i> Commercial Use</span>
+      <span><i class="fas fa-music"></i> Studio-Quality Output</span>
+      <span><i class="fas fa-infinity"></i> Always Improving</span>
     </div>
   </div>
 </section>
@@ -1544,7 +1544,7 @@ function homePage() {
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-microchip"></i></div>
         <h3>Composition-first generation</h3>
-        <p>GPT-4o builds a shared blueprint first — BPM, key, structure, arrangement — so all tracks lock together perfectly.</p>
+        <p>AI builds a shared blueprint first — BPM, key, structure, arrangement — so all tracks lock together perfectly.</p>
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-sliders"></i></div>
@@ -1570,45 +1570,7 @@ function homePage() {
   </div>
 </section>
 
-<section class="how" id="how">
-  <div class="container">
-    <div class="section-header">
-      <div class="section-tag">How it works</div>
-      <h2>From prompt to stems<br/>in under a minute.</h2>
-    </div>
-    <div class="how__steps">
-      <div class="how__step">
-        <div class="how__step-num">01</div>
-        <div class="how__step-body">
-          <h3>Describe your beat</h3>
-          <p>Type your prompt. Genre, mood, BPM, instruments. StemForge reads intent.</p>
-          <div class="how__step-example">"95 BPM dark surf noir trap beat, open vocal space, Rhodes and guitar texture"</div>
-        </div>
-      </div>
-      <div class="how__step">
-        <div class="how__step-num">02</div>
-        <div class="how__step-body">
-          <h3>GPT-4o builds the blueprint</h3>
-          <p>AI creates a shared composition plan — BPM, key, structure, instrument list, arrangement map — before a single note is generated.</p>
-        </div>
-      </div>
-      <div class="how__step">
-        <div class="how__step-num">03</div>
-        <div class="how__step-body">
-          <h3>Mureka renders the audio</h3>
-          <p>The full instrumental generates first. Then individual tracks are extracted — each instrument clean on its own file.</p>
-        </div>
-      </div>
-      <div class="how__step">
-        <div class="how__step-num">04</div>
-        <div class="how__step-body">
-          <h3>Download what you need</h3>
-          <p>Stereo mix, premaster, grouped stems, or individual tracks. Your plan determines what you can export.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+
 
 <section class="pricing-preview">
   <div class="container">
@@ -1624,8 +1586,8 @@ function homePage() {
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 3 generations/month</li>
-          <li><i class="fas fa-check"></i> Stereo preview</li>
-          <li><i class="fas fa-check"></i> Stem ZIP download</li>
+          <li><i class="fas fa-check"></i> Stereo preview & playback</li>
+          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
@@ -1635,7 +1597,7 @@ function homePage() {
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
-        <p class="plan-card__desc">For rappers, writers, and content creators.</p>
+        <p class="plan-card__desc">For Artists, writers, and content creators.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 50 generations/month</li>
           <li><i class="fas fa-check"></i> Full stereo beats</li>
@@ -1670,7 +1632,6 @@ function homePage() {
     <div class="final-cta__box">
       <div class="final-cta__orb"></div>
       <h2>Your next beat.<br/>Every track. Ready to download.</h2>
-      <p>Start with 150 free credits. No card required.</p>
       <a href="/generator" class="btn btn--primary btn--lg">Try the generator free <i class="fas fa-arrow-right"></i></a>
     </div>
   </div>
@@ -1933,8 +1894,8 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 3 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
-          <li><i class="fas fa-check"></i> Stereo preview & download</li>
-          <li><i class="fas fa-check"></i> Stem ZIP (5 stems)</li>
+          <li><i class="fas fa-check"></i> Stereo preview & playback</li>
+          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
           <li class="muted"><i class="fas fa-times"></i> Overage add-ons</li>
@@ -1945,7 +1906,7 @@ function pricingPage() {
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
-        <p class="plan-card__desc">For rappers, writers, and content creators.</p>
+        <p class="plan-card__desc">For Artists, writers, and content creators.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 50 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
@@ -1984,7 +1945,7 @@ function pricingPage() {
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat (stereo + 5-stem ZIP)</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP (5 stems)</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP (5 stems)</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-list"></i> Individual track download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
@@ -1995,7 +1956,7 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: GPT-4o builds the blueprint, Mureka renders the instrumental, and stems are extracted — all included. You get the stereo mix + a 5-stem ZIP from that single generation.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and extracts stems — all included. Creator and Pro Artist plans get the stereo mix + a 5-stem ZIP from that single generation.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Free plan users must upgrade to continue after 3 generations.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
@@ -2356,7 +2317,7 @@ function subscriptionPage(user: User, env: Bindings) {
         </div>
         <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}">
           <div class="sub-plan-card__top">
-            <div><h4>Creator</h4><p>For rappers &amp; creators</p></div>
+            <div><h4>Creator</h4><p>For Artists &amp; creators</p></div>
             <div class="sub-plan-card__price">$19<span>/mo</span></div>
           </div>
           <ul>
@@ -2511,7 +2472,7 @@ function termsPage() {
     <li>Project storage, dashboard, and playback functionality</li>
     <li>Account management including profile, subscription, and billing tools</li>
   </ul>
-  <p>We use third-party AI providers (including Mureka AI and OpenAI) to power our generation pipeline. Output quality and availability depend on these services and may vary.</p>
+  <p>We use third-party AI providers to power our generation pipeline. Output quality and availability depend on these services and may vary.</p>
 </section>
 
 <section>
@@ -2703,7 +2664,7 @@ function privacyPage() {
   <h2>5. How We Share Your Information</h2>
   <p>We do not sell or rent your personal information. We share data only in these limited circumstances:</p>
   <ul>
-    <li><strong>Service providers:</strong> We share necessary data with Stripe (payments), Cloudflare (hosting), OpenAI (blueprint generation), and Mureka AI (audio generation) to operate the Service. These providers process data on our behalf under data processing agreements.</li>
+    <li><strong>Service providers:</strong> We share necessary data with Stripe (payments), Cloudflare (hosting), and our AI generation providers to operate the Service. These providers process data on our behalf under data processing agreements.</li>
     <li><strong>Legal requirements:</strong> We may disclose your information if required by law, court order, or governmental authority, or to protect the rights, safety, or property of StemForge or others.</li>
     <li><strong>Business transfers:</strong> If StemForge is acquired or merges with another entity, your information may be transferred as part of that transaction. We will notify you via email or a prominent notice before your data is subject to a different privacy policy.</li>
   </ul>
