@@ -992,63 +992,112 @@ app.get('/api/cover-image/:jobId', async (c) => {
     }
   }
 
-  // ── Step 2: Build genre/mood-aware prompt ──
-  const bp = job.blueprint as any
-  const genre  = (bp?.genre  || 'music').toLowerCase()
-  const mood   = (bp?.mood   || 'uplifting').toLowerCase()
-  const energy = (bp?.energy || 'medium').toLowerCase()
-  const title  = ((job as any).title || genre).toLowerCase()
+  // ── Step 2: Build a title-driven, Suno-style prompt ──
+  // Philosophy (inspired by Suno's cover art approach):
+  //   • The TITLE is the primary subject — interpret it literally and creatively
+  //   • Genre/mood are secondary hints, not visual constraints
+  //   • Every image should be rich in colour and striking — never muted or generic
+  //   • Visual style (painterly, 3D, retro-vector, cinematic, etc) is chosen to best
+  //     match the title's concept, not locked to genre
+  //   • No repeated formulas — the AI should feel free to be inventive
+  const bp    = job.blueprint as any
+  const genre = (bp?.genre  || 'music').toLowerCase()
+  const mood  = (bp?.mood   || '').toLowerCase()
+  const rawTitle = ((job as any).title || '').trim()
+  const titleForPrompt = rawTitle || genre
 
-  const darkKeywords   = ['dark','cold','menacing','aggressive','hard','gritty','sinister','evil','haunted','ominous','drill','noir','horror','gothic','trap','sad','melancholy','depressed']
-  const brightKeywords = ['happy','uplifting','joyful','warm','sunny','vibrant','energetic','summer','beach','festival','party','dance','groovy','funky','positive','love','romantic','smooth','chill','peaceful']
-  const genreDark  = ['drill','dark trap','hard trap','horror','gothic'].some(g => genre.includes(g))
-  const moodDark   = darkKeywords.some(w => mood.includes(w) || title.includes(w))
-  const moodBright = brightKeywords.some(w => mood.includes(w) || title.includes(w))
-  const isDark = genreDark || (moodDark && !moodBright)
+  // ── 2a: Derive visual concept directly from the title ──
+  // Strip common filler words so the core subject shines
+  const stopWords = new Set(['the','a','an','of','in','on','at','to','for','and','or','but','with','my','our','your','its','ft','feat'])
+  const titleWords = titleForPrompt
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w: string) => w.length > 1 && !stopWords.has(w))
 
-  const genreVisuals: Record<string,string> = {
-    'pop':        'colorful confetti burst, bright pastel palette, glossy sheen, pop-art energy, vivid neon highlights',
-    'r&b':        'warm golden hour light, silhouetted figure, rich amber and burgundy tones, soul and sensuality',
-    'afrobeats':  'vivid orange and gold African sunset, bold tribal patterns, vibrant earth tones, joyful motion blur',
-    'reggaeton':  'neon city night, Latin street art, hot pink and electric blue, urban energy, pulse and rhythm',
-    'house':      'electric dance floor, strobing colored lights, abstract geometric shapes, euphoric rave energy',
-    'gospel':     'radiant golden light rays, soaring heavenly clouds, warm divine glow, inspiring and uplifting',
-    'soul':       'warm vintage bokeh, rich mahogany tones, candlelit intimacy, analog warmth',
-    'jazz':       'smoky blue jazz club, vintage brass instruments silhouette, soft amber spotlights, sophisticated',
-    'lo-fi':      'cozy late-night room, analog grain, warm lamp glow, rainy window, nostalgic and intimate',
-    'boom bap':   'gritty urban street art, bold graffiti colors, raw concrete texture, street energy',
-    'cinematic':  'epic widescreen landscape, dramatic sky, sweeping orchestral atmosphere, breathtaking scale',
-    'trap':       'purple and cyan neon haze, urban rooftop at night, moody and electric, street luxury',
-    'drill':      'cold grey concrete, dark blue tones, stark shadows, hard urban grit, stark and intense',
-    'hip hop':    'dynamic bold colors, spray paint splatter, confident urban portrait, cultural richness',
-    'reggae':     'lush tropical greens, warm sun rays through palm trees, peaceful island vibes',
+  // ── 2b: Pick a rendering style that best fits the concept ──
+  // These are style "lenses" the AI can apply — chosen by matching title keywords.
+  // If no keyword matches, we pick one randomly so variety is high across tracks.
+  interface StyleRule { keywords: string[]; style: string }
+  const styleRules: StyleRule[] = [
+    { keywords: ['night','midnight','dark','shadow','black','gothic','horror','haunted','ghost','demon','devil'],
+      style: 'dramatic cinematic noir, deep blacks and electric highlights, chiaroscuro lighting, ultra-detailed' },
+    { keywords: ['fire','flame','burn','inferno','blaze','heat','volcano','explosive'],
+      style: 'hyperrealistic fire and molten light, deep crimsons and vivid oranges, breathtaking energy' },
+    { keywords: ['ocean','sea','wave','water','rain','storm','flood','river','tide'],
+      style: 'epic seascape, rich teals and deep navy, volumetric water, sweeping ocean atmosphere' },
+    { keywords: ['space','galaxy','star','cosmos','universe','nebula','planet','alien','astronaut'],
+      style: 'stunning deep-space digital art, vivid nebula colours, luminous stardust, cosmic scale' },
+    { keywords: ['city','street','urban','neon','tokyo','ny','nyc','chicago','london','downtown'],
+      style: 'vibrant neon-drenched cityscape, reflective wet streets, cinematic night photography style' },
+    { keywords: ['love','heart','romance','kiss','together','forever','baby','girl','boy','soul'],
+      style: 'warm golden hour photography aesthetic, rich amber and rose tones, intimate and glowing' },
+    { keywords: ['war','battle','fight','soldier','warrior','weapon','gun','sword','army'],
+      style: 'epic battlefield concept art, dramatic sky, vivid contrast, cinematic scale and power' },
+    { keywords: ['jungle','forest','nature','tree','earth','green','wild','animal','lion','tiger','wolf'],
+      style: 'lush hyper-real nature photography, rich emerald greens and golden light shafts' },
+    { keywords: ['dream','fantasy','magic','fairy','wizard','dragon','mythical','surreal','psychedelic'],
+      style: 'surrealist digital painting, impossible dreamscape, saturated otherworldly palette' },
+    { keywords: ['money','rich','gold','luxury','diamond','crown','king','queen','throne','empire'],
+      style: 'opulent golden aesthetic, deep jewel tones, baroque luxury, gleaming surfaces' },
+    { keywords: ['future','cyber','robot','machine','tech','digital','ai','matrix','code','electric'],
+      style: 'sleek cyberpunk 3D render, neon cyan and magenta on matte black, geometric precision' },
+    { keywords: ['retro','vintage','old','classic','90s','80s','70s','80','90','cassette','vinyl'],
+      style: 'retro-illustration with grain texture, warm vintage colour palette, nostalgic poster art' },
+    { keywords: ['peace','calm','meditation','zen','sky','cloud','sunrise','sunset','heaven','light'],
+      style: 'breathtaking sky photography, god rays and prismatic light, serene and transcendent' },
+    { keywords: ['party','dance','club','dj','rave','festival','bounce','energy','hype'],
+      style: 'high-energy rave photography, strobing multicolour lights, explosive colour and motion blur' },
+    { keywords: ['sad','broken','pain','cry','tears','lost','alone','empty','lonely','hurt'],
+      style: 'melancholic painterly portrait, muted cool tones with single warm highlight, emotional depth' },
+  ]
+
+  let chosenStyle = ''
+  for (const rule of styleRules) {
+    if (rule.keywords.some((kw: string) => titleWords.includes(kw) || titleForPrompt.toLowerCase().includes(kw))) {
+      chosenStyle = rule.style
+      break
+    }
   }
 
-  let visualStyle = ''
-  for (const [key, style] of Object.entries(genreVisuals)) {
-    if (genre.includes(key)) { visualStyle = style; break }
+  // If no keyword matched, use a mood/genre hint to pick a style, then fall back to
+  // a varied default so every un-matched track still looks different
+  if (!chosenStyle) {
+    const moodHints: Record<string, string> = {
+      'dark':       'cinematic noir atmosphere, deep shadows and vivid colour accents, ultra-detailed',
+      'aggressive': 'raw power concept art, explosive contrast, intense colour, visceral energy',
+      'uplifting':  'radiant light burst, vivid rainbow spectrum, soaring and inspirational',
+      'chill':      'lo-fi cozy scene, warm lamp glow, soft colour harmony, intimate and relaxed',
+      'romantic':   'dreamy golden bokeh, rose and amber warmth, soft romantic glow',
+      'energetic':  'dynamic motion blur, saturated colours, explosive composition, high contrast',
+    }
+    for (const [key, style] of Object.entries(moodHints)) {
+      if (mood.includes(key)) { chosenStyle = style; break }
+    }
   }
 
-  let aestheticLine: string
-  if (isDark) {
-    aestheticLine = visualStyle
-      ? `${visualStyle}. Deep shadows, dramatic contrast, moody atmosphere.`
-      : `Dark moody atmosphere, dramatic shadows, cinematic lighting, deep rich tones, intense energy.`
-  } else {
-    aestheticLine = visualStyle
-      ? `${visualStyle}. Bright, vivid, high contrast, visually striking.`
-      : `Vibrant bold colors, bright dynamic lighting, energetic and visually striking, rich saturated palette.`
+  if (!chosenStyle) {
+    // Cycle through diverse defaults based on a hash of the jobId so every track is different
+    const defaults = [
+      'painterly surrealist digital art, impossible scene, rich saturated palette, highly detailed',
+      'epic cinematic concept art, dramatic lighting, vivid colours, sweeping composition',
+      'stunning 3D render, volumetric light, jewel-tone colour palette, ultra-detailed',
+      'retro-futurist illustration, bold graphic shapes, warm vintage colours, poster art style',
+      'photorealistic macro world, rich textures, prismatic colour, breathtaking detail',
+      'abstract expressionist digital painting, bold colour fields, dynamic brushstrokes',
+    ]
+    const hash = jobId.split('').reduce((a: number, c: string) => (a * 31 + c.charCodeAt(0)) & 0xffff, 0)
+    chosenStyle = defaults[hash % defaults.length]
   }
 
-  const energyLine = energy === 'high'
-    ? 'High energy, explosive, dynamic composition.'
-    : energy === 'low'
-    ? 'Calm, intimate, soft and refined composition.'
-    : 'Balanced composition, visually engaging.'
-
-  const imagePrompt = `Professional album cover art for a ${genre} track titled "${(job as any).title || genre}". ` +
-    `${aestheticLine} ${energyLine} ` +
-    `No text, no words, no letters, no numbers. Abstract music visual, professional artwork, highly detailed, 4K quality.`
+  // ── 2c: Build the final prompt — title concept first, style second ──
+  // Format mirrors how Suno approaches it: describe what you SEE in the image,
+  // not just what genre it is. Rich colour quality instructions at the end.
+  const imagePrompt =
+    `Album cover art depicting: ${titleForPrompt}. ` +
+    `Rendered as ${chosenStyle}. ` +
+    `Richly coloured, visually striking, professional album artwork quality. ` +
+    `No text, no words, no letters, no numbers anywhere in the image.`
 
   try {
     // ── Step 3: Generate image with gpt-image-1 ──
