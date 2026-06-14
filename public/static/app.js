@@ -471,197 +471,409 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ── Dashboard: load real projects from /api/projects ───────────
-  const projectGrid = document.getElementById('project-grid');
-  if (projectGrid) {
-    (async () => {
+  // ══════════════════════════════════════════════════════════════
+  //  LIBRARY (3-tab: Beats/Songs · One Shots · Trash)
+  // ══════════════════════════════════════════════════════════════
+
+  // Track which tabs have been fetched so we only fetch once per session
+  const _libLoaded  = { beats: false, oneshots: false, trash: false };
+  // Cached project arrays per tab (for client-side search)
+  const _libData    = { beats: [], oneshots: [], trash: [] };
+  let   _libActive  = 'beats';
+
+  // ── Canvas art generator (shared helper) ───────────────────
+  function drawCanvasArt(artEl, hue, title, genre) {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256; canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+      const grad = ctx.createLinearGradient(0, 0, 256, 256);
+      grad.addColorStop(0, `hsl(${hue},65%,18%)`);
+      grad.addColorStop(0.5, `hsl(${(hue+40)%360},75%,12%)`);
+      grad.addColorStop(1, `hsl(${(hue+80)%360},60%,8%)`);
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, 256, 256);
+      const r1 = ctx.createRadialGradient(200, 60, 10, 200, 60, 120);
+      r1.addColorStop(0, `hsla(${(hue+120)%360},80%,60%,0.35)`);
+      r1.addColorStop(1, 'transparent');
+      ctx.fillStyle = r1; ctx.fillRect(0, 0, 256, 256);
+      const r2 = ctx.createRadialGradient(50, 200, 5, 50, 200, 100);
+      r2.addColorStop(0, `hsla(${(hue+240)%360},70%,55%,0.25)`);
+      r2.addColorStop(1, 'transparent');
+      ctx.fillStyle = r2; ctx.fillRect(0, 0, 256, 256);
+      ctx.font = 'bold 13px system-ui,sans-serif';
+      ctx.fillStyle = `hsla(${hue},60%,85%,0.7)`;
+      ctx.textAlign = 'center';
+      ctx.fillText((genre||'music').toUpperCase(), 128, 36);
+      const barCount = 18; const barW = 6; const gap = 4;
+      const totalW = barCount * (barW + gap) - gap;
+      const startX = (256 - totalW) / 2;
+      for (let b = 0; b < barCount; b++) {
+        const seed = (hue * 13 + b * 97) % 360;
+        const h = 20 + (Math.sin(seed * 0.13) * 0.5 + 0.5) * 55;
+        const x = startX + b * (barW + gap); const y = 128 - h / 2;
+        const barGrad = ctx.createLinearGradient(0, y, 0, y + h);
+        barGrad.addColorStop(0, `hsla(${(hue+40)%360},80%,75%,0.9)`);
+        barGrad.addColorStop(1, `hsla(${hue},60%,50%,0.4)`);
+        ctx.fillStyle = barGrad;
+        ctx.beginPath();
+        ctx.roundRect ? ctx.roundRect(x, y, barW, h, 2) : ctx.rect(x, y, barW, h);
+        ctx.fill();
+      }
+      const words = (title||'').split(' ');
+      const line1 = words.slice(0, Math.ceil(words.length/2)).join(' ');
+      const line2 = words.slice(Math.ceil(words.length/2)).join(' ');
+      ctx.font = 'bold 18px system-ui,sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 6;
+      ctx.textAlign = 'center';
+      if (line2) { ctx.fillText(line1.slice(0,18), 128, 185); ctx.fillText(line2.slice(0,18), 128, 207); }
+      else { ctx.fillText(line1.slice(0,20), 128, 197); }
+      ctx.shadowBlur = 0;
+      artEl.style.backgroundImage = `url('${canvas.toDataURL('image/png')}')`;
+      artEl.style.backgroundSize = 'cover';
+      artEl.style.backgroundPosition = 'center';
+    } catch(e) { /* gradient fallback already shown */ }
+  }
+
+  // ── Load AI cover images async for a grid element ───────────
+  function loadCoverImages(gridEl) {
+    gridEl.querySelectorAll('.project-card[data-hue]').forEach((card, cardIndex) => {
+      const hue    = parseInt(card.dataset.hue || '180', 10);
+      const title  = card.dataset.title || '';
+      const genre  = card.dataset.genre || 'music';
+      const jobId  = card.dataset.id || '';
+      const imgUrl = card.dataset.imgurl || '';
+      const artEl  = card.querySelector('.project-card__art');
+      if (!artEl) return;
+
+      // Draw canvas art immediately
+      drawCanvasArt(artEl, hue, title, genre);
+
+      if (!jobId) return;
+
+      // If server already returned a permanent cover-art URL, use it immediately
+      if (imgUrl && imgUrl.includes('/api/cover-art/')) {
+        const img = new Image();
+        img.onload = () => {
+          artEl.style.backgroundImage = `url('${imgUrl}')`;
+          artEl.style.backgroundSize = 'cover';
+          artEl.style.backgroundPosition = 'center';
+        };
+        img.src = imgUrl;
+        return;
+      }
+
+      // Clean up stale data: URLs
       try {
-        const res = await fetch('/api/projects');
-        if (!res.ok) {
-          projectGrid.innerHTML = `<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your projects. <a href="/login">Log in</a></div>
-            <div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
-          return;
-        }
-        const { projects } = await res.json();
-        let html = '';
-        if (projects && projects.length > 0) {
-          projects.forEach((p, i) => {
-            const hue = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
-            const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
-            const bpm   = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
-            const genre = p.blueprint ? p.blueprint.genre : '';
-            const dur   = p.blueprint ? Math.floor(p.blueprint.duration_seconds / 60) + ':' + String(p.blueprint.duration_seconds % 60).padStart(2,'0') : '';
-            const label = p.prompt ? p.prompt.slice(0, 32) + (p.prompt.length > 32 ? '…' : '') : 'Beat';
-            const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label);
-            const sub   = [bpm, dur].filter(Boolean).join(' · ');
-            const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g,'_').toLowerCase();
-            // Build art style: gradient base always shown first; Canvas art applied after
-            const artStyle = thumbBg;
-            html += `
-              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}" data-hue="${hue}" data-genre="${(genre||'music').replace(/"/g,'&quot;')}" data-imgurl="${p.image_url || ''}">
-                <div class="project-card__art" style="${artStyle}">
-                  <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
-                  <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
-                </div>
-                <div class="project-card__body">
-                  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
-                    <h4 style="margin:0;flex:1">${rawTitle}</h4>
-                    <button class="song-dots-btn" title="More options" onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}')" style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
-                  </div>
-                  <p>${sub || genre || label}</p>
-                  <div class="project-card__tags">
-                    ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
-                  </div>
-                </div>
-              </div>`;
-          });
-        } else {
-          html = `<div class="project-grid-empty">
-            <i class="fas fa-music" style="font-size:40px;opacity:.3;margin-bottom:16px"></i>
-            <p>No beats yet. <a href="/generator">Generate your first beat!</a></p>
-          </div>`;
-        }
-        html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
-        projectGrid.innerHTML = html;
+        const stale = sessionStorage.getItem('cover_img_' + jobId);
+        if (stale && stale.startsWith('data:')) sessionStorage.removeItem('cover_img_' + jobId);
+      } catch(e) {}
 
-        // Draw canvas placeholder instantly for all cards, then load real AI images async
-        projectGrid.querySelectorAll('.project-card[data-hue]').forEach(card => {
-          const hue    = parseInt(card.dataset.hue || '180', 10);
-          const title  = card.dataset.title || '';
-          const genre  = card.dataset.genre || 'music';
-          const jobId  = card.dataset.id || '';
-          const imgUrl = card.dataset.imgurl || '';   // permanent /api/cover-art/ URL if already cached
-          const artEl  = card.querySelector('.project-card__art');
-          if (!artEl) return;
-
-          // Step 1: draw Canvas placeholder instantly
-          try {
-            const canvas = document.createElement('canvas');
-            canvas.width = 256; canvas.height = 256;
-            const ctx = canvas.getContext('2d');
-            const grad = ctx.createLinearGradient(0, 0, 256, 256);
-            grad.addColorStop(0, `hsl(${hue},65%,18%)`);
-            grad.addColorStop(0.5, `hsl(${(hue+40)%360},75%,12%)`);
-            grad.addColorStop(1, `hsl(${(hue+80)%360},60%,8%)`);
-            ctx.fillStyle = grad; ctx.fillRect(0, 0, 256, 256);
-            const r1 = ctx.createRadialGradient(200, 60, 10, 200, 60, 120);
-            r1.addColorStop(0, `hsla(${(hue+120)%360},80%,60%,0.35)`);
-            r1.addColorStop(1, 'transparent');
-            ctx.fillStyle = r1; ctx.fillRect(0, 0, 256, 256);
-            const r2 = ctx.createRadialGradient(50, 200, 5, 50, 200, 100);
-            r2.addColorStop(0, `hsla(${(hue+240)%360},70%,55%,0.25)`);
-            r2.addColorStop(1, 'transparent');
-            ctx.fillStyle = r2; ctx.fillRect(0, 0, 256, 256);
-            ctx.font = 'bold 13px system-ui,sans-serif';
-            ctx.fillStyle = `hsla(${hue},60%,85%,0.7)`;
-            ctx.textAlign = 'center';
-            ctx.fillText(genre.toUpperCase(), 128, 36);
-            const barCount = 18; const barW = 6; const gap = 4;
-            const totalW = barCount * (barW + gap) - gap;
-            const startX = (256 - totalW) / 2;
-            for (let b = 0; b < barCount; b++) {
-              const seed = (hue * 13 + b * 97) % 360;
-              const h = 20 + (Math.sin(seed * 0.13) * 0.5 + 0.5) * 55;
-              const x = startX + b * (barW + gap); const y = 128 - h / 2;
-              const barGrad = ctx.createLinearGradient(0, y, 0, y + h);
-              barGrad.addColorStop(0, `hsla(${(hue+40)%360},80%,75%,0.9)`);
-              barGrad.addColorStop(1, `hsla(${hue},60%,50%,0.4)`);
-              ctx.fillStyle = barGrad;
-              ctx.beginPath();
-              ctx.roundRect ? ctx.roundRect(x, y, barW, h, 2) : ctx.rect(x, y, barW, h);
-              ctx.fill();
-            }
-            const words = title.split(' ');
-            const line1 = words.slice(0, Math.ceil(words.length/2)).join(' ');
-            const line2 = words.slice(Math.ceil(words.length/2)).join(' ');
-            ctx.font = 'bold 18px system-ui,sans-serif';
-            ctx.fillStyle = '#ffffff';
-            ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 6;
-            ctx.textAlign = 'center';
-            if (line2) { ctx.fillText(line1.slice(0,18), 128, 185); ctx.fillText(line2.slice(0,18), 128, 207); }
-            else { ctx.fillText(line1.slice(0,20), 128, 197); }
-            ctx.shadowBlur = 0;
-            artEl.style.backgroundImage = `url('${canvas.toDataURL('image/png')}')`;
-            artEl.style.backgroundSize = 'cover';
-            artEl.style.backgroundPosition = 'center';
-          } catch(e) { /* gradient fallback already shown */ }
-
-          // Step 2: load real AI image
-          // If the server already returned a permanent /api/cover-art/ URL, use it immediately —
-          // no API call needed (the browser caches it with immutable Cache-Control headers).
-          // Only call /api/cover-image/ when no cached URL exists yet.
-          if (!jobId) return;
-
-          if (imgUrl && imgUrl.includes('/api/cover-art/')) {
-            // Already cached — apply directly, no fetch needed
+      setTimeout(() => {
+        fetch('/api/cover-image/' + jobId)
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (!data || !data.url) return;
+            card.dataset.imgurl = data.url;
             const img = new Image();
             img.onload = () => {
-              artEl.style.backgroundImage = `url('${imgUrl}')`;
+              artEl.style.backgroundImage = `url('${data.url}')`;
               artEl.style.backgroundSize = 'cover';
               artEl.style.backgroundPosition = 'center';
             };
-            img.src = imgUrl;
-            return;
-          }
+            img.src = data.url;
+          })
+          .catch(() => {});
+      }, cardIndex * 800);
+    });
+  }
 
-          // No cached URL — fetch from server (generates once, caches forever)
-          // Small stagger to avoid hammering the API simultaneously for all cards
-          const imgCacheKey = 'cover_img_' + jobId;
-          // Clean up any legacy data: URLs from sessionStorage
-          try {
-            const stale = sessionStorage.getItem(imgCacheKey);
-            if (stale && stale.startsWith('data:')) sessionStorage.removeItem(imgCacheKey);
-          } catch(e) {}
+  // ── Render a single beats/songs card ───────────────────────
+  function renderBeatCard(p, i) {
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
+    const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
+    const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
+    const genre= p.blueprint ? p.blueprint.genre : '';
+    const dur  = p.blueprint ? Math.floor(p.blueprint.duration_seconds/60) + ':' + String(p.blueprint.duration_seconds%60).padStart(2,'0') : '';
+    const label= p.prompt ? p.prompt.slice(0,32) + (p.prompt.length>32?'…':'') : 'Beat';
+    const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : label);
+    const sub  = [bpm, dur].filter(Boolean).join(' · ');
+    const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
+    return `
+      <div class="project-card"
+           data-stereo="${p.stereo_url||''}" data-zip="${p.zip_url||''}"
+           data-id="${p.id}"
+           data-title="${rawTitle.replace(/"/g,'&quot;')}"
+           data-hue="${hue}"
+           data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
+           data-imgurl="${p.image_url||''}">
+        <div class="project-card__art" style="${thumbBg}">
+          <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
+          <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
+        </div>
+        <div class="project-card__body">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
+            <h4 style="margin:0;flex:1">${rawTitle}</h4>
+            <button class="song-dots-btn" title="More options"
+              onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
+              style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
+          </div>
+          <p>${sub||genre||label}</p>
+          <div class="project-card__tags">
+            ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
+          </div>
+        </div>
+      </div>`;
+  }
 
-          const cardIndex = Array.from(projectGrid.querySelectorAll('.project-card[data-hue]')).indexOf(card);
-          setTimeout(() => {
-            fetch('/api/cover-image/' + jobId)
-              .then(r => r.ok ? r.json() : null)
-              .then(data => {
-                if (!data || !data.url) return;
-                // Update the card's data-imgurl so subsequent renders use the cached URL
-                card.dataset.imgurl = data.url;
-                const img = new Image();
-                img.onload = () => {
-                  artEl.style.backgroundImage = `url('${data.url}')`;
-                  artEl.style.backgroundSize = 'cover';
-                  artEl.style.backgroundPosition = 'center';
-                };
-                img.src = data.url;
-              })
-              .catch(() => { /* keep canvas art */ });
-          }, cardIndex * 800); // 800ms stagger between cards
-        });
+  // ── Render a single one-shot card ───────────────────────────
+  function renderOneshotCard(p, i) {
+    const soundType = p.sound_type || 'One Shot';
+    const label = soundType.charAt(0).toUpperCase() + soundType.slice(1);
+    const safeFilename = soundType.replace(/[^a-zA-Z0-9]/g,'_').toLowerCase();
+    const audioUrl = p.audio_url || '';
+    return `
+      <div class="project-card project-card--oneshot"
+           data-stereo="${audioUrl}"
+           data-id="${p.id}"
+           data-title="${label.replace(/"/g,'&quot;')}">
+        <div class="project-card__art" style="background:linear-gradient(135deg,#1a1240,#0d0a1e)">
+          <div class="project-card__art-icon"><i class="fas fa-bolt" style="color:#a855f7"></i></div>
+          ${audioUrl ? `<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>` : ''}
+        </div>
+        <div class="project-card__body">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
+            <h4 style="margin:0;flex:1">${label}</h4>
+            <button class="song-dots-btn" title="More options"
+              onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${audioUrl}','','${safeFilename}','oneshots')"
+              style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
+          </div>
+          <p style="margin-bottom:8px">One Shot · ${new Date(p.created_at).toLocaleDateString()}</p>
+          ${audioUrl ? `<audio class="oneshot-card-audio" src="${audioUrl}" controls preload="none"></audio>` : ''}
+        </div>
+      </div>`;
+  }
 
-        // Inject dashboard upgrade modal if not already present
-        if (!document.getElementById('sf-dash-upgrade')) {
-          const m = document.createElement('div');
-          m.id = 'sf-dash-upgrade';
-          m.style.cssText = 'position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(6px)';
-          m.innerHTML = `
-            <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
-              <button onclick="document.getElementById('sf-dash-upgrade').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
-              <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-lock-open"></i></div>
-              <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
-              <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
-              <div style="display:flex;flex-direction:column;gap:10px">
-                <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $19/mo · 50 beats</a>
-                <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $39/mo · 150 beats</a>
-              </div>
-              <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
-            </div>`;
-          document.body.appendChild(m);
+  // ── Render a single trash card ──────────────────────────────
+  function renderTrashCard(p, i) {
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
+    const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
+    const genre= p.blueprint ? p.blueprint.genre : (p.sound_type || '');
+    const label= p.prompt ? p.prompt.slice(0,32)+(p.prompt.length>32?'…':'') : (p.title||'Item');
+    const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre+(p.blueprint.key?' — '+p.blueprint.key:'')) : label);
+    const days = p.days_until_purge != null ? p.days_until_purge : '?';
+    const isOneshot = p.is_oneshot;
+    const icon = isOneshot ? 'fa-bolt' : 'fa-wave-square';
+    return `
+      <div class="project-card project-card--trash"
+           data-id="${p.id}"
+           data-title="${rawTitle.replace(/"/g,'&quot;')}"
+           data-hue="${hue}"
+           data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
+           data-imgurl="${p.image_url||''}">
+        <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},40%,14%),hsl(${hue},30%,8%))">
+          <div class="project-card__art-icon" style="opacity:.5"><i class="fas ${icon}"></i></div>
+        </div>
+        <div class="project-card__body">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
+            <h4 style="margin:0;flex:1;opacity:.75">${rawTitle}</h4>
+            <span class="trash-days-badge">${days}d</span>
+          </div>
+          <p>${genre||bpm||label}</p>
+          <div class="trash-actions">
+            <button class="trash-btn trash-btn--restore"
+              onclick="restoreLibItem('${p.id}')">
+              <i class="fas fa-undo"></i> Restore
+            </button>
+            <button class="trash-btn trash-btn--purge"
+              onclick="purgeLibItem('${p.id}', '${rawTitle.replace(/'/g,'\\u0027')}')">
+              <i class="fas fa-trash"></i> Delete
+            </button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  // ── Populate a grid element with cards + "new beat" card ────
+  function populateGrid(gridEl, tab, projects) {
+    if (!gridEl) return;
+    if (!projects || projects.length === 0) {
+      const emptyMsgs = {
+        beats:    '<i class="fas fa-music" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No beats yet. <a href="/generator">Generate your first beat!</a></p>',
+        oneshots: '<i class="fas fa-bolt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No one shots yet. Head to the <a href="/generator">Generator</a> to create some!</p>',
+        trash:    '<i class="fas fa-trash-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>Trash is empty.</p>',
+      };
+      gridEl.innerHTML = `<div class="project-grid-empty">${emptyMsgs[tab]||''}</div>`;
+      return;
+    }
+    let html = '';
+    projects.forEach((p, i) => {
+      if (tab === 'beats')    html += renderBeatCard(p, i);
+      else if (tab === 'oneshots') html += renderOneshotCard(p, i);
+      else if (tab === 'trash')    html += renderTrashCard(p, i);
+    });
+    if (tab === 'beats') {
+      html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
+    }
+    gridEl.innerHTML = html;
+    if (tab === 'beats') loadCoverImages(gridEl);
+  }
+
+  // ── Update tab count badges ─────────────────────────────────
+  function updateTabCount(tab, count) {
+    const btn = document.querySelector(`.lib-tab[data-tab="${tab}"]`);
+    if (!btn) return;
+    let badge = btn.querySelector('.lib-tab-count');
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'lib-tab-count';
+      btn.appendChild(badge);
+    }
+    badge.textContent = count;
+  }
+
+  // ── Fetch one tab's data from API ───────────────────────────
+  async function fetchLibTab(tab) {
+    const gridEl = document.getElementById('project-grid-' + tab);
+    if (!gridEl) return;
+    if (_libLoaded[tab]) { populateGrid(gridEl, tab, _libData[tab]); return; }
+    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+    try {
+      const res = await fetch('/api/projects?tab=' + tab);
+      if (!res.ok) {
+        if (res.status === 401) {
+          gridEl.innerHTML = `<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your projects. <a href="/login">Log in</a></div>`;
+          return;
         }
-      } catch(e) {
-        projectGrid.innerHTML = `<div class="project-grid-loading" style="color:var(--muted)">Could not load projects.</div>
-          <div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
+        throw new Error('HTTP ' + res.status);
       }
-    })();
+      const { projects } = await res.json();
+      _libData[tab] = projects || [];
+      _libLoaded[tab] = true;
+      updateTabCount(tab, _libData[tab].length);
+      populateGrid(gridEl, tab, _libData[tab]);
+    } catch(e) {
+      gridEl.innerHTML = `<div class="project-grid-loading" style="color:var(--muted)">Could not load projects.</div>`;
+    }
+  }
+
+  // ── Switch active tab ───────────────────────────────────────
+  window.switchLibTab = function(tab) {
+    _libActive = tab;
+    // Update tab buttons
+    document.querySelectorAll('.lib-tab').forEach(btn => {
+      btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
+      if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
+    });
+    // Show/hide panels
+    ['beats','oneshots','trash'].forEach(t => {
+      const panel = document.getElementById('lib-panel-' + t);
+      if (panel) panel.style.display = t === tab ? '' : 'none';
+    });
+    // Update search placeholder
+    const searchInput = document.getElementById('lib-search');
+    if (searchInput) {
+      const placeholders = { beats: 'Search beats…', oneshots: 'Search one shots…', trash: 'Search trash…' };
+      searchInput.placeholder = placeholders[tab] || 'Search…';
+      // Reset search when switching tabs
+      searchInput.value = '';
+      filterLibrary('');
+    }
+    // Load data if not yet loaded
+    fetchLibTab(tab);
+  };
+
+  // ── Client-side search filter ────────────────────────────────
+  window.filterLibrary = function(query) {
+    const tab = _libActive;
+    const clearBtn = document.getElementById('lib-search-clear');
+    if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
+    const q = query.toLowerCase().trim();
+    const gridEl = document.getElementById('project-grid-' + tab);
+    if (!gridEl) return;
+    const filtered = !q ? _libData[tab] : _libData[tab].filter(p => {
+      const t  = (p.title || '').toLowerCase();
+      const pr = (p.prompt || '').toLowerCase();
+      const g  = (p.blueprint ? p.blueprint.genre : (p.sound_type||'')).toLowerCase();
+      return t.includes(q) || pr.includes(q) || g.includes(q);
+    });
+    populateGrid(gridEl, tab, filtered);
+  };
+
+  // ── Soft-delete a card ──────────────────────────────────────
+  window.deleteLibItem = async function(jobId) {
+    if (!confirm('Move this item to Trash?')) return;
+    try {
+      const r = await fetch('/api/job/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId })
+      });
+      if (!r.ok) throw new Error('Delete failed');
+      // Refresh both beats/oneshots and trash tabs
+      _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false;
+      fetchLibTab(_libActive);
+      if (_libActive !== 'trash') fetchLibTab('trash'); // pre-load trash count
+    } catch(e) { alert('Could not delete item. Please try again.'); }
+  };
+
+  // ── Restore a trashed card ──────────────────────────────────
+  window.restoreLibItem = async function(jobId) {
+    try {
+      const r = await fetch('/api/job/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId })
+      });
+      if (!r.ok) throw new Error('Restore failed');
+      _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false;
+      fetchLibTab('trash');
+    } catch(e) { alert('Could not restore item. Please try again.'); }
+  };
+
+  // ── Permanently delete a trashed card ──────────────────────
+  window.purgeLibItem = async function(jobId, title) {
+    if (!confirm(`Permanently delete "${title}"? This cannot be undone.`)) return;
+    try {
+      const r = await fetch('/api/job/purge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId })
+      });
+      if (!r.ok) throw new Error('Purge failed');
+      _libLoaded.trash = false;
+      fetchLibTab('trash');
+    } catch(e) { alert('Could not delete item permanently. Please try again.'); }
+  };
+
+  // ── Bootstrap: init library if dashboard tab elements exist ─
+  const libTabsEl = document.getElementById('lib-tabs');
+  if (libTabsEl) {
+    // Inject upgrade modal
+    if (!document.getElementById('sf-dash-upgrade')) {
+      const m = document.createElement('div');
+      m.id = 'sf-dash-upgrade';
+      m.style.cssText = 'position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.7);backdrop-filter:blur(6px)';
+      m.innerHTML = `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
+          <button onclick="document.getElementById('sf-dash-upgrade').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+          <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-lock-open"></i></div>
+          <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+          <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $19/mo · 50 beats</a>
+            <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $39/mo · 150 beats</a>
+          </div>
+          <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
+        </div>`;
+      document.body.appendChild(m);
+    }
+    // Load initial tab (beats)
+    fetchLibTab('beats');
   }
 
   // ── Dashboard: card 3-dots context menu ─────────────────────────
-  window.openCardMenu = function(btn, jobId, stereoUrl, zipUrl, safeTitle) {
-    // Remove any existing menu
+  window.openCardMenu = function(btn, jobId, stereoUrl, zipUrl, safeTitle, cardTab) {
     const existing = document.getElementById('card-context-menu');
     if (existing) existing.remove();
 
@@ -669,45 +881,52 @@ document.addEventListener('DOMContentLoaded', () => {
     menu.id = 'card-context-menu';
     menu.style.cssText = 'position:fixed;z-index:99999;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);min-width:200px;overflow:hidden;padding:4px 0';
 
-    const items = [
-      { icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) },
-      { icon: 'fa-layer-group', label: 'Get Stems', action: () => {
-          // Helper to show upgrade prompt from the dashboard upgrade modal
-          function dashUpgradePrompt() {
-            const m = document.getElementById('sf-dash-upgrade');
-            if (m) m.style.display = 'flex';
-            else window.location.href = '/pricing';
-          }
-          // Use the two-card tier picker (same as the export panel button)
-          const user = window._sfUser;
-          if (user && user.plan !== 'free') {
-            openStemPickerModal(jobId, user);
-          } else if (!user) {
-            // Race condition guard: _sfUser not loaded yet — fetch then open
-            fetch('/api/auth/me').then(r => r.json()).then(me => {
-              const u = me && me.user;
-              if (!u || u.plan === 'free') { dashUpgradePrompt(); return; }
-              window._sfUser = window._sfUser || u;
-              openStemPickerModal(jobId, u);
-            }).catch(() => dashUpgradePrompt());
-          } else {
-            dashUpgradePrompt();
-          }
-        } },
-      { icon: 'fa-download', label: 'Download Full Track', action: () => openDownloadModal(jobId, stereoUrl, safeTitle) },
-    ];
+    const isOneshot = cardTab === 'oneshots';
+
+    const items = [];
+
+    // Edit & Stems only for full beats
+    if (!isOneshot) {
+      items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
+      items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
+        function dashUpgradePrompt() {
+          const m = document.getElementById('sf-dash-upgrade');
+          if (m) m.style.display = 'flex';
+          else window.location.href = '/pricing';
+        }
+        const user = window._sfUser;
+        if (user && user.plan !== 'free') {
+          openStemPickerModal(jobId, user);
+        } else if (!user) {
+          fetch('/api/auth/me').then(r => r.json()).then(me => {
+            const u = me && me.user;
+            if (!u || u.plan === 'free') { dashUpgradePrompt(); return; }
+            window._sfUser = window._sfUser || u;
+            openStemPickerModal(jobId, u);
+          }).catch(() => dashUpgradePrompt());
+        } else { dashUpgradePrompt(); }
+      }});
+    }
+
+    if (stereoUrl) {
+      items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
+        action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
+    }
+
+    // Delete — goes to trash
+    items.push({ icon: 'fa-trash-alt', label: 'Move to Trash', danger: true,
+      action: () => deleteLibItem(jobId) });
 
     items.forEach(item => {
       const el = document.createElement('button');
-      el.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:var(--text);cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s';
-      el.innerHTML = `<i class="fas ${item.icon}" style="width:15px;opacity:.65;flex-shrink:0"></i>${item.label}`;
+      el.style.cssText = `display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:${item.danger?'var(--danger)':'var(--text)'};cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s`;
+      el.innerHTML = `<i class="fas ${item.icon}" style="width:15px;opacity:.7;flex-shrink:0"></i>${item.label}`;
       el.onmouseover = () => el.style.background = 'rgba(255,255,255,.06)';
       el.onmouseout  = () => el.style.background = 'none';
       el.onclick = (e) => { e.stopPropagation(); menu.remove(); item.action(); };
       menu.appendChild(el);
     });
 
-    // Position near the button
     const rect = btn.getBoundingClientRect();
     document.body.appendChild(menu);
     const mh = menu.offsetHeight;
@@ -719,7 +938,6 @@ document.addEventListener('DOMContentLoaded', () => {
     menu.style.top  = top  + 'px';
     menu.style.left = left + 'px';
 
-    // Close on outside click
     setTimeout(() => {
       document.addEventListener('click', function closeMenu(e) {
         if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); }
@@ -1027,13 +1245,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!bp || !bpPills) return;
     bpPills.innerHTML = '';
     const pills = [
-      { icon: 'fa-drum',       label: bp.bpm + ' BPM' },
-      { icon: 'fa-music',      label: bp.key + ' ' + bp.scale },
+      { icon: 'fa-drum',        label: bp.bpm + ' BPM' },
+      { icon: 'fa-music',       label: bp.key + ' ' + bp.scale },
       { icon: 'fa-compact-disc',label: bp.genre },
-      { icon: 'fa-heart',      label: bp.mood },
-      { icon: 'fa-bolt',       label: bp.energy + ' energy' },
-      { icon: 'fa-clock',      label: Math.round(bp.duration_seconds/60) + ' min' },
-      { icon: 'fa-layer-group',label: bp.instrument_count + ' instruments' },
+      { icon: 'fa-heart',       label: bp.mood },
+      { icon: 'fa-bolt',        label: bp.energy + ' energy' },
+      { icon: 'fa-clock',       label: Math.round(bp.duration_seconds/60) + ':' + String(bp.duration_seconds%60).padStart(2,'0') },
     ];
     pills.forEach(p => {
       const el = document.createElement('span');
@@ -1041,6 +1258,27 @@ document.addEventListener('DOMContentLoaded', () => {
       el.innerHTML = `<i class="fas ${p.icon}"></i> ${p.label}`;
       bpPills.appendChild(el);
     });
+    // Show individual instrument name pills if available, otherwise show count
+    if (bp.instruments && bp.instruments.length > 0) {
+      const familyIconMap = {
+        drums: 'fa-drum', bass: 'fa-guitar', keys: 'fa-keyboard',
+        guitar: 'fa-guitar', strings: 'fa-music', brass: 'fa-music',
+        woodwind: 'fa-music', synth: 'fa-wave-square', fx: 'fa-wand-magic-sparkles',
+        vocals: 'fa-microphone', default: 'fa-music'
+      };
+      bp.instruments.forEach(ins => {
+        const icon = familyIconMap[ins.family] || familyIconMap.default;
+        const el = document.createElement('span');
+        el.className = 'blueprint-pill blueprint-pill--instr';
+        el.innerHTML = `<i class="fas ${icon}"></i> ${ins.name}`;
+        bpPills.appendChild(el);
+      });
+    } else if (bp.instrument_count) {
+      const el = document.createElement('span');
+      el.className = 'blueprint-pill';
+      el.innerHTML = `<i class="fas fa-layer-group"></i> ${bp.instrument_count} instruments`;
+      bpPills.appendChild(el);
+    }
     bpBlueprint.style.display = 'block';
   }
 

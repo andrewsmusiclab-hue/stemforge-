@@ -46,10 +46,15 @@ async function ensureTable(db: D1Database): Promise<void> {
       created_at INTEGER NOT NULL
     )`
   ).run()
-  // Add user_id column if it doesn't exist (migration-safe)
-  try {
-    await db.prepare(`ALTER TABLE jobs ADD COLUMN user_id TEXT`).run()
-  } catch { /* column already exists */ }
+  // Migration-safe: add columns if they don't exist yet
+  const migrations = [
+    `ALTER TABLE jobs ADD COLUMN user_id TEXT`,
+    `ALTER TABLE jobs ADD COLUMN deleted_at INTEGER`,
+    `ALTER TABLE jobs ADD COLUMN is_oneshot INTEGER NOT NULL DEFAULT 0`,
+  ]
+  for (const sql of migrations) {
+    try { await db.prepare(sql).run() } catch { /* column already exists — ignore */ }
+  }
 }
 
 async function getJob(db: D1Database | undefined, id: string): Promise<Job | null> {
@@ -550,6 +555,7 @@ Return ONLY this JSON:
 Instrument rules:
 - 6–10 instruments, always include kick + snare/hi-hats + bass at minimum
 - All instruments MUST be genre-appropriate (no jazz brushes in hip hop, no 808s in jazz, no grand piano in drill unless specified)
+- NAMING: instrument "name" MUST be the EXACT specific instrument name — e.g. "Trumpet" NOT "brass", "Flute" NOT "woodwind", "Violin" NOT "strings", "Rhodes Piano" NOT "keys", "808 Bass" NOT "bass", "Acoustic Guitar" NOT "guitar". Be as specific as possible.
 - mureka_track_type: kick/snare/hats → "drums", 808/bass → "bass", keys/guitar/pad/strings → "accompaniment", fx/vox → "vocals"`
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
@@ -880,6 +886,10 @@ app.post('/api/poll/:id', async (c) => {
       duration_seconds: job.blueprint.duration_seconds,
       arrangement: job.blueprint.arrangement,
       instrument_count: job.blueprint.instruments?.length || 0,
+      instruments: (job.blueprint.instruments || []).map((ins: any) => ({
+        name: ins.name,
+        family: ins.family
+      })),
       mureka_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
@@ -922,6 +932,10 @@ app.get('/api/job/:id', async (c) => {
       duration_seconds: job.blueprint.duration_seconds,
       arrangement: job.blueprint.arrangement,
       instrument_count: job.blueprint.instruments?.length || 0,
+      instruments: (job.blueprint.instruments || []).map((ins: any) => ({
+        name: ins.name,
+        family: ins.family
+      })),
       mureka_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
@@ -2158,45 +2172,125 @@ app.delete('/api/job/cover/:jobId', async (c) => {
   return c.json({ ok: true })
 })
 
-// GET /api/projects — return logged-in user's completed jobs
+// GET /api/projects?tab=beats|oneshots|trash — return logged-in user's jobs by tab
 app.get('/api/projects', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ projects: [] })
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const tab = c.req.query('tab') || 'beats' // beats | oneshots | trash
+
   try {
     await ensureTable(c.env.DB)
-    const rows = await c.env.DB.prepare(
-      `SELECT id, data, created_at FROM jobs WHERE user_id = ? AND json_extract(data,'$.status') = 'ready' ORDER BY created_at DESC LIMIT 50`
-    ).bind(user.id).all<{ id: string; data: string; created_at: number }>()
-    const projects = (rows.results || []).map(r => {
-      const d = JSON.parse(r.data) as Job
+
+    // Auto-purge trash older than 60 days
+    const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000
+    await c.env.DB.prepare(
+      `DELETE FROM jobs WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?`
+    ).bind(user.id, cutoff).run()
+
+    let rows: { id: string; data: string; created_at: number; deleted_at: number | null; is_oneshot: number }[] = []
+    if (tab === 'trash') {
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND deleted_at IS NOT NULL
+         ORDER BY deleted_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
+    } else if (tab === 'oneshots') {
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND is_oneshot = 1 AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
+    } else {
+      // beats tab: regular beats (not one-shots), not deleted
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
+         AND json_extract(data,'$.status') = 'ready'
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
+    }
+
+    const SIXTY_DAYS_MS = 60 * 24 * 60 * 60 * 1000
+    const projects = rows.map((r: any) => {
+      const d = JSON.parse(r.data) as any
       return {
         id: d.id,
         prompt: d.prompt,
-        title: (d as any).title || null,
-        thumbnail_seed: d.thumbnail_seed || (d.id.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0) % 360),
-        // Only return a cached permanent URL — never return pollinations/data: URLs.
-        // The client calls /api/cover-image/:id which generates once, saves to R2+D1.
-        image_url: (() => { const u = (d as any).image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
+        title: d.title || null,
+        is_oneshot: r.is_oneshot === 1,
+        deleted_at: r.deleted_at || null,
+        days_until_purge: r.deleted_at ? Math.max(0, Math.ceil((r.deleted_at + SIXTY_DAYS_MS - Date.now()) / 86400000)) : null,
+        thumbnail_seed: d.thumbnail_seed || (d.id.split('').reduce((a: number, ch: string) => a + ch.charCodeAt(0), 0) % 360),
+        image_url: (() => { const u = d.image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
         created_at: d.created_at,
-        stereo_url: d.stereo_url || null,
+        stereo_url: d.stereo_url || d.audio_url || null,
         zip_url: d.zip_url || null,
         blueprint: d.blueprint ? {
-          bpm: d.blueprint.bpm,
-          key: d.blueprint.key,
-          scale: d.blueprint.scale,
-          genre: d.blueprint.genre,
-          mood: d.blueprint.mood,
+          bpm: d.blueprint.bpm, key: d.blueprint.key, scale: d.blueprint.scale,
+          genre: d.blueprint.genre, mood: d.blueprint.mood,
           duration_seconds: d.blueprint.duration_seconds,
-          arrangement: (d.blueprint as any).arrangement || null
-        } : null
+          arrangement: d.blueprint.arrangement || null
+        } : null,
+        // One-shot specific fields
+        sound_type: d.sound_type || null,
+        audio_url: d.audio_url || null,
       }
     })
     return c.json({ projects })
   } catch (e: any) {
     return c.json({ projects: [], error: e?.message })
   }
+})
+
+// POST /api/job/delete — soft-delete a job (move to trash)
+app.post('/api/job/delete', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { job_id } = await c.req.json<{ job_id: string }>()
+  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+  await ensureTable(c.env.DB)
+  await c.env.DB.prepare(
+    `UPDATE jobs SET deleted_at = ? WHERE id = ? AND user_id = ?`
+  ).bind(Date.now(), job_id, user.id).run()
+  return c.json({ ok: true })
+})
+
+// POST /api/job/restore — restore a job from trash
+app.post('/api/job/restore', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { job_id } = await c.req.json<{ job_id: string }>()
+  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+  await ensureTable(c.env.DB)
+  await c.env.DB.prepare(
+    `UPDATE jobs SET deleted_at = NULL WHERE id = ? AND user_id = ?`
+  ).bind(job_id, user.id).run()
+  return c.json({ ok: true })
+})
+
+// POST /api/job/purge — permanently delete a job from trash
+app.post('/api/job/purge', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { job_id } = await c.req.json<{ job_id: string }>()
+  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+  await ensureTable(c.env.DB)
+  // Only allow purging deleted items
+  await c.env.DB.prepare(
+    `DELETE FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL`
+  ).bind(job_id, user.id).run()
+  return c.json({ ok: true })
 })
 
 // GET /api/stripe/portal — redirect to Stripe billing portal
@@ -2772,6 +2866,8 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
   if (!user) return c.json({ error: 'Not logged in' }, 401)
 
   const taskId = c.req.param('task_id')
+  const { sound_type } = await c.req.json<{ sound_type?: string }>().catch(() => ({ sound_type: undefined }))
+
   const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
     headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
   })
@@ -2779,7 +2875,25 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
 
   const data = await res.json() as any
   if (data.status === 'succeeded' && data.choices?.[0]?.url) {
-    return c.json({ status: 'ready', audio_url: data.choices[0].url as string })
+    const audioUrl = data.choices[0].url as string
+    // Save one-shot to library (jobs table with is_oneshot=1)
+    if (c.env.DB) {
+      try {
+        await ensureTable(c.env.DB)
+        const oneshotId = 'os_' + taskId
+        const oneshotJob = {
+          id: oneshotId, status: 'ready', created_at: Date.now(),
+          sound_type: sound_type || 'one-shot', audio_url: audioUrl,
+          title: sound_type || 'One Shot', prompt: sound_type || 'one-shot',
+          tracks: [], thumbnail_seed: Math.floor(Math.random() * 360)
+        }
+        await c.env.DB.prepare(
+          `INSERT OR IGNORE INTO jobs (id, data, created_at, user_id, is_oneshot)
+           VALUES (?, ?, ?, ?, 1)`
+        ).bind(oneshotId, JSON.stringify(oneshotJob), oneshotJob.created_at, user.id).run()
+      } catch { /* ignore save errors */ }
+    }
+    return c.json({ status: 'ready', audio_url: audioUrl })
   }
   if (data.status === 'failed') return c.json({ status: 'error', error: 'Generation failed' })
   return c.json({ status: 'pending' })
@@ -5337,9 +5451,51 @@ function pricingPage() {
 function dashboardPage() {
   return shell('Dashboard', `
 <main class="inner-page gs-content">
-  <div class="dash-header"><h2>Library</h2><a href="/generator" class="btn btn--primary"><i class="fas fa-plus"></i> New beat</a></div>
-  <div class="project-grid" id="project-grid">
-    <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading projects...</div>
+  <div class="dash-header">
+    <h2>Library</h2>
+    <a href="/generator" class="btn btn--primary"><i class="fas fa-plus"></i> New beat</a>
+  </div>
+
+  <!-- Library tabs -->
+  <div class="lib-tabs" id="lib-tabs">
+    <button class="lib-tab lib-tab--active" data-tab="beats" onclick="switchLibTab('beats')">
+      <i class="fas fa-music"></i> Beats / Songs
+    </button>
+    <button class="lib-tab" data-tab="oneshots" onclick="switchLibTab('oneshots')">
+      <i class="fas fa-bolt"></i> One Shots
+    </button>
+    <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
+      <i class="fas fa-trash-alt"></i> Trash
+    </button>
+  </div>
+
+  <!-- Search bar (shared, updates with active tab) -->
+  <div class="lib-search-wrap" id="lib-search-wrap">
+    <i class="fas fa-search lib-search-icon"></i>
+    <input type="text" id="lib-search" class="lib-search-input" placeholder="Search beats…" oninput="filterLibrary(this.value)"/>
+    <button class="lib-search-clear" id="lib-search-clear" onclick="document.getElementById('lib-search').value='';filterLibrary('')" style="display:none">
+      <i class="fas fa-times"></i>
+    </button>
+  </div>
+
+  <!-- Grid per tab -->
+  <div id="lib-panel-beats">
+    <div class="project-grid" id="project-grid-beats">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-oneshots" style="display:none">
+    <div class="project-grid" id="project-grid-oneshots">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-trash" style="display:none">
+    <div style="padding:12px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-info-circle"></i> Items are permanently deleted after 60 days in Trash.
+    </div>
+    <div class="project-grid" id="project-grid-trash">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
   </div>
 </main>`, `<style>.sf-nav{display:none}</style>`)
 }
