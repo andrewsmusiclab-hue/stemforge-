@@ -1115,8 +1115,7 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/stems — on-demand stem extraction
-//  Both plans: V2 (up to 12 stems + MIDI)
-//  Creator: 2 credits — Pro: 10 credits (priority + MIDI export)
+//  Creator: V1 (5 stems, 2 credits) — Pro: V2 (up to 12 stems + MIDI, 10 credits)
 //  Free plan: not allowed
 // ═══════════════════════════════════════════════════════════════
 
@@ -1184,7 +1183,7 @@ app.post('/api/job/stems', async (c) => {
     return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, already_extracted: true })
   }
 
-  // Credit cost: Creator=2, Pro=10 — both use V2 (12 stems)
+  // Credit cost: Creator=2 (V1, 5 stems) — Pro=10 (V2, up to 12 stems + MIDI)
   const creditCost = user.plan === 'pro' ? 10 : 2
   if (user.gens_used + creditCost > user.gens_limit) {
     return c.json({
@@ -1198,8 +1197,9 @@ app.post('/api/job/stems', async (c) => {
     .bind(creditCost, user.id).run()
 
   try {
-    // Both Creator and Pro use V2 (up to 12 stems + MIDI)
-    const model = 'audio-separation-2'
+    // Creator: V1 (5 fixed stems, ~$0.06) — Pro: V2 (up to 12 stems + MIDI, ~$0.70)
+    const isPro = user.plan === 'pro'
+    const model = isPro ? 'audio-separation-2' : 'audio-separation-1'
     const { zip_url, midi_zip_url } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, model)
 
     // Blueprint instruments — use to smartly label stems from the beat's own instrument list
@@ -1221,20 +1221,28 @@ app.post('/api/job/stems', async (c) => {
       return 'Drums (' + parts.join(' / ') + ')'
     }
 
-    // Full V2 candidate list — 12 stems, smartly labeled from blueprint
-    const candidateList = [
-      { stem: 'drums',    name: getDrumLabel(),    family: 'drums',   color: '#ef4444' },
-      { stem: 'bass',     name: getBassLabel(bpInstruments), family: 'bass', color: '#3b82f6' },
-      { stem: 'vocals',   name: 'Vocals',          family: 'vocals',  color: '#ec4899' },
-      { stem: 'other',    name: getOtherLabel(bpInstruments), family: 'synth', color: '#8b5cf6' },
-      { stem: 'piano',    name: getPianoLabel(bpInstruments), family: 'keys',  color: '#f59e0b' },
-      { stem: 'guitar',   name: getGuitarLabel(bpInstruments), family: 'guitar', color: '#84cc16' },
-      { stem: 'strings',  name: 'Strings',         family: 'strings', color: '#06b6d4' },
-      { stem: 'synth',    name: getSynthLabel(bpInstruments), family: 'synth', color: '#a78bfa' },
-      { stem: 'brass',    name: 'Brass',           family: 'brass',   color: '#fb923c' },
-      { stem: 'woodwind', name: 'Woodwind',        family: 'wind',    color: '#34d399' },
-      { stem: 'fx',       name: 'FX / Effects',    family: 'fx',      color: '#f87171' },
+    // V1 (Creator): 5 fixed stems — smartly labeled from blueprint
+    const v1CandidateList = [
+      { stem: 'drums',  name: getDrumLabel(),              family: 'drums',  color: '#ef4444' },
+      { stem: 'bass',   name: getBassLabel(bpInstruments), family: 'bass',   color: '#3b82f6' },
+      { stem: 'vocals', name: 'Vocals',                    family: 'vocals', color: '#ec4899' },
+      { stem: 'other',  name: getOtherLabel(bpInstruments), family: 'synth', color: '#8b5cf6' },
     ]
+    // V2 (Pro): up to 12 stems — smartly labeled from blueprint
+    const v2CandidateList = [
+      { stem: 'drums',    name: getDrumLabel(),              family: 'drums',   color: '#ef4444' },
+      { stem: 'bass',     name: getBassLabel(bpInstruments), family: 'bass',    color: '#3b82f6' },
+      { stem: 'vocals',   name: 'Vocals',                    family: 'vocals',  color: '#ec4899' },
+      { stem: 'other',    name: getOtherLabel(bpInstruments), family: 'synth',  color: '#8b5cf6' },
+      { stem: 'piano',    name: getPianoLabel(bpInstruments), family: 'keys',   color: '#f59e0b' },
+      { stem: 'guitar',   name: getGuitarLabel(bpInstruments), family: 'guitar', color: '#84cc16' },
+      { stem: 'strings',  name: 'Strings',                   family: 'strings', color: '#06b6d4' },
+      { stem: 'synth',    name: getSynthLabel(bpInstruments), family: 'synth',  color: '#a78bfa' },
+      { stem: 'brass',    name: 'Brass',                     family: 'brass',   color: '#fb923c' },
+      { stem: 'woodwind', name: 'Woodwind',                  family: 'wind',    color: '#34d399' },
+      { stem: 'fx',       name: 'FX / Effects',              family: 'fx',      color: '#f87171' },
+    ]
+    const candidateList = isPro ? v2CandidateList : v1CandidateList
 
     // Probe the ZIP to discover which stems are actually present
     // (skips undetected instruments — no silent/empty stems)
@@ -2224,7 +2232,7 @@ function stemsPage(jobId: string) {
   <div id="stems-no-stems" style="display:none;text-align:center;padding:60px 20px">
     <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
     <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
-    <p style="color:var(--muted);margin-bottom:8px">Extract up to 12 individual stems — Kick/Snare/Hi-Hats, Bass, Melody, Synth, and more — from your beat to preview and download each track separately.</p>
+    <p style="color:var(--muted);margin-bottom:8px" id="stems-no-stems-desc">Extract individual stems from your beat — preview and download each track separately.</p>
     <p id="stems-cost-label" style="color:var(--muted);font-size:.88rem;margin-bottom:24px"></p>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
       <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
@@ -2374,9 +2382,13 @@ async function stemsInit() {
       const isPro = user.plan === 'pro';
       const costLabel = document.getElementById('stems-cost-label');
       const btnLabel  = document.getElementById('stems-extract-btn-label');
+      const descLabel = document.getElementById('stems-no-stems-desc');
+      if (descLabel) descLabel.textContent = isPro
+        ? 'Extract up to 12 individual stems — Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export.'
+        : 'Extract 5 individual stems — Drums, Bass, Melody, Vocals, and Other — from your beat to preview and download each track separately.';
       if (costLabel) costLabel.textContent = isPro
         ? 'Costs 10 download credits — extracts up to 12 stems + MIDI'
-        : 'Costs 2 download credits — extracts up to 12 stems';
+        : 'Costs 2 download credits — extracts 5 stems (Drums, Bass, Melody, Vocals, Other)';
       if (btnLabel) btnLabel.textContent = isPro
         ? 'Extract Stems — 10 Credits'
         : 'Extract Stems — 2 Credits';
@@ -2403,25 +2415,58 @@ function populateHero(job) {
   const h2  = (hue + 55) % 360, h3 = (hue + 120) % 360;
   const grad = 'linear-gradient(135deg,hsl('+hue+',65%,28%) 0%,hsl('+h2+',75%,20%) 55%,hsl('+h3+',60%,15%) 100%)';
   artEl.style.cssText = 'background:'+grad+';background-size:cover;background-position:center;';
-  if (job.image_url) {
-    // Retry with backoff — Pollinations.ai can be slow (10-30s)
-    function tryHeroImg(url, attempt) {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        artEl.style.backgroundImage = "url('"+url+"'),"+grad;
-        artEl.style.backgroundSize='cover,cover';
-      };
-      img.onerror = () => {
-        const delays = [4000,8000,12000,18000,25000];
-        if (attempt < delays.length) {
-          setTimeout(() => tryHeroImg(url+'&_r='+attempt, attempt+1), delays[attempt]);
-        }
-      };
-      img.src = url;
+
+  // Generate Canvas album art for hero (no external service needed)
+  try {
+    const genre = (job.blueprint && job.blueprint.genre) || 'music';
+    const canvas = document.createElement('canvas');
+    canvas.width = 400; canvas.height = 400;
+    const ctx = canvas.getContext('2d');
+    const g = ctx.createLinearGradient(0,0,400,400);
+    g.addColorStop(0,'hsl('+hue+',60%,18%)');
+    g.addColorStop(0.5,'hsl('+((hue+40)%360)+',70%,12%)');
+    g.addColorStop(1,'hsl('+((hue+80)%360)+',55%,8%)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,400,400);
+    const r1=ctx.createRadialGradient(320,80,10,320,80,180);
+    r1.addColorStop(0,'hsla('+((hue+120)%360)+',80%,60%,0.3)');
+    r1.addColorStop(1,'transparent');
+    ctx.fillStyle=r1; ctx.fillRect(0,0,400,400);
+    const r2=ctx.createRadialGradient(80,320,5,80,320,150);
+    r2.addColorStop(0,'hsla('+((hue+240)%360)+',70%,55%,0.2)');
+    r2.addColorStop(1,'transparent');
+    ctx.fillStyle=r2; ctx.fillRect(0,0,400,400);
+    ctx.font='bold 16px system-ui,sans-serif';
+    ctx.fillStyle='hsla('+hue+',60%,85%,0.65)';
+    ctx.textAlign='center';
+    ctx.fillText(genre.toUpperCase(),200,44);
+    const barCount=24; const barW=8; const gap=5;
+    const totalW=barCount*(barW+gap)-gap;
+    const startX=(400-totalW)/2;
+    for(let b=0;b<barCount;b++){
+      const seed=(hue*13+b*97)%360;
+      const bh=28+(Math.sin(seed*0.13)*0.5+0.5)*70;
+      const x=startX+b*(barW+gap); const y=190-bh/2;
+      const bg=ctx.createLinearGradient(0,y,0,y+bh);
+      bg.addColorStop(0,'hsla('+((hue+40)%360)+',80%,75%,0.85)');
+      bg.addColorStop(1,'hsla('+hue+',60%,50%,0.3)');
+      ctx.fillStyle=bg;
+      ctx.beginPath();
+      if(ctx.roundRect) ctx.roundRect(x,y,barW,bh,2); else ctx.rect(x,y,barW,bh);
+      ctx.fill();
     }
-    tryHeroImg(job.image_url, 0);
-  }
+    const words=title.split(' ');
+    const l1=words.slice(0,Math.ceil(words.length/2)).join(' ');
+    const l2=words.slice(Math.ceil(words.length/2)).join(' ');
+    ctx.font='bold 24px system-ui,sans-serif';
+    ctx.fillStyle='#fff';
+    ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=8;
+    if(l2){ctx.fillText(l1.slice(0,22),200,300);ctx.fillText(l2.slice(0,22),200,330);}
+    else{ctx.fillText(l1.slice(0,24),200,316);}
+    ctx.shadowBlur=0;
+    const dataUrl=canvas.toDataURL('image/png');
+    artEl.style.backgroundImage="url('"+dataUrl+"')";
+    artEl.style.backgroundSize='cover';
+  } catch(e){/* fallback to gradient */}
 
   if (job.zip_url) {
     const zipBtn = document.getElementById('stems-download-zip-btn');
@@ -3169,7 +3214,7 @@ function generatorPage() {
         <div class="export-options">
           <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
           <button class="export-btn export-btn--get-stems" id="exp-stems"><i class="fas fa-layer-group"></i><span>Get Stems</span><small>Creator+</small></button>
-          <button class="export-btn export-btn--get-stems" id="exp-tracks"><i class="fas fa-music"></i><span>Get up to 12 stems</span><small>Creator+</small></button>
+          <button class="export-btn export-btn--get-stems" id="exp-tracks"><i class="fas fa-music"></i><span>Get Stems</span><small>Creator+</small></button>
         </div>
         <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to unlock stems</a>
       </div>
@@ -3238,7 +3283,7 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Stereo download</li>
-          <li><i class="fas fa-check"></i> Stem ZIP export (up to 12 stems)</li>
+          <li><i class="fas fa-check"></i> Stem ZIP export (5 stems, labeled)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
@@ -3272,7 +3317,8 @@ function pricingPage() {
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat (stereo + 5-stem ZIP)</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP (up to 12 stems)</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP — Creator (5 stems)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP — Pro (up to 12 stems + MIDI)</span><span class="credit-val">10 credits</span><span class="tier-badge tier-badge--pro">Pro</span></div>
         <div class="credit-table__row"><span><i class="fas fa-list"></i> Individual track download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
@@ -3283,7 +3329,7 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and extracts stems — all included. Creator and Pro Artist plans get the stereo mix + up to 12 individually labeled stems (Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more).</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and optionally extracts stems. Creator plans get 5 labeled stems (Drums, Bass, Melody, Vocals, Other) for 2 credits. Pro Artist plans get up to 12 individually labeled stems (Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more) plus MIDI for 10 credits.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Free plan users must upgrade to continue after 3 generations.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>

@@ -495,11 +495,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — ' + p.blueprint.key : '')) : label);
             const sub   = [bpm, dur].filter(Boolean).join(' · ');
             const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g,'_').toLowerCase();
-            // Build art style: gradient base always shown first; image loaded lazily
+            // Build art style: gradient base always shown first; Canvas art applied after
             const artStyle = thumbBg;
-            const artImageUrl = p.image_url || '';
             html += `
-              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}" data-art="${artImageUrl.replace(/"/g,'&quot;')}">
+              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}" data-hue="${hue}" data-genre="${(genre||'music').replace(/"/g,'&quot;')}">
                 <div class="project-card__art" style="${artStyle}">
                   <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
                   <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
@@ -532,29 +531,79 @@ document.addEventListener('DOMContentLoaded', () => {
         html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
         projectGrid.innerHTML = html;
 
-        // Lazy-load Pollinations cover art for each card (image takes 10-30s to generate)
-        projectGrid.querySelectorAll('.project-card[data-art]').forEach(card => {
-          const imgUrl = card.dataset.art;
-          if (!imgUrl) return;
-          const artEl = card.querySelector('.project-card__art');
+        // Generate Canvas-based album art for each card (deterministic, no external service)
+        projectGrid.querySelectorAll('.project-card[data-hue]').forEach(card => {
+          const hue    = parseInt(card.dataset.hue || '180', 10);
+          const title  = card.dataset.title || '';
+          const genre  = card.dataset.genre || 'music';
+          const artEl  = card.querySelector('.project-card__art');
           if (!artEl) return;
-          const existingBg = artEl.style.background || artEl.style.backgroundImage || '';
-          function tryCardImg(url, attempt) {
-            const img = new Image();
-            img.onload = () => {
-              artEl.style.backgroundImage = `url('${url}'), ${existingBg}`;
-              artEl.style.backgroundSize = 'cover, cover';
-              artEl.style.backgroundPosition = 'center, center';
-            };
-            img.onerror = () => {
-              if (attempt < 4) {
-                const delay = [5000, 10000, 15000, 20000][attempt] || 20000;
-                setTimeout(() => tryCardImg(url, attempt + 1), delay);
-              }
-            };
-            img.src = url;
-          }
-          tryCardImg(imgUrl, 0);
+          // Draw on a small canvas then set as background
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 256;
+            const ctx = canvas.getContext('2d');
+            // Background gradient
+            const grad = ctx.createLinearGradient(0, 0, 256, 256);
+            grad.addColorStop(0, `hsl(${hue},65%,18%)`);
+            grad.addColorStop(0.5, `hsl(${(hue+40)%360},75%,12%)`);
+            grad.addColorStop(1, `hsl(${(hue+80)%360},60%,8%)`);
+            ctx.fillStyle = grad; ctx.fillRect(0, 0, 256, 256);
+            // Decorative circles
+            const r1 = ctx.createRadialGradient(200, 60, 10, 200, 60, 120);
+            r1.addColorStop(0, `hsla(${(hue+120)%360},80%,60%,0.35)`);
+            r1.addColorStop(1, 'transparent');
+            ctx.fillStyle = r1; ctx.fillRect(0, 0, 256, 256);
+            const r2 = ctx.createRadialGradient(50, 200, 5, 50, 200, 100);
+            r2.addColorStop(0, `hsla(${(hue+240)%360},70%,55%,0.25)`);
+            r2.addColorStop(1, 'transparent');
+            ctx.fillStyle = r2; ctx.fillRect(0, 0, 256, 256);
+            // Genre text (small, top)
+            ctx.font = 'bold 13px system-ui,sans-serif';
+            ctx.fillStyle = `hsla(${hue},60%,85%,0.7)`;
+            ctx.textAlign = 'center';
+            ctx.fillText(genre.toUpperCase(), 128, 36);
+            // Waveform bars decoration
+            const barCount = 18;
+            const barW = 6; const gap = 4;
+            const totalW = barCount * (barW + gap) - gap;
+            const startX = (256 - totalW) / 2;
+            ctx.fillStyle = `hsla(${hue},70%,70%,0.5)`;
+            for (let b = 0; b < barCount; b++) {
+              // Use hue + index to generate pseudo-random heights
+              const seed = (hue * 13 + b * 97) % 360;
+              const h = 20 + (Math.sin(seed * 0.13) * 0.5 + 0.5) * 55;
+              const x = startX + b * (barW + gap);
+              const y = 128 - h / 2;
+              const barGrad = ctx.createLinearGradient(0, y, 0, y + h);
+              barGrad.addColorStop(0, `hsla(${(hue+40)%360},80%,75%,0.9)`);
+              barGrad.addColorStop(1, `hsla(${hue},60%,50%,0.4)`);
+              ctx.fillStyle = barGrad;
+              ctx.beginPath();
+              ctx.roundRect ? ctx.roundRect(x, y, barW, h, 2) : ctx.rect(x, y, barW, h);
+              ctx.fill();
+            }
+            // Title text (bold, centered)
+            const words = title.split(' ');
+            const line1 = words.slice(0, Math.ceil(words.length/2)).join(' ');
+            const line2 = words.slice(Math.ceil(words.length/2)).join(' ');
+            ctx.font = 'bold 18px system-ui,sans-serif';
+            ctx.fillStyle = '#ffffff';
+            ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 6;
+            ctx.textAlign = 'center';
+            if (line2) {
+              ctx.fillText(line1.slice(0,18), 128, 185);
+              ctx.fillText(line2.slice(0,18), 128, 207);
+            } else {
+              ctx.fillText(line1.slice(0,20), 128, 197);
+            }
+            ctx.shadowBlur = 0;
+            // Apply canvas as background
+            const dataUrl = canvas.toDataURL('image/png');
+            artEl.style.backgroundImage = `url('${dataUrl}')`;
+            artEl.style.backgroundSize = 'cover';
+            artEl.style.backgroundPosition = 'center';
+          } catch(e) { /* canvas failed — gradient fallback already shown */ }
         });
 
         // Inject dashboard upgrade modal if not already present
@@ -1204,27 +1253,56 @@ document.addEventListener('DOMContentLoaded', () => {
               thumbEl.style.display = 'flex';
               if (thumbLabel) thumbLabel.textContent = finalTitle;
 
-              // Layer real image on top when loaded (Pollinations.ai can be slow — retry with backoff)
-              const imgUrl = job.image_url;
-              if (imgUrl) {
-                function tryLoadCoverImage(url, attempt) {
-                  const img = new Image();
-                  img.onload = () => {
-                    thumbEl.style.backgroundImage = `url('${url}'), ${gradientBg}`;
-                    thumbEl.style.backgroundSize = 'cover, cover';
-                    thumbEl.style.backgroundPosition = 'center, center';
-                  };
-                  img.onerror = () => {
-                    // Retry up to 5 times with increasing delays (Pollinations can take 30s+)
-                    if (attempt < 5) {
-                      const delay = [3000, 6000, 10000, 15000, 20000][attempt] || 20000;
-                      setTimeout(() => tryLoadCoverImage(url + '&_r=' + attempt, attempt + 1), delay);
-                    }
-                  };
-                  img.src = url + (attempt > 0 ? '' : '');
+              // Generate Canvas-based cover art (no external service)
+              try {
+                const genre = (job.blueprint && job.blueprint.genre) || 'music';
+                const cnv = document.createElement('canvas');
+                cnv.width = 300; cnv.height = 300;
+                const ctx = cnv.getContext('2d');
+                const g = ctx.createLinearGradient(0,0,300,300);
+                g.addColorStop(0,`hsl(${hue},60%,18%)`);
+                g.addColorStop(0.5,`hsl(${(hue+40)%360},70%,12%)`);
+                g.addColorStop(1,`hsl(${(hue+80)%360},55%,8%)`);
+                ctx.fillStyle=g; ctx.fillRect(0,0,300,300);
+                const r1=ctx.createRadialGradient(240,60,8,240,60,140);
+                r1.addColorStop(0,`hsla(${(hue+120)%360},80%,60%,0.3)`);
+                r1.addColorStop(1,'transparent');
+                ctx.fillStyle=r1; ctx.fillRect(0,0,300,300);
+                const r2=ctx.createRadialGradient(60,240,4,60,240,120);
+                r2.addColorStop(0,`hsla(${(hue+240)%360},70%,55%,0.2)`);
+                r2.addColorStop(1,'transparent');
+                ctx.fillStyle=r2; ctx.fillRect(0,0,300,300);
+                ctx.font='bold 13px system-ui,sans-serif';
+                ctx.fillStyle=`hsla(${hue},60%,85%,0.65)`;
+                ctx.textAlign='center';
+                ctx.fillText(genre.toUpperCase(),150,36);
+                const bc=20; const bw=7; const bg2=4;
+                const tw=bc*(bw+bg2)-bg2; const sx=(300-tw)/2;
+                for(let b=0;b<bc;b++){
+                  const sd=(hue*13+b*97)%360;
+                  const bh=22+(Math.sin(sd*0.13)*0.5+0.5)*56;
+                  const x=sx+b*(bw+bg2); const y=145-bh/2;
+                  const bg3=ctx.createLinearGradient(0,y,0,y+bh);
+                  bg3.addColorStop(0,`hsla(${(hue+40)%360},80%,75%,0.85)`);
+                  bg3.addColorStop(1,`hsla(${hue},60%,50%,0.3)`);
+                  ctx.fillStyle=bg3;
+                  ctx.beginPath();
+                  if(ctx.roundRect) ctx.roundRect(x,y,bw,bh,2); else ctx.rect(x,y,bw,bh);
+                  ctx.fill();
                 }
-                tryLoadCoverImage(imgUrl, 0);
-              }
+                const words=finalTitle.split(' ');
+                const l1=words.slice(0,Math.ceil(words.length/2)).join(' ');
+                const l2=words.slice(Math.ceil(words.length/2)).join(' ');
+                ctx.font='bold 18px system-ui,sans-serif';
+                ctx.fillStyle='#fff';
+                ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=6;
+                if(l2){ctx.fillText(l1.slice(0,18),150,222);ctx.fillText(l2.slice(0,18),150,246);}
+                else{ctx.fillText(l1.slice(0,20),150,234);}
+                ctx.shadowBlur=0;
+                const du=cnv.toDataURL('image/png');
+                thumbEl.style.backgroundImage=`url('${du}')`;
+                thumbEl.style.backgroundSize='cover';
+              } catch(e){/* gradient fallback already shown */}
             }
 
             if (genResult) genResult.style.display = 'block';
@@ -1354,7 +1432,7 @@ function showStemsSection(job) {
   sec.style.display = 'block';
   const isPro = user.plan === 'pro';
   const cost  = isPro ? 10 : 2;
-  const stems = 'up to 12 stems';
+  const stems = isPro ? 'up to 12 stems' : '5 stems';
   if (desc) desc.textContent = `${stems} · costs ${cost} credits (you have ${user.gens_limit - user.gens_used} remaining)`;
   const btn = document.getElementById('edit-get-stems-btn');
   if (btn) btn.style.display = '';
@@ -1478,14 +1556,14 @@ window.openStemsPopup = async function(jobId) {
 
   const isPro = plan === 'pro';
   const creditCost = isPro ? 10 : 2;
-  const stemCount  = 'up to 12 stems';
+  const stemCount  = isPro ? 'up to 12 stems + MIDI' : '5 stems';
   const planLabel  = isPro ? 'Pro Artist' : 'Creator';
 
   document.getElementById('sf-stems-popup-body').innerHTML = `
     <div style="width:100%">
       <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-layer-group"></i></div>
       <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Extract Stems</h3>
-      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track — Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, and more — to preview and download each one individually.</p>
+      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track${isPro ? ' — Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export' : ' — Drums, Bass, Melody, Vocals, and Other'}. Preview and download each one individually.</p>
       <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px"><strong>${creditCost} download credits</strong> will be used from your ${planLabel} plan.</p>
       <div style="display:flex;gap:10px;justify-content:center">
         <button id="sf-stems-popup-go" onclick="sfStemsGo('${jobId}')" style="flex:1;padding:11px 16px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:.92rem">
