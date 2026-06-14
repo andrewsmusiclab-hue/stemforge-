@@ -498,7 +498,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Build art style: gradient base always shown first; Canvas art applied after
             const artStyle = thumbBg;
             html += `
-              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}" data-hue="${hue}" data-genre="${(genre||'music').replace(/"/g,'&quot;')}">
+              <div class="project-card" data-stereo="${p.stereo_url || ''}" data-zip="${p.zip_url || ''}" data-id="${p.id}" data-title="${rawTitle.replace(/"/g,'&quot;')}" data-hue="${hue}" data-genre="${(genre||'music').replace(/"/g,'&quot;')}" data-imgurl="${p.image_url || ''}">
                 <div class="project-card__art" style="${artStyle}">
                   <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
                   <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
@@ -531,12 +531,13 @@ document.addEventListener('DOMContentLoaded', () => {
         html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
         projectGrid.innerHTML = html;
 
-        // Generate Canvas art immediately (instant placeholder), then load real DALL-E image async
+        // Draw canvas placeholder instantly for all cards, then load real AI images async
         projectGrid.querySelectorAll('.project-card[data-hue]').forEach(card => {
           const hue    = parseInt(card.dataset.hue || '180', 10);
           const title  = card.dataset.title || '';
           const genre  = card.dataset.genre || 'music';
           const jobId  = card.dataset.id || '';
+          const imgUrl = card.dataset.imgurl || '';   // permanent /api/cover-art/ URL if already cached
           const artEl  = card.querySelector('.project-card__art');
           if (!artEl) return;
 
@@ -592,33 +593,41 @@ document.addEventListener('DOMContentLoaded', () => {
             artEl.style.backgroundPosition = 'center';
           } catch(e) { /* gradient fallback already shown */ }
 
-          // Step 2: load real AI image async (only if job has a valid id)
+          // Step 2: load real AI image
+          // If the server already returned a permanent /api/cover-art/ URL, use it immediately —
+          // no API call needed (the browser caches it with immutable Cache-Control headers).
+          // Only call /api/cover-image/ when no cached URL exists yet.
           if (!jobId) return;
-          // Check sessionStorage cache — only useful for data: URLs (legacy fallback).
-          // Permanent R2 URLs (https://) are served directly and cached by the browser.
-          const imgCacheKey = 'cover_img_' + jobId;
-          const cachedUrl = sessionStorage.getItem(imgCacheKey);
-          if (cachedUrl && cachedUrl.startsWith('data:')) {
-            // Legacy data URL still in storage — use it but it'll be replaced by R2 URL on next fetch
-            artEl.style.backgroundImage = `url('${cachedUrl}')`;
-            artEl.style.backgroundSize = 'cover';
-            artEl.style.backgroundPosition = 'center';
-            // Don't return — still fall through to fetch the permanent URL below
+
+          if (imgUrl && imgUrl.includes('/api/cover-art/')) {
+            // Already cached — apply directly, no fetch needed
+            const img = new Image();
+            img.onload = () => {
+              artEl.style.backgroundImage = `url('${imgUrl}')`;
+              artEl.style.backgroundSize = 'cover';
+              artEl.style.backgroundPosition = 'center';
+            };
+            img.src = imgUrl;
+            return;
           }
+
+          // No cached URL — fetch from server (generates once, caches forever)
           // Small stagger to avoid hammering the API simultaneously for all cards
+          const imgCacheKey = 'cover_img_' + jobId;
+          // Clean up any legacy data: URLs from sessionStorage
+          try {
+            const stale = sessionStorage.getItem(imgCacheKey);
+            if (stale && stale.startsWith('data:')) sessionStorage.removeItem(imgCacheKey);
+          } catch(e) {}
+
           const cardIndex = Array.from(projectGrid.querySelectorAll('.project-card[data-hue]')).indexOf(card);
           setTimeout(() => {
             fetch('/api/cover-image/' + jobId)
               .then(r => r.ok ? r.json() : null)
               .then(data => {
                 if (!data || !data.url) return;
-                // Only sessionStorage-cache data: URLs — https:// URLs are browser-cached natively
-                if (data.url.startsWith('data:')) {
-                  try { sessionStorage.setItem(imgCacheKey, data.url); } catch(e) { /* storage full */ }
-                } else {
-                  // Clear any stale data: URL now that we have a permanent one
-                  try { sessionStorage.removeItem(imgCacheKey); } catch(e) {}
-                }
+                // Update the card's data-imgurl so subsequent renders use the cached URL
+                card.dataset.imgurl = data.url;
                 const img = new Image();
                 img.onload = () => {
                   artEl.style.backgroundImage = `url('${data.url}')`;

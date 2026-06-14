@@ -718,10 +718,10 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     // Mureka instrumental is done — save stereo URL
     job.stereo_url = stereoUrl
 
-    // Generate cover art URL (Pollinations — deterministic, no fetch needed)
-    if (!(job as any).image_url) {
-      (job as any).image_url = buildCoverImageUrl(job)
-    }
+    // Do NOT pre-populate image_url here with a pollinations URL.
+    // Cover art is generated on-demand by /api/cover-image/:jobId (gpt-image-1 → R2 → D1).
+    // Storing a pollinations URL here would cause it to be re-generated on every refresh
+    // because the cover-image route rejects non-/api/cover-art/ URLs.
 
     // All plans: stereo only on generation. Stems requested on-demand via /api/job/stems.
     job.zip_url = null
@@ -821,7 +821,10 @@ app.post('/api/poll/:id', async (c) => {
     prompt: job.prompt,
     title: (job as any).title || null,
     thumbnail_seed: job.thumbnail_seed || null,
-    image_url: (job as any).image_url || (job.blueprint ? buildCoverImageUrl(job) : null),
+    // Only return image_url if it's a permanent cached URL (/api/cover-art/*)
+    // Pollinations / data: URLs are intentionally excluded — the client fetches
+    // /api/cover-image/ which generates once, saves to R2+D1, and returns the real URL.
+    image_url: (() => { const u = (job as any).image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -862,8 +865,8 @@ app.get('/api/job/:id', async (c) => {
     title: (job as any).title || null,
     user_lyrics: (job as any).user_lyrics || null,
     thumbnail_seed: job.thumbnail_seed || null,
-    // Generate image_url on-the-fly for old jobs that don't have one stored
-    image_url: (job as any).image_url || (job.blueprint ? buildCoverImageUrl(job) : null),
+    // Only return image_url if it's a permanent cached URL (/api/cover-art/*)
+    image_url: (() => { const u = (job as any).image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
     blueprint: job.blueprint ? {
       bpm: job.blueprint.bpm,
       key: job.blueprint.key,
@@ -954,11 +957,39 @@ app.get('/api/cover-image/:jobId', async (c) => {
   } catch { /* fall through */ }
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  // ── Step 1: Return cached permanent URL immediately (zero cost) ──
+  // ── Step 1a: Return cached permanent URL from D1 (zero cost) ──
+  // Only trust our own /api/cover-art/* URLs — reject pollinations, data:, or anything else
   const cachedUrl = (job as any).image_url as string | undefined
-  // Only trust http(s) URLs — not legacy data: or pollinations URLs
-  if (cachedUrl && cachedUrl.startsWith('http') && !cachedUrl.includes('pollinations')) {
+  if (cachedUrl && cachedUrl.includes('/api/cover-art/')) {
     return c.json({ url: cachedUrl, cached: true })
+  }
+
+  // ── Step 1b: Check R2 directly — image may exist but D1 record wasn't updated ──
+  // This happens if a previous setJob write failed or the job was generated before caching was added.
+  if (c.env.IMAGES) {
+    // Check custom first, then AI-generated
+    for (const ext of ['jpg', 'png', 'webp']) {
+      const custom = await c.env.IMAGES.get(`covers/${jobId}-custom.${ext}`)
+      if (custom) {
+        const url = `${c.env.SITE_URL}/api/cover-art/${jobId}`
+        // Heal the D1 record so future calls are instant
+        try {
+          const healed = { ...job, image_url: url, image_url_custom: true } as any
+          await setJob(c.env.DB, healed)
+        } catch { /* best-effort */ }
+        return c.json({ url, cached: true })
+      }
+    }
+    const aiObj = await c.env.IMAGES.get(`covers/${jobId}.jpg`)
+    if (aiObj) {
+      const url = `${c.env.SITE_URL}/api/cover-art/${jobId}`
+      // Heal the D1 record
+      try {
+        const healed = { ...job, image_url: url } as any
+        await setJob(c.env.DB, healed)
+      } catch { /* best-effort */ }
+      return c.json({ url, cached: true })
+    }
   }
 
   // ── Step 2: Build genre/mood-aware prompt ──
@@ -1061,10 +1092,14 @@ app.get('/api/cover-image/:jobId', async (c) => {
       publicUrl = 'data:image/jpeg;base64,' + b64
     }
 
-    // ── Step 6: Save permanent URL into D1 job record ──
-    if (c.env.IMAGES) {
+    // ── Step 6: Save permanent URL into D1 job record (always — even data: fallback) ──
+    // This is the most important write: if it doesn't happen, the image re-generates on every refresh.
+    try {
       const updatedJob = { ...job, image_url: publicUrl } as any
       await setJob(c.env.DB, updatedJob)
+    } catch (saveErr: any) {
+      // Log but don't fail the request — the image was generated, just not cached
+      console.error('Failed to cache image_url in D1:', saveErr?.message)
     }
 
     return c.json({ url: publicUrl })
@@ -1967,7 +2002,9 @@ app.get('/api/projects', async (c) => {
         prompt: d.prompt,
         title: (d as any).title || null,
         thumbnail_seed: d.thumbnail_seed || (d.id.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0) % 360),
-        image_url: (d as any).image_url || (d.blueprint ? buildCoverImageUrl(d) : null),
+        // Only return a cached permanent URL — never return pollinations/data: URLs.
+        // The client calls /api/cover-image/:id which generates once, saves to R2+D1.
+        image_url: (() => { const u = (d as any).image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
         created_at: d.created_at,
         stereo_url: d.stereo_url || null,
         zip_url: d.zip_url || null,
