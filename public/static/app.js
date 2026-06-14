@@ -192,8 +192,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Read plan from URL param
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
-      creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 generations/month', 'Stereo + 5-stem ZIP download', 'Commercial use rights', '+$0.49 per extra generation'] },
-      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 generations/month', 'Everything in Creator', 'Individual track download', 'Priority queue', '+$0.49 per extra generation'] },
+      creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 generations/month', 'Stereo mix + stem bundle', 'Commercial use rights', '+$0.49 per extra generation'] },
+      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 generations/month', 'Everything in Creator', 'Priority queue', '+$0.49 per extra generation'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -506,18 +506,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="project-card__body">
                   <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
                     <h4 style="margin:0;flex:1">${rawTitle}</h4>
-                    <button class="song-dots-btn" title="Edit" onclick="event.stopPropagation();openSongEditModal(null,'${p.id}')" style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
+                    <button class="song-dots-btn" title="More options" onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}')" style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
                   </div>
                   <p>${sub || genre || label}</p>
                   <div class="project-card__tags">
-                    ${p.stereo_url
-                      ? (window._sfUser && window._sfUser.plan !== 'free'
-                          ? `<a class="export-badge export-badge--stereo" href="${p.stereo_url}" download="${safeFilename}_stereo.mp3" onclick="event.stopPropagation()">⬇ Stereo</a>`
-                          : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
-                      : ''}
-                    ${p.stereo_url
-                      ? `<a class="export-badge export-badge--stems-cta" href="#" onclick="event.preventDefault();event.stopPropagation();openStemsPopup('${p.id}','${p.zip_url||''}')" title="Get stems"><i class="fas fa-layer-group"></i> Get Stems</a>`
-                      : ''}
+                    ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
                   </div>
                 </div>
               </div>`;
@@ -665,6 +658,97 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     })();
   }
+
+  // ── Dashboard: card 3-dots context menu ─────────────────────────
+  window.openCardMenu = function(btn, jobId, stereoUrl, zipUrl, safeTitle) {
+    // Remove any existing menu
+    const existing = document.getElementById('card-context-menu');
+    if (existing) existing.remove();
+
+    const menu = document.createElement('div');
+    menu.id = 'card-context-menu';
+    menu.style.cssText = 'position:fixed;z-index:99999;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);min-width:200px;overflow:hidden;padding:4px 0';
+
+    const items = [
+      { icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) },
+      { icon: 'fa-layer-group', label: 'Get Stems', action: () => openStemsPopup(jobId, zipUrl) },
+      { icon: 'fa-download', label: 'Download Full Track', action: () => openDownloadModal(jobId, stereoUrl, safeTitle) },
+    ];
+
+    items.forEach(item => {
+      const el = document.createElement('button');
+      el.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:var(--text);cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s';
+      el.innerHTML = `<i class="fas ${item.icon}" style="width:15px;opacity:.65;flex-shrink:0"></i>${item.label}`;
+      el.onmouseover = () => el.style.background = 'rgba(255,255,255,.06)';
+      el.onmouseout  = () => el.style.background = 'none';
+      el.onclick = (e) => { e.stopPropagation(); menu.remove(); item.action(); };
+      menu.appendChild(el);
+    });
+
+    // Position near the button
+    const rect = btn.getBoundingClientRect();
+    document.body.appendChild(menu);
+    const mh = menu.offsetHeight;
+    const mw = menu.offsetWidth;
+    let top  = rect.bottom + 6;
+    let left = rect.right  - mw;
+    if (left < 8) left = 8;
+    if (top + mh > window.innerHeight - 8) top = rect.top - mh - 6;
+    menu.style.top  = top  + 'px';
+    menu.style.left = left + 'px';
+
+    // Close on outside click
+    setTimeout(() => {
+      document.addEventListener('click', function closeMenu(e) {
+        if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); }
+      });
+    }, 0);
+  };
+
+  // ── Dashboard: Download Full Track modal (WAV / MP3) ────────────
+  window.openDownloadModal = function(jobId, stereoUrl, safeTitle) {
+    if (!stereoUrl) {
+      alert('No audio available for this track yet. Generate the beat first.');
+      return;
+    }
+    // Gate for free users
+    if (window._sfUser && window._sfUser.plan === 'free') {
+      const upgradeModal = document.getElementById('sf-dash-upgrade');
+      if (upgradeModal) upgradeModal.style.display = 'flex';
+      return;
+    }
+
+    const old = document.getElementById('sf-download-modal');
+    if (old) old.remove();
+
+    const title = safeTitle || 'stemforge_beat';
+    const modal = document.createElement('div');
+    modal.id = 'sf-download-modal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);backdrop-filter:blur(6px)';
+    modal.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:32px 28px;max-width:360px;width:90%;text-align:center;position:relative">
+        <button onclick="document.getElementById('sf-download-modal').remove()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+        <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.2rem;color:#fff"><i class="fas fa-download"></i></div>
+        <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download Full Track</h3>
+        <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your format:</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <a href="${stereoUrl}" download="${title}.mp3"
+             onclick="document.getElementById('sf-download-modal').remove()"
+             style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,var(--primary),#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+            <i class="fas fa-file-audio"></i> Download MP3
+          </a>
+          <a href="/api/download-wav/${jobId}" download="${title}.wav"
+             onclick="document.getElementById('sf-download-modal').remove()"
+             style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+            <i class="fas fa-file-waveform"></i> Download WAV
+          </a>
+        </div>
+        <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV = lossless quality · MP3 = smaller file size</p>
+      </div>`;
+
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  };
 
   // ── Dashboard: play project audio ───────────────────────────────
   window.playDashProject = function(btn) {
@@ -1433,7 +1517,60 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  genBtn.addEventListener('click', startGeneration);
+  // ── Generate Lyrics with AI ──────────────────────────────────────
+  const genLyricsBtn = document.getElementById('gen-lyrics-btn');
+  if (genLyricsBtn) {
+    genLyricsBtn.addEventListener('click', () => {
+      const panel = document.getElementById('gen-lyrics-panel');
+      if (panel) {
+        const isOpen = panel.style.display !== 'none';
+        panel.style.display = isOpen ? 'none' : 'block';
+      }
+    });
+  }
+
+  window.generateLyricsAI = async function() {
+    const desc    = document.getElementById('gen-lyrics-desc')?.value?.trim();
+    const status  = document.getElementById('gen-lyrics-status');
+    const submitBtn = document.getElementById('gen-lyrics-submit');
+    const style   = document.getElementById('gen-style')?.value?.trim() || '';
+
+    if (!desc) {
+      if (status) { status.textContent = 'Please describe what the song is about.'; status.style.color = 'var(--danger)'; status.style.display = 'block'; }
+      return;
+    }
+
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...'; }
+    if (status) { status.textContent = 'Writing your lyrics...'; status.style.color = 'var(--muted)'; status.style.display = 'block'; }
+
+    try {
+      const res = await fetch('/api/generate-lyrics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: desc, genre: style || 'hip hop', mood: 'energetic' })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.lyrics) throw new Error(data.error || 'Generation failed');
+
+      // Paste lyrics into the textarea
+      const lyricsEl = document.getElementById('gen-lyrics');
+      if (lyricsEl) lyricsEl.value = data.lyrics;
+
+      // Hide panel, show success
+      if (status) { status.textContent = '✅ Lyrics generated! Edit them above if needed.'; status.style.color = '#10b981'; }
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fas fa-sparkles"></i> Generate Lyrics'; }
+      // Close the panel after a short delay
+      setTimeout(() => {
+        const panel = document.getElementById('gen-lyrics-panel');
+        if (panel) panel.style.display = 'none';
+      }, 1500);
+    } catch(err) {
+      if (status) { status.textContent = '❌ ' + (err.message || 'Failed to generate lyrics.'); status.style.color = 'var(--danger)'; }
+      if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fas fa-sparkles"></i> Generate Lyrics'; }
+    }
+  };
+
+    genBtn.addEventListener('click', startGeneration);
 
   if (genRetryBtn) genRetryBtn.addEventListener('click', () => {
     if (genError) genError.style.display = 'none';

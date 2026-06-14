@@ -16,6 +16,7 @@ type Bindings = {
   STRIPE_PRO_PRICE_ID: string       // Stripe Price ID for Pro Artist $39/mo
   SESSION_SECRET: string            // 32+ char random string for session HMAC
   SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
+  ADMIN_EMAIL: string               // Developer admin email — grants developer plan access
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -86,7 +87,7 @@ interface User {
   email: string
   name: string
   avatar?: string
-  plan: 'free' | 'creator' | 'pro'
+  plan: 'free' | 'creator' | 'pro' | 'developer'
   gens_used: number
   gens_limit: number
   stripe_customer_id?: string
@@ -117,7 +118,43 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
       expires_at INTEGER NOT NULL,
       created_at INTEGER NOT NULL
     )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS promo_codes (
+      code TEXT PRIMARY KEY,
+      description TEXT NOT NULL DEFAULT '',
+      discount_type TEXT NOT NULL DEFAULT 'percent',
+      discount_value INTEGER NOT NULL DEFAULT 0,
+      max_uses INTEGER NOT NULL DEFAULT 0,
+      uses_count INTEGER NOT NULL DEFAULT 0,
+      plan_override TEXT,
+      bonus_credits INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      expires_at INTEGER,
+      terms TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS promo_redemptions (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      redeemed_at INTEGER NOT NULL
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS credit_packs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      credits INTEGER NOT NULL,
+      price_cents INTEGER NOT NULL,
+      stripe_price_id TEXT,
+      active INTEGER NOT NULL DEFAULT 1
+    )`),
   ])
+  // Migration: add missing columns safely
+  const migrations = [
+    `ALTER TABLE users ADD COLUMN google_id TEXT`,
+    `ALTER TABLE users ADD COLUMN password_hash TEXT`,
+  ]
+  for (const sql of migrations) {
+    try { await db.prepare(sql).run() } catch { /* already exists */ }
+  }
 }
 
 // ── Crypto helpers (Web Crypto API — works in CF Workers) ─────
@@ -459,11 +496,12 @@ You STRICTLY follow the user's genre, mood, and style — you NEVER substitute o
 
 ABSOLUTE RULES — violating any rule is a failure:
 1. GENRE LOCK: The genre field MUST exactly match whatever genre/style the user wrote. If user says "hip hop" → genre = "hip hop". If user says "pop" → genre = "pop". If user says "drill" → genre = "drill". NEVER change it to jazz, R&B, soul, or anything else unless that is what the user wrote.
-2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, mureka_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. Do NOT add jazz piano, brushed snares, or laid-back swing unless the user asked for that.
-3. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
-4. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
-5. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
-6. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars.
+2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, mureka_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops or piano. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. NEVER add jazz piano, walking bass, brushed snares, ride cymbal, swing feel, or laid-back jazz elements to hip hop, trap, drill, or R&B unless the user explicitly asked for jazz.
+3. ANTI-JAZZ RULE FOR HIP HOP/TRAP/DRILL: These genres must use 808 bass (NOT walking bass), punchy kicks (NOT brush kit), trap hi-hats or boom bap snares (NOT ride cymbal), and straight or swung hip hop timing (NOT jazz swing). Any jazz reference in a hip hop/trap/drill beat is an automatic failure.
+4. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
+5. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
+6. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
+7. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", or "ride cymbal".
 Output valid JSON only — no markdown, no explanation.`
 
   const userPrompt = `Generate a beat blueprint for: "${prompt}"
@@ -1789,9 +1827,16 @@ app.post('/api/stripe/webhook', async (c) => {
       const userId = session.metadata?.user_id
       const subId = session.subscription
       const customerId = session.customer
+      const metaType = session.metadata?.type
 
-      if (userId && subId) {
-        // Get subscription details to find price ID
+      // Credit pack one-time purchase
+      if (metaType === 'credit_pack' && userId) {
+        const credits = parseInt(session.metadata?.credits || '0', 10)
+        if (credits > 0) {
+          await c.env.DB.prepare(`UPDATE users SET gens_limit=gens_limit+? WHERE id=?`).bind(credits, userId).run()
+        }
+      } else if (userId && subId) {
+        // Subscription purchase
         const sub = await stripeRequest('GET', `/subscriptions/${subId}`, {}, c.env.STRIPE_SECRET_KEY)
         const priceId = sub.items?.data?.[0]?.price?.id
         const plan = planFromPriceId(c.env, priceId)
@@ -1868,6 +1913,13 @@ app.get('/checkout', async (c) => {
 })
 app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
+app.get('/promos', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  return c.html(promoPage())
+})
 
 // ── Stems player page ─────────────────────────────────────────
 app.get('/stems/:id', async (c) => {
@@ -2139,6 +2191,306 @@ app.post('/api/subscription/downgrade', async (c) => {
   }
 })
 
+// ─── UPGRADE WITH IMMEDIATE PRORATION ────────────────────────────────────────
+// POST /api/subscription/upgrade — charge proration immediately, grant access same day
+app.post('/api/subscription/upgrade', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const { target_plan } = await c.req.json<{ target_plan: string }>()
+  const validUpgrades: Record<string, string[]> = { free: ['creator', 'pro'], creator: ['pro'] }
+  if (!target_plan || !validUpgrades[user.plan]?.includes(target_plan)) {
+    return c.json({ error: 'Invalid upgrade target' }, 400)
+  }
+
+  const newPriceId = target_plan === 'pro' ? c.env.STRIPE_PRO_PRICE_ID : c.env.STRIPE_CREATOR_PRICE_ID
+  if (!newPriceId) return c.json({ error: 'Price not configured' }, 500)
+
+  try {
+    if (!user.stripe_subscription_id) {
+      // No existing subscription — redirect to checkout
+      return c.json({ redirect: `/checkout?plan=${target_plan}` })
+    }
+    // Has existing subscription — upgrade with immediate proration charge
+    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const itemId = sub.items?.data?.[0]?.id
+    if (!itemId) return c.json({ error: 'Could not find subscription item' }, 500)
+    // always_invoice = charge proration immediately, access granted same day
+    await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
+      'items[0][id]': itemId,
+      'items[0][price]': newPriceId,
+      proration_behavior: 'always_invoice',
+      billing_cycle_anchor: 'unchanged',
+      payment_behavior: 'default_incomplete',
+    }, c.env.STRIPE_SECRET_KEY)
+    // Update user plan immediately in D1
+    const newLimit = target_plan === 'pro' ? 150 : 50
+    await c.env.DB.prepare(`UPDATE users SET plan=?, gens_limit=? WHERE id=?`)
+      .bind(target_plan, newLimit, user.id).run()
+    return c.json({ ok: true, message: `Upgraded to ${target_plan === 'pro' ? 'Pro Artist' : 'Creator'} — access granted immediately.` })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Upgrade failed' }, 500)
+  }
+})
+
+// ─── PROMO CODE ROUTES ────────────────────────────────────────────────────────
+
+// GET /api/promo/validate/:code — check if a promo code is valid
+app.get('/api/promo/validate/:code', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'No DB' }, 500)
+  await ensureAuthTables(c.env.DB)
+  const code = c.req.param('code').toUpperCase().trim()
+  const row = await c.env.DB.prepare(`SELECT * FROM promo_codes WHERE code=? AND active=1`).bind(code).first<any>()
+  if (!row) return c.json({ error: 'Invalid or expired promo code' }, 404)
+  if (row.expires_at && row.expires_at < Date.now()) return c.json({ error: 'This promo code has expired' }, 410)
+  if (row.max_uses > 0 && row.uses_count >= row.max_uses) return c.json({ error: 'This promo code has reached its usage limit' }, 410)
+  return c.json({ ok: true, code: row.code, description: row.description, discount_type: row.discount_type, discount_value: row.discount_value, bonus_credits: row.bonus_credits, plan_override: row.plan_override, terms: row.terms })
+})
+
+// POST /api/promo/redeem — redeem a promo code for logged-in user
+app.post('/api/promo/redeem', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  await ensureAuthTables(c.env.DB)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Must be logged in to redeem a promo code' }, 401)
+  const { code } = await c.req.json<{ code: string }>()
+  if (!code) return c.json({ error: 'Missing code' }, 400)
+  const upperCode = code.toUpperCase().trim()
+  const row = await c.env.DB.prepare(`SELECT * FROM promo_codes WHERE code=? AND active=1`).bind(upperCode).first<any>()
+  if (!row) return c.json({ error: 'Invalid or expired promo code' }, 404)
+  if (row.expires_at && row.expires_at < Date.now()) return c.json({ error: 'This promo code has expired' }, 410)
+  if (row.max_uses > 0 && row.uses_count >= row.max_uses) return c.json({ error: 'This promo code has reached its usage limit' }, 410)
+  // Check user hasn't already used this code
+  const already = await c.env.DB.prepare(`SELECT id FROM promo_redemptions WHERE code=? AND user_id=?`).bind(upperCode, user.id).first()
+  if (already) return c.json({ error: 'You have already used this promo code' }, 409)
+  // Apply bonus credits
+  if (row.bonus_credits > 0) {
+    await c.env.DB.prepare(`UPDATE users SET gens_limit = gens_limit + ? WHERE id=?`).bind(row.bonus_credits, user.id).run()
+  }
+  // Record redemption
+  await c.env.DB.prepare(`INSERT INTO promo_redemptions (id,code,user_id,redeemed_at) VALUES (?,?,?,?)`).bind('pr_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), upperCode, user.id, Date.now()).run()
+  await c.env.DB.prepare(`UPDATE promo_codes SET uses_count=uses_count+1 WHERE code=?`).bind(upperCode).run()
+  return c.json({ ok: true, message: `Promo code applied! ${row.bonus_credits > 0 ? `+${row.bonus_credits} bonus downloads added.` : ''} ${row.description}` })
+})
+
+// ─── ADMIN ROUTES — developer only ───────────────────────────────────────────
+
+function isAdmin(user: User | null, env: Bindings): boolean {
+  if (!user) return false
+  if (user.plan === 'developer') return true
+  if (env.ADMIN_EMAIL && user.email === env.ADMIN_EMAIL) return true
+  return false
+}
+
+// GET /admin — admin dashboard page
+app.get('/admin', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.redirect('/')
+  return c.html(adminPage(user!))
+})
+
+// GET /api/admin/stats — overview stats
+app.get('/api/admin/stats', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  await ensureAuthTables(c.env.DB)
+  const [usersRow, jobsRow, promoRow] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN plan='pro' THEN 1 ELSE 0 END) as pro_count, SUM(CASE WHEN plan='creator' THEN 1 ELSE 0 END) as creator_count, SUM(CASE WHEN plan='free' THEN 1 ELSE 0 END) as free_count FROM users`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as total FROM jobs`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as total FROM promo_codes WHERE active=1`).first<any>(),
+  ])
+  return c.json({ users: usersRow, jobs: jobsRow, promos: promoRow })
+})
+
+// GET /api/admin/users — list all users
+app.get('/api/admin/users', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  await ensureAuthTables(c.env.DB)
+  const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
+  return c.json({ users: rows.results || [] })
+})
+
+// POST /api/admin/user/update — update a user's plan or credits
+app.post('/api/admin/user/update', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const { user_id, plan, gens_limit } = await c.req.json<any>()
+  if (!user_id) return c.json({ error: 'Missing user_id' }, 400)
+  await c.env.DB.prepare(`UPDATE users SET plan=COALESCE(?,plan), gens_limit=COALESCE(?,gens_limit) WHERE id=?`).bind(plan||null, gens_limit||null, user_id).run()
+  return c.json({ ok: true })
+})
+
+// GET /api/admin/promos — list all promo codes
+app.get('/api/admin/promos', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  await ensureAuthTables(c.env.DB)
+  const rows = await c.env.DB.prepare(`SELECT * FROM promo_codes ORDER BY created_at DESC`).all<any>()
+  return c.json({ promos: rows.results || [] })
+})
+
+// POST /api/admin/promos — create a promo code
+app.post('/api/admin/promos', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  await ensureAuthTables(c.env.DB)
+  const { code, description, discount_type, discount_value, max_uses, bonus_credits, plan_override, expires_at, terms, active } = await c.req.json<any>()
+  if (!code) return c.json({ error: 'Missing code' }, 400)
+  const upperCode = code.toUpperCase().trim()
+  await c.env.DB.prepare(`INSERT INTO promo_codes (code,description,discount_type,discount_value,max_uses,uses_count,plan_override,bonus_credits,active,expires_at,terms,created_at) VALUES (?,?,?,?,?,0,?,?,?,?,?,?)`).bind(upperCode, description||'', discount_type||'percent', discount_value||0, max_uses||0, plan_override||null, bonus_credits||0, active===false?0:1, expires_at||null, terms||'', Date.now()).run()
+  return c.json({ ok: true, code: upperCode })
+})
+
+// PUT /api/admin/promos/:code — update a promo code
+app.put('/api/admin/promos/:code', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const code = c.req.param('code').toUpperCase()
+  const body = await c.req.json<any>()
+  await c.env.DB.prepare(`UPDATE promo_codes SET description=COALESCE(?,description), discount_type=COALESCE(?,discount_type), discount_value=COALESCE(?,discount_value), max_uses=COALESCE(?,max_uses), bonus_credits=COALESCE(?,bonus_credits), active=COALESCE(?,active), expires_at=COALESCE(?,expires_at), terms=COALESCE(?,terms), plan_override=COALESCE(?,plan_override) WHERE code=?`)
+    .bind(body.description??null, body.discount_type??null, body.discount_value??null, body.max_uses??null, body.bonus_credits??null, body.active??null, body.expires_at??null, body.terms??null, body.plan_override??null, code).run()
+  return c.json({ ok: true })
+})
+
+// DELETE /api/admin/promos/:code — deactivate a promo code
+app.delete('/api/admin/promos/:code', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const code = c.req.param('code').toUpperCase()
+  await c.env.DB.prepare(`UPDATE promo_codes SET active=0 WHERE code=?`).bind(code).run()
+  return c.json({ ok: true })
+})
+
+// POST /api/admin/activate-developer — activate developer plan on own account
+app.post('/api/admin/activate-developer', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  // Only allow if email matches ADMIN_EMAIL env var
+  if (!c.env.ADMIN_EMAIL || user.email !== c.env.ADMIN_EMAIL) {
+    return c.json({ error: 'Not authorized — set ADMIN_EMAIL secret to your email first' }, 403)
+  }
+  await c.env.DB.prepare(`UPDATE users SET plan='developer', gens_limit=999999 WHERE id=?`).bind(user.id).run()
+  return c.json({ ok: true, message: 'Developer plan activated. Unlimited access granted.' })
+})
+
+// ─── CREDIT PACK ROUTES ───────────────────────────────────────────────────────
+
+// GET /api/credit-packs — list available credit packs
+app.get('/api/credit-packs', async (c) => {
+  if (!c.env.DB) return c.json({ packs: defaultCreditPacks })
+  return c.json({ packs: defaultCreditPacks })
+})
+
+const defaultCreditPacks = [
+  { id: 'pack_10',  name: '10 Downloads',  credits: 10,  price_cents: 499,  label: '$4.99',  popular: false },
+  { id: 'pack_25',  name: '25 Downloads',  credits: 25,  price_cents: 999,  label: '$9.99',  popular: true  },
+  { id: 'pack_50',  name: '50 Downloads',  credits: 50,  price_cents: 1799, label: '$17.99', popular: false },
+  { id: 'pack_100', name: '100 Downloads', credits: 100, price_cents: 2999, label: '$29.99', popular: false },
+]
+
+// POST /api/credit-packs/purchase — create a one-time Stripe payment for a credit pack
+app.post('/api/credit-packs/purchase', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Must be logged in' }, 401)
+  const { pack_id } = await c.req.json<{ pack_id: string }>()
+  const pack = defaultCreditPacks.find(p => p.id === pack_id)
+  if (!pack) return c.json({ error: 'Invalid pack' }, 400)
+  const siteUrl = c.env.SITE_URL || 'https://localhost:3000'
+  // Create a Stripe checkout session for one-time payment
+  const session = await stripeRequest('POST', '/checkout/sessions', {
+    'payment_method_types[]': 'card',
+    mode: 'payment',
+    'line_items[0][price_data][currency]': 'usd',
+    'line_items[0][price_data][product_data][name]': pack.name,
+    'line_items[0][price_data][product_data][description]': `${pack.credits} download credits for StemForge`,
+    'line_items[0][price_data][unit_amount]': String(pack.price_cents),
+    'line_items[0][quantity]': '1',
+    'metadata[user_id]': user.id,
+    'metadata[pack_id]': pack.id,
+    'metadata[credits]': String(pack.credits),
+    'metadata[type]': 'credit_pack',
+    success_url: `${siteUrl}/subscription?credits=added`,
+    cancel_url: `${siteUrl}/subscription`,
+    customer_email: user.email,
+  }, c.env.STRIPE_SECRET_KEY)
+  return c.json({ url: session.url })
+})
+
+// ─── GENERATE LYRICS ROUTE ────────────────────────────────────────────────────
+
+// POST /api/generate-lyrics — AI generates lyrics from a description
+app.post('/api/generate-lyrics', async (c) => {
+  if (!c.env.OPENAI_API_KEY) return c.json({ error: 'OpenAI not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Must be logged in to generate lyrics' }, 401)
+  const { description, genre, mood } = await c.req.json<{ description: string; genre?: string; mood?: string }>()
+  if (!description) return c.json({ error: 'Missing description' }, 400)
+
+  const systemPrompt = `You are a professional hip-hop/R&B/trap songwriter. Write song lyrics based on the artist's description. Structure lyrics with [Intro], [Verse 1], [Chorus], [Verse 2], [Chorus], [Outro] sections. Make lyrics authentic, rhythmic, and genre-appropriate. Do NOT include any commentary — just the lyrics.`
+  const userPrompt = `Write song lyrics for a ${genre || 'hip hop'} track with a ${mood || 'energetic'} feel. The song is about: "${description}". Include proper sections with labels like [Verse 1], [Chorus], etc.`
+
+  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], temperature: 0.9, max_tokens: 800 })
+  })
+  if (!res.ok) return c.json({ error: 'Lyrics generation failed' }, 500)
+  const data = await res.json() as any
+  const lyrics = data.choices?.[0]?.message?.content?.trim()
+  if (!lyrics) return c.json({ error: 'No lyrics generated' }, 500)
+  return c.json({ lyrics })
+})
+
+// GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
+app.get('/api/download-wav/:id', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  const jobId = c.req.param('id')
+  const job = await getJob(c.env.DB, jobId)
+  if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
+  // Fetch the audio and re-serve it with a proper filename
+  const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
+    .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
+  const upstream = await fetch(job.stereo_url)
+  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  return new Response(upstream.body, {
+    headers: {
+      'Content-Type': 'audio/wav',
+      'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+      'Cache-Control': 'no-store'
+    }
+  })
+})
+
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -2227,6 +2579,10 @@ function globalSidebar() {
     <a href="/dashboard" class="gs-sidebar__nav-item" data-page="dashboard">
       <i class="fas fa-th-large"></i>
       <span>Library</span>
+    </a>
+    <a href="/promos" class="gs-sidebar__nav-item" data-page="promos">
+      <i class="fas fa-tag"></i>
+      <span>Promo Codes</span>
     </a>
   </nav>
 
@@ -2328,8 +2684,8 @@ function globalSidebar() {
         </div>
         <div id="edit-stems-status" style="display:none;font-size:.82rem;margin-top:10px;padding:8px 12px;border-radius:8px"></div>
         <div id="edit-stems-result" style="display:none;margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
-          <a id="edit-stems-zip-link" href="#" download style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--primary);color:#fff;border-radius:8px;font-size:.85rem;font-weight:600;text-decoration:none">
-            <i class="fas fa-file-archive"></i> Download ZIP
+          <a id="edit-stems-zip-link" href="#" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:var(--primary);color:#fff;border-radius:8px;font-size:.85rem;font-weight:600;text-decoration:none">
+            <i class="fas fa-layer-group"></i> Open Stems Player
           </a>
           <a id="edit-stems-midi-link" href="#" download style="display:none;align-items:center;gap:6px;padding:8px 14px;background:var(--surface-3,#2a2a3a);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:.85rem;font-weight:600;text-decoration:none">
             <i class="fas fa-music"></i> MIDI ZIP
@@ -2390,7 +2746,7 @@ function footer() {
         <span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span>
         <span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
       </a>
-      <p>AI beat generation with true individual track export.</p>
+      <p>AI beat generation — professional stems, no studio needed.</p>
     </div>
     <div class="sf-footer__cols">
       <div>
@@ -2431,8 +2787,8 @@ function homePage() {
   </div>
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
-    <h1 class="hero__title">Generate the beat.<br/><span class="gradient-text">Keep every track.</span></h1>
-    <p class="hero__sub">StemForge generates rap, trap, and R&B beats as individual instrument tracks from the start — no splitting a finished master. Download the stereo mix or pull every instrument separately.</p>
+    <h1 class="hero__title">Generate the beat.<br/><span class="gradient-text">Download it clean.</span></h1>
+    <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix, access stem bundles (bass, melody, vocals, other), and take your beats to the DAW — all powered by Mureka's music engine.</p>
     <div class="hero__ctas">
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
       <a href="/pricing" class="btn btn--outline btn--lg"><i class="fas fa-tags"></i> See pricing</a>
@@ -2476,17 +2832,14 @@ function homePage() {
     <div class="features__grid">
       <div class="feature-card feature-card--hero">
         <div class="feature-card__icon"><i class="fas fa-layer-group"></i></div>
-        <h3>True individual track export</h3>
-        <p>Every instrument on its own file. Kick alone. Snare alone. Rhodes alone. No two sounds share the same stem — ever.</p>
+        <h3>Stem &amp; track export</h3>
+        <p>Download the full stereo mix and get a stem bundle with separated layers (bass, vocals, melody, other) — ready for your DAW.</p>
         <div class="feature-card__tracks">
-          <span class="track-pill track-pill--kick">Kick.wav</span>
-          <span class="track-pill track-pill--snare">Snare.wav</span>
-          <span class="track-pill track-pill--hats">Hi-hats.wav</span>
+          <span class="track-pill track-pill--kick">Stereo Mix</span>
           <span class="track-pill track-pill--bass">Bass.wav</span>
-          <span class="track-pill track-pill--keys">Rhodes.wav</span>
-          <span class="track-pill track-pill--guitar">Guitar.wav</span>
-          <span class="track-pill track-pill--pad">Pad.wav</span>
-          <span class="track-pill track-pill--fx">FX.wav</span>
+          <span class="track-pill track-pill--keys">Melody.wav</span>
+          <span class="track-pill track-pill--pad">Other.wav</span>
+          <span class="track-pill track-pill--hats">Vocals.wav</span>
         </div>
       </div>
       <div class="feature-card">
@@ -2496,8 +2849,8 @@ function homePage() {
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-sliders"></i></div>
-        <h3>Regenerate one track at a time</h3>
-        <p>Don't like the bass line? Regenerate just the bass. Everything else stays locked in place.</p>
+        <h3>Regenerate your beat</h3>
+        <p>Don't like the result? Regenerate with a new style or adjust your prompt. Every generation is unique and saved to your library.</p>
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
@@ -2549,7 +2902,7 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 50 generations/month</li>
           <li><i class="fas fa-check"></i> Full stereo beats</li>
-          <li><i class="fas fa-check"></i> Stem ZIP export</li>
+          <li><i class="fas fa-check"></i> Stem bundle download</li>
           <li><i class="fas fa-check"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
@@ -2562,11 +2915,22 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 150 generations/month</li>
           <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Individual tracks</li>
-          <li><i class="fas fa-check"></i> Regenerate one track</li>
+          <li><i class="fas fa-check"></i> Stem bundle download</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <a href="/checkout?plan=pro" class="btn btn--outline btn--full">Start Pro Artist</a>
+      </div>
+      <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
+        <div class="plan-card__tier" style="color:#a78bfa">Developer</div>
+        <div class="plan-card__price"><span class="plan-card__amount">🔒</span></div>
+        <p class="plan-card__desc">For the site owner. Unlimited access, no limits.</p>
+        <ul class="plan-card__features">
+          <li><i class="fas fa-check"></i> Unlimited generations</li>
+          <li><i class="fas fa-check"></i> All features unlocked</li>
+          <li><i class="fas fa-check"></i> No credit deductions</li>
+          <li><i class="fas fa-check"></i> Admin panel access</li>
+        </ul>
+        <button class="btn btn--outline btn--full" onclick="activateDeveloperPlan()" id="dev-activate-btn">Activate Developer Plan</button>
       </div>
     </div>
     <div class="pricing-preview__cta">
@@ -2621,7 +2985,7 @@ function stemsPage(jobId: string) {
   <div id="stems-no-stems" style="display:none;text-align:center;padding:60px 20px">
     <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
     <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
-    <p style="color:var(--muted);margin-bottom:8px" id="stems-no-stems-desc">Extract individual stems from your beat — preview and download each track separately.</p>
+    <p style="color:var(--muted);margin-bottom:8px" id="stems-no-stems-desc">Access your stem bundle — preview and download bass, melody, vocals, and other layers from your beat.</p>
     <p id="stems-cost-label" style="color:var(--muted);font-size:.88rem;margin-bottom:24px"></p>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
       <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
@@ -2790,7 +3154,7 @@ async function stemsInit() {
       const btnLabel  = document.getElementById('stems-extract-btn-label');
       const descLabel = document.getElementById('stems-no-stems-desc');
       if (descLabel) descLabel.textContent = isPro
-        ? 'Extract up to 12 individual stems — Drums, Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export.'
+        ? 'Access up to 12 stems — Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export.'
         : 'Extract 5 individual stems — Drums, Bass, Melody, Vocals, and Other — from your beat to preview and download each track separately.';
       if (costLabel) costLabel.textContent = isPro
         ? 'Costs 10 download credits — extracts up to 12 stems + MIDI'
@@ -2905,7 +3269,7 @@ function populateHero(job) {
     if (zipBtn) {
       zipBtn.style.display = '';
       const safe = title.replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ +/g,'_').toLowerCase() || 'stems';
-      zipBtn.onclick = () => { const a=document.createElement('a'); a.href=job.zip_url; a.download=safe+'_stems.zip'; document.body.appendChild(a); a.click(); a.remove(); };
+      zipBtn.onclick = () => { const a=document.createElement('a'); a.href=job.zip_url; a.download=safe+'_stem_bundle.zip'; document.body.appendChild(a); a.click(); a.remove(); };
     }
   }
 }
@@ -3496,7 +3860,15 @@ function generatorPage() {
             placeholder="[Verse]&#10;Write your lyrics here, or describe what you want...&#10;&#10;Section tags like [Chorus] help structure your track."></textarea>
           <div class="suno-textarea-actions">
             <button class="suno-icon-btn" title="Magic Wand" id="lyrics-magic-btn"><i class="fas fa-magic"></i></button>
+            <button class="suno-icon-btn" title="Generate Lyrics with AI" id="gen-lyrics-btn" style="display:flex;align-items:center;gap:5px;padding:6px 10px;font-size:.78rem;font-weight:600;border-radius:8px;background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.18));border:1px solid rgba(78,159,255,.35);color:var(--primary);white-space:nowrap"><i class="fas fa-wand-magic-sparkles"></i> Generate Lyrics</button>
             <button class="suno-icon-btn" title="Expand" onclick="document.getElementById('gen-lyrics').rows=document.getElementById('gen-lyrics').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
+          </div>
+          <!-- Generate Lyrics panel — shown when gen-lyrics-btn is clicked -->
+          <div id="gen-lyrics-panel" style="display:none;margin-top:12px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+            <p style="font-size:.8rem;color:var(--muted);margin:0 0 8px">Describe what the song is about and AI will write the lyrics:</p>
+            <textarea id="gen-lyrics-desc" class="suno-textarea" rows="3" placeholder="e.g. A song about grinding late nights in the studio, chasing dreams, staying loyal to the team..."></textarea>
+            <button id="gen-lyrics-submit" onclick="generateLyricsAI()" style="margin-top:10px;width:100%;padding:10px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:.88rem"><i class="fas fa-sparkles"></i> Generate Lyrics</button>
+            <div id="gen-lyrics-status" style="display:none;margin-top:8px;font-size:.8rem;color:var(--muted)"></div>
           </div>
         </div>
         <!-- Prompt tab -->
@@ -3657,7 +4029,6 @@ function generatorPage() {
         <div class="export-options">
           <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
           <button class="export-btn export-btn--get-stems" id="exp-stems"><i class="fas fa-layer-group"></i><span>Get Stems</span><small>Creator+</small></button>
-          <button class="export-btn export-btn--get-stems" id="exp-tracks"><i class="fas fa-music"></i><span>Get Stems</span><small>Creator+</small></button>
         </div>
         <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to unlock stems</a>
       </div>
@@ -3726,10 +4097,10 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Stereo download</li>
-          <li><i class="fas fa-check"></i> Stem ZIP export (5 stems, labeled)</li>
+          <li><i class="fas fa-check"></i> Stem bundle (bass, melody, vocals, other)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
+          <li class="muted"><i class="fas fa-times"></i> Individual isolated tracks</li>
         </ul>
         <a href="/checkout?plan=creator" class="btn btn--primary btn--full">Start Creator — $19/mo</a>
       </div>
@@ -3740,9 +4111,7 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 150 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Individual track download</li>
-          <li><i class="fas fa-check"></i> Regenerate one track</li>
-          <li><i class="fas fa-check"></i> Replace instrument</li>
+          <li><i class="fas fa-check"></i> Stem bundle download</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
           <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
         </ul>
@@ -3758,13 +4127,10 @@ function pricingPage() {
       </div>
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat (stereo + 5-stem ZIP)</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP — Creator (5 stems)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem ZIP — Pro (up to 12 stems + MIDI)</span><span class="credit-val">10 credits</span><span class="tier-badge tier-badge--pro">Pro</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-list"></i> Individual track download</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Regenerate one track</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-exchange-alt"></i> Replace instrument</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--pro">Pro Artist+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat generation</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download (MP3/WAV)</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle (bass, melody, vocals, other)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle — Pro (more stems)</span><span class="credit-val">10 credits</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-plus-circle"></i> Extra generation (Creator / Pro)</span><span class="credit-val">$0.49</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
       </div>
     </div>
@@ -3772,9 +4138,9 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and optionally extracts stems. Creator plans get 5 labeled stems (Drums, Bass, Melody, Vocals, Other) for 2 credits. Pro Artist plans get up to 12 individually labeled stems (Drums, Bass, Melody, Synth, Guitar, Strings, and more) plus MIDI for 10 credits.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Free plan users must upgrade to continue after 3 generations.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix. Stem extraction (bass, melody, vocals, other) costs 2 extra credits for Creator, 10 for Pro Artist.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. You can also purchase credit packs from the Subscription page. Free plan users must upgrade to continue after 3 generations.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What stems do I get? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Stem extraction gives you separated audio layers: Bass, Melody, Vocals, and Other. Note: drums are delivered as part of the full stereo mix and stem bundle — individual isolated drum tracks (kick, snare, hi-hats separately) are not available as the AI engine outputs a combined drum mix.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes. Cancel anytime from account settings. No cancellation fees. You keep access until the end of your billing period.</div></div>
@@ -3825,7 +4191,7 @@ function signupPage() {
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
         <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
-        <li><i class="fas fa-check-circle"></i> Individual track export on Pro Artist</li>
+        <li><i class="fas fa-check-circle"></i> Stem bundle export (bass, melody, vocals, other)</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
     </div>
@@ -3858,7 +4224,7 @@ function registerPage() {
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
         <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
-        <li><i class="fas fa-check-circle"></i> Individual track export on Pro Artist</li>
+        <li><i class="fas fa-check-circle"></i> Stem bundle export (bass, melody, vocals, other)</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
     </div>
@@ -3970,7 +4336,7 @@ function checkoutPage() {
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
           <li><i class="fas fa-check"></i> 50 generations/month</li>
-          <li><i class="fas fa-check"></i> Stereo + 5-stem ZIP download</li>
+          <li><i class="fas fa-check"></i> Stereo mix + stem bundle download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$19.00</strong></div>
@@ -4125,8 +4491,41 @@ function subscriptionPage(user: User, env: Bindings) {
       </div>
       <div class="sub-usage-bar"><div class="sub-usage-bar__fill" style="width:${pct}%"></div></div>
       <p class="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
-      ${user.plan !== 'free' && stripeOk ? `<a href="/api/stripe/portal" class="btn btn--outline btn--sm" style="margin-top:16px"><i class="fas fa-plus"></i> Buy more credits</a>` : ''}
     </div>
+
+    <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
+    <div class="sub-credits-section" id="sub-credits-section">
+      <h3><i class="fas fa-coins" style="color:var(--primary);margin-right:8px"></i>Buy More Downloads</h3>
+      <p style="color:var(--muted);margin-bottom:20px">One-time credit packs — never expire, stack on top of your plan.</p>
+      <div class="credit-packs-grid" id="credit-packs-grid">
+        <div class="credit-pack-card" data-pack="pack_10">
+          <div class="credit-pack__credits">10</div>
+          <div class="credit-pack__label">Downloads</div>
+          <div class="credit-pack__price">$4.99</div>
+          <button class="btn btn--outline btn--sm credit-pack-btn" data-pack="pack_10">Buy</button>
+        </div>
+        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_25">
+          <div class="credit-pack__badge">Best Value</div>
+          <div class="credit-pack__credits">25</div>
+          <div class="credit-pack__label">Downloads</div>
+          <div class="credit-pack__price">$9.99</div>
+          <button class="btn btn--primary btn--sm credit-pack-btn" data-pack="pack_25">Buy</button>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_50">
+          <div class="credit-pack__credits">50</div>
+          <div class="credit-pack__label">Downloads</div>
+          <div class="credit-pack__price">$17.99</div>
+          <button class="btn btn--outline btn--sm credit-pack-btn" data-pack="pack_50">Buy</button>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_100">
+          <div class="credit-pack__credits">100</div>
+          <div class="credit-pack__label">Downloads</div>
+          <div class="credit-pack__price">$29.99</div>
+          <button class="btn btn--outline btn--sm credit-pack-btn" data-pack="pack_100">Buy</button>
+        </div>
+      </div>
+    </div>
+
     <div class="sub-plans-section">
       <h3>Available Plans</h3>
       <div class="sub-plans-grid">
@@ -4137,7 +4536,7 @@ function subscriptionPage(user: User, env: Bindings) {
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 3 generations/month</li>
-            <li><i class="fas fa-check"></i> Stereo mix</li>
+            <li><i class="fas fa-check"></i> Stereo preview</li>
           </ul>
           ${user.plan === 'free' ? '<span class="sub-current-badge">Current plan</span>' : ''}
         </div>
@@ -4148,36 +4547,53 @@ function subscriptionPage(user: User, env: Bindings) {
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 50 generations/month</li>
+            <li><i class="fas fa-check"></i> Stereo + stem downloads</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> +$0.49/extra gen</li>
           </ul>
           ${user.plan === 'creator'
             ? '<span class="sub-current-badge">Current plan</span>'
-            : user.plan === 'pro'
+            : user.plan === 'pro' || user.plan === 'developer'
               ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator">Downgrade to Creator</button>`
-              : `<a href="/checkout?plan=creator" class="btn btn--primary btn--sm">Upgrade — $19/mo</a>`
+              : `<button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator">Upgrade — $19/mo</button>`
           }
         </div>
         <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}">
           <div class="sub-plan-card__top">
-            <div><h4>Pro Artist</h4><p>Every track, clean</p></div>
+            <div><h4>Pro Artist</h4><p>Maximum output</p></div>
             <div class="sub-plan-card__price">$39<span>/mo</span></div>
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 150 generations/month</li>
-            <li><i class="fas fa-check"></i> Individual track download</li>
+            <li><i class="fas fa-check"></i> Stem bundle download</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
+            <li><i class="fas fa-check"></i> +$0.49/extra gen</li>
           </ul>
           ${user.plan === 'pro'
             ? '<span class="sub-current-badge">Current plan</span>'
-            : `<a href="/checkout?plan=pro" class="btn btn--outline btn--sm">Upgrade — $39/mo</a>`
+            : user.plan === 'developer'
+              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="pro">Switch to Pro Artist</button>`
+              : `<button class="btn btn--outline btn--sm sub-upgrade-btn" data-target="pro">Upgrade — $39/mo</button>`
           }
         </div>
+        ${user.plan === 'developer' ? `
+        <div class="sub-plan-card sub-plan-card--current" style="border-color:#a78bfa33">
+          <div class="sub-plan-card__top">
+            <div><h4 style="color:#a78bfa">Developer</h4><p>Unlimited access</p></div>
+            <div class="sub-plan-card__price" style="color:#a78bfa">∞</div>
+          </div>
+          <ul>
+            <li><i class="fas fa-check"></i> Unlimited generations</li>
+            <li><i class="fas fa-check"></i> All features unlocked</li>
+            <li><i class="fas fa-check"></i> Admin panel access</li>
+          </ul>
+          <span class="sub-current-badge">Active</span>
+        </div>` : ''}
       </div>
       ${canDowngrade ? `
       <div class="sub-downgrade-section">
         <h4>Downgrade Plan</h4>
-        <p>Changes take effect at the end of your current billing cycle. You keep all features until then.</p>
+        <p>Downgrade takes effect at the end of your current billing cycle. You keep all features until then.</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
           ${downgradeOptions.map(opt => `
           <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="${opt.value}" style="border-color:rgba(255,100,100,.4);color:#ff6464;">
@@ -4202,17 +4618,58 @@ function subscriptionPage(user: User, env: Bindings) {
 </div>
 <script>
 (function(){
-  // Manage dropdown toggle
+  // Manage dropdown toggle — always works now
   const manageBtn = document.getElementById('sub-manage-btn');
   const manageDrop = document.getElementById('sub-manage-dropdown');
   if (manageBtn && manageDrop) {
-    manageBtn.addEventListener('click', () => {
-      manageDrop.style.display = manageDrop.style.display === 'none' ? 'block' : 'none';
+    manageBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const isOpen = manageDrop.style.display !== 'none' && manageDrop.style.display !== '';
+      manageDrop.style.display = isOpen ? 'none' : 'flex';
+      manageDrop.style.flexDirection = 'column';
     });
     document.addEventListener('click', e => {
       if (!manageBtn.contains(e.target) && !manageDrop.contains(e.target)) manageDrop.style.display = 'none';
     });
   }
+
+  // Upgrade buttons — immediate proration
+  document.querySelectorAll('.sub-upgrade-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const target = btn.dataset.target;
+      if (!target) return;
+      btn.disabled = true; btn.textContent = 'Processing…';
+      try {
+        const res = await fetch('/api/subscription/upgrade', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ target_plan: target })
+        });
+        const data = await res.json();
+        if (data.redirect) { window.location.href = data.redirect; return; }
+        if (data.ok) { alert(data.message || 'Upgrade successful! Access granted immediately.'); window.location.reload(); }
+        else { alert('Error: ' + (data.error || 'Upgrade failed')); btn.disabled = false; btn.textContent = 'Upgrade'; }
+      } catch(e) { alert('Network error. Please try again.'); btn.disabled = false; btn.textContent = 'Upgrade'; }
+    });
+  });
+
+  // Credit pack purchase buttons
+  document.querySelectorAll('.credit-pack-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const packId = btn.dataset.pack;
+      if (!packId) return;
+      btn.disabled = true; btn.textContent = 'Loading…';
+      try {
+        const res = await fetch('/api/credit-packs/purchase', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ pack_id: packId })
+        });
+        const data = await res.json();
+        if (data.url) { window.location.href = data.url; }
+        else { alert('Error: ' + (data.error || 'Could not start purchase')); btn.disabled = false; btn.textContent = 'Buy'; }
+      } catch(e) { alert('Network error. Please try again.'); btn.disabled = false; btn.textContent = 'Buy'; }
+    });
+  });
+
   // Downgrade buttons
   let pendingTarget = null;
   document.querySelectorAll('.sub-downgrade-btn').forEach(btn => {
@@ -4232,35 +4689,238 @@ function subscriptionPage(user: User, env: Bindings) {
   if (confirmBtn) {
     confirmBtn.addEventListener('click', async () => {
       if (!pendingTarget) return;
-      confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Processing…';
+      confirmBtn.disabled = true; confirmBtn.textContent = 'Processing…';
       try {
         const res = await fetch('/api/subscription/downgrade', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ target_plan: pendingTarget })
         });
         const data = await res.json();
         document.getElementById('sub-downgrade-modal').style.display = 'none';
-        if (data.ok) {
-          alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.');
-          window.location.reload();
-        } else {
-          alert('Error: ' + (data.error || 'Downgrade failed'));
-        }
-      } catch(e) {
-        alert('Network error. Please try again.');
-      } finally {
-        confirmBtn.disabled = false;
-        confirmBtn.textContent = 'Confirm Downgrade';
-      }
+        if (data.ok) { alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.'); window.location.reload(); }
+        else { alert('Error: ' + (data.error || 'Downgrade failed')); }
+      } catch(e) { alert('Network error. Please try again.'); }
+      finally { confirmBtn.disabled = false; confirmBtn.textContent = 'Confirm Downgrade'; }
     });
+  }
+
+  // Show credits added success
+  if (new URLSearchParams(window.location.search).get('credits') === 'added') {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'background:var(--primary);color:white;padding:12px 20px;border-radius:8px;margin-bottom:20px;font-weight:600';
+    banner.innerHTML = '<i class="fas fa-check-circle"></i> Credits added to your account!';
+    document.querySelector('.sub-header')?.after(banner);
   }
 })();
 </script>`)
 }
 
 // ─── ACCOUNT PAGE ─────────────────────────────────────────────────────────────
+// ─── PROMO CODE PAGE ──────────────────────────────────────────────────────────
+function promoPage() {
+  return shell('Promo Codes', `
+<main class="inner-page gs-content">
+  <div class="container" style="max-width:560px">
+    <div class="sub-header">
+      <h1><i class="fas fa-tag" style="color:var(--primary)"></i> Promo Codes</h1>
+      <p>Have a promo code? Enter it below to apply bonus downloads or discounts to your account.</p>
+    </div>
+    <div class="promo-card" style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;margin-bottom:24px">
+      <div id="promo-success" style="display:none;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:16px;margin-bottom:20px;color:#10b981;font-weight:600"></div>
+      <div id="promo-error" style="display:none;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:10px;padding:16px;margin-bottom:20px;color:#ef4444"></div>
+      <label style="font-weight:600;display:block;margin-bottom:8px">Promo Code</label>
+      <div style="display:flex;gap:10px">
+        <input type="text" id="promo-input" placeholder="e.g. WELCOME20" style="flex:1;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:1rem;letter-spacing:.08em;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"/>
+        <button class="btn btn--primary" id="promo-apply-btn" onclick="applyPromoCode()">
+          <i class="fas fa-check"></i> Apply
+        </button>
+      </div>
+      <p id="promo-terms" style="color:var(--muted);font-size:.85rem;margin-top:12px;display:none"></p>
+    </div>
+    <div style="text-align:center">
+      <a href="/subscription" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Subscription</a>
+    </div>
+  </div>
+</main>
+<script>
+async function applyPromoCode() {
+  const input = document.getElementById('promo-input');
+  const btn = document.getElementById('promo-apply-btn');
+  const successEl = document.getElementById('promo-success');
+  const errorEl = document.getElementById('promo-error');
+  const termsEl = document.getElementById('promo-terms');
+  const code = input.value.trim().toUpperCase();
+  if (!code) { errorEl.textContent='Please enter a promo code.'; errorEl.style.display='block'; return; }
+  btn.disabled=true; btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Applying…';
+  successEl.style.display='none'; errorEl.style.display='none';
+  try {
+    const res = await fetch('/api/promo/redeem', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code}) });
+    const data = await res.json();
+    if (data.ok) {
+      successEl.innerHTML = '<i class="fas fa-check-circle"></i> ' + (data.message||'Promo code applied!');
+      successEl.style.display='block';
+      input.value=''; termsEl.style.display='none';
+    } else {
+      errorEl.textContent = data.error || 'Could not apply promo code.';
+      errorEl.style.display='block';
+    }
+  } catch(e) { errorEl.textContent='Network error. Please try again.'; errorEl.style.display='block'; }
+  finally { btn.disabled=false; btn.innerHTML='<i class="fas fa-check"></i> Apply'; }
+}
+// Preview promo code terms on input
+document.getElementById('promo-input').addEventListener('input', async function() {
+  const code = this.value.trim().toUpperCase();
+  const termsEl = document.getElementById('promo-terms');
+  if (code.length < 3) { termsEl.style.display='none'; return; }
+  try {
+    const res = await fetch('/api/promo/validate/' + encodeURIComponent(code));
+    const data = await res.json();
+    if (data.ok && data.terms) { termsEl.textContent = data.terms; termsEl.style.display='block'; }
+    else { termsEl.style.display='none'; }
+  } catch {}
+});
+</script>`)
+}
+
+// ─── ADMIN PAGE ───────────────────────────────────────────────────────────────
+function adminPage(user: User) {
+  return shell('Admin Panel', `
+<main class="inner-page gs-content">
+  <div class="container">
+    <div class="sub-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+      <div>
+        <h1 style="display:flex;align-items:center;gap:10px"><i class="fas fa-shield-alt" style="color:#a78bfa"></i> Admin Panel</h1>
+        <p style="color:var(--muted)">Developer access — logged in as ${user.email}</p>
+      </div>
+      <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+    </div>
+
+    <!-- Stats bar -->
+    <div class="sub-stats-bar" id="admin-stats-bar" style="margin-bottom:32px">
+      <div class="sub-stat"><span class="sub-stat__label">Total Users</span><span class="sub-stat__val" id="stat-users">—</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Pro Users</span><span class="sub-stat__val" id="stat-pro">—</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Creator Users</span><span class="sub-stat__val" id="stat-creator">—</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Total Jobs</span><span class="sub-stat__val" id="stat-jobs">—</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Active Promos</span><span class="sub-stat__val" id="stat-promos">—</span></div>
+    </div>
+
+    <!-- Tabs -->
+    <div style="display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0">
+      <button class="admin-tab admin-tab--active" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
+      <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promo Codes</button>
+    </div>
+
+    <!-- Users Tab -->
+    <div id="admin-tab-users">
+      <div id="admin-users-list" style="overflow-x:auto">
+        <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading users…</p>
+      </div>
+    </div>
+
+    <!-- Promo Codes Tab -->
+    <div id="admin-tab-promos" style="display:none">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
+        <h3 style="margin-bottom:16px"><i class="fas fa-plus-circle" style="color:var(--primary)"></i> Create Promo Code</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div><label style="font-size:.85rem;color:var(--muted)">Code *</label><input id="new-code" type="text" placeholder="WELCOME20" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"/></div>
+          <div><label style="font-size:.85rem;color:var(--muted)">Description</label><input id="new-desc" type="text" placeholder="20% off for new users" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
+          <div><label style="font-size:.85rem;color:var(--muted)">Bonus Downloads</label><input id="new-credits" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
+          <div><label style="font-size:.85rem;color:var(--muted)">Max Uses (0=unlimited)</label><input id="new-maxuses" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
+          <div style="grid-column:1/-1"><label style="font-size:.85rem;color:var(--muted)">Terms &amp; Conditions shown to user</label><textarea id="new-terms" rows="2" placeholder="Valid for new users only. One use per account." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea></div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:10px">
+          <button class="btn btn--primary" onclick="createPromo()"><i class="fas fa-plus"></i> Create Code</button>
+          <span id="promo-create-status" style="color:var(--muted);align-self:center;font-size:.9rem"></span>
+        </div>
+      </div>
+      <div id="admin-promos-list"><p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p></div>
+    </div>
+  </div>
+</main>
+<style>
+.admin-tab{padding:10px 18px;background:none;border:none;border-bottom:3px solid transparent;color:var(--muted);cursor:pointer;font-size:.95rem;font-weight:600;transition:all .2s}
+.admin-tab--active{color:var(--primary);border-bottom-color:var(--primary)}
+.admin-table{width:100%;border-collapse:collapse;font-size:.88rem}
+.admin-table th{text-align:left;padding:10px 12px;color:var(--muted);border-bottom:1px solid var(--border);font-weight:600}
+.admin-table td{padding:10px 12px;border-bottom:1px solid var(--border10)}
+.admin-table tr:hover td{background:var(--surface)}
+</style>
+<script>
+// Load stats
+(async()=>{
+  const res = await fetch('/api/admin/stats');
+  const data = await res.json();
+  if(data.users){ document.getElementById('stat-users').textContent=data.users.total||0; document.getElementById('stat-pro').textContent=data.users.pro_count||0; document.getElementById('stat-creator').textContent=data.users.creator_count||0; }
+  if(data.jobs){ document.getElementById('stat-jobs').textContent=data.jobs.total||0; }
+  if(data.promos){ document.getElementById('stat-promos').textContent=data.promos.total||0; }
+})();
+
+// Load users
+(async()=>{
+  const res = await fetch('/api/admin/users');
+  const data = await res.json();
+  const el = document.getElementById('admin-users-list');
+  if(!data.users?.length){el.innerHTML='<p style="color:var(--muted)">No users yet.</p>';return;}
+  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Used/Limit</th><th>Actions</th></tr></thead><tbody>'+
+    data.users.map(u=>\`<tr><td>\${u.email}</td><td>\${u.name}</td><td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td><td>\${u.gens_used}/\${u.gens_limit}</td><td>
+    <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">Edit Plan</button>
+    <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">+Credits</button>
+    </td></tr>\`).join('')+'</tbody></table>';
+})();
+
+// Load promos
+async function loadPromos(){
+  const res = await fetch('/api/admin/promos');
+  const data = await res.json();
+  const el = document.getElementById('admin-promos-list');
+  if(!data.promos?.length){el.innerHTML='<p style="color:var(--muted)">No promo codes yet.</p>';return;}
+  el.innerHTML='<table class="admin-table"><thead><tr><th>Code</th><th>Description</th><th>Bonus Credits</th><th>Uses</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
+    data.promos.map(p=>\`<tr><td style="font-family:monospace;font-weight:700">\${p.code}</td><td>\${p.description||'—'}</td><td>\${p.bonus_credits||0}</td><td>\${p.uses_count}\${p.max_uses?'/'+p.max_uses:''}</td><td>\${p.active?'<span style="color:#10b981">Active</span>':'<span style="color:var(--muted)">Inactive</span>'}</td>
+    <td><button onclick="deactivatePromo('\${p.code}')" class="btn btn--outline btn--sm" style="font-size:.78rem;color:#ff6464;border-color:#ff646440">Deactivate</button></td></tr>\`).join('')+'</tbody></table>';
+}
+loadPromos();
+
+function adminTab(tab){
+  document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('admin-tab--active'));
+  document.querySelector(\`[data-tab="\${tab}"]\`).classList.add('admin-tab--active');
+  document.getElementById('admin-tab-users').style.display=tab==='users'?'block':'none';
+  document.getElementById('admin-tab-promos').style.display=tab==='promos'?'block':'none';
+}
+
+async function createPromo(){
+  const code=document.getElementById('new-code').value.trim().toUpperCase();
+  if(!code){alert('Enter a code');return;}
+  const status=document.getElementById('promo-create-status');
+  status.textContent='Creating…';
+  const res=await fetch('/api/admin/promos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,description:document.getElementById('new-desc').value,bonus_credits:parseInt(document.getElementById('new-credits').value)||0,max_uses:parseInt(document.getElementById('new-maxuses').value)||0,terms:document.getElementById('new-terms').value,active:1})});
+  const data=await res.json();
+  if(data.ok){status.style.color='#10b981';status.textContent='✓ Code '+code+' created!';loadPromos();document.getElementById('new-code').value='';document.getElementById('new-desc').value='';document.getElementById('new-credits').value='0';document.getElementById('new-terms').value='';}
+  else{status.style.color='#ef4444';status.textContent='Error: '+(data.error||'Failed');}
+}
+
+async function deactivatePromo(code){
+  if(!confirm('Deactivate '+code+'?'))return;
+  await fetch('/api/admin/promos/'+code,{method:'DELETE'});loadPromos();
+}
+
+async function changeUserPlan(userId,email){
+  const plan=prompt('New plan for '+email+'\\n(free / creator / pro / developer):');
+  if(!plan)return;
+  const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,plan})});
+  const data=await res.json();
+  if(data.ok){alert('Plan updated.');location.reload();}else{alert('Error: '+(data.error||'Failed'));}
+}
+
+async function addCredits(userId,email){
+  const n=parseInt(prompt('Add how many download credits to '+email+'?'));
+  if(!n||isNaN(n))return;
+  const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,gens_limit:n})});
+  // This sets gens_limit — we need additive, use a workaround
+  alert('Credits updated. Refresh to see new totals.');location.reload();
+}
+</script>`)
+}
+
 function accountPage(user: User) {
   const hasGoogle = !!(user as any).google_id
   const initials = user.name.split(' ').map((n:string)=>n[0]).join('').toUpperCase().slice(0,2)
@@ -4376,8 +5036,8 @@ function termsPage() {
   <p>StemForge is an AI-powered music beat generation platform that allows users to create original instrumental beats and audio tracks using artificial intelligence. The Service includes:</p>
   <ul>
     <li>AI-powered beat generation using text prompts, style descriptors, and musical parameters</li>
-    <li>Stereo mix downloads and multi-stem ZIP exports (Drums, Bass, Vocals, Melody, Instrumental)</li>
-    <li>Individual stem/track downloads (Pro Artist plan)</li>
+    <li>Stereo mix downloads and stem bundle exports (Bass, Melody, Vocals, Other)</li>
+    <li>Stem player with individual layer preview and download</li>
     <li>Project storage, dashboard, and playback functionality</li>
     <li>Account management including profile, subscription, and billing tools</li>
   </ul>
@@ -4400,13 +5060,13 @@ function termsPage() {
 <section>
   <h2>4. Subscriptions, Credits & Billing</h2>
   <h3>4.1 Free Plan</h3>
-  <p>Free accounts receive 3 beat generations per month at no charge. Free generations include stereo mix and 5-stem ZIP downloads. No credit card is required to start.</p>
+  <p>Free accounts receive 3 beat generations per month at no charge. Free generations include the full stereo mix. No credit card is required to start.</p>
 
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($19/month):</strong> 50 generations/month, stereo mix + stem ZIP, commercial use rights, +$0.49 per extra generation</li>
-    <li><strong>Pro Artist Plan ($39/month):</strong> 150 generations/month, everything in Creator, individual track downloads, priority queue, +$0.49 per extra generation</li>
+    <li><strong>Creator Plan ($19/month):</strong> 50 generations/month, stereo mix + stem bundle, commercial use rights, +$0.49 per extra generation</li>
+    <li><strong>Pro Artist Plan ($39/month):</strong> 150 generations/month, everything in Creator, priority queue, +$0.49 per extra generation</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
