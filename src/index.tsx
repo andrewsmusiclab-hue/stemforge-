@@ -2196,6 +2196,95 @@ app.post('/api/subscription/downgrade', async (c) => {
   }
 })
 
+// ─── UPGRADE PREVIEW ─────────────────────────────────────────────────────────
+// GET /api/subscription/upgrade-preview?plan=pro|creator
+// Returns the exact prorated charge the user will see BEFORE they confirm.
+// Formula:
+//   days_remaining  = ceil((period_end - now) / 86400)
+//   days_in_period  = ceil((period_end - period_start) / 86400)
+//   daily_new       = new_plan_price / days_in_period
+//   daily_old       = current_plan_price / days_in_period
+//   proration_charge = (daily_new - daily_old) × days_remaining  (rounded up to cents)
+app.get('/api/subscription/upgrade-preview', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const target_plan = c.req.query('plan') as string
+  const validUpgrades: Record<string, string[]> = { free: ['creator', 'pro'], creator: ['pro'] }
+  if (!target_plan || !validUpgrades[user.plan]?.includes(target_plan)) {
+    return c.json({ error: 'Invalid upgrade target' }, 400)
+  }
+
+  // Plan prices in cents
+  const PRICES: Record<string, number> = { free: 0, creator: 1900, pro: 3900 }
+  const currentPriceCents = PRICES[user.plan] ?? 0
+  const newPriceCents = PRICES[target_plan] ?? 0
+
+  // No existing subscription — they'll go through checkout, charged full price
+  if (!user.stripe_subscription_id) {
+    return c.json({
+      has_subscription: false,
+      target_plan,
+      target_plan_label: target_plan === 'pro' ? 'Pro Artist' : 'Creator',
+      new_price_cents: newPriceCents,
+      new_price_label: `$${(newPriceCents / 100).toFixed(2)}`,
+      proration_cents: newPriceCents,
+      proration_label: `$${(newPriceCents / 100).toFixed(2)}`,
+      days_remaining: null,
+      days_in_period: null,
+      period_end_label: null,
+      note: 'First subscription — charged full monthly price'
+    })
+  }
+
+  try {
+    // Fetch live subscription from Stripe to get accurate period dates
+    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const periodStart: number = sub.current_period_start // unix seconds
+    const periodEnd: number   = sub.current_period_end   // unix seconds
+    const nowSec = Math.floor(Date.now() / 1000)
+
+    const totalDays     = Math.ceil((periodEnd - periodStart) / 86400)
+    const daysRemaining = Math.max(1, Math.ceil((periodEnd - nowSec) / 86400))
+    const daysUsed      = totalDays - daysRemaining
+
+    // Daily rates
+    const dailyNew = newPriceCents / totalDays
+    const dailyOld = currentPriceCents / totalDays
+
+    // Proration = (new daily - old daily) × days remaining, rounded to nearest cent
+    const proratedCents = Math.round((dailyNew - dailyOld) * daysRemaining)
+
+    const periodEndDate = new Date(periodEnd * 1000).toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric'
+    })
+
+    return c.json({
+      has_subscription: true,
+      target_plan,
+      target_plan_label: target_plan === 'pro' ? 'Pro Artist' : 'Creator',
+      current_plan: user.plan,
+      current_plan_label: user.plan === 'creator' ? 'Creator' : 'Free',
+      new_price_cents: newPriceCents,
+      new_price_label: `$${(newPriceCents / 100).toFixed(2)}/mo`,
+      current_price_cents: currentPriceCents,
+      current_price_label: `$${(currentPriceCents / 100).toFixed(2)}/mo`,
+      proration_cents: proratedCents,
+      proration_label: `$${(proratedCents / 100).toFixed(2)}`,
+      days_remaining: daysRemaining,
+      days_used: daysUsed,
+      days_in_period: totalDays,
+      period_end_label: periodEndDate,
+      note: `${daysRemaining} of ${totalDays} days remaining in your current billing period`
+    })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Could not fetch subscription details' }, 500)
+  }
+})
+
 // ─── UPGRADE WITH IMMEDIATE PRORATION ────────────────────────────────────────
 // POST /api/subscription/upgrade — charge proration immediately, grant access same day
 app.post('/api/subscription/upgrade', async (c) => {
@@ -4964,6 +5053,93 @@ function subscriptionPage(user: User, env: Bindings) {
     </div>
   </div>
 </div>
+
+<!-- Upgrade confirm modal -->
+<div id="sub-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
+
+    <!-- Modal header -->
+    <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:24px 28px 20px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
+        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-up" style="color:white;font-size:.9rem"></i>
+        </div>
+        <div>
+          <h3 style="margin:0;font-size:1.15rem" id="upgrade-modal-title">Confirm Upgrade</h3>
+          <p style="margin:0;font-size:.8rem;color:var(--muted)" id="upgrade-modal-subtitle">Review your prorated charge</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading state -->
+    <div id="upgrade-modal-loading" style="padding:40px;text-align:center">
+      <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
+      <p style="color:var(--muted);margin:0;font-size:.9rem">Calculating your prorated charge…</p>
+    </div>
+
+    <!-- Content state -->
+    <div id="upgrade-modal-content" style="display:none;padding:24px 28px">
+
+      <!-- Plan transition -->
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px">
+        <div style="text-align:center">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Current Plan</div>
+          <div id="upgrade-from-label" style="font-weight:700;font-size:1rem;color:var(--text)">Creator</div>
+          <div id="upgrade-from-price" style="font-size:.8rem;color:var(--muted)">$19/mo</div>
+        </div>
+        <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-right" style="color:white;font-size:.8rem"></i>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">New Plan</div>
+          <div id="upgrade-to-label" style="font-weight:700;font-size:1rem;color:#a855f7">Pro Artist</div>
+          <div id="upgrade-to-price" style="font-size:.8rem;color:var(--muted)">$39/mo</div>
+        </div>
+      </div>
+
+      <!-- Proration breakdown table -->
+      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px">
+        <div style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;color:var(--muted)">Billing period</span>
+          <span id="upgrade-period-label" style="font-size:.85rem;font-weight:600">—</span>
+        </div>
+        <div style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;color:var(--muted)">Days remaining</span>
+          <span id="upgrade-days-label" style="font-size:.85rem;font-weight:600">—</span>
+        </div>
+        <div style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;color:var(--muted)">Price difference</span>
+          <span id="upgrade-diff-label" style="font-size:.85rem;font-weight:600">—</span>
+        </div>
+        <div style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;background:rgba(108,58,255,.1)">
+          <span style="font-size:.95rem;font-weight:700">Charge today</span>
+          <span id="upgrade-charge-label" style="font-size:1.1rem;font-weight:800;color:#a855f7">—</span>
+        </div>
+      </div>
+
+      <!-- Renewal note -->
+      <p id="upgrade-renewal-note" style="font-size:.8rem;color:var(--muted);text-align:center;margin:0 0 20px;line-height:1.5"></p>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:10px">
+        <button class="btn btn--outline btn--sm" style="flex:1" onclick="closeUpgradeModal()">
+          <i class="fas fa-times"></i> Cancel
+        </button>
+        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="upgrade-confirm-btn" onclick="confirmUpgrade()">
+          <i class="fas fa-lock"></i> <span id="upgrade-confirm-label">Confirm &amp; Pay</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Error state -->
+    <div id="upgrade-modal-error" style="display:none;padding:32px 28px;text-align:center">
+      <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:#ef4444;margin-bottom:12px"></i>
+      <p id="upgrade-error-msg" style="color:var(--muted);margin:0 0 20px;font-size:.9rem;line-height:1.5">Unable to calculate proration.</p>
+      <button class="btn btn--outline btn--sm" onclick="closeUpgradeModal()">Close</button>
+    </div>
+
+  </div>
+</div>
 <script>
 (function(){
   // Manage dropdown toggle — always works now
@@ -4981,22 +5157,114 @@ function subscriptionPage(user: User, env: Bindings) {
     });
   }
 
-  // Upgrade buttons — immediate proration
+  // ── Upgrade flow: preview → confirm modal → pay ──────────────────────────
+  let _upgradePendingPlan = null;
+  let _upgradePreviewData = null;
+
+  function openUpgradeModal(targetPlan) {
+    _upgradePendingPlan = targetPlan;
+    _upgradePreviewData = null;
+    const modal = document.getElementById('sub-upgrade-modal');
+    const loadingEl  = document.getElementById('upgrade-modal-loading');
+    const contentEl  = document.getElementById('upgrade-modal-content');
+    const errorEl    = document.getElementById('upgrade-modal-error');
+    modal.style.display = 'flex';
+    loadingEl.style.display  = 'block';
+    contentEl.style.display  = 'none';
+    errorEl.style.display    = 'none';
+
+    fetch('/api/subscription/upgrade-preview?plan=' + encodeURIComponent(targetPlan))
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { showUpgradeError(data.error); return; }
+        _upgradePreviewData = data;
+
+        // Populate plan labels
+        document.getElementById('upgrade-from-label').textContent  = data.current_plan_label  || 'Current';
+        document.getElementById('upgrade-from-price').textContent  = data.current_price_label || '';
+        document.getElementById('upgrade-to-label').textContent    = data.target_plan_label   || targetPlan;
+        document.getElementById('upgrade-to-price').textContent    = data.new_price_label     || '';
+
+        // Populate breakdown rows
+        if (data.has_subscription) {
+          document.getElementById('upgrade-period-label').textContent = data.period_end_label
+            ? 'Renews ' + data.period_end_label : '—';
+          document.getElementById('upgrade-days-label').textContent =
+            data.days_remaining + ' of ' + data.days_in_period + ' days left';
+          document.getElementById('upgrade-diff-label').textContent =
+            (data.current_price_label || '') + ' → ' + (data.new_price_label || '');
+          document.getElementById('upgrade-charge-label').textContent = data.proration_label || data.new_price_label;
+          document.getElementById('upgrade-renewal-note').textContent =
+            'Then ' + (data.new_price_label || '') + ' starting ' + (data.period_end_label || 'next billing date') + '. ' + (data.note || '');
+        } else {
+          // No existing subscription — full price checkout
+          document.getElementById('upgrade-period-label').textContent = 'New subscription';
+          document.getElementById('upgrade-days-label').textContent   = 'Full billing cycle';
+          document.getElementById('upgrade-diff-label').textContent   = '—';
+          document.getElementById('upgrade-charge-label').textContent = data.proration_label || data.new_price_label;
+          document.getElementById('upgrade-renewal-note').textContent =
+            'You will be charged ' + (data.new_price_label || '') + ' today and billed monthly.';
+        }
+
+        // Update confirm button label
+        document.getElementById('upgrade-confirm-label').textContent =
+          'Confirm & Pay ' + (data.proration_label || '');
+
+        loadingEl.style.display = 'none';
+        contentEl.style.display = 'block';
+      })
+      .catch(err => showUpgradeError('Network error. Please try again.'));
+  }
+
+  function showUpgradeError(msg) {
+    document.getElementById('upgrade-modal-loading').style.display = 'none';
+    document.getElementById('upgrade-modal-content').style.display = 'none';
+    const errorEl = document.getElementById('upgrade-modal-error');
+    document.getElementById('upgrade-error-msg').textContent = msg;
+    errorEl.style.display = 'block';
+  }
+
+  window.closeUpgradeModal = function() {
+    document.getElementById('sub-upgrade-modal').style.display = 'none';
+    _upgradePendingPlan = null;
+    _upgradePreviewData = null;
+  };
+
+  window.confirmUpgrade = async function() {
+    if (!_upgradePendingPlan) return;
+    const confirmBtn = document.getElementById('upgrade-confirm-btn');
+    confirmBtn.disabled = true;
+    document.getElementById('upgrade-confirm-label').textContent = 'Processing…';
+    try {
+      const res = await fetch('/api/subscription/upgrade', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ target_plan: _upgradePendingPlan })
+      });
+      const data = await res.json();
+      closeUpgradeModal();
+      if (data.redirect) { window.location.href = data.redirect; return; }
+      if (data.ok) {
+        alert(data.message || 'Upgrade successful! Access granted immediately.');
+        window.location.reload();
+      } else {
+        alert('Error: ' + (data.error || 'Upgrade failed'));
+      }
+    } catch(e) {
+      closeUpgradeModal();
+      alert('Network error. Please try again.');
+    }
+  };
+
+  // Close modal on backdrop click
+  document.getElementById('sub-upgrade-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeUpgradeModal();
+  });
+
   document.querySelectorAll('.sub-upgrade-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const target = btn.dataset.target;
       if (!target) return;
-      btn.disabled = true; btn.textContent = 'Processing…';
-      try {
-        const res = await fetch('/api/subscription/upgrade', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ target_plan: target })
-        });
-        const data = await res.json();
-        if (data.redirect) { window.location.href = data.redirect; return; }
-        if (data.ok) { alert(data.message || 'Upgrade successful! Access granted immediately.'); window.location.reload(); }
-        else { alert('Error: ' + (data.error || 'Upgrade failed')); btn.disabled = false; btn.textContent = 'Upgrade'; }
-      } catch(e) { alert('Network error. Please try again.'); btn.disabled = false; btn.textContent = 'Upgrade'; }
+      openUpgradeModal(target);
     });
   });
 
