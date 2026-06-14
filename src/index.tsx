@@ -1062,57 +1062,107 @@ app.get('/api/cover-image/:jobId', async (c) => {
   // These are style "lenses" the AI can apply — chosen by matching title keywords.
   // If no keyword matches, we pick one randomly so variety is high across tracks.
   interface StyleRule { keywords: string[]; style: string }
+
+  // ── Genre-first styles: hip hop / trap / R&B get specific cinematic visual language ──
+  const genreNorm = genre.toLowerCase()
+  let genreStyle = ''
+  if (genreNorm.includes('hip') || genreNorm.includes('hop') || genreNorm.includes('rap') || genreNorm.includes('trap')) {
+    // Rotate through 8 distinct hip-hop visual aesthetics so every track looks different
+    const hipHopStyles = [
+      'cinematic hip-hop street photography, golden-hour light hitting wet asphalt, dramatic lens flare, film grain, ultra-sharp detail',
+      'luxury rap aesthetic: black matte background with gleaming 24k gold chains, diamonds and ice, macro studio photography, extreme detail',
+      'dark trap visual: lone figure silhouette under purple-and-red neon in a rain-soaked alley, moody cinematic, photorealistic',
+      'aerial urban rap cityscape at dusk, purple and amber sky over downtown skyline, Kendrick-Lamar-album-cover energy, cinematic',
+      'abstract hip-hop 3D art: shattered gold record pieces floating in dark void, deep blacks, glowing amber fragments, hyper-real render',
+      'gritty street mural style, spray-paint graffiti aesthetic, vibrant colours on brick wall, urban raw energy, hyperdetailed',
+      'smoke and money trap aesthetic: dollar bills raining from dark sky, dramatic spotlight, cinematic still-life photography',
+      'lo-fi hip-hop mood: cozy room at night, lamp glow, vinyl record spinning, warm amber tones, film grain, nostalgic detail',
+    ]
+    const h2 = jobId.split('').reduce((a: number, c: string) => (a * 37 + c.charCodeAt(0)) & 0xff, 0)
+    genreStyle = hipHopStyles[h2 % hipHopStyles.length]
+  } else if (genreNorm.includes('rnb') || genreNorm.includes('r&b') || genreNorm.includes('soul') || genreNorm.includes('neo')) {
+    const rnbStyles = [
+      'silky R&B aesthetic: soft purple and rose studio portrait lighting, film-photography warmth, intimate mood, ultra-detailed skin tones',
+      'neo-soul visual: warm candlelight bokeh, vintage film stock, rich amber and burgundy palette, emotional intimacy, photorealistic',
+      'luxury R&B album art: neon pink and deep plum abstract light painting, glossy surfaces, cinematic 8K render',
+      'soulful moody R&B: solitary figure bathed in window light, deep blue shadows, golden highlights, painterly cinematic photography',
+      'modern R&B: iridescent purple holographic background, crystalline reflections, sleek editorial fashion photography style',
+    ]
+    const h3 = jobId.split('').reduce((a: number, c: string) => (a * 41 + c.charCodeAt(0)) & 0xff, 0)
+    genreStyle = rnbStyles[h3 % rnbStyles.length]
+  } else if (genreNorm.includes('pop')) {
+    const popStyles = [
+      'bold pop album cover: electric neon gradient background, glossy 3D typography elements, maximalist colour, professional studio',
+      'dreamy pop aesthetic: pastel sunset gradient sky, floating petals and sparkles, vivid candy colours, editorial perfection',
+      'edgy pop: black and chrome high-contrast fashion photography, dramatic lighting, sharp shadows, ultra-detailed',
+      'euphoric pop visual: confetti burst explosion of vivid colour, backlit stage lighting, dazzling and high-energy, photorealistic',
+      'cinematic pop art: Andy-Warhol-inspired bold colour blocks, hyper-saturated, graphic and modern',
+    ]
+    const h4 = jobId.split('').reduce((a: number, c: string) => (a * 43 + c.charCodeAt(0)) & 0xff, 0)
+    genreStyle = popStyles[h4 % popStyles.length]
+  }
+
   const styleRules: StyleRule[] = [
     { keywords: ['night','midnight','dark','shadow','black','gothic','horror','haunted','ghost','demon','devil'],
-      style: 'dramatic cinematic noir, deep blacks and electric highlights, chiaroscuro lighting, ultra-detailed' },
-    { keywords: ['fire','flame','burn','inferno','blaze','heat','volcano','explosive'],
-      style: 'hyperrealistic fire and molten light, deep crimsons and vivid oranges, breathtaking energy' },
+      style: 'dramatic cinematic noir, deep blacks and electric neon highlights, chiaroscuro lighting, hyperdetailed photography' },
+    { keywords: ['fire','flame','burn','inferno','blaze','heat','volcano','explosive','hot'],
+      style: 'hyperrealistic fire and molten light, deep crimsons and vivid oranges, breathtaking energy, 8K photorealistic' },
     { keywords: ['ocean','sea','wave','water','rain','storm','flood','river','tide'],
-      style: 'epic seascape, rich teals and deep navy, volumetric water, sweeping ocean atmosphere' },
+      style: 'epic seascape, rich teals and deep navy, volumetric ocean waves, sweeping cinematic atmosphere, ultra-sharp' },
     { keywords: ['space','galaxy','star','cosmos','universe','nebula','planet','alien','astronaut'],
-      style: 'stunning deep-space digital art, vivid nebula colours, luminous stardust, cosmic scale' },
-    { keywords: ['city','street','urban','neon','tokyo','ny','nyc','chicago','london','downtown'],
-      style: 'vibrant neon-drenched cityscape, reflective wet streets, cinematic night photography style' },
-    { keywords: ['love','heart','romance','kiss','together','forever','baby','girl','boy','soul'],
-      style: 'warm golden hour photography aesthetic, rich amber and rose tones, intimate and glowing' },
-    { keywords: ['war','battle','fight','soldier','warrior','weapon','gun','sword','army'],
-      style: 'epic battlefield concept art, dramatic sky, vivid contrast, cinematic scale and power' },
+      style: 'stunning deep-space digital art, vivid nebula colours, luminous stardust, photorealistic cosmic scale, hyperdetailed' },
+    { keywords: ['city','street','urban','neon','tokyo','ny','nyc','chicago','london','downtown','block','hood'],
+      style: 'vibrant neon-drenched urban streetscape, reflective wet asphalt, cinematic night photography, lens flare, hyperrealistic' },
+    { keywords: ['love','heart','romance','kiss','together','forever','baby','girl','boy','soul','feeling'],
+      style: 'warm golden hour photography, rich amber and rose bokeh, intimate cinematic close-up, film grain, ultra-detailed' },
+    { keywords: ['war','battle','fight','soldier','warrior','weapon','gun','sword','army','struggle'],
+      style: 'epic battlefield concept art, dramatic overcast sky, vivid contrast, cinematic scale and raw power, photorealistic' },
     { keywords: ['jungle','forest','nature','tree','earth','green','wild','animal','lion','tiger','wolf'],
-      style: 'lush hyper-real nature photography, rich emerald greens and golden light shafts' },
+      style: 'lush hyper-real nature photography, rich emerald greens and golden light shafts, extreme macro detail' },
     { keywords: ['dream','fantasy','magic','fairy','wizard','dragon','mythical','surreal','psychedelic'],
-      style: 'surrealist digital painting, impossible dreamscape, saturated otherworldly palette' },
-    { keywords: ['money','rich','gold','luxury','diamond','crown','king','queen','throne','empire'],
-      style: 'opulent golden aesthetic, deep jewel tones, baroque luxury, gleaming surfaces' },
+      style: 'surrealist digital painting, impossible dreamscape, saturated otherworldly palette, incredibly detailed render' },
+    { keywords: ['money','rich','gold','luxury','diamond','crown','king','queen','throne','empire','boss','drip'],
+      style: 'opulent luxury aesthetic, deep jewel tones, 24k gold and diamond details, baroque grandeur, macro photography, gleaming' },
     { keywords: ['future','cyber','robot','machine','tech','digital','ai','matrix','code','electric'],
-      style: 'sleek cyberpunk 3D render, neon cyan and magenta on matte black, geometric precision' },
-    { keywords: ['retro','vintage','old','classic','90s','80s','70s','80','90','cassette','vinyl'],
-      style: 'retro-illustration with grain texture, warm vintage colour palette, nostalgic poster art' },
-    { keywords: ['peace','calm','meditation','zen','sky','cloud','sunrise','sunset','heaven','light'],
-      style: 'breathtaking sky photography, god rays and prismatic light, serene and transcendent' },
-    { keywords: ['party','dance','club','dj','rave','festival','bounce','energy','hype'],
-      style: 'high-energy rave photography, strobing multicolour lights, explosive colour and motion blur' },
-    { keywords: ['sad','broken','pain','cry','tears','lost','alone','empty','lonely','hurt'],
-      style: 'melancholic painterly portrait, muted cool tones with single warm highlight, emotional depth' },
+      style: 'sleek cyberpunk 3D render, neon cyan and magenta on matte black, holographic fragments, geometric precision, 8K' },
+    { keywords: ['retro','vintage','old','classic','90s','80s','70s','cassette','vinyl','throwback'],
+      style: 'retro-illustration with film grain texture, warm vintage colour palette, nostalgic poster art, highly detailed' },
+    { keywords: ['peace','calm','meditation','zen','sky','cloud','sunrise','sunset','heaven','light','chill'],
+      style: 'breathtaking sky photography, god rays and prismatic light, serene and transcendent, ultra-detailed atmosphere' },
+    { keywords: ['party','dance','club','dj','rave','festival','bounce','energy','hype','lit'],
+      style: 'high-energy club photography, multi-coloured strobe lights, motion blur trails, explosive colour and intensity' },
+    { keywords: ['sad','broken','pain','cry','tears','lost','alone','empty','lonely','hurt','cold'],
+      style: 'melancholic cinematic portrait, muted blue-grey tones with single warm amber highlight, emotional photorealism' },
+    { keywords: ['smoke','haze','fog','mist','blunt','wave'],
+      style: 'atmospheric smoke and haze photography, purple and indigo light diffusion, moody cinematic still, photorealistic' },
+    { keywords: ['ice','cold','winter','snow','frozen','frosty','glacier'],
+      style: 'hyper-real ice and crystal photography, cold electric blue and white tones, sharp frozen details, cinematic' },
+    { keywords: ['blood','dead','death','kill','murder','grave','dark','hell'],
+      style: 'dark cinematic horror aesthetic, deep crimson and jet black palette, chiaroscuro dramatic lighting, photorealistic' },
   ]
 
-  let chosenStyle = ''
-  for (const rule of styleRules) {
-    if (rule.keywords.some((kw: string) => titleWords.includes(kw) || titleForPrompt.toLowerCase().includes(kw))) {
-      chosenStyle = rule.style
-      break
+  let chosenStyle = genreStyle  // Start with genre style if set
+  if (!chosenStyle) {
+    for (const rule of styleRules) {
+      if (rule.keywords.some((kw: string) => titleWords.includes(kw) || titleForPrompt.toLowerCase().includes(kw))) {
+        chosenStyle = rule.style
+        break
+      }
     }
   }
 
   // If no keyword matched, use a mood/genre hint to pick a style, then fall back to
-  // a varied default so every un-matched track still looks different
+  // a large varied pool so every un-matched track looks completely different
   if (!chosenStyle) {
     const moodHints: Record<string, string> = {
-      'dark':       'cinematic noir atmosphere, deep shadows and vivid colour accents, ultra-detailed',
-      'aggressive': 'raw power concept art, explosive contrast, intense colour, visceral energy',
-      'uplifting':  'radiant light burst, vivid rainbow spectrum, soaring and inspirational',
-      'chill':      'lo-fi cozy scene, warm lamp glow, soft colour harmony, intimate and relaxed',
-      'romantic':   'dreamy golden bokeh, rose and amber warmth, soft romantic glow',
-      'energetic':  'dynamic motion blur, saturated colours, explosive composition, high contrast',
+      'dark':       'cinematic noir atmosphere, deep shadows, electric neon accents, ultra-detailed hyperrealistic photography',
+      'aggressive': 'raw power concept art, explosive contrast, intense colour, visceral energy, hyperdetailed render',
+      'uplifting':  'radiant golden light burst, vivid chromatic rays, soaring and inspirational, cinematic wide shot',
+      'chill':      'lo-fi night scene, warm lamp glow through window, cozy amber tones, film grain, photorealistic intimacy',
+      'romantic':   'dreamy golden bokeh portrait, rose and amber warmth, soft romantic film photography, ultra-detailed',
+      'energetic':  'dynamic motion blur street photography, saturated neon colours, explosive composition, high contrast cinematic',
+      'melancholic':'painterly foggy cityscape at dusk, muted teals and soft amber, moody impressionist atmosphere',
+      'luxurious':  'opulent gold and marble editorial, gleaming surfaces, deep burgundy and black, luxury brand aesthetic',
     }
     for (const [key, style] of Object.entries(moodHints)) {
       if (mood.includes(key)) { chosenStyle = style; break }
@@ -1120,26 +1170,34 @@ app.get('/api/cover-image/:jobId', async (c) => {
   }
 
   if (!chosenStyle) {
-    // Cycle through diverse defaults based on a hash of the jobId so every track is different
+    // Large pool of diverse defaults — 16 options so repeat rate is very low
     const defaults = [
-      'painterly surrealist digital art, impossible scene, rich saturated palette, highly detailed',
-      'epic cinematic concept art, dramatic lighting, vivid colours, sweeping composition',
-      'stunning 3D render, volumetric light, jewel-tone colour palette, ultra-detailed',
-      'retro-futurist illustration, bold graphic shapes, warm vintage colours, poster art style',
-      'photorealistic macro world, rich textures, prismatic colour, breathtaking detail',
-      'abstract expressionist digital painting, bold colour fields, dynamic brushstrokes',
+      'painterly surrealist digital art, impossible floating landscape, ultra-rich saturated palette, hyperdetailed',
+      'epic cinematic concept art, dramatic rim lighting, jewel-toned colour palette, sweeping wide composition',
+      'stunning 3D render, volumetric god rays, deep violet and gold tones, crystalline surfaces, ultra-detailed',
+      'retro-futurist sci-fi illustration, bold graphic shapes, warm vintage chrome and orange, poster art style',
+      'photorealistic macro world, water droplet reflections, prismatic colour diffraction, breathtaking detail',
+      'abstract expressionist digital painting, bold impasto brushstrokes, electric colour fields, gallery art quality',
+      'dark cinematic still-life photography, dramatic chiaroscuro, deep shadows, one vivid colour accent',
+      'luxury streetwear editorial, matte black and chrome, architectural concrete backdrop, fashion photography',
+      'ethereal double-exposure art, human silhouette filled with sweeping landscape, rich tonal depth',
+      'vibrant graffiti mural photography, spray-can colour explosion, urban raw texture, hyperreal detail',
+      'cinematic smoke photography, backlit volumetric haze, deep purples and electric blues, otherworldly atmosphere',
+      'low-angle urban photography at golden hour, silhouette of figure, blazing sky, architectural grandeur',
+      'hyperrealistic crystalline abstract 3D, faceted geometric forms, rainbow light refraction, black background',
+      'impressionist digital painting, thick textured brushstrokes, sunset colours bleeding across canvas, gallery quality',
+      'futuristic neon grid landscape, synthwave horizon, deep purple and hot pink, retrowave atmosphere',
+      'cinematic rain photography, neon reflections on wet glass and pavement, moody noir, ultra-sharp focus',
     ]
     const hash = jobId.split('').reduce((a: number, c: string) => (a * 31 + c.charCodeAt(0)) & 0xffff, 0)
     chosenStyle = defaults[hash % defaults.length]
   }
 
   // ── 2c: Build the final prompt — title concept first, style second ──
-  // Format mirrors how Suno approaches it: describe what you SEE in the image,
-  // not just what genre it is. Rich colour quality instructions at the end.
   const imagePrompt =
-    `Album cover art depicting: ${titleForPrompt}. ` +
-    `Rendered as ${chosenStyle}. ` +
-    `Richly coloured, visually striking, professional album artwork quality. ` +
+    `Professional music album cover art for a ${genre} track titled "${titleForPrompt}". ` +
+    `Visual concept: ${chosenStyle}. ` +
+    `Extremely high quality, striking composition, rich colours, photorealistic detail, professional album artwork. ` +
     `No text, no words, no letters, no numbers anywhere in the image.`
 
   try {
@@ -1152,7 +1210,7 @@ app.get('/api/cover-image/:jobId', async (c) => {
         prompt: imagePrompt,
         n: 1,
         size: '1024x1024',
-        quality: 'low',
+        quality: 'medium',
         output_format: 'jpeg'
       })
     })
@@ -2284,11 +2342,18 @@ app.get('/api/subscription/upgrade-preview', async (c) => {
     const dailyOld = currentPriceCents / totalDays
 
     // Proration = (new daily - old daily) × days remaining, rounded to nearest cent
+    // This is exactly what Stripe will charge: upgrade cost minus unused portion of current plan
     const proratedCents = Math.round((dailyNew - dailyOld) * daysRemaining)
 
-    const periodEndDate = new Date(periodEnd * 1000).toLocaleDateString('en-US', {
-      month: 'long', day: 'numeric', year: 'numeric'
-    })
+    const dateOpts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' }
+    const periodStartDate = new Date(periodStart * 1000).toLocaleDateString('en-US', dateOpts)
+    const periodEndDate   = new Date(periodEnd   * 1000).toLocaleDateString('en-US', dateOpts)
+
+    // Human-readable billing cycle range e.g. "Jun 14 – Jul 14, 2025"
+    const billingCycleRange = `${periodStartDate} – ${periodEndDate}`
+
+    // Price difference label for display e.g. "$19.00 → $39.00"
+    const priceDiffLabel = `$${(currentPriceCents / 100).toFixed(2)}/mo → $${(newPriceCents / 100).toFixed(2)}/mo`
 
     return c.json({
       has_subscription: true,
@@ -2305,8 +2370,11 @@ app.get('/api/subscription/upgrade-preview', async (c) => {
       days_remaining: daysRemaining,
       days_used: daysUsed,
       days_in_period: totalDays,
+      period_start_label: periodStartDate,
       period_end_label: periodEndDate,
-      note: `${daysRemaining} of ${totalDays} days remaining in your current billing period`
+      billing_cycle_range: billingCycleRange,
+      price_diff_label: priceDiffLabel,
+      note: `${daysRemaining} days left in your current billing cycle`
     })
   } catch (e: any) {
     return c.json({ error: e?.message || 'Could not fetch subscription details' }, 500)
@@ -3076,7 +3144,7 @@ function homePage() {
     <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix, access stem bundles (bass, melody, vocals, other), and take your beats to the DAW — all powered by Mureka's music engine.</p>
     <div class="hero__ctas">
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
-      <a href="/pricing" class="btn btn--outline btn--lg"><i class="fas fa-tags"></i> See pricing</a>
+      <a href="#pricing-preview" class="btn btn--outline btn--lg" onclick="event.preventDefault();document.getElementById('pricing-preview').scrollIntoView({behavior:'smooth'})"><i class="fas fa-tags"></i> See pricing</a>
     </div>
 
   </div>
@@ -3158,7 +3226,7 @@ function homePage() {
 
 
 
-<section class="pricing-preview">
+<section class="pricing-preview" id="pricing-preview">
   <div class="container">
     <div class="section-header">
       <div class="section-tag">Pricing</div>
@@ -3344,18 +3412,18 @@ function homePage() {
           data.days_remaining != null && !isNaN(data.days_remaining) &&
           data.days_in_period != null && !isNaN(data.days_in_period);
         const humChargeLabel = (data.proration_label && data.proration_label !== '$NaN')
-          ? data.proration_label : (data.new_price_label || '');
+          ? data.proration_label : (data.new_price_label ? data.new_price_label.replace('/mo','') : '');
         if (humHasRealSub) {
-          document.getElementById('hum-period').textContent = data.period_end_label ? 'Renews ' + data.period_end_label : '—';
-          document.getElementById('hum-days').textContent   = data.days_remaining + ' of ' + data.days_in_period + ' days left';
-          document.getElementById('hum-diff').textContent   = (data.current_price_label||'') + ' → ' + (data.new_price_label||'');
+          document.getElementById('hum-period').textContent = data.billing_cycle_range || (data.period_end_label ? 'Renews ' + data.period_end_label : '—');
+          document.getElementById('hum-days').textContent   = data.days_remaining + ' days left';
+          document.getElementById('hum-diff').textContent   = data.price_diff_label || ((data.current_price_label||'') + ' → ' + (data.new_price_label||''));
           document.getElementById('hum-charge').textContent = humChargeLabel;
-          document.getElementById('hum-note').textContent   = 'Then ' + (data.new_price_label||'') + ' starting ' + (data.period_end_label||'next billing date') + '. ' + (data.note||'');
+          document.getElementById('hum-note').textContent   = 'Then ' + (data.new_price_label||'') + ' starting ' + (data.period_end_label||'next billing date') + '.';
         } else {
           document.getElementById('hum-period').textContent = 'New subscription';
           document.getElementById('hum-days').textContent   = 'Full billing cycle';
           document.getElementById('hum-diff').textContent   = '—';
-          document.getElementById('hum-charge').textContent = data.new_price_label || humChargeLabel;
+          document.getElementById('hum-charge').textContent = data.new_price_label ? data.new_price_label.replace('/mo','') : humChargeLabel;
           document.getElementById('hum-note').textContent   = 'You will be charged ' + (data.new_price_label||'') + ' today and billed monthly.';
         }
         document.getElementById('hum-confirm-label').textContent = 'Confirm & Pay ' + humChargeLabel;
@@ -4996,32 +5064,34 @@ function pricingPage() {
 
   // ── Shared helper: populate proration breakdown rows ────────────────────────
   // prefix = 'pum' | 'hum' | 'upgrade'
-  // Maps: <prefix>-period, <prefix>-days (pum uses pum-period/pum-days),
-  //       <prefix>-diff, <prefix>-charge, <prefix>-note
-  // IDs on pricing modal: pum-period, pum-days, pum-diff, pum-charge, pum-note
+  // IDs: <prefix>-period, <prefix>-days, <prefix>-diff, <prefix>-charge, <prefix>-note
   function populateUpgradeRows(prefix, data) {
     const hasRealSub = data.has_subscription &&
       data.days_remaining != null && !isNaN(data.days_remaining) &&
       data.days_in_period != null && !isNaN(data.days_in_period);
     const chargeLabel = (data.proration_label && data.proration_label !== '$NaN')
-      ? data.proration_label : (data.new_price_label || '');
+      ? data.proration_label : (data.new_price_label ? data.new_price_label.replace('/mo','') : '');
     const periodEl = document.getElementById(prefix + '-period');
     const daysEl   = document.getElementById(prefix + '-days');
     const diffEl   = document.getElementById(prefix + '-diff');
     const chargeEl = document.getElementById(prefix + '-charge');
     const noteEl   = document.getElementById(prefix + '-note');
     if (hasRealSub) {
-      if (periodEl) periodEl.textContent = data.period_end_label ? 'Renews ' + data.period_end_label : '—';
-      if (daysEl)   daysEl.textContent   = data.days_remaining + ' of ' + data.days_in_period + ' days left';
-      if (diffEl)   diffEl.textContent   = (data.current_price_label || '') + ' → ' + (data.new_price_label || '');
+      // Show exact billing cycle range e.g. "Jun 14 – Jul 14, 2025"
+      if (periodEl) periodEl.textContent = data.billing_cycle_range || (data.period_end_label ? 'Renews ' + data.period_end_label : '—');
+      // Show exact days remaining e.g. "13 days left"
+      if (daysEl)   daysEl.textContent   = data.days_remaining + ' days left';
+      // Show price difference e.g. "$19.00/mo → $39.00/mo"
+      if (diffEl)   diffEl.textContent   = data.price_diff_label || ((data.current_price_label || '') + ' → ' + (data.new_price_label || ''));
+      // Charge = prorated amount (new - old) × days remaining
       if (chargeEl) chargeEl.textContent = chargeLabel;
       if (noteEl)   noteEl.textContent   = 'Then ' + (data.new_price_label || '') + ' starting ' +
-        (data.period_end_label || 'next billing date') + '. ' + (data.note || '');
+        (data.period_end_label || 'next billing date') + '.';
     } else {
       if (periodEl) periodEl.textContent = 'New subscription';
       if (daysEl)   daysEl.textContent   = 'Full billing cycle';
       if (diffEl)   diffEl.textContent   = '—';
-      if (chargeEl) chargeEl.textContent = data.new_price_label || chargeLabel;
+      if (chargeEl) chargeEl.textContent = data.new_price_label ? data.new_price_label.replace('/mo','') : chargeLabel;
       if (noteEl)   noteEl.textContent   = 'You will be charged ' + (data.new_price_label || '') + ' today and billed monthly.';
     }
     return chargeLabel;
@@ -5754,23 +5824,27 @@ function subscriptionPage(user: User, env: Bindings) {
           data.days_remaining != null && !isNaN(data.days_remaining) &&
           data.days_in_period != null && !isNaN(data.days_in_period);
         const chargeLabel = (data.proration_label && data.proration_label !== '$NaN')
-          ? data.proration_label : (data.new_price_label || '');
+          ? data.proration_label : (data.new_price_label ? data.new_price_label.replace('/mo','') : '');
         if (hasRealSub) {
-          document.getElementById('upgrade-period-label').textContent = data.period_end_label
-            ? 'Renews ' + data.period_end_label : '—';
+          // Billing cycle: e.g. "Jun 14 – Jul 14, 2025"
+          document.getElementById('upgrade-period-label').textContent =
+            data.billing_cycle_range || (data.period_end_label ? 'Renews ' + data.period_end_label : '—');
+          // Days remaining: e.g. "13 days left"
           document.getElementById('upgrade-days-label').textContent =
-            data.days_remaining + ' of ' + data.days_in_period + ' days left';
+            data.days_remaining + ' days left';
+          // Price diff: e.g. "$19.00/mo → $39.00/mo"
           document.getElementById('upgrade-diff-label').textContent =
-            (data.current_price_label || '') + ' → ' + (data.new_price_label || '');
+            data.price_diff_label || ((data.current_price_label || '') + ' → ' + (data.new_price_label || ''));
+          // Charge today: prorated amount = (new_daily - old_daily) × days_remaining
           document.getElementById('upgrade-charge-label').textContent = chargeLabel;
           document.getElementById('upgrade-renewal-note').textContent =
-            'Then ' + (data.new_price_label || '') + ' starting ' + (data.period_end_label || 'next billing date') + '. ' + (data.note || '');
+            'Then ' + (data.new_price_label || '') + ' starting ' + (data.period_end_label || 'next billing date') + '.';
         } else {
           // No existing subscription (or period dates unavailable) — full price checkout
           document.getElementById('upgrade-period-label').textContent = 'New subscription';
           document.getElementById('upgrade-days-label').textContent   = 'Full billing cycle';
           document.getElementById('upgrade-diff-label').textContent   = '—';
-          document.getElementById('upgrade-charge-label').textContent = data.new_price_label || chargeLabel;
+          document.getElementById('upgrade-charge-label').textContent = data.new_price_label ? data.new_price_label.replace('/mo','') : chargeLabel;
           document.getElementById('upgrade-renewal-note').textContent =
             'You will be charged ' + (data.new_price_label || '') + ' today and billed monthly.';
         }

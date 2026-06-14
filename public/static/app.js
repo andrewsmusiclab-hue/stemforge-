@@ -1594,9 +1594,7 @@ function resetStemsSection() {
   _editStemTier = 'basic';
 }
 
-function showStemsSection(job) {
-  const user = window._sfUser;
-  if (!user || user.plan === 'free') return;
+function _renderStemsSection(job, user) {
   const sec    = document.getElementById('edit-stems-section');
   const picker = document.getElementById('edit-stems-picker');
   const result = document.getElementById('edit-stems-result');
@@ -1632,13 +1630,14 @@ function showStemsSection(job) {
   const proLock  = document.getElementById('edit-pro-lock');
   const proBadge = document.getElementById('edit-pro-badge');
   const proNote  = document.getElementById('edit-pro-upgrade-note');
+  const proCard  = document.getElementById('edit-tier-pro');
   if (!isPro) {
-    const proCard = document.getElementById('edit-tier-pro');
-    if (proCard) { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
+    if (proCard)  { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
     if (proLock)  proLock.style.display = 'flex';
     if (proBadge) proBadge.style.display = 'none';
     if (proNote)  proNote.style.display = 'block';
   } else {
+    if (proCard)  { proCard.style.opacity = '1'; proCard.style.cursor = 'pointer'; }
     if (proLock)  proLock.style.display = 'none';
     if (proBadge) proBadge.style.display = 'block';
     if (proNote)  proNote.style.display = 'none';
@@ -1646,6 +1645,21 @@ function showStemsSection(job) {
   // Start on basic
   _editStemTier = 'basic';
   selectEditStemTier('basic');
+}
+
+function showStemsSection(job) {
+  // If user data is already available, render immediately
+  if (window._sfUser && window._sfUser.plan !== 'free') {
+    _renderStemsSection(job, window._sfUser);
+    return;
+  }
+  // User not yet loaded (race condition) — fetch it now
+  fetch('/api/auth/me').then(r => r.json()).then(data => {
+    const user = data && data.user;
+    if (!user || user.plan === 'free') return; // Free plan — no stems
+    window._sfUser = window._sfUser || user; // cache if not already set
+    _renderStemsSection(job, user);
+  }).catch(() => {});
 }
 
 window.selectEditStemTier = function(tier) {
