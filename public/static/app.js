@@ -1329,39 +1329,34 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // Export panel stereo button
-            const expStereoBtn = document.getElementById('exp-stereo');
-            if (expStereoBtn) {
+            // Build export action buttons dynamically — only download button shown (no stereo mix / get stems tabs)
+            const exportOptionsRow = document.getElementById('export-options-row');
+            if (exportOptionsRow) {
+              exportOptionsRow.innerHTML = '';
               if (isFree) {
-                expStereoBtn.classList.add('export-btn--locked');
-                expStereoBtn.querySelector('small').textContent = 'Creator+';
-                expStereoBtn.onclick = () => showUpgradePrompt();
+                // Free users: locked download + upgrade nudge
+                const lockBtn = document.createElement('button');
+                lockBtn.className = 'export-btn export-btn--locked';
+                lockBtn.innerHTML = '<i class="fas fa-download"></i><span>Download Beat</span><small>Creator+</small>';
+                lockBtn.onclick = () => showUpgradePrompt();
+                exportOptionsRow.appendChild(lockBtn);
               } else {
-                expStereoBtn.classList.remove('export-btn--locked');
-                expStereoBtn.querySelector('small').textContent = 'Stereo';
-                expStereoBtn.onclick = () => {
+                // Paid users: download button only
+                const dlBtn = document.createElement('button');
+                dlBtn.className = 'export-btn';
+                dlBtn.innerHTML = '<i class="fas fa-download"></i><span>Download Beat</span><small>MP3</small>';
+                dlBtn.onclick = () => {
                   const a = document.createElement('a');
                   a.href = job.stereo_url;
                   a.download = safeFilename + '_stereo.mp3';
                   document.body.appendChild(a); a.click(); a.remove();
                 };
-              }
-            }
-
-            // Get Stems button — opens stem tier picker then stems player page
-            const zipBtn = document.getElementById('exp-stems');
-            if (zipBtn) {
-              if (isFree) {
-                zipBtn.classList.add('export-btn--locked');
-                zipBtn.onclick = () => showUpgradePrompt();
-              } else {
-                zipBtn.classList.remove('export-btn--locked');
-                zipBtn.onclick = () => openStemPickerModal(job.id, window._sfUser);
+                exportOptionsRow.appendChild(dlBtn);
               }
             }
 
             // Show upgrade nudge below export panel for free users
-            const upgradeNudge = document.querySelector('.upgrade-nudge');
+            const upgradeNudge = document.getElementById('export-upgrade-nudge');
             if (upgradeNudge) {
               if (isFree) {
                 upgradeNudge.innerHTML = '<i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to download your beat';
@@ -2151,6 +2146,8 @@ window.confirmStemPick = function() {
   if (!modal || !modal._jobId) return;
   const tier = modal._tier || 'basic';
   modal.style.display = 'none';
+  // Save tier choice to sessionStorage — stems player will use this to skip picker on revisit
+  try { sessionStorage.setItem('stem_tier_' + modal._jobId, tier); } catch(e) {}
   // Navigate to stems page with tier as query param
   window.location.href = '/stems/' + modal._jobId + '?tier=' + tier;
 };

@@ -484,7 +484,7 @@ function pickRandomKey(): string {
   return ALL_KEYS[Math.floor(Math.random() * ALL_KEYS.length)]
 }
 
-async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string): Promise<Blueprint & { suggested_title?: string }> {
+async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string, userPlan?: string): Promise<Blueprint & { suggested_title?: string }> {
   const suggestedKey = pickRandomKey()
 
   // Extract genre/style from the front of the prompt if present (it's always prepended first)
@@ -502,6 +502,7 @@ ABSOLUTE RULES — violating any rule is a failure:
 5. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
 6. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
 7. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", or "ride cymbal".
+8. DURATION: ${userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be 180 seconds (3 min) or longer. Prefer 210 or 240 seconds for epic, expansive arrangements. Minimum is 180.' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.'}
 Output valid JSON only — no markdown, no explanation.`
 
   const userPrompt = `Generate a beat blueprint for: "${prompt}"
@@ -531,7 +532,7 @@ Return ONLY this JSON:
   "genre": <EXACT genre string from user input — do not change>,
   "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
   "energy": <"low" | "medium" | "high">,
-  "duration_seconds": <90 | 120 | 150 | 180>,
+  "duration_seconds": <${userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180'}>,
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
   "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
@@ -694,7 +695,7 @@ function buildCoverImageUrl(job: Job): string {
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
-async function startPipeline(jobId: string, env: Bindings, refFileId?: string) {
+async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -705,7 +706,7 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string) {
     await setJob(db, { ...job })
 
     const userTitle = (job as any).title as string | undefined
-    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle)
+    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle, userPlan)
 
     // Auto-name the track if user left title blank
     if (!userTitle && (blueprint as any).suggested_title) {
@@ -795,6 +796,7 @@ app.post('/api/generate', async (c) => {
 
   // ── Auth + generation limit check ────────────────────────────
   let userId: string | undefined
+  let userPlan: string | undefined
   if (c.env.DB && c.env.SESSION_SECRET) {
     try {
       const token = getSessionCookie(c.req.raw)
@@ -809,6 +811,7 @@ app.post('/api/generate', async (c) => {
             }, 403)
           }
           userId = u.id
+          userPlan = u.plan
           // Increment usage counter immediately so concurrent requests can't race past the limit
           await c.env.DB.prepare(
             `UPDATE users SET gens_used = gens_used + 1 WHERE id = ?`
@@ -844,7 +847,7 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined))
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -2412,15 +2415,30 @@ app.post('/api/subscription/upgrade', async (c) => {
     const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
     const itemId = sub.items?.data?.[0]?.id
     if (!itemId) return c.json({ error: 'Could not find subscription item' }, 500)
-    // always_invoice = charge proration immediately, access granted same day
-    await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
+    // error_if_incomplete = Stripe throws if payment fails, so D1 only updates on confirmed payment
+    const updatedSub = await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
       'items[0][id]': itemId,
       'items[0][price]': newPriceId,
       proration_behavior: 'always_invoice',
       billing_cycle_anchor: 'unchanged',
-      payment_behavior: 'default_incomplete',
+      payment_behavior: 'error_if_incomplete',
     }, c.env.STRIPE_SECRET_KEY)
-    // Update user plan immediately in D1
+    // Only grant access if subscription is active (payment succeeded)
+    if (updatedSub.status !== 'active') {
+      // Payment requires action — get the latest invoice's hosted URL for redirect
+      const latestInvoice = updatedSub.latest_invoice
+      let invoiceUrl: string | null = null
+      if (latestInvoice) {
+        const invoiceId = typeof latestInvoice === 'string' ? latestInvoice : latestInvoice.id
+        if (invoiceId) {
+          const inv = await stripeRequest('GET', `/invoices/${invoiceId}`, {}, c.env.STRIPE_SECRET_KEY)
+          invoiceUrl = inv?.hosted_invoice_url || null
+        }
+      }
+      if (invoiceUrl) return c.json({ redirect: invoiceUrl, message: 'Payment required to complete upgrade.' })
+      return c.json({ error: 'Payment incomplete. Please check your payment method in the billing portal.' }, 402)
+    }
+    // Payment confirmed — grant access
     const newLimit = target_plan === 'pro' ? 150 : 50
     await c.env.DB.prepare(`UPDATE users SET plan=?, gens_limit=? WHERE id=?`)
       .bind(target_plan, newLimit, user.id).run()
@@ -3249,7 +3267,7 @@ function homePage() {
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
-        <a href="/signup" class="btn btn--outline btn--full">Get started free</a>
+        <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
       </div>
       <div class="plan-card plan-card--featured">
         <div class="plan-card__badge">Most popular</div>
@@ -3549,6 +3567,29 @@ function homePage() {
         }
         // upgrade case: leave button as-is (handled by click handler)
       });
+      // Update the Free tier <a> button separately (it's not a .home-plan-btn)
+      const freePlanBtn = document.getElementById('home-free-plan-btn');
+      if (freePlanBtn) {
+        if (userRank === 0) {
+          // On free plan — "Current plan"
+          freePlanBtn.textContent = 'Current plan';
+          freePlanBtn.style.opacity = '0.6';
+          freePlanBtn.style.pointerEvents = 'none';
+          freePlanBtn.removeAttribute('href');
+        } else if (userRank > 0) {
+          // On paid plan — show "Cancel / downgrade to free"
+          freePlanBtn.textContent = 'Cancel plan';
+          freePlanBtn.removeAttribute('href');
+          freePlanBtn.style.borderColor = 'rgba(255,100,100,.5)';
+          freePlanBtn.style.color = '#ff7070';
+          freePlanBtn.style.cursor = 'pointer';
+          freePlanBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            _homeDgPlan = 'free';
+            document.getElementById('home-downgrade-modal').style.display = 'flex';
+          });
+        }
+      }
     } catch(e) { /* not logged in or error — leave buttons as default */ }
   })();
 })();
@@ -3603,7 +3644,6 @@ function stemsPage(jobId: string) {
         <div style="font-size:.85rem;font-weight:600;margin:4px 0 2px">Stems</div>
         <div style="font-size:.75rem;color:var(--muted);margin-bottom:12px">Drums · Bass · Melody · Vocals · Other</div>
         <div style="font-size:.8rem;color:var(--text);font-weight:600">2 credits</div>
-        <div style="font-size:.72rem;color:var(--muted);margin-top:2px">~$0.06</div>
         <div style="position:absolute;top:10px;right:10px;width:18px;height:18px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center" id="stem-check-basic">
           <i class="fas fa-check" style="color:white;font-size:.6rem"></i>
         </div>
@@ -3615,7 +3655,6 @@ function stemsPage(jobId: string) {
         <div style="font-size:.85rem;font-weight:600;margin:4px 0 2px">Stems</div>
         <div style="font-size:.75rem;color:var(--muted);margin-bottom:12px">+ Guitar · Strings · Synth · Brass · FX · MIDI</div>
         <div style="font-size:.8rem;color:var(--text);font-weight:600">10 credits</div>
-        <div style="font-size:.72rem;color:var(--muted);margin-top:2px">~$0.70</div>
         <!-- Pro Artist badge / locked label -->
         <div id="stem-pro-badge" style="position:absolute;top:10px;right:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);border-radius:6px;padding:2px 7px;font-size:.65rem;font-weight:700;color:white;white-space:nowrap">
           <i class="fas fa-crown" style="margin-right:3px"></i>Pro Artist
@@ -3826,6 +3865,19 @@ async function stemsInit() {
       if (!user || user.plan === 'free') { showState('upgrade'); return; }
       _planForConfirm = user.plan || 'creator';
       const isPro = user.plan === 'pro' || user.plan === 'developer';
+
+      // Check if user already chose a tier for this track this session — auto-extract without showing picker
+      const savedTierKey = 'stem_tier_' + STEMS_JOB_ID;
+      const savedTier = sessionStorage.getItem(savedTierKey);
+      if (savedTier && (savedTier === 'basic' || (savedTier === 'pro' && isPro))) {
+        _stemTier = savedTier;
+        _planForConfirm = user.plan;
+        // Auto-extract silently with saved tier
+        showState('loading');
+        await stemsExtract();
+        return;
+      }
+
       // Default to tier from URL param, fall back to basic
       _stemTier = (STEMS_TIER_PARAM === 'pro' && isPro) ? 'pro' : 'basic';
       showState('no-stems');
@@ -4388,6 +4440,8 @@ async function stemsExtract() {
         tracks:  data.tracks || [],
         midi_zip_url: data.midi_zip_url || null
       }));
+      // Save the chosen tier so re-visiting this track skips the picker entirely
+      sessionStorage.setItem('stem_tier_' + STEMS_JOB_ID, _stemTier || 'basic');
     } catch(e) { /* storage full — ignore */ }
     populateHero(stemsJob);
     await buildStemsPlayer(stemsJob);
@@ -4878,13 +4932,10 @@ function generatorPage() {
       </div>
       <!-- Track list (hidden for free tier, shown for Creator/Pro) -->
       <div class="track-list" id="track-list" style="display:none"></div>
-      <!-- Action buttons row (no tab header) -->
+      <!-- Action buttons row -->
       <div class="export-panel" style="padding-top:0">
-        <div class="export-options">
-          <button class="export-btn" id="exp-stereo"><i class="fas fa-file-audio"></i><span>Stereo mix</span><small>Free</small></button>
-          <button class="export-btn export-btn--get-stems" id="exp-stems"><i class="fas fa-layer-group"></i><span>Get Stems</span><small>Creator+</small></button>
-        </div>
-        <a href="/pricing" class="upgrade-nudge"><i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to unlock stems</a>
+        <div class="export-options" id="export-options-row"></div>
+        <a href="/pricing" class="upgrade-nudge" id="export-upgrade-nudge" style="display:none"><i class="fas fa-arrow-up"></i> Upgrade to Creator or Pro Artist to unlock stems</a>
       </div>
     </div>
 
@@ -5604,17 +5655,17 @@ function subscriptionPage(user: User, env: Bindings) {
       </div>
       <div class="sub-stat">
         <span class="sub-stat__label">Downloads Remaining</span>
-        <span class="sub-stat__val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit}</span>
+        <span class="sub-stat__val" id="sub-remaining-val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit}</span>
       </div>
 
     </div>
     <div class="sub-usage-card">
       <div class="sub-usage-header">
         <h3>Download Usage</h3>
-        <span class="sub-usage-count">${user.gens_used} / ${user.gens_limit} used</span>
+        <span class="sub-usage-count" id="sub-usage-count">${user.gens_used} / ${user.gens_limit} used</span>
       </div>
-      <div class="sub-usage-bar"><div class="sub-usage-bar__fill" style="width:${pct}%"></div></div>
-      <p class="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
+      <div class="sub-usage-bar"><div class="sub-usage-bar__fill" id="sub-usage-bar-fill" style="width:${pct}%"></div></div>
+      <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
 
     <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
