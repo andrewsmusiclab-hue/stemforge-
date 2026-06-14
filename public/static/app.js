@@ -1518,6 +1518,31 @@ window.openSongEditModal = function(jobData, jobId) {
   const infoBlock = document.getElementById('edit-info-block');
   if (infoBlock) infoBlock.style.display = 'none';
 
+  // Reset cover art UI
+  _setCoverThumb(null);
+  _setEditCoverStatus('', false);
+  var removeBtn = document.getElementById('edit-cover-remove');
+  if (removeBtn) removeBtn.style.display = 'none';
+  var coverInput = document.getElementById('edit-cover-file');
+  if (coverInput) coverInput.value = '';
+
+  // Helper to populate cover from a job object
+  function _loadCoverForJob(job) {
+    var thumb = document.getElementById('edit-cover-thumb');
+    var imageUrl = job.image_url || null;
+    if (imageUrl && imageUrl.startsWith('http')) {
+      _setCoverThumb(imageUrl);
+      if (thumb) thumb.dataset.prevUrl = imageUrl;
+    } else {
+      _setCoverThumb(null);
+      if (thumb) thumb.dataset.prevUrl = '';
+    }
+    if (job.image_url_custom) {
+      var rb = document.getElementById('edit-cover-remove');
+      if (rb) rb.style.display = '';
+    }
+  }
+
   if (jobData) {
     // Opened from generator result
     document.getElementById('edit-job-id').value = jobData.id || '';
@@ -1527,6 +1552,7 @@ window.openSongEditModal = function(jobData, jobId) {
     document.getElementById('edit-genre').value = jobData.blueprint ? jobData.blueprint.genre : '';
     document.getElementById('edit-description').value = jobData.blueprint ? jobData.blueprint.arrangement || '' : '';
     window._sfProjects[jobData.id] = jobData;
+    _loadCoverForJob(jobData);
 
     // Show read-only info
     if (jobData.blueprint && infoBlock) {
@@ -1560,6 +1586,7 @@ window.openSongEditModal = function(jobData, jobId) {
         document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
       }
       window._sfProjects[jobId] = job;
+      _loadCoverForJob(job);
       // Show stems section if ready
       if (job.status === 'ready' && job.stereo_url) showStemsSection(job);
     }).catch(() => {});
@@ -1573,6 +1600,121 @@ window.closeSongEditModal = function() {
   const modal = document.getElementById('song-edit-modal');
   if (modal) modal.style.display = 'none';
   document.body.style.overflow = '';
+};
+
+// ── Cover art helpers used by the edit modal ────────────────────────────────
+
+// Set the thumbnail preview in the edit modal.
+// Accepts a URL (http/https or data:) or null to reset to the music-note icon.
+function _setCoverThumb(url) {
+  var thumb = document.getElementById('edit-cover-thumb');
+  if (!thumb) return;
+  if (url) {
+    thumb.style.backgroundImage = 'url(' + url + ')';
+    thumb.style.backgroundSize  = 'cover';
+    thumb.style.backgroundPosition = 'center';
+    var icon = thumb.querySelector('.edit-cover-thumb__icon');
+    if (icon) icon.style.display = 'none';
+  } else {
+    thumb.style.backgroundImage = '';
+    var icon = thumb.querySelector('.edit-cover-thumb__icon');
+    if (icon) icon.style.display = '';
+  }
+}
+
+function _setEditCoverStatus(msg, isError) {
+  var el = document.getElementById('edit-cover-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.color = isError ? '#e55' : '#4caf50';
+}
+
+// Wire up the file-input change event once the DOM is ready.
+// We use event delegation via a single listener on the document so we don't
+// need to call this repeatedly when the modal is opened.
+(function _initCoverUpload() {
+  document.addEventListener('change', function(e) {
+    var input = e.target;
+    if (!input || input.id !== 'edit-cover-file') return;
+
+    var file = input.files && input.files[0];
+    if (!file) return;
+
+    // Client-side validation
+    var allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (allowed.indexOf(file.type) === -1) {
+      _setEditCoverStatus('Only JPG, PNG or WebP allowed.', true);
+      input.value = '';
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      _setEditCoverStatus('Image too large — max 5 MB.', true);
+      input.value = '';
+      return;
+    }
+
+    // Show a local preview immediately
+    var reader = new FileReader();
+    reader.onload = function(evt) { _setCoverThumb(evt.target.result); };
+    reader.readAsDataURL(file);
+
+    // Upload to server
+    var jobId = (document.getElementById('edit-job-id') || {}).value;
+    if (!jobId) { _setEditCoverStatus('No track selected.', true); return; }
+
+    _setEditCoverStatus('Uploading…', false);
+    var form = new FormData();
+    form.append('job_id', jobId);
+    form.append('image', file);
+
+    fetch('/api/job/cover', { method: 'POST', body: form })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.ok) {
+          _setEditCoverStatus('Cover updated!', false);
+          // Show remove button
+          var removeBtn = document.getElementById('edit-cover-remove');
+          if (removeBtn) removeBtn.style.display = '';
+          // Bust sessionStorage so the card refreshes on next render
+          try { sessionStorage.removeItem('cover_img_' + jobId); } catch(e) {}
+          // Keep the preview already set from FileReader — or switch to server URL
+          if (data.url) _setCoverThumb(data.url);
+        } else {
+          _setEditCoverStatus(data.error || 'Upload failed.', true);
+          // Revert preview to whatever was there before
+          var prev = document.getElementById('edit-cover-thumb');
+          if (prev && prev.dataset.prevUrl) {
+            _setCoverThumb(prev.dataset.prevUrl);
+          } else {
+            _setCoverThumb(null);
+          }
+        }
+      })
+      .catch(function() { _setEditCoverStatus('Network error. Try again.', true); });
+  });
+}());
+
+// Remove custom cover image — called by the "Remove custom image" button.
+window.removeCoverImage = function() {
+  var jobId = (document.getElementById('edit-job-id') || {}).value;
+  if (!jobId) return;
+
+  _setEditCoverStatus('Removing…', false);
+  fetch('/api/job/cover/' + jobId, { method: 'DELETE' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        _setCoverThumb(null);
+        var removeBtn = document.getElementById('edit-cover-remove');
+        if (removeBtn) removeBtn.style.display = 'none';
+        _setEditCoverStatus('Custom image removed.', false);
+        // Bust sessionStorage so the card re-fetches the AI cover
+        try { sessionStorage.removeItem('cover_img_' + jobId); } catch(e) {}
+      } else {
+        _setEditCoverStatus(data.error || 'Remove failed.', true);
+      }
+    })
+    .catch(function() { _setEditCoverStatus('Network error. Try again.', true); });
 };
 
 // ── Stems popup modal — shown when user clicks "Get Stems" on a library card ──

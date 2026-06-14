@@ -2441,6 +2441,61 @@ body.light .legal-body td {
   border-top: 1px solid var(--border);
 }
 
+/* ── Edit modal cover art ──────────────────────────────────────────── */
+.edit-cover-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.edit-cover-thumb {
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
+}
+.edit-cover-thumb__icon { font-size: 1.6rem; color: var(--muted); }
+.edit-cover-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.edit-cover-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  width: fit-content;
+}
+.edit-cover-hint {
+  font-size: .75rem;
+  color: var(--muted);
+  margin: 0;
+}
+.edit-cover-remove {
+  background: none;
+  border: none;
+  color: #f87171;
+  font-size: .78rem;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  font-family: inherit;
+}
+.edit-cover-remove:hover { color: #ef4444; text-decoration: underline; }
+.edit-cover-status {
+  font-size: .78rem;
+  color: var(--muted);
+  min-height: 1em;
+}
+
 /* Instruments section — optional tag */
 .suno-optional-tag {
   font-size: .68rem;

@@ -1082,6 +1082,28 @@ app.get('/api/cover-image/:jobId', async (c) => {
 app.get('/api/cover-art/:jobId', async (c) => {
   if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
   const jobId = c.req.param('jobId')
+
+  // Check custom uploads first (any extension), then fall back to AI-generated jpg
+  const customExts: Array<{ ext: string; mime: string }> = [
+    { ext: 'jpg',  mime: 'image/jpeg' },
+    { ext: 'png',  mime: 'image/png'  },
+    { ext: 'webp', mime: 'image/webp' },
+  ]
+  for (const { ext, mime } of customExts) {
+    const custom = await c.env.IMAGES.get(`covers/${jobId}-custom.${ext}`)
+    if (custom) {
+      const data = await custom.arrayBuffer()
+      return new Response(data, {
+        headers: {
+          'Content-Type': mime,
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Content-Length': String(data.byteLength),
+        }
+      })
+    }
+  }
+
+  // Fall back to AI-generated cover
   const obj = await c.env.IMAGES.get(`covers/${jobId}.jpg`)
   if (!obj) return c.json({ error: 'Not found' }, 404)
   const data = await obj.arrayBuffer()
@@ -1826,6 +1848,107 @@ app.post('/api/job/update', async (c) => {
   }
 })
 
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/job/cover — upload a custom cover image for a track.
+//  Accepts multipart/form-data with fields: job_id, image (file).
+//  Stores JPEG/PNG/WebP in R2 under covers/<jobId>-custom.<ext>
+//  and saves the permanent URL back into the D1 job record.
+//  Auth: session cookie required.
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/job/cover', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  let jobId: string
+  let imageBytes: ArrayBuffer
+  let contentType: string
+
+  try {
+    const formData = await c.req.formData()
+    jobId = (formData.get('job_id') as string || '').trim()
+    const file = formData.get('image') as File | null
+    if (!jobId) return c.json({ error: 'Missing job_id' }, 400)
+    if (!file) return c.json({ error: 'Missing image file' }, 400)
+
+    // Validate file type
+    const allowed = ['image/jpeg', 'image/png', 'image/webp']
+    contentType = file.type || 'image/jpeg'
+    if (!allowed.includes(contentType)) return c.json({ error: 'Only JPG, PNG or WebP allowed' }, 400)
+
+    // Validate file size (max 5 MB)
+    if (file.size > 5 * 1024 * 1024) return c.json({ error: 'Image too large — max 5 MB' }, 400)
+
+    imageBytes = await file.arrayBuffer()
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Upload parse failed' }, 400)
+  }
+
+  // Verify job ownership
+  let job: Job | null = null
+  try {
+    const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?').bind(jobId).first<{ data: string; user_id: string | null }>()
+    if (!row) return c.json({ error: 'Job not found' }, 404)
+    if (row.user_id && row.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+    job = JSON.parse(row.data) as Job
+  } catch { return c.json({ error: 'DB error' }, 500) }
+
+  // Store in R2
+  const ext = contentType === 'image/png' ? 'png' : contentType === 'image/webp' ? 'webp' : 'jpg'
+  const r2Key = `covers/${jobId}-custom.${ext}`
+  try {
+    await c.env.IMAGES.put(r2Key, imageBytes, { httpMetadata: { contentType } })
+  } catch (e: any) {
+    return c.json({ error: 'Storage upload failed' }, 500)
+  }
+
+  // Build the permanent URL via our cover-art proxy route
+  const publicUrl = `${c.env.SITE_URL}/api/cover-art/${jobId}?custom=${ext}`
+
+  // Save URL to D1 job record (overwrites any AI-generated image_url)
+  const updatedJob = { ...job, image_url: publicUrl, image_url_custom: true } as any
+  await setJob(c.env.DB, updatedJob)
+
+  return c.json({ ok: true, url: publicUrl })
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  DELETE /api/job/cover/:jobId — remove the custom cover image,
+//  reverting to AI-generated art on next load.
+// ═══════════════════════════════════════════════════════════════
+app.delete('/api/job/cover/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('jobId')
+  let job: Job | null = null
+  try {
+    const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?').bind(jobId).first<{ data: string; user_id: string | null }>()
+    if (!row) return c.json({ error: 'Job not found' }, 404)
+    if (row.user_id && row.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+    job = JSON.parse(row.data) as Job
+  } catch { return c.json({ error: 'DB error' }, 500) }
+
+  // Delete from R2 (try all extensions)
+  if (c.env.IMAGES) {
+    for (const ext of ['jpg', 'png', 'webp']) {
+      try { await c.env.IMAGES.delete(`covers/${jobId}-custom.${ext}`) } catch { /* ok */ }
+    }
+  }
+
+  // Clear image_url from D1 so next load re-generates via AI
+  const updatedJob = { ...job } as any
+  delete updatedJob.image_url
+  delete updatedJob.image_url_custom
+  await setJob(c.env.DB, updatedJob)
+
+  return c.json({ ok: true })
+})
+
 // GET /api/projects — return logged-in user's completed jobs
 app.get('/api/projects', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ projects: [] })
@@ -2053,6 +2176,30 @@ function globalSidebar() {
     </div>
     <div class="song-edit-modal__body">
       <input type="hidden" id="edit-job-id"/>
+
+      <!-- ── Cover Art ─────────────────────────────────────────── -->
+      <div class="form-group">
+        <label>Cover Art</label>
+        <div class="edit-cover-row">
+          <!-- Thumbnail preview -->
+          <div class="edit-cover-thumb" id="edit-cover-thumb">
+            <i class="fas fa-music edit-cover-thumb__icon"></i>
+          </div>
+          <!-- Upload controls -->
+          <div class="edit-cover-controls">
+            <label class="btn btn--outline btn--sm edit-cover-upload-btn" for="edit-cover-file">
+              <i class="fas fa-upload"></i> Upload image
+            </label>
+            <input type="file" id="edit-cover-file" accept="image/jpeg,image/png,image/webp" style="display:none"/>
+            <p class="edit-cover-hint">JPG, PNG or WebP · max 5 MB</p>
+            <button class="edit-cover-remove" id="edit-cover-remove" style="display:none" onclick="removeCoverImage()">
+              <i class="fas fa-trash-alt"></i> Remove custom image
+            </button>
+            <span class="edit-cover-status" id="edit-cover-status"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="form-group">
         <label>Song Title</label>
         <input type="text" id="edit-title" placeholder="Song title" style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;width:100%;box-sizing:border-box;color:var(--text);font-family:inherit;font-size:.9rem"/>
