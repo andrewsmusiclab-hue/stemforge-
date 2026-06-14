@@ -1479,8 +1479,15 @@ app.post('/api/job/stems', async (c) => {
     return c.json({ error: 'Stem extraction requires a Creator or Pro Artist plan.', upgrade: true }, 403)
   }
 
-  const { job_id } = await c.req.json()
+  const { job_id, stem_tier } = await c.req.json()
+  // stem_tier: 'basic' = 5 stems (V1, 2 credits), 'pro' = up to 12 stems (V2, 10 credits, Pro plan only)
   if (!job_id) return c.json({ error: 'job_id required' }, 400)
+
+  // Validate stem_tier: only Pro/Developer can request 'pro' tier
+  const wantPro = stem_tier === 'pro'
+  if (wantPro && user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Up to 12 stems requires the Pro Artist plan.', upgrade: true }, 403)
+  }
 
   // Fetch job AND its owner user_id from the DB row (user_id is NOT in JSON blob)
   let job: Job | null = null
@@ -1500,8 +1507,8 @@ app.post('/api/job/stems', async (c) => {
     return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, already_extracted: true })
   }
 
-  // Credit cost: Creator=2 (V1, 5 stems) — Pro=10 (V2, up to 12 stems + MIDI)
-  const creditCost = user.plan === 'pro' ? 10 : 2
+  // Credit cost: basic=2 (V1, 5 stems), pro=10 (V2, up to 12 stems + MIDI)
+  const creditCost = wantPro ? 10 : 2
   if (user.gens_used + creditCost > user.gens_limit) {
     return c.json({
       error: `Not enough downloads. This costs ${creditCost} credits and you only have ${user.gens_limit - user.gens_used} remaining.`,
@@ -1514,8 +1521,8 @@ app.post('/api/job/stems', async (c) => {
     .bind(creditCost, user.id).run()
 
   try {
-    // Creator: V1 (5 fixed stems, ~$0.06) — Pro: V2 (up to 12 stems + MIDI, ~$0.70)
-    const isPro = user.plan === 'pro'
+    // basic tier: V1 (5 fixed stems) — pro tier: V2 (up to 12 stems + MIDI)
+    const isPro = wantPro
     const model = isPro ? 'audio-separation-2' : 'audio-separation-1'
     const { zip_url, midi_zip_url } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, model)
 
@@ -3126,7 +3133,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Commercial use</li>
           <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
-        <a href="/checkout?plan=creator" class="btn btn--primary btn--full">Start Creator</a>
+        <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
@@ -3138,7 +3145,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Stem bundle download</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
-        <a href="/checkout?plan=pro" class="btn btn--outline btn--full">Start Pro Artist</a>
+        <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
       </div>
       <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
         <div class="plan-card__tier" style="color:#a78bfa">Developer</div>
@@ -3168,6 +3175,168 @@ function homePage() {
     </div>
   </div>
 </section>
+
+<!-- Home page upgrade confirmation modal (same as subscription page) -->
+<div id="home-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;padding:16px">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
+    <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:24px 28px 20px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-up" style="color:white;font-size:.9rem"></i>
+        </div>
+        <div>
+          <h3 style="margin:0;font-size:1.15rem" id="hum-title">Confirm Upgrade</h3>
+          <p style="margin:0;font-size:.8rem;color:var(--muted)" id="hum-subtitle">Review your prorated charge</p>
+        </div>
+      </div>
+    </div>
+    <div id="hum-loading" style="padding:40px;text-align:center">
+      <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
+      <p style="color:var(--muted);margin:0;font-size:.9rem">Calculating your charge…</p>
+    </div>
+    <div id="hum-content" style="display:none;padding:24px 28px">
+      <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px">
+        <div style="text-align:center">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Current Plan</div>
+          <div id="hum-from-label" style="font-weight:700;font-size:1rem">Free</div>
+          <div id="hum-from-price" style="font-size:.8rem;color:var(--muted)"></div>
+        </div>
+        <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-right" style="color:white;font-size:.8rem"></i>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">New Plan</div>
+          <div id="hum-to-label" style="font-weight:700;font-size:1rem;color:#a855f7">Pro Artist</div>
+          <div id="hum-to-price" style="font-size:.8rem;color:var(--muted)"></div>
+        </div>
+      </div>
+      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px">
+        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;color:var(--muted)">Billing period</span>
+          <span id="hum-period" style="font-size:.85rem;font-weight:600">—</span>
+        </div>
+        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;color:var(--muted)">Days remaining</span>
+          <span id="hum-days" style="font-size:.85rem;font-weight:600">—</span>
+        </div>
+        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;color:var(--muted)">Price difference</span>
+          <span id="hum-diff" style="font-size:.85rem;font-weight:600">—</span>
+        </div>
+        <div style="padding:12px 16px;display:flex;justify-content:space-between;background:rgba(108,58,255,.1)">
+          <span style="font-size:.95rem;font-weight:700">Charge today</span>
+          <span id="hum-charge" style="font-size:1.1rem;font-weight:800;color:#a855f7">—</span>
+        </div>
+      </div>
+      <p id="hum-note" style="font-size:.8rem;color:var(--muted);text-align:center;margin:0 0 20px;line-height:1.5"></p>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn--outline btn--sm" style="flex:1" onclick="closeHomeUpgradeModal()"><i class="fas fa-times"></i> Cancel</button>
+        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="hum-confirm-btn" onclick="confirmHomeUpgrade()"><i class="fas fa-lock"></i> <span id="hum-confirm-label">Confirm &amp; Pay</span></button>
+      </div>
+    </div>
+    <div id="hum-error" style="display:none;padding:32px 28px;text-align:center">
+      <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:#ef4444;margin-bottom:12px"></i>
+      <p id="hum-error-msg" style="color:var(--muted);margin:0 0 20px;font-size:.9rem;line-height:1.5"></p>
+      <button class="btn btn--outline btn--sm" onclick="closeHomeUpgradeModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  let _humPlan = null;
+
+  // Convert plan card buttons: logged-in users get preview modal, logged-out go to checkout
+  document.querySelectorAll('.home-plan-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const plan = btn.dataset.plan;
+      if (!plan) return;
+      // Quick auth check
+      try {
+        const me = await fetch('/api/auth/me').then(r => r.json());
+        const user = me.user;
+        if (!user) { window.location.href = '/checkout?plan=' + plan; return; }
+        // Already on this plan or higher — go to subscription page
+        const rank = { free:0, creator:1, pro:2, developer:3 };
+        if ((rank[user.plan]||0) >= (rank[plan]||0)) { window.location.href = '/subscription'; return; }
+        // Has existing subscription — show proration modal
+        openHomeUpgradeModal(plan);
+      } catch(e) {
+        window.location.href = '/checkout?plan=' + plan;
+      }
+    });
+  });
+
+  window.openHomeUpgradeModal = function(plan) {
+    _humPlan = plan;
+    const modal = document.getElementById('home-upgrade-modal');
+    modal.style.display = 'flex';
+    document.getElementById('hum-loading').style.display  = 'block';
+    document.getElementById('hum-content').style.display  = 'none';
+    document.getElementById('hum-error').style.display    = 'none';
+    fetch('/api/subscription/upgrade-preview?plan=' + encodeURIComponent(plan))
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { showHumError(data.error); return; }
+        document.getElementById('hum-from-label').textContent = data.current_plan_label || 'Free';
+        document.getElementById('hum-from-price').textContent = data.current_price_label || '';
+        document.getElementById('hum-to-label').textContent   = data.target_plan_label || plan;
+        document.getElementById('hum-to-price').textContent   = data.new_price_label || '';
+        if (data.has_subscription) {
+          document.getElementById('hum-period').textContent = data.period_end_label ? 'Renews ' + data.period_end_label : '—';
+          document.getElementById('hum-days').textContent   = data.days_remaining + ' of ' + data.days_in_period + ' days left';
+          document.getElementById('hum-diff').textContent   = (data.current_price_label||'') + ' → ' + (data.new_price_label||'');
+          document.getElementById('hum-charge').textContent = data.proration_label || data.new_price_label;
+          document.getElementById('hum-note').textContent   = 'Then ' + (data.new_price_label||'') + ' starting ' + (data.period_end_label||'next billing date') + '. ' + (data.note||'');
+        } else {
+          document.getElementById('hum-period').textContent = 'New subscription';
+          document.getElementById('hum-days').textContent   = 'Full billing cycle';
+          document.getElementById('hum-diff').textContent   = '—';
+          document.getElementById('hum-charge').textContent = data.proration_label || data.new_price_label;
+          document.getElementById('hum-note').textContent   = 'You will be charged ' + (data.new_price_label||'') + ' today and billed monthly.';
+        }
+        document.getElementById('hum-confirm-label').textContent = 'Confirm & Pay ' + (data.proration_label || '');
+        document.getElementById('hum-loading').style.display = 'none';
+        document.getElementById('hum-content').style.display = 'block';
+      })
+      .catch(() => showHumError('Network error. Please try again.'));
+  };
+
+  function showHumError(msg) {
+    document.getElementById('hum-loading').style.display = 'none';
+    document.getElementById('hum-content').style.display = 'none';
+    document.getElementById('hum-error-msg').textContent = msg;
+    document.getElementById('hum-error').style.display   = 'block';
+  }
+
+  window.closeHomeUpgradeModal = function() {
+    document.getElementById('home-upgrade-modal').style.display = 'none';
+    _humPlan = null;
+  };
+
+  window.confirmHomeUpgrade = async function() {
+    if (!_humPlan) return;
+    const btn = document.getElementById('hum-confirm-btn');
+    btn.disabled = true;
+    document.getElementById('hum-confirm-label').textContent = 'Processing…';
+    try {
+      const res = await fetch('/api/subscription/upgrade', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ target_plan: _humPlan })
+      });
+      const data = await res.json();
+      closeHomeUpgradeModal();
+      if (data.redirect) { window.location.href = data.redirect; return; }
+      if (data.ok) { alert(data.message || 'Upgrade successful!'); window.location.href = '/dashboard'; }
+      else { alert('Error: ' + (data.error || 'Upgrade failed')); }
+    } catch(e) { closeHomeUpgradeModal(); alert('Network error. Please try again.'); }
+  };
+
+  document.getElementById('home-upgrade-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeHomeUpgradeModal();
+  });
+})();
+</script>
 </main>`)
 }
 
@@ -3202,20 +3371,61 @@ function stemsPage(jobId: string) {
     <i class="fas fa-spinner fa-spin" style="font-size:2rem;margin-bottom:16px;display:block"></i>
     <p>Loading stems...</p>
   </div>
-  <div id="stems-no-stems" style="display:none;text-align:center;padding:60px 20px">
-    <i class="fas fa-layer-group" style="font-size:3rem;color:var(--primary);margin-bottom:16px;display:block;opacity:.5"></i>
-    <h3 style="margin-bottom:10px">Stems not yet extracted</h3>
-    <p style="color:var(--muted);margin-bottom:8px" id="stems-no-stems-desc">Access your stem bundle — preview and download bass, melody, vocals, and other layers from your beat.</p>
-    <p id="stems-cost-label" style="color:var(--muted);font-size:.88rem;margin-bottom:24px"></p>
+  <div id="stems-no-stems" style="display:none;padding:40px 20px;max-width:560px;margin:0 auto">
+    <div style="text-align:center;margin-bottom:28px">
+      <i class="fas fa-layer-group" style="font-size:2.5rem;color:var(--primary);margin-bottom:12px;display:block;opacity:.6"></i>
+      <h3 style="margin-bottom:6px">Choose Your Stem Pack</h3>
+      <p style="color:var(--muted);font-size:.9rem">Select how many stems to extract from this beat.</p>
+    </div>
+
+    <!-- Stem tier cards -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px">
+
+      <!-- 5 Stems — available to all Creator+ -->
+      <div class="stem-tier-card" id="stem-tier-basic" onclick="selectStemTier('basic')" style="cursor:pointer;border:2px solid var(--primary);border-radius:16px;padding:20px 16px;background:rgba(108,58,255,.08);position:relative;transition:all .2s">
+        <div style="font-size:1.8rem;font-weight:800;color:var(--primary);line-height:1">5</div>
+        <div style="font-size:.85rem;font-weight:600;margin:4px 0 2px">Stems</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:12px">Drums · Bass · Melody · Vocals · Other</div>
+        <div style="font-size:.8rem;color:var(--text);font-weight:600">2 credits</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:2px">~$0.06</div>
+        <div style="position:absolute;top:10px;right:10px;width:18px;height:18px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center" id="stem-check-basic">
+          <i class="fas fa-check" style="color:white;font-size:.6rem"></i>
+        </div>
+      </div>
+
+      <!-- Up to 12 Stems — Pro only -->
+      <div class="stem-tier-card" id="stem-tier-pro" onclick="selectStemTier('pro')" style="cursor:pointer;border:2px solid var(--border);border-radius:16px;padding:20px 16px;background:var(--surface);position:relative;transition:all .2s" id="stem-tier-pro-card">
+        <div style="font-size:1.8rem;font-weight:800;color:#a855f7;line-height:1">12</div>
+        <div style="font-size:.85rem;font-weight:600;margin:4px 0 2px">Stems</div>
+        <div style="font-size:.75rem;color:var(--muted);margin-bottom:12px">+ Guitar · Strings · Synth · Brass · FX · MIDI</div>
+        <div style="font-size:.8rem;color:var(--text);font-weight:600">10 credits</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:2px">~$0.70</div>
+        <!-- Pro Artist badge / locked label -->
+        <div id="stem-pro-badge" style="position:absolute;top:10px;right:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);border-radius:6px;padding:2px 7px;font-size:.65rem;font-weight:700;color:white;white-space:nowrap">
+          <i class="fas fa-crown" style="margin-right:3px"></i>Pro Artist
+        </div>
+        <div style="position:absolute;top:10px;right:10px;width:18px;height:18px;border-radius:50%;background:#a855f7;display:flex;align-items:center;justify-content:center;display:none" id="stem-check-pro">
+          <i class="fas fa-check" style="color:white;font-size:.6rem"></i>
+        </div>
+        <!-- Locked overlay for non-pro -->
+        <div id="stem-pro-lock" style="display:none;position:absolute;inset:0;border-radius:14px;background:rgba(0,0,0,.45);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px">
+          <i class="fas fa-lock" style="color:#a855f7;font-size:1.2rem"></i>
+          <span style="font-size:.7rem;color:rgba(255,255,255,.7);font-weight:600">Pro Artist only</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="stem-tier-locked-note" style="display:none;text-align:center;margin-bottom:16px;font-size:.82rem;color:var(--muted)">
+      <i class="fas fa-crown" style="color:#a855f7;margin-right:4px"></i>Up to 12 stems is a <a href="/pricing" style="color:#a855f7;text-decoration:underline">Pro Artist</a> feature
+    </div>
+
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-      <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()">
-        <i class="fas fa-layer-group"></i> <span id="stems-extract-btn-label">Extract Stems</span>
-      </button>
-      <button class="btn btn--outline" onclick="history.back()">
-        <i class="fas fa-times"></i> Cancel
+      <button class="btn btn--outline" onclick="history.back()"><i class="fas fa-times"></i> Cancel</button>
+      <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()" style="min-width:180px">
+        <i class="fas fa-layer-group"></i> <span id="stems-extract-btn-label">Extract 5 Stems — 2 Credits</span>
       </button>
     </div>
-    <div id="stems-extract-status" style="margin-top:16px;font-size:.88rem;display:none"></div>
+    <div id="stems-extract-status" style="margin-top:16px;font-size:.88rem;display:none;text-align:center"></div>
   </div>
   <div id="stems-error" style="display:none;text-align:center;padding:60px 20px">
     <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:var(--danger);margin-bottom:16px;display:block"></i>
@@ -3272,6 +3482,7 @@ function stemsPage(jobId: string) {
 // ═══════════════════════════════════════════════════════════════
 
 const STEMS_JOB_ID = '${jobId}';
+const STEMS_TIER_PARAM = new URLSearchParams(location.search).get('tier') || 'basic';
 
 // ── State ─────────────────────────────────────────────────────
 let stemsJob       = null;
@@ -3289,6 +3500,7 @@ let stemSources    = {};   // { stem: MediaElementSourceNode }
 let waveRAF        = {};   // { stem: rAF id }
 let viMode         = 'vocals'; // 'vocals' | 'instrumental'
 let _planForConfirm = 'creator';
+let _stemTier = 'basic'; // 'basic' | 'pro'
 
 // ── JSZip loader ─────────────────────────────────────────────
 function loadJSZip() {
@@ -3336,6 +3548,35 @@ function setVIMode(mode) {
 }
 
 // ── Init ──────────────────────────────────────────────────────
+function selectStemTier(tier) {
+  const isPro = tier === 'pro';
+  // Check if Pro tier is actually locked for this user
+  const proLock = document.getElementById('stem-pro-lock');
+  if (isPro && proLock && proLock.style.display !== 'none') return; // locked — ignore click
+
+  _stemTier = tier;
+
+  const basicCard  = document.getElementById('stem-tier-basic');
+  const proCard    = document.getElementById('stem-tier-pro');
+  const basicCheck = document.getElementById('stem-check-basic');
+  const proCheck   = document.getElementById('stem-check-pro');
+  const btnLabel   = document.getElementById('stems-extract-btn-label');
+  const btn        = document.getElementById('stems-extract-btn');
+
+  if (basicCard) basicCard.style.borderColor = isPro ? 'var(--border)' : 'var(--primary)';
+  if (proCard && !(proLock && proLock.style.display !== 'none'))
+    proCard.style.borderColor = isPro ? '#a855f7' : 'var(--border)';
+  if (basicCheck) basicCheck.style.display = isPro ? 'none' : 'flex';
+  if (proCheck)   proCheck.style.display   = isPro ? 'flex' : 'none';
+
+  if (btnLabel) btnLabel.textContent = isPro
+    ? 'Extract Up to 12 Stems — 10 Credits'
+    : 'Extract 5 Stems — 2 Credits';
+  if (btn) {
+    btn.style.background = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
+  }
+}
+
 async function stemsInit() {
   showState('loading');
   try {
@@ -3368,20 +3609,28 @@ async function stemsInit() {
       const user   = meData.user;
       if (!user || user.plan === 'free') { showState('upgrade'); return; }
       _planForConfirm = user.plan || 'creator';
+      const isPro = user.plan === 'pro' || user.plan === 'developer';
+      // Default to tier from URL param, fall back to basic
+      _stemTier = (STEMS_TIER_PARAM === 'pro' && isPro) ? 'pro' : 'basic';
       showState('no-stems');
-      const isPro = user.plan === 'pro';
-      const costLabel = document.getElementById('stems-cost-label');
-      const btnLabel  = document.getElementById('stems-extract-btn-label');
-      const descLabel = document.getElementById('stems-no-stems-desc');
-      if (descLabel) descLabel.textContent = isPro
-        ? 'Access up to 12 stems — Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export.'
-        : 'Extract 5 individual stems — Drums, Bass, Melody, Vocals, and Other — from your beat to preview and download each track separately.';
-      if (costLabel) costLabel.textContent = isPro
-        ? 'Costs 10 download credits — extracts up to 12 stems + MIDI'
-        : 'Costs 2 download credits — extracts 5 stems (Drums, Bass, Melody, Vocals, Other)';
-      if (btnLabel) btnLabel.textContent = isPro
-        ? 'Extract Stems — 10 Credits'
-        : 'Extract Stems — 2 Credits';
+      // Set up the tier picker: lock/unlock Pro card
+      const proCard  = document.getElementById('stem-tier-pro');
+      const proLock  = document.getElementById('stem-pro-lock');
+      const proBadge = document.getElementById('stem-pro-badge');
+      const proNote  = document.getElementById('stem-tier-locked-note');
+      if (!isPro) {
+        // Non-pro: lock the 12-stem card, show note
+        if (proCard)  { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
+        if (proLock)  { proLock.style.display = 'flex'; }
+        if (proBadge) { proBadge.style.display = 'none'; }
+        if (proNote)  { proNote.style.display = 'block'; }
+      } else {
+        if (proLock)  { proLock.style.display = 'none'; }
+        if (proBadge) { proBadge.style.display = 'block'; }
+        if (proNote)  { proNote.style.display = 'none'; }
+      }
+      // Highlight pre-selected tier (from URL param or default basic)
+      selectStemTier(_stemTier);
       return;
     }
 
@@ -3904,7 +4153,7 @@ async function stemsExtract() {
   try {
     const res  = await fetch('/api/job/stems', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ job_id: STEMS_JOB_ID })
+      body: JSON.stringify({ job_id: STEMS_JOB_ID, stem_tier: _stemTier || 'basic' })
     });
     const data = await res.json();
     if (!res.ok || data.error) {
@@ -4865,14 +5114,7 @@ function subscriptionPage(user: User, env: Bindings) {
         <span class="sub-stat__label">Downloads Remaining</span>
         <span class="sub-stat__val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit}</span>
       </div>
-      ${user.plan !== 'free' && stripeOk ? `
-      <div class="sub-stat sub-stat--manage">
-        <button class="btn btn--outline btn--sm" id="sub-manage-btn">Manage <i class="fas fa-chevron-down"></i></button>
-        <div class="sub-manage-dropdown" id="sub-manage-dropdown" style="display:none">
-          <a href="/api/stripe/portal" class="sub-manage-item"><i class="fas fa-credit-card"></i> Update payment method</a>
-          <a href="/api/stripe/portal" class="sub-manage-item sub-manage-item--danger"><i class="fas fa-times-circle"></i> Cancel subscription</a>
-        </div>
-      </div>` : ''}
+
     </div>
     <div class="sub-usage-card">
       <div class="sub-usage-header">
@@ -5142,21 +5384,6 @@ function subscriptionPage(user: User, env: Bindings) {
 </div>
 <script>
 (function(){
-  // Manage dropdown toggle — always works now
-  const manageBtn = document.getElementById('sub-manage-btn');
-  const manageDrop = document.getElementById('sub-manage-dropdown');
-  if (manageBtn && manageDrop) {
-    manageBtn.addEventListener('click', e => {
-      e.stopPropagation();
-      const isOpen = manageDrop.style.display !== 'none' && manageDrop.style.display !== '';
-      manageDrop.style.display = isOpen ? 'none' : 'flex';
-      manageDrop.style.flexDirection = 'column';
-    });
-    document.addEventListener('click', e => {
-      if (!manageBtn.contains(e.target) && !manageDrop.contains(e.target)) manageDrop.style.display = 'none';
-    });
-  }
-
   // ── Upgrade flow: preview → confirm modal → pay ──────────────────────────
   let _upgradePendingPlan = null;
   let _upgradePreviewData = null;

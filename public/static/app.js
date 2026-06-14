@@ -1326,7 +1326,7 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // Get Stems button — opens stems player page
+            // Get Stems button — opens stem tier picker then stems player page
             const zipBtn = document.getElementById('exp-stems');
             if (zipBtn) {
               if (isFree) {
@@ -1334,23 +1334,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 zipBtn.onclick = () => showUpgradePrompt();
               } else {
                 zipBtn.classList.remove('export-btn--locked');
-                zipBtn.onclick = () => {
-                  window.location.href = '/stems/' + job.id;
-                };
-              }
-            }
-
-            // "Get up to 12 stems" button — same stems page
-            const tracksBtn = document.getElementById('exp-tracks');
-            if (tracksBtn) {
-              if (isFree) {
-                tracksBtn.classList.add('export-btn--locked');
-                tracksBtn.onclick = () => showUpgradePrompt();
-              } else {
-                tracksBtn.classList.remove('export-btn--locked');
-                tracksBtn.onclick = () => {
-                  window.location.href = '/stems/' + job.id;
-                };
+                zipBtn.onclick = () => openStemPickerModal(job.id, window._sfUser);
               }
             }
 
@@ -1955,57 +1939,138 @@ window.sfStemsGo = async function(jobId) {
 };
 
 // Request stems on-demand — called from "Get Stems" button in 3-dot modal
-window.requestStems = async function() {
-  const jobId  = document.getElementById('edit-job-id')?.value;
-  const btn    = document.getElementById('edit-get-stems-btn');
-  const status = document.getElementById('edit-stems-status');
-  const result = document.getElementById('edit-stems-result');
-  if (!jobId || !btn) return;
+window.requestStems = function() {
+  const jobId = document.getElementById('edit-job-id')?.value;
+  if (!jobId) return;
+  openStemPickerModal(jobId, window._sfUser);
+};
 
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
-  if (status) { status.style.display = 'block'; status.style.background = 'rgba(99,102,241,.12)'; status.style.color = 'var(--text)'; status.textContent = '⏳ Extracting stems — this takes ~10 seconds...'; }
-
-  try {
-    const res  = await fetch('/api/job/stems', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id: jobId })
-    });
-    const data = await res.json();
-
-    if (!res.ok || data.error) {
-      if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ ' + (data.error || 'Stem extraction failed. Please try again.'); }
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry';
-      return;
-    }
-
-    // Success — update sidebar credits
-    if (window._sfUser) {
-      const cost = data.credits_used || 0;
-      window._sfUser.gens_used = (window._sfUser.gens_used || 0) + cost;
-      const gsGensVal = document.getElementById('gs-gens-val');
-      const limitMap  = { free: 3, creator: 50, pro: 150 };
-      const lim = window._sfUser.gens_limit || limitMap[window._sfUser.plan] || 3;
-      if (gsGensVal) gsGensVal.innerHTML = `${window._sfUser.gens_used} <small>/ ${lim}</small>`;
-    }
-
-    // Update cached job
-    if (window._sfProjects && window._sfProjects[jobId]) {
-      window._sfProjects[jobId].zip_url = data.zip_url;
-    }
-
-    // Redirect to stems player page
-    if (status) { status.style.background = 'rgba(16,185,129,.12)'; status.style.color = '#34d399'; status.textContent = `✅ Done! Redirecting to stems player...`; }
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening...';
-    setTimeout(() => { window.location.href = '/stems/' + jobId; }, 800);
-
-  } catch(e) {
-    if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ Network error. Please try again.'; }
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-layer-group"></i> Retry';
+// ── Stem Tier Picker Modal ─────────────────────────────────────────────────
+window.openStemPickerModal = function(jobId, user) {
+  let modal = document.getElementById('stem-picker-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'stem-picker-modal';
+    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;align-items:center;justify-content:center;padding:16px';
+    modal.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:480px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
+        <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:20px 24px 16px;display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <h3 style="margin:0;font-size:1.05rem"><i class="fas fa-layer-group" style="color:var(--primary);margin-right:8px"></i>Choose Stem Pack</h3>
+            <p style="margin:4px 0 0;font-size:.8rem;color:var(--muted)">Select how many stems to extract</p>
+          </div>
+          <button onclick="closeStemPickerModal()" style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;padding:4px 8px;border-radius:6px">&times;</button>
+        </div>
+        <div style="padding:20px 24px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+            <div id="spm-basic-card" onclick="selectSpmTier('basic')" style="cursor:pointer;border:2px solid var(--primary);border-radius:14px;padding:18px 14px;background:rgba(108,58,255,.08);position:relative;transition:all .2s">
+              <div style="font-size:1.6rem;font-weight:800;color:var(--primary);line-height:1">5</div>
+              <div style="font-size:.82rem;font-weight:600;margin:3px 0 2px">Stems</div>
+              <div style="font-size:.72rem;color:var(--muted);margin-bottom:10px;line-height:1.3">Drums · Bass · Melody<br>Vocals · Other</div>
+              <div style="font-size:.8rem;font-weight:700;color:var(--text)">2 credits</div>
+              <div id="spm-check-basic" style="position:absolute;top:9px;right:9px;width:16px;height:16px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center">
+                <i class="fas fa-check" style="color:white;font-size:.55rem"></i>
+              </div>
+            </div>
+            <div id="spm-pro-card" onclick="selectSpmTier('pro')" style="cursor:pointer;border:2px solid var(--border);border-radius:14px;padding:18px 14px;background:var(--surface-2,var(--surface));position:relative;transition:all .2s">
+              <div style="font-size:1.6rem;font-weight:800;color:#a855f7;line-height:1">12</div>
+              <div style="font-size:.82rem;font-weight:600;margin:3px 0 2px">Stems</div>
+              <div style="font-size:.72rem;color:var(--muted);margin-bottom:10px;line-height:1.3">+ Guitar · Strings · Synth<br>Brass · FX · MIDI</div>
+              <div style="font-size:.8rem;font-weight:700;color:var(--text)">10 credits</div>
+              <div id="spm-pro-badge" style="position:absolute;top:8px;right:8px;background:linear-gradient(135deg,#6c3aff,#a855f7);border-radius:5px;padding:2px 6px;font-size:.62rem;font-weight:700;color:white">
+                <i class="fas fa-crown" style="margin-right:2px"></i>Pro
+              </div>
+              <div id="spm-check-pro" style="display:none;position:absolute;top:9px;right:9px;width:16px;height:16px;border-radius:50%;background:#a855f7;align-items:center;justify-content:center">
+                <i class="fas fa-check" style="color:white;font-size:.55rem"></i>
+              </div>
+              <div id="spm-pro-lock" style="display:none;position:absolute;inset:0;border-radius:12px;background:rgba(0,0,0,.45);flex-direction:column;align-items:center;justify-content:center;gap:3px">
+                <i class="fas fa-lock" style="color:#a855f7;font-size:1rem"></i>
+                <span style="font-size:.68rem;color:rgba(255,255,255,.7);font-weight:600">Pro Artist only</span>
+              </div>
+            </div>
+          </div>
+          <p id="spm-pro-note" style="display:none;font-size:.78rem;color:var(--muted);text-align:center;margin:0 0 14px">
+            <i class="fas fa-crown" style="color:#a855f7;margin-right:4px"></i>Up to 12 stems is a <a href="/pricing" style="color:#a855f7;text-decoration:underline">Pro Artist</a> feature
+          </p>
+          <button id="spm-confirm-btn" class="btn btn--primary" style="width:100%" onclick="confirmStemPick()">
+            <i class="fas fa-layer-group"></i> <span id="spm-confirm-label">Go to Stems Player — 5 stems</span>
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) closeStemPickerModal(); });
   }
+
+  // Store current job id
+  modal._jobId = jobId;
+  modal._tier  = 'basic';
+
+  // Set up Pro lock based on user plan
+  const isPro = user && (user.plan === 'pro' || user.plan === 'developer');
+  const proCard  = document.getElementById('spm-pro-card');
+  const proLock  = document.getElementById('spm-pro-lock');
+  const proBadge = document.getElementById('spm-pro-badge');
+  const proNote  = document.getElementById('spm-pro-note');
+  if (!isPro) {
+    if (proCard)  { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
+    if (proLock)  { proLock.style.display = 'flex'; }
+    if (proBadge) { proBadge.style.display = 'none'; }
+    if (proNote)  { proNote.style.display = 'block'; }
+  } else {
+    if (proCard)  { proCard.style.opacity = '1'; proCard.style.cursor = 'pointer'; }
+    if (proLock)  { proLock.style.display = 'none'; }
+    if (proBadge) { proBadge.style.display = 'block'; }
+    if (proNote)  { proNote.style.display = 'none'; }
+  }
+
+  // Reset to basic selection
+  selectSpmTier('basic');
+  modal.style.display = 'flex';
+};
+
+window.closeStemPickerModal = function() {
+  const modal = document.getElementById('stem-picker-modal');
+  if (modal) modal.style.display = 'none';
+};
+
+window.selectSpmTier = function(tier) {
+  const modal = document.getElementById('stem-picker-modal');
+  if (!modal) return;
+  // Check Pro lock
+  const proLock = document.getElementById('spm-pro-lock');
+  if (tier === 'pro' && proLock && proLock.style.display !== 'none') return;
+
+  modal._tier = tier;
+  const isPro = tier === 'pro';
+
+  const basicCard  = document.getElementById('spm-basic-card');
+  const proCard    = document.getElementById('spm-pro-card');
+  const basicCheck = document.getElementById('spm-check-basic');
+  const proCheck   = document.getElementById('spm-check-pro');
+  const proBadge   = document.getElementById('spm-pro-badge');
+  const label      = document.getElementById('spm-confirm-label');
+  const btn        = document.getElementById('spm-confirm-btn');
+
+  if (basicCard) basicCard.style.borderColor = isPro ? 'var(--border)' : 'var(--primary)';
+  if (proCard && !(proLock && proLock.style.display !== 'none'))
+    proCard.style.borderColor = isPro ? '#a855f7' : 'var(--border)';
+  if (basicCheck) basicCheck.style.display = isPro ? 'none' : 'flex';
+  if (proCheck)   { proCheck.style.display = isPro ? 'flex' : 'none'; }
+  if (proBadge)   { proBadge.style.display = isPro ? 'none' : 'block'; }
+
+  if (label) label.textContent = isPro
+    ? 'Go to Stems Player — up to 12 stems'
+    : 'Go to Stems Player — 5 stems';
+  if (btn) btn.style.background = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
+};
+
+window.confirmStemPick = function() {
+  const modal = document.getElementById('stem-picker-modal');
+  if (!modal || !modal._jobId) return;
+  const tier = modal._tier || 'basic';
+  modal.style.display = 'none';
+  // Navigate to stems page with tier as query param
+  window.location.href = '/stems/' + modal._jobId + '?tier=' + tier;
 };
 
 window.saveSongEdit = function() {
