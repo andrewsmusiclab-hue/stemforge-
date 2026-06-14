@@ -589,17 +589,22 @@ Instrument rules:
 //  STEP 2 — MUREKA INSTRUMENTAL GENERATION
 // ═══════════════════════════════════════════════════════════════
 
-async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string): Promise<string> {
+async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string): Promise<string> {
+  const body: Record<string, any> = {
+    prompt: blueprint.mureka_prompt,
+    model: 'auto'
+  }
+  // If a reference audio file ID was supplied, pass it for style matching
+  if (refFileId) {
+    body.reference_audio = refFileId
+  }
   const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      prompt: blueprint.mureka_prompt,
-      model: 'auto'
-    })
+    body: JSON.stringify(body)
   })
 
   if (!res.ok) {
@@ -689,7 +694,7 @@ function buildCoverImageUrl(job: Job): string {
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
-async function startPipeline(jobId: string, env: Bindings) {
+async function startPipeline(jobId: string, env: Bindings, refFileId?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -717,7 +722,7 @@ async function startPipeline(jobId: string, env: Bindings) {
     job.status = 'generating'
     await setJob(db, { ...job })
 
-    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY)
+    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId)
     job.stereo_task_id = stereoTaskId
     await setJob(db, { ...job })
 
@@ -782,7 +787,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude, title } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude, title, reference_file_id } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -839,7 +844,7 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env))
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -2468,6 +2473,111 @@ app.post('/api/generate-lyrics', async (c) => {
   return c.json({ lyrics })
 })
 
+// POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
+// Pro Artist only
+app.post('/api/upload-reference', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Reference tracks require the Pro Artist plan.', upgrade: true }, 403)
+  }
+
+  // Parse multipart form — file field = 'file', optional url field = 'url'
+  const formData = await c.req.formData()
+  const file = formData.get('file') as File | null
+  const url  = formData.get('url') as string | null
+
+  if (!file && !url) return c.json({ error: 'Provide a file or url' }, 400)
+
+  // Forward to Mureka /v1/files/upload as multipart
+  const mForm = new FormData()
+  mForm.append('purpose', 'reference')
+  if (file) {
+    mForm.append('file', file)
+  } else if (url) {
+    mForm.append('url', url)
+  }
+
+  const res = await fetch(`${MUREKA_BASE}/files/upload`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+    body: mForm
+  })
+
+  if (!res.ok) {
+    const err = await res.json() as any
+    return c.json({ error: err?.error?.message || `Mureka upload error ${res.status}` }, 502)
+  }
+
+  const data = await res.json() as any
+  // data.id = the Mureka file ID to pass to instrumental/generate as reference_audio
+  return c.json({ ok: true, file_id: data.id, filename: file?.name || url || 'reference' })
+})
+
+// POST /api/generate-oneshot — generate a one-shot percussive sound (Pro Artist only)
+// Uses Mureka instrumental with a very short, percussive prompt
+app.post('/api/generate-oneshot', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'One Shot Creator requires the Pro Artist plan.', upgrade: true }, 403)
+  }
+
+  const { sound_type, description, pitch, texture } = await c.req.json<{
+    sound_type: string; description?: string; pitch?: string; texture?: string
+  }>()
+  if (!sound_type) return c.json({ error: 'sound_type is required' }, 400)
+
+  // Build a tight one-shot prompt
+  const parts: string[] = []
+  parts.push(sound_type)
+  if (description) parts.push(description)
+  if (pitch) parts.push(`pitch: ${pitch}`)
+  if (texture) parts.push(texture)
+  parts.push('single hit, one-shot, no tail, percussive, punchy, isolated sound, no music, no melody, dry sample')
+
+  const oneshotPrompt = parts.join(', ')
+
+  const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: oneshotPrompt, model: 'auto' })
+  })
+
+  if (!res.ok) {
+    const err = await res.json() as any
+    return c.json({ error: err?.error?.message || `Mureka error ${res.status}` }, 502)
+  }
+
+  const data = await res.json() as any
+  return c.json({ ok: true, task_id: data.id, sound_type, prompt: oneshotPrompt })
+})
+
+// POST /api/poll-oneshot/:task_id — poll Mureka for one-shot status
+app.post('/api/poll-oneshot/:task_id', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+
+  const taskId = c.req.param('task_id')
+  const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+  })
+  if (!res.ok) return c.json({ status: 'error' }, 502)
+
+  const data = await res.json() as any
+  if (data.status === 'succeeded' && data.choices?.[0]?.url) {
+    return c.json({ status: 'ready', audio_url: data.choices[0].url as string })
+  }
+  if (data.status === 'failed') return c.json({ status: 'error', error: 'Generation failed' })
+  return c.json({ status: 'pending' })
+})
+
 // GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
@@ -2486,6 +2596,27 @@ app.get('/api/download-wav/:id', async (c) => {
     headers: {
       'Content-Type': 'audio/wav',
       'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+      'Cache-Control': 'no-store'
+    }
+  })
+})
+
+// GET /api/download-wav-url — proxy any audio URL as WAV download (for one shots)
+app.get('/api/download-wav-url', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  const url = c.req.query('url')
+  const name = c.req.query('name') || 'oneshot'
+  if (!url) return c.json({ error: 'Missing url param' }, 400)
+  const safeUrl = decodeURIComponent(url)
+  const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '_')
+  const upstream = await fetch(safeUrl)
+  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  return new Response(upstream.body, {
+    headers: {
+      'Content-Type': 'audio/wav',
+      'Content-Disposition': `attachment; filename="${safeName}.wav"`,
       'Cache-Control': 'no-store'
     }
   })
@@ -3903,6 +4034,83 @@ function generatorPage() {
       </div>
     </div>
 
+    <!-- SECTION 1b: Reference Track (Pro Artist only) -->
+    <div class="suno-card suno-card--pro" id="card-reference">
+      <div class="suno-card__header" id="ref-header" style="cursor:pointer" onclick="toggleRefCard()">
+        <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
+          <i class="fas fa-chevron-right" id="ref-collapse-icon"></i>
+        </button>
+        <span class="suno-card__title" style="display:flex;align-items:center;gap:8px">
+          Reference Track
+          <span class="pro-badge"><i class="fas fa-crown"></i> Pro</span>
+        </span>
+      </div>
+      <div class="suno-card__body" id="ref-body" style="display:none">
+
+        <!-- Upload zone -->
+        <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
+          <input type="file" id="ref-audio-file" accept="audio/mp3,audio/mpeg,audio/m4a,audio/*" style="display:none"/>
+          <div id="ref-upload-idle">
+            <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--primary);margin-bottom:8px"></i>
+            <p style="margin:0;font-weight:600;font-size:.9rem">Upload Reference Audio</p>
+            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3 or M4A · First 30 seconds used</p>
+          </div>
+          <div id="ref-upload-loading" style="display:none">
+            <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:var(--primary);margin-bottom:8px"></i>
+            <p style="margin:0;font-size:.88rem;color:var(--muted)">Uploading to Mureka…</p>
+          </div>
+          <div id="ref-upload-done" style="display:none">
+            <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:6px"></i>
+            <p style="margin:0;font-weight:600;font-size:.88rem" id="ref-upload-name">reference.mp3</p>
+            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">Reference loaded · 30s used</p>
+          </div>
+        </div>
+        <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:8px;width:100%;padding:7px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82rem">
+          <i class="fas fa-times"></i> Remove reference track
+        </button>
+
+        <!-- Mode selector — only shown after successful upload -->
+        <div id="ref-mode-panel" style="display:none;margin-top:16px">
+          <label class="suno-option-label" style="margin-bottom:10px">What do you want to do?</label>
+          <div class="ref-mode-group">
+            <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
+              <i class="fas fa-wand-magic-sparkles"></i>
+              <span class="ref-mode-btn__title">Match Style</span>
+              <span class="ref-mode-btn__sub">Generate a new beat inspired by this track's vibe</span>
+            </button>
+            <button class="ref-mode-btn" data-mode="extend" onclick="selectRefMode('extend')">
+              <i class="fas fa-expand-arrows-alt"></i>
+              <span class="ref-mode-btn__title">Extend Song</span>
+              <span class="ref-mode-btn__sub">Continue the track from where it ends</span>
+            </button>
+            <button class="ref-mode-btn" data-mode="loop" onclick="selectRefMode('loop')">
+              <i class="fas fa-sync-alt"></i>
+              <span class="ref-mode-btn__title">Create Loop</span>
+              <span class="ref-mode-btn__sub">Generate a seamless loop from the reference</span>
+            </button>
+          </div>
+
+          <!-- Loop bar selector — shown when mode=loop -->
+          <div id="ref-loop-opts" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+            <label class="suno-option-label" style="margin-bottom:8px">Loop length</label>
+            <div class="ref-bar-presets">
+              <button class="ref-bar-btn ref-bar-btn--active" data-bars="4" onclick="selectBarPreset(this,4)">4 bars</button>
+              <button class="ref-bar-btn" data-bars="8" onclick="selectBarPreset(this,8)">8 bars</button>
+              <button class="ref-bar-btn" data-bars="16" onclick="selectBarPreset(this,16)">16 bars</button>
+              <button class="ref-bar-btn" data-bars="32" onclick="selectBarPreset(this,32)">32 bars</button>
+              <button class="ref-bar-btn" data-bars="custom" onclick="selectBarPreset(this,'custom')">Custom</button>
+            </div>
+            <div id="ref-bar-custom" style="display:none;margin-top:10px;display:flex;align-items:center;gap:8px">
+              <input type="number" id="ref-bar-custom-val" min="1" max="256" value="16" style="width:80px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem"/>
+              <span style="color:var(--muted);font-size:.88rem">bars</span>
+            </div>
+            <p style="color:var(--muted);font-size:.75rem;margin:8px 0 0"><i class="fas fa-info-circle"></i> Loop will be generated at the BPM of your reference track</p>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
     <!-- SECTION 2: Styles -->
     <div class="suno-card" id="card-styles">
       <div class="suno-card__header">
@@ -3952,6 +4160,99 @@ function generatorPage() {
           <textarea class="suno-textarea suno-textarea--sm" id="gen-instruments"
             rows="2"
             placeholder="e.g. Rhodes piano, flute, violin, guitar... describe any instruments you want included"></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 3b: One Shots (Pro Artist only) -->
+    <div class="suno-card suno-card--pro" id="card-oneshots">
+      <div class="suno-card__header" id="oneshot-header" style="cursor:pointer" onclick="toggleOneShotCard()">
+        <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
+          <i class="fas fa-chevron-right" id="oneshot-collapse-icon"></i>
+        </button>
+        <span class="suno-card__title" style="display:flex;align-items:center;gap:8px">
+          One Shot Creator
+          <span class="pro-badge"><i class="fas fa-crown"></i> Pro</span>
+        </span>
+      </div>
+      <div class="suno-card__body" id="oneshot-body" style="display:none">
+        <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px">Generate a short, punchy one-shot sound — 808 kicks, snares, hi-hats, FX, or any percussive element.</p>
+
+        <div class="oneshot-type-grid">
+          <button class="oneshot-type-btn oneshot-type-btn--active" data-sound="808 bass hit" onclick="selectOneshotType(this)">
+            <i class="fas fa-wave-square"></i> 808
+          </button>
+          <button class="oneshot-type-btn" data-sound="punchy kick drum" onclick="selectOneshotType(this)">
+            <i class="fas fa-drum"></i> Kick
+          </button>
+          <button class="oneshot-type-btn" data-sound="snare hit" onclick="selectOneshotType(this)">
+            <i class="fas fa-drum"></i> Snare
+          </button>
+          <button class="oneshot-type-btn" data-sound="hi-hat hit" onclick="selectOneshotType(this)">
+            <i class="fas fa-music"></i> Hi-Hat
+          </button>
+          <button class="oneshot-type-btn" data-sound="clap hit" onclick="selectOneshotType(this)">
+            <i class="fas fa-hands-clapping"></i> Clap
+          </button>
+          <button class="oneshot-type-btn" data-sound="FX riser impact" onclick="selectOneshotType(this)">
+            <i class="fas fa-bolt"></i> FX
+          </button>
+        </div>
+
+        <div class="suno-option-row" style="margin-top:14px">
+          <label class="suno-option-label">Describe your one-shot <span class="suno-optional-tag">Optional</span></label>
+          <input type="text" id="oneshot-desc" class="suno-style-input" placeholder="e.g. dark distorted 808, punchy boom bap kick, crispy trap snare…"/>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+          <div>
+            <label class="suno-option-label" style="margin-bottom:6px">Pitch / Note</label>
+            <select id="oneshot-pitch" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.88rem">
+              <option value="">Auto</option>
+              <option>A</option><option>A#/Bb</option><option>B</option>
+              <option>C</option><option>C#/Db</option><option>D</option>
+              <option>D#/Eb</option><option>E</option><option>F</option>
+              <option>F#/Gb</option><option>G</option><option>G#/Ab</option>
+            </select>
+          </div>
+          <div>
+            <label class="suno-option-label" style="margin-bottom:6px">Texture</label>
+            <select id="oneshot-texture" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.88rem">
+              <option value="">Auto</option>
+              <option>Clean</option>
+              <option>Distorted</option>
+              <option>Saturated</option>
+              <option>Filtered</option>
+              <option>Punchy</option>
+              <option>Soft</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="suno-create-btn" id="oneshot-gen-btn" style="margin-top:16px;width:100%;font-size:.9rem;padding:12px" onclick="generateOneShot()">
+          <i class="fas fa-bolt"></i> Generate One Shot
+        </button>
+
+        <!-- One Shot result -->
+        <div id="oneshot-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <span style="font-weight:600;font-size:.88rem" id="oneshot-result-title">One Shot Ready</span>
+            <span class="status-dot status-dot--ready" style="display:flex;align-items:center;gap:5px;font-size:.78rem;color:var(--accent-2)">
+              <span style="width:7px;height:7px;background:var(--accent-2);border-radius:50%;display:inline-block"></span>Ready
+            </span>
+          </div>
+          <audio id="oneshot-audio" controls style="width:100%;border-radius:8px"></audio>
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <a id="oneshot-dl-mp3" class="btn btn--outline btn--sm" style="flex:1;justify-content:center" download>
+              <i class="fas fa-download"></i> MP3
+            </a>
+            <a id="oneshot-dl-wav" class="btn btn--outline btn--sm" style="flex:1;justify-content:center" download>
+              <i class="fas fa-file-audio"></i> WAV
+            </a>
+          </div>
+        </div>
+        <div id="oneshot-status" style="display:none;margin-top:12px;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px;text-align:center;color:var(--muted);font-size:.85rem">
+          <i class="fas fa-spinner fa-spin" style="margin-right:6px"></i> <span id="oneshot-status-msg">Generating…</span>
         </div>
       </div>
     </div>
@@ -4495,35 +4796,82 @@ function subscriptionPage(user: User, env: Bindings) {
 
     <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
     <div class="sub-credits-section" id="sub-credits-section">
-      <h3><i class="fas fa-coins" style="color:var(--primary);margin-right:8px"></i>Buy More Downloads</h3>
-      <p style="color:var(--muted);margin-bottom:20px">One-time credit packs — never expire, stack on top of your plan.</p>
-      <div class="credit-packs-grid" id="credit-packs-grid">
-        <div class="credit-pack-card" data-pack="pack_10">
-          <div class="credit-pack__credits">10</div>
-          <div class="credit-pack__label">Downloads</div>
-          <div class="credit-pack__price">$4.99</div>
-          <button class="btn btn--outline btn--sm credit-pack-btn" data-pack="pack_10">Buy</button>
+      <div class="pack-section-header">
+        <div>
+          <h3 style="margin:0 0 4px;font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:8px">
+            <span style="width:32px;height:32px;background:linear-gradient(135deg,var(--primary),#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-bolt" style="color:#fff;font-size:.85rem"></i>
+            </span>
+            Top Up Downloads
+          </h3>
+          <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — never expire, stack on top of your plan</p>
         </div>
-        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_25">
-          <div class="credit-pack__badge">Best Value</div>
-          <div class="credit-pack__credits">25</div>
-          <div class="credit-pack__label">Downloads</div>
-          <div class="credit-pack__price">$9.99</div>
-          <button class="btn btn--primary btn--sm credit-pack-btn" data-pack="pack_25">Buy</button>
-        </div>
-        <div class="credit-pack-card" data-pack="pack_50">
-          <div class="credit-pack__credits">50</div>
-          <div class="credit-pack__label">Downloads</div>
-          <div class="credit-pack__price">$17.99</div>
-          <button class="btn btn--outline btn--sm credit-pack-btn" data-pack="pack_50">Buy</button>
-        </div>
-        <div class="credit-pack-card" data-pack="pack_100">
-          <div class="credit-pack__credits">100</div>
-          <div class="credit-pack__label">Downloads</div>
-          <div class="credit-pack__price">$29.99</div>
-          <button class="btn btn--outline btn--sm credit-pack-btn" data-pack="pack_100">Buy</button>
+        <div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(78,159,255,.08);border:1px solid rgba(78,159,255,.2);border-radius:8px;font-size:.78rem;color:var(--primary)">
+          <i class="fas fa-lock-open"></i> No subscription required
         </div>
       </div>
+      <div class="credit-packs-grid" id="credit-packs-grid">
+        <div class="credit-pack-card" data-pack="pack_10">
+          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">10</div>
+            <div class="credit-pack__label">Downloads</div>
+            <div class="credit-pack__per">$0.50 / download</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$4.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_10">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_25">
+          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
+          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">25</div>
+            <div class="credit-pack__label">Downloads</div>
+            <div class="credit-pack__per">$0.40 / download</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$9.99</span>
+            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_25">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_50">
+          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">50</div>
+            <div class="credit-pack__label">Downloads</div>
+            <div class="credit-pack__per">$0.36 / download</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$17.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_50">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_100">
+          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">100</div>
+            <div class="credit-pack__label">Downloads</div>
+            <div class="credit-pack__per">$0.30 / download</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$29.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_100">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+      </div>
+      <p style="text-align:center;font-size:.78rem;color:var(--muted);margin-top:10px">
+        <i class="fas fa-shield-alt" style="color:var(--accent-2);margin-right:4px"></i>Secure checkout powered by Stripe
+      </p>
     </div>
 
     <div class="sub-plans-section">

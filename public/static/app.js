@@ -2080,3 +2080,279 @@ window.activateDeveloperPlan = async function() {
     if (btn) { btn.disabled = false; btn.textContent = 'Activate Developer Plan'; }
   }
 };
+
+// ═══════════════════════════════════════════════════════════
+//  REFERENCE TRACK FEATURE (Pro Artist)
+// ═══════════════════════════════════════════════════════════
+
+// State
+let refFileId = null;
+let refMode = 'style'; // 'style' | 'extend' | 'loop'
+let refBars = 8;
+let oneshotSelectedType = '808 bass hit';
+let oneshotPollInterval = null;
+
+// Toggle collapse of Reference Track card
+window.toggleRefCard = function() {
+  const body = document.getElementById('ref-body');
+  const icon = document.getElementById('ref-collapse-icon');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (icon) {
+    icon.className = isOpen ? 'fas fa-chevron-right' : 'fas fa-chevron-down';
+  }
+};
+
+// Toggle collapse of One Shot card
+window.toggleOneShotCard = function() {
+  const body = document.getElementById('oneshot-body');
+  const icon = document.getElementById('oneshot-collapse-icon');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (icon) {
+    icon.className = isOpen ? 'fas fa-chevron-right' : 'fas fa-chevron-down';
+  }
+};
+
+// Handle reference audio file selection
+(function() {
+  const fileInput = document.getElementById('ref-audio-file');
+  if (!fileInput) return;
+  fileInput.addEventListener('change', async function() {
+    const file = this.files?.[0];
+    if (!file) return;
+    await uploadRefTrack(file, file.name);
+  });
+
+  // Drag-and-drop on the upload zone
+  const zone = document.getElementById('ref-upload-zone');
+  if (zone) {
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.style.borderColor = 'var(--primary)'; });
+    zone.addEventListener('dragleave', () => { zone.style.borderColor = ''; });
+    zone.addEventListener('drop', async e => {
+      e.preventDefault();
+      zone.style.borderColor = '';
+      const file = e.dataTransfer?.files?.[0];
+      if (file) await uploadRefTrack(file, file.name);
+    });
+  }
+})();
+
+async function uploadRefTrack(file, name) {
+  // Check file size — warn if likely > 30s (rough estimate: 30s MP3 ≈ 720KB at 192kbps)
+  const zone = document.getElementById('ref-upload-zone');
+  const idle = document.getElementById('ref-upload-idle');
+  const loading = document.getElementById('ref-upload-loading');
+  const done = document.getElementById('ref-upload-done');
+  const nameEl = document.getElementById('ref-upload-name');
+  const modePanel = document.getElementById('ref-mode-panel');
+  const clearBtn = document.getElementById('ref-clear-btn');
+
+  if (loading) { idle.style.display = 'none'; loading.style.display = 'flex'; done.style.display = 'none'; }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch('/api/upload-reference', { method: 'POST', body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      if (data.upgrade) {
+        // Show upgrade prompt
+        if (loading) loading.style.display = 'none';
+        idle.style.display = 'flex';
+        showUpgradeToast('Reference tracks require the Pro Artist plan.');
+        return;
+      }
+      throw new Error(data.error || 'Upload failed');
+    }
+
+    refFileId = data.file_id;
+    if (nameEl) nameEl.textContent = name.length > 28 ? name.slice(0, 25) + '...' : name;
+    if (done) { loading.style.display = 'none'; done.style.display = 'flex'; }
+    if (zone) zone.classList.add('has-file');
+    if (modePanel) modePanel.style.display = 'block';
+    if (clearBtn) clearBtn.style.display = 'block';
+  } catch(err) {
+    if (loading) loading.style.display = 'none';
+    if (idle) idle.style.display = 'flex';
+    alert('Upload error: ' + err.message);
+  }
+}
+
+window.clearRefTrack = function() {
+  refFileId = null;
+  const zone = document.getElementById('ref-upload-zone');
+  const idle = document.getElementById('ref-upload-idle');
+  const done = document.getElementById('ref-upload-done');
+  const modePanel = document.getElementById('ref-mode-panel');
+  const clearBtn = document.getElementById('ref-clear-btn');
+  const fileInput = document.getElementById('ref-audio-file');
+  if (idle) idle.style.display = 'flex';
+  if (done) done.style.display = 'none';
+  if (zone) zone.classList.remove('has-file');
+  if (modePanel) modePanel.style.display = 'none';
+  if (clearBtn) clearBtn.style.display = 'none';
+  if (fileInput) fileInput.value = '';
+};
+
+window.selectRefMode = function(mode) {
+  refMode = mode;
+  document.querySelectorAll('.ref-mode-btn').forEach(b => {
+    b.classList.toggle('ref-mode-btn--active', b.dataset.mode === mode);
+  });
+  const loopOpts = document.getElementById('ref-loop-opts');
+  if (loopOpts) loopOpts.style.display = mode === 'loop' ? 'block' : 'none';
+};
+
+window.selectBarPreset = function(btn, bars) {
+  refBars = bars;
+  document.querySelectorAll('.ref-bar-btn').forEach(b => b.classList.remove('ref-bar-btn--active'));
+  btn.classList.add('ref-bar-btn--active');
+  const customInput = document.getElementById('ref-bar-custom');
+  if (customInput) customInput.style.display = bars === 'custom' ? 'flex' : 'none';
+};
+
+// Override getInputs to inject reference_file_id into the generate payload
+// We patch the startGeneration fetch call via a global variable
+(function patchStartGenerationForRef() {
+  // We'll inject refFileId into the fetch body inside startGeneration
+  // by hooking into the existing startGeneration function via a window override
+  const _originalFetch = window.fetch;
+  // We don't override fetch globally — instead we rely on the app reading window._refFileId
+  // and window._refMode at generate time
+})();
+
+// Expose ref info so startGeneration can read it
+Object.defineProperty(window, '_refFileId', { get: () => refFileId });
+Object.defineProperty(window, '_refMode', { get: () => refMode });
+Object.defineProperty(window, '_refBars', { get: () => {
+  if (refBars === 'custom') {
+    return parseInt(document.getElementById('ref-bar-custom-val')?.value || '16') || 16;
+  }
+  return refBars;
+}});
+
+function showUpgradeToast(msg) {
+  let t = document.createElement('div');
+  t.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e1e3a;border:1px solid rgba(167,139,250,.4);color:#a78bfa;padding:12px 20px;border-radius:10px;font-size:.88rem;font-weight:600;z-index:9999;display:flex;align-items:center;gap:10px;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+  t.innerHTML = `<i class="fas fa-crown"></i> ${msg} <a href="/pricing" style="color:#fff;text-decoration:underline;margin-left:8px">Upgrade</a>`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ONE SHOT CREATOR (Pro Artist)
+// ═══════════════════════════════════════════════════════════
+
+window.selectOneshotType = function(btn) {
+  oneshotSelectedType = btn.dataset.sound || '808 bass hit';
+  document.querySelectorAll('.oneshot-type-btn').forEach(b => b.classList.remove('oneshot-type-btn--active'));
+  btn.classList.add('oneshot-type-btn--active');
+};
+
+window.generateOneShot = async function() {
+  const btn = document.getElementById('oneshot-gen-btn');
+  const statusEl = document.getElementById('oneshot-status');
+  const statusMsg = document.getElementById('oneshot-status-msg');
+  const resultEl = document.getElementById('oneshot-result');
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
+  if (statusEl) { statusEl.style.display = 'block'; }
+  if (statusMsg) statusMsg.textContent = 'Submitting to AI…';
+  if (resultEl) resultEl.style.display = 'none';
+
+  const description = document.getElementById('oneshot-desc')?.value?.trim() || '';
+  const pitch = document.getElementById('oneshot-pitch')?.value || '';
+  const texture = document.getElementById('oneshot-texture')?.value || '';
+
+  try {
+    const res = await fetch('/api/generate-oneshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sound_type: oneshotSelectedType, description, pitch, texture })
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      if (data.upgrade) { showUpgradeToast('One Shot Creator requires the Pro Artist plan.'); }
+      else { alert('Error: ' + (data.error || 'Generation failed')); }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+      if (statusEl) statusEl.style.display = 'none';
+      return;
+    }
+
+    const taskId = data.task_id;
+    if (statusMsg) statusMsg.textContent = 'AI is crafting your one-shot…';
+
+    // Poll for result
+    if (oneshotPollInterval) clearInterval(oneshotPollInterval);
+    oneshotPollInterval = setInterval(async () => {
+      try {
+        const pr = await fetch('/api/poll-oneshot/' + taskId, { method: 'POST' });
+        const pd = await pr.json();
+
+        if (pd.status === 'ready') {
+          clearInterval(oneshotPollInterval);
+          if (statusEl) statusEl.style.display = 'none';
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+
+          // Show result
+          const audio = document.getElementById('oneshot-audio');
+          const titleEl = document.getElementById('oneshot-result-title');
+          const dlMp3 = document.getElementById('oneshot-dl-mp3');
+          const dlWav = document.getElementById('oneshot-dl-wav');
+
+          if (audio) audio.src = pd.audio_url;
+          const safeName = oneshotSelectedType.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+          if (titleEl) titleEl.textContent = oneshotSelectedType.charAt(0).toUpperCase() + oneshotSelectedType.slice(1) + ' — Ready';
+          if (dlMp3) { dlMp3.href = pd.audio_url; dlMp3.setAttribute('download', safeName + '.mp3'); }
+          if (dlWav) { dlWav.href = '/api/download-wav-url?url=' + encodeURIComponent(pd.audio_url) + '&name=' + encodeURIComponent(safeName); dlWav.setAttribute('download', safeName + '.wav'); }
+          if (resultEl) resultEl.style.display = 'block';
+
+          if (audio) audio.play().catch(() => {});
+
+        } else if (pd.status === 'error') {
+          clearInterval(oneshotPollInterval);
+          if (statusEl) statusEl.style.display = 'none';
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+          alert('Generation failed. Please try again.');
+        }
+        // else still pending — keep polling
+      } catch {}
+    }, 4000);
+
+  } catch(err) {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+    if (statusEl) statusEl.style.display = 'none';
+    alert('Network error: ' + err.message);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  Patch startGeneration to send reference_file_id
+// ═══════════════════════════════════════════════════════════
+// We intercept the fetch('/api/generate',...) call by overriding window.fetch
+// ONLY for that specific path, injecting refFileId and ref mode data.
+(function patchFetchForRef() {
+  const _orig = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    const url = typeof input === 'string' ? input : input?.url || '';
+    if (url === '/api/generate' && init?.method === 'POST' && init?.body) {
+      try {
+        const body = JSON.parse(init.body);
+        if (window._refFileId) {
+          body.reference_file_id = window._refFileId;
+          body.ref_mode = window._refMode;
+          if (window._refMode === 'loop') body.ref_bars = window._refBars;
+          if (window._refMode === 'extend') body.ref_extend = true;
+          init = { ...init, body: JSON.stringify(body) };
+        }
+      } catch {}
+    }
+    return _orig(input, init);
+  };
+})();
