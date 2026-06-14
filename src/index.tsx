@@ -928,6 +928,67 @@ app.get('/api/zip-proxy', async (c) => {
 app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 
 // ═══════════════════════════════════════════════════════════════
+//  GET /api/cover-image/:jobId
+//  Generate a DALL-E 3 album cover image for a beat.
+//  Result is cached in the job record for 55 min to avoid re-charging.
+//  Auth: session cookie required.
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/cover-image/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('jobId')
+  let job: Job | null = null
+  try {
+    const row = await c.env.DB.prepare('SELECT data FROM jobs WHERE id = ?').bind(jobId).first<{data:string}>()
+    if (row) job = JSON.parse(row.data) as Job
+  } catch { /* fall through */ }
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  // Return cached image_url if it's less than 55 minutes old
+  const cached = (job as any).image_url as string | undefined
+  const cachedAt = (job as any).image_url_generated_at as number | undefined
+  const now = Date.now()
+  if (cached && cachedAt && (now - cachedAt) < 55 * 60 * 1000) {
+    return c.json({ url: cached })
+  }
+
+  // Build a descriptive DALL-E 3 prompt from the beat's blueprint
+  const bp = job.blueprint as any
+  const genre  = bp?.genre  || 'music'
+  const mood   = bp?.mood   || 'atmospheric'
+  const energy = bp?.energy || 'medium'
+  const title  = (job as any).title || genre
+
+  const imagePrompt = `Album cover art for a ${genre} track titled "${title}". ${mood} mood, ${energy} energy. ` +
+    `Cinematic, dark studio aesthetic, moody atmospheric lighting, no text, no words, no letters, ` +
+    `abstract music visual, professional album artwork, highly detailed, 4K quality.`
+
+  try {
+    const imgRes = await fetch(`${OPENAI_BASE}/images/generations`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'dall-e-3', prompt: imagePrompt, n: 1, size: '1024x1024', quality: 'standard' })
+    })
+    const imgData = await imgRes.json() as any
+    if (!imgRes.ok || !imgData.data?.[0]?.url) {
+      return c.json({ error: imgData.error?.message || 'Image generation failed' }, 500)
+    }
+    const url = imgData.data[0].url as string
+
+    // Cache back into job record
+    const updatedJob = { ...job, image_url: url, image_url_generated_at: now } as any
+    await setJob(c.env.DB, updatedJob)
+
+    return c.json({ url })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Image generation failed' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  GET /api/stem-audio/:jobId/:stem
 //  Serves a single stem WAV extracted from the Mureka ZIP.
 //  Uses HTTP Range requests to fetch only the needed file bytes
@@ -1206,20 +1267,8 @@ app.post('/api/job/stems', async (c) => {
     const bp = job.blueprint as any
     const bpInstruments: string[] = bp?.instruments?.map((i: any) => (i.name || '').toLowerCase()) || []
 
-    // Derive smart drum label from blueprint — kick, snare, hi-hats get their own label
-    // Mureka V2 returns one 'drums' stem; we label it from what the blueprint says is in it
-    function getDrumLabel(): string {
-      const hasKick  = bpInstruments.some(n => n.includes('kick') || n.includes('808'))
-      const hasSnare = bpInstruments.some(n => n.includes('snare') || n.includes('clap'))
-      const hasHats  = bpInstruments.some(n => n.includes('hat') || n.includes('hi-hat') || n.includes('hihat'))
-      const parts = []
-      if (hasKick)  parts.push('Kick')
-      if (hasSnare) parts.push('Snare')
-      if (hasHats)  parts.push('Hi-Hats')
-      if (parts.length === 0) return 'Drums'
-      if (parts.length >= 3)  return 'Drums (Kick / Snare / Hi-Hats)'
-      return 'Drums (' + parts.join(' / ') + ')'
-    }
+    // Drums always labeled 'Drums' — Mureka returns one mixed drum track regardless of sub-components
+    function getDrumLabel(): string { return 'Drums' }
 
     // V1 (Creator): 5 fixed stems — smartly labeled from blueprint
     const v1CandidateList = [
@@ -2372,6 +2421,23 @@ async function stemsInit() {
     stemsJob = job;
     populateHero(job);
 
+    // Check sessionStorage cache first — if stems were already extracted this session,
+    // skip the credit prompt entirely and go straight to the player
+    const cacheKey = 'stems_extracted_' + STEMS_JOB_ID;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached && !job.zip_url) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed.zip_url && parsed.tracks && parsed.tracks.length > 0) {
+          stemsJob.zip_url = parsed.zip_url;
+          stemsJob.tracks  = parsed.tracks;
+          if (parsed.midi_zip_url) stemsJob.midi_zip_url = parsed.midi_zip_url;
+          job.zip_url = parsed.zip_url;
+          job.tracks  = parsed.tracks;
+        }
+      } catch(e) { sessionStorage.removeItem(cacheKey); }
+    }
+
     if (!job.zip_url) {
       const meRes  = await fetch('/api/auth/me');
       const meData = await meRes.json();
@@ -2384,7 +2450,7 @@ async function stemsInit() {
       const btnLabel  = document.getElementById('stems-extract-btn-label');
       const descLabel = document.getElementById('stems-no-stems-desc');
       if (descLabel) descLabel.textContent = isPro
-        ? 'Extract up to 12 individual stems — Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export.'
+        ? 'Extract up to 12 individual stems — Drums, Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export.'
         : 'Extract 5 individual stems — Drums, Bass, Melody, Vocals, and Other — from your beat to preview and download each track separately.';
       if (costLabel) costLabel.textContent = isPro
         ? 'Costs 10 download credits — extracts up to 12 stems + MIDI'
@@ -2394,6 +2460,15 @@ async function stemsInit() {
         : 'Extract Stems — 2 Credits';
       return;
     }
+
+    // Save to sessionStorage so back-navigation skips the prompt
+    try {
+      sessionStorage.setItem(cacheKey, JSON.stringify({
+        zip_url: job.zip_url,
+        tracks:  job.tracks  || [],
+        midi_zip_url: job.midi_zip_url || null
+      }));
+    } catch(e) { /* storage full — ignore */ }
 
     await buildStemsPlayer(job);
   } catch(e) {
@@ -2467,6 +2542,23 @@ function populateHero(job) {
     artEl.style.backgroundImage="url('"+dataUrl+"')";
     artEl.style.backgroundSize='cover';
   } catch(e){/* fallback to gradient */}
+
+  // Load real DALL-E image async on top of the canvas placeholder
+  if (job.id) {
+    fetch('/api/cover-image/' + job.id)
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(data){
+        if (!data || !data.url) return;
+        const img = new Image();
+        img.onload = function(){
+          artEl.style.backgroundImage = "url('"+data.url+"')";
+          artEl.style.backgroundSize = 'cover';
+          artEl.style.backgroundPosition = 'center';
+        };
+        img.src = data.url;
+      })
+      .catch(function(){ /* keep canvas art */ });
+  }
 
   if (job.zip_url) {
     const zipBtn = document.getElementById('stems-download-zip-btn');
@@ -2899,6 +2991,15 @@ async function stemsExtract() {
     if (status) { status.textContent='✅ Done! Building player...'; status.style.color='var(--accent-2)'; }
     stemsJob.zip_url = data.zip_url;
     stemsJob.tracks  = data.tracks || stemsJob.tracks;
+    if (data.midi_zip_url) stemsJob.midi_zip_url = data.midi_zip_url;
+    // Cache in sessionStorage so back-navigation skips the credit prompt
+    try {
+      sessionStorage.setItem('stems_extracted_' + STEMS_JOB_ID, JSON.stringify({
+        zip_url: data.zip_url,
+        tracks:  data.tracks || [],
+        midi_zip_url: data.midi_zip_url || null
+      }));
+    } catch(e) { /* storage full — ignore */ }
     populateHero(stemsJob);
     await buildStemsPlayer(stemsJob);
   } catch(e) {
@@ -3329,7 +3430,7 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and optionally extracts stems. Creator plans get 5 labeled stems (Drums, Bass, Melody, Vocals, Other) for 2 credits. Pro Artist plans get up to 12 individually labeled stems (Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more) plus MIDI for 10 credits.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat: the AI builds the blueprint, renders the instrumental, and optionally extracts stems. Creator plans get 5 labeled stems (Drums, Bass, Melody, Vocals, Other) for 2 credits. Pro Artist plans get up to 12 individually labeled stems (Drums, Bass, Melody, Synth, Guitar, Strings, and more) plus MIDI for 10 credits.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. Free plan users must upgrade to continue after 3 generations.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What is in the stem ZIP vs individual track download? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">The stem ZIP (free on all plans) contains 5 audio files: Drums, Bass, Vocals, Other/Melody, and Instrumental mix. Individual track download (Pro Artist+) lets you access each stem file separately by name.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>

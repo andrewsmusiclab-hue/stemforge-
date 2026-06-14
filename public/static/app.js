@@ -531,25 +531,25 @@ document.addEventListener('DOMContentLoaded', () => {
         html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
         projectGrid.innerHTML = html;
 
-        // Generate Canvas-based album art for each card (deterministic, no external service)
+        // Generate Canvas art immediately (instant placeholder), then load real DALL-E image async
         projectGrid.querySelectorAll('.project-card[data-hue]').forEach(card => {
           const hue    = parseInt(card.dataset.hue || '180', 10);
           const title  = card.dataset.title || '';
           const genre  = card.dataset.genre || 'music';
+          const jobId  = card.dataset.id || '';
           const artEl  = card.querySelector('.project-card__art');
           if (!artEl) return;
-          // Draw on a small canvas then set as background
+
+          // Step 1: draw Canvas placeholder instantly
           try {
             const canvas = document.createElement('canvas');
             canvas.width = 256; canvas.height = 256;
             const ctx = canvas.getContext('2d');
-            // Background gradient
             const grad = ctx.createLinearGradient(0, 0, 256, 256);
             grad.addColorStop(0, `hsl(${hue},65%,18%)`);
             grad.addColorStop(0.5, `hsl(${(hue+40)%360},75%,12%)`);
             grad.addColorStop(1, `hsl(${(hue+80)%360},60%,8%)`);
             ctx.fillStyle = grad; ctx.fillRect(0, 0, 256, 256);
-            // Decorative circles
             const r1 = ctx.createRadialGradient(200, 60, 10, 200, 60, 120);
             r1.addColorStop(0, `hsla(${(hue+120)%360},80%,60%,0.35)`);
             r1.addColorStop(1, 'transparent');
@@ -558,23 +558,17 @@ document.addEventListener('DOMContentLoaded', () => {
             r2.addColorStop(0, `hsla(${(hue+240)%360},70%,55%,0.25)`);
             r2.addColorStop(1, 'transparent');
             ctx.fillStyle = r2; ctx.fillRect(0, 0, 256, 256);
-            // Genre text (small, top)
             ctx.font = 'bold 13px system-ui,sans-serif';
             ctx.fillStyle = `hsla(${hue},60%,85%,0.7)`;
             ctx.textAlign = 'center';
             ctx.fillText(genre.toUpperCase(), 128, 36);
-            // Waveform bars decoration
-            const barCount = 18;
-            const barW = 6; const gap = 4;
+            const barCount = 18; const barW = 6; const gap = 4;
             const totalW = barCount * (barW + gap) - gap;
             const startX = (256 - totalW) / 2;
-            ctx.fillStyle = `hsla(${hue},70%,70%,0.5)`;
             for (let b = 0; b < barCount; b++) {
-              // Use hue + index to generate pseudo-random heights
               const seed = (hue * 13 + b * 97) % 360;
               const h = 20 + (Math.sin(seed * 0.13) * 0.5 + 0.5) * 55;
-              const x = startX + b * (barW + gap);
-              const y = 128 - h / 2;
+              const x = startX + b * (barW + gap); const y = 128 - h / 2;
               const barGrad = ctx.createLinearGradient(0, y, 0, y + h);
               barGrad.addColorStop(0, `hsla(${(hue+40)%360},80%,75%,0.9)`);
               barGrad.addColorStop(1, `hsla(${hue},60%,50%,0.4)`);
@@ -583,7 +577,6 @@ document.addEventListener('DOMContentLoaded', () => {
               ctx.roundRect ? ctx.roundRect(x, y, barW, h, 2) : ctx.rect(x, y, barW, h);
               ctx.fill();
             }
-            // Title text (bold, centered)
             const words = title.split(' ');
             const line1 = words.slice(0, Math.ceil(words.length/2)).join(' ');
             const line2 = words.slice(Math.ceil(words.length/2)).join(' ');
@@ -591,19 +584,33 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.fillStyle = '#ffffff';
             ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 6;
             ctx.textAlign = 'center';
-            if (line2) {
-              ctx.fillText(line1.slice(0,18), 128, 185);
-              ctx.fillText(line2.slice(0,18), 128, 207);
-            } else {
-              ctx.fillText(line1.slice(0,20), 128, 197);
-            }
+            if (line2) { ctx.fillText(line1.slice(0,18), 128, 185); ctx.fillText(line2.slice(0,18), 128, 207); }
+            else { ctx.fillText(line1.slice(0,20), 128, 197); }
             ctx.shadowBlur = 0;
-            // Apply canvas as background
-            const dataUrl = canvas.toDataURL('image/png');
-            artEl.style.backgroundImage = `url('${dataUrl}')`;
+            artEl.style.backgroundImage = `url('${canvas.toDataURL('image/png')}')`;
             artEl.style.backgroundSize = 'cover';
             artEl.style.backgroundPosition = 'center';
-          } catch(e) { /* canvas failed — gradient fallback already shown */ }
+          } catch(e) { /* gradient fallback already shown */ }
+
+          // Step 2: load real DALL-E image async (only if job has a valid id)
+          if (!jobId) return;
+          // Small stagger to avoid hammering the API simultaneously for all cards
+          const cardIndex = Array.from(projectGrid.querySelectorAll('.project-card[data-hue]')).indexOf(card);
+          setTimeout(() => {
+            fetch('/api/cover-image/' + jobId)
+              .then(r => r.ok ? r.json() : null)
+              .then(data => {
+                if (!data || !data.url) return;
+                const img = new Image();
+                img.onload = () => {
+                  artEl.style.backgroundImage = `url('${data.url}')`;
+                  artEl.style.backgroundSize = 'cover';
+                  artEl.style.backgroundPosition = 'center';
+                };
+                img.src = data.url;
+              })
+              .catch(() => { /* keep canvas art */ });
+          }, cardIndex * 800); // 800ms stagger between cards
         });
 
         // Inject dashboard upgrade modal if not already present
@@ -1303,6 +1310,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 thumbEl.style.backgroundImage=`url('${du}')`;
                 thumbEl.style.backgroundSize='cover';
               } catch(e){/* gradient fallback already shown */}
+
+              // Load real DALL-E image async on top of the canvas placeholder
+              if (job.id) {
+                fetch('/api/cover-image/' + job.id)
+                  .then(r => r.ok ? r.json() : null)
+                  .then(data => {
+                    if (!data || !data.url) return;
+                    const img = new Image();
+                    img.onload = () => {
+                      thumbEl.style.backgroundImage = `url('${data.url}')`;
+                      thumbEl.style.backgroundSize = 'cover';
+                      thumbEl.style.backgroundPosition = 'center';
+                    };
+                    img.src = data.url;
+                  })
+                  .catch(() => {});
+              }
             }
 
             if (genResult) genResult.style.display = 'block';
