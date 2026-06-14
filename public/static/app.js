@@ -1580,58 +1580,98 @@ window.downloadStem = function(zipUrl, stemName) {
 // Cache of loaded projects for the modal
 window._sfProjects = {};
 
+let _editStemTier = 'basic'; // 'basic' | 'pro'
+
 function resetStemsSection() {
   const sec    = document.getElementById('edit-stems-section');
   const status = document.getElementById('edit-stems-status');
   const result = document.getElementById('edit-stems-result');
-  const btn    = document.getElementById('edit-get-stems-btn');
+  const picker = document.getElementById('edit-stems-picker');
   if (sec)    sec.style.display = 'none';
   if (status) { status.style.display = 'none'; status.textContent = ''; }
-  if (result) result.style.display = 'none';
-  if (btn)    { btn.disabled = false; btn.innerHTML = '<i class="fas fa-layer-group"></i> Extract'; }
+  if (result) { result.style.display = 'none'; }
+  if (picker) { picker.style.display = 'none'; }
+  _editStemTier = 'basic';
 }
 
 function showStemsSection(job) {
   const user = window._sfUser;
-  if (!user || user.plan === 'free') return; // free plan — don't show
-  const sec  = document.getElementById('edit-stems-section');
-  const desc = document.getElementById('edit-stems-desc');
+  if (!user || user.plan === 'free') return;
+  const sec    = document.getElementById('edit-stems-section');
+  const picker = document.getElementById('edit-stems-picker');
+  const result = document.getElementById('edit-stems-result');
   if (!sec) return;
 
-  // Already extracted — link to stems player page
+  sec.style.display = 'block';
+
+  // Already extracted — show Open Stems Player link
   if (job && job.zip_url) {
-    sec.style.display = 'block';
-    if (desc) desc.textContent = 'Stems extracted — open the stems player to preview and download.';
-    const btn = document.getElementById('edit-get-stems-btn');
-    if (btn) {
-      btn.innerHTML = '<i class="fas fa-play-circle"></i> Open Stems Player';
-      btn.onclick = () => { window.location.href = '/stems/' + job.id; };
-      btn.style.display = '';
-    }
-    const result = document.getElementById('edit-stems-result');
-    const zipLink = document.getElementById('edit-stems-zip-link');
-    if (result && zipLink) {
-      zipLink.href = job.zip_url;
-      const title = (job.title || job.blueprint?.genre || 'beat').replace(/[^a-zA-Z0-9 \-_]/g,'').replace(/\s+/g,'_').toLowerCase();
-      zipLink.download = title + '_stems.zip';
+    if (picker) picker.style.display = 'none';
+    if (result) {
       result.style.display = 'flex';
-    }
-    if (job.midi_zip_url) {
-      const midiLink = document.getElementById('edit-stems-midi-link');
-      if (midiLink) { midiLink.href = job.midi_zip_url; midiLink.style.display = 'inline-flex'; }
+      const zipLink = document.getElementById('edit-stems-zip-link');
+      if (zipLink) {
+        zipLink.href = '/stems/' + job.id;
+        zipLink.removeAttribute('download');
+        zipLink.textContent = '';
+        zipLink.innerHTML = '<i class="fas fa-layer-group"></i> Open Stems Player';
+      }
+      if (job.midi_zip_url) {
+        const midiLink = document.getElementById('edit-stems-midi-link');
+        if (midiLink) { midiLink.href = job.midi_zip_url; midiLink.style.display = 'inline-flex'; }
+      }
     }
     return;
   }
 
-  // Not yet extracted — show cost info
-  sec.style.display = 'block';
-  const isPro = user.plan === 'pro';
-  const cost  = isPro ? 10 : 2;
-  const stems = isPro ? 'up to 12 stems' : '5 stems';
-  if (desc) desc.textContent = `${stems} · costs ${cost} credits (you have ${user.gens_limit - user.gens_used} remaining)`;
-  const btn = document.getElementById('edit-get-stems-btn');
-  if (btn) btn.style.display = '';
+  // Not yet extracted — show tier picker
+  if (result) result.style.display = 'none';
+  if (picker) picker.style.display = 'block';
+
+  const isPro = user.plan === 'pro' || user.plan === 'developer';
+  const proLock  = document.getElementById('edit-pro-lock');
+  const proBadge = document.getElementById('edit-pro-badge');
+  const proNote  = document.getElementById('edit-pro-upgrade-note');
+  if (!isPro) {
+    const proCard = document.getElementById('edit-tier-pro');
+    if (proCard) { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
+    if (proLock)  proLock.style.display = 'flex';
+    if (proBadge) proBadge.style.display = 'none';
+    if (proNote)  proNote.style.display = 'block';
+  } else {
+    if (proLock)  proLock.style.display = 'none';
+    if (proBadge) proBadge.style.display = 'block';
+    if (proNote)  proNote.style.display = 'none';
+  }
+  // Start on basic
+  _editStemTier = 'basic';
+  selectEditStemTier('basic');
 }
+
+window.selectEditStemTier = function(tier) {
+  const proLock = document.getElementById('edit-pro-lock');
+  if (tier === 'pro' && proLock && proLock.style.display !== 'none') return;
+
+  _editStemTier = tier;
+  const isPro = tier === 'pro';
+
+  const basicCard  = document.getElementById('edit-tier-basic');
+  const proCard    = document.getElementById('edit-tier-pro');
+  const basicCheck = document.getElementById('edit-check-basic');
+  const proCheck   = document.getElementById('edit-check-pro');
+  const proBadge   = document.getElementById('edit-pro-badge');
+  const btnLabel   = document.getElementById('edit-stems-btn-label');
+  const btn        = document.getElementById('edit-get-stems-btn');
+
+  if (basicCard) basicCard.style.borderColor = isPro ? 'var(--border)' : 'var(--primary)';
+  if (proCard && !(proLock && proLock.style.display !== 'none'))
+    proCard.style.borderColor = isPro ? '#a855f7' : 'var(--border)';
+  if (basicCheck) basicCheck.style.display = isPro ? 'none' : 'flex';
+  if (proCheck)   proCheck.style.display   = isPro ? 'flex' : 'none';
+  if (proBadge)   proBadge.style.display   = isPro ? 'none' : 'block';
+  if (btnLabel)   btnLabel.textContent     = isPro ? 'Get Up to 12 Stems — 10 Credits' : 'Get 5 Stems — 2 Credits';
+  if (btn)        btn.style.background     = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
+};
 
 window.openSongEditModal = function(jobData, jobId) {
   const modal = document.getElementById('song-edit-modal');
@@ -1939,10 +1979,43 @@ window.sfStemsGo = async function(jobId) {
 };
 
 // Request stems on-demand — called from "Get Stems" button in 3-dot modal
-window.requestStems = function() {
-  const jobId = document.getElementById('edit-job-id')?.value;
-  if (!jobId) return;
-  openStemPickerModal(jobId, window._sfUser);
+window.requestStems = async function() {
+  const jobId  = document.getElementById('edit-job-id')?.value;
+  const btn    = document.getElementById('edit-get-stems-btn');
+  const status = document.getElementById('edit-stems-status');
+  if (!jobId || !btn) return;
+
+  btn.disabled = true;
+  const origLabel = document.getElementById('edit-stems-btn-label')?.textContent || 'Get Stems';
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting…';
+  if (status) { status.style.display = 'block'; status.style.background = 'rgba(99,102,241,.12)'; status.style.color = 'var(--text)'; status.textContent = '⏳ Extracting stems — this takes ~15 seconds…'; }
+
+  try {
+    const res  = await fetch('/api/job/stems', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId, stem_tier: _editStemTier || 'basic' })
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ ' + (data.error || 'Stem extraction failed.'); }
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-layer-group"></i> <span>' + origLabel + '</span>';
+      return;
+    }
+
+    // Update cached job
+    const job = window._sfProjects[jobId];
+    if (job) { job.zip_url = data.zip_url; if (data.midi_zip_url) job.midi_zip_url = data.midi_zip_url; }
+
+    if (status) { status.style.background = 'rgba(16,185,129,.12)'; status.style.color = '#34d399'; status.textContent = '✅ Done! Opening stems player…'; }
+    setTimeout(() => { window.location.href = '/stems/' + jobId; }, 800);
+
+  } catch(e) {
+    if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ Network error. Please try again.'; }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-layer-group"></i> <span>' + origLabel + '</span>';
+  }
 };
 
 // ── Stem Tier Picker Modal ─────────────────────────────────────────────────
