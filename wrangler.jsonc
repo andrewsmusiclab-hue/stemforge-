@@ -24,5 +24,11 @@
       "database_name": "stemforge-jobs",
       "database_id": "placeholder"
     }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "stemforge-images"
+    }
   ]
 }

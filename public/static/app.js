@@ -594,14 +594,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
           // Step 2: load real AI image async (only if job has a valid id)
           if (!jobId) return;
-          // Check sessionStorage cache first — data URL is ~1.5 MB, no need to re-fetch
+          // Check sessionStorage cache — only useful for data: URLs (legacy fallback).
+          // Permanent R2 URLs (https://) are served directly and cached by the browser.
           const imgCacheKey = 'cover_img_' + jobId;
           const cachedUrl = sessionStorage.getItem(imgCacheKey);
-          if (cachedUrl) {
+          if (cachedUrl && cachedUrl.startsWith('data:')) {
+            // Legacy data URL still in storage — use it but it'll be replaced by R2 URL on next fetch
             artEl.style.backgroundImage = `url('${cachedUrl}')`;
             artEl.style.backgroundSize = 'cover';
             artEl.style.backgroundPosition = 'center';
-            return;
+            // Don't return — still fall through to fetch the permanent URL below
           }
           // Small stagger to avoid hammering the API simultaneously for all cards
           const cardIndex = Array.from(projectGrid.querySelectorAll('.project-card[data-hue]')).indexOf(card);
@@ -610,8 +612,13 @@ document.addEventListener('DOMContentLoaded', () => {
               .then(r => r.ok ? r.json() : null)
               .then(data => {
                 if (!data || !data.url) return;
-                // Cache data URL so back-nav / re-render skips the API call
-                try { sessionStorage.setItem(imgCacheKey, data.url); } catch(e) { /* storage full */ }
+                // Only sessionStorage-cache data: URLs — https:// URLs are browser-cached natively
+                if (data.url.startsWith('data:')) {
+                  try { sessionStorage.setItem(imgCacheKey, data.url); } catch(e) { /* storage full */ }
+                } else {
+                  // Clear any stale data: URL now that we have a permanent one
+                  try { sessionStorage.removeItem(imgCacheKey); } catch(e) {}
+                }
                 const img = new Image();
                 img.onload = () => {
                   artEl.style.backgroundImage = `url('${data.url}')`;
@@ -1341,12 +1348,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 thumbEl.style.backgroundSize='cover';
               } catch(e){/* gradient fallback already shown */}
 
-              // Load real DALL-E image async on top of the canvas placeholder
+              // Load real AI image async on top of the canvas placeholder
               if (job.id) {
                 fetch('/api/cover-image/' + job.id)
                   .then(r => r.ok ? r.json() : null)
                   .then(data => {
                     if (!data || !data.url) return;
+                    // Clear any stale data: URL from sessionStorage now that we have a permanent R2 URL
+                    if (!data.url.startsWith('data:')) {
+                      try { sessionStorage.removeItem('cover_img_' + job.id); } catch(e) {}
+                    }
                     const img = new Image();
                     img.onload = () => {
                       thumbEl.style.backgroundImage = `url('${data.url}')`;

@@ -6,6 +6,7 @@ type Bindings = {
   OPENAI_API_KEY: string
   MUREKA_API_KEY: string
   DB: D1Database             // Cloudflare D1 for persistent job storage
+  IMAGES: R2Bucket           // Cloudflare R2 for permanent cover art storage
   // Auth + Payments (set via gsk hosted deploy or wrangler secret put)
   GOOGLE_CLIENT_ID: string          // Google OAuth App client ID
   GOOGLE_CLIENT_SECRET: string      // Google OAuth App client secret
@@ -930,8 +931,13 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/cover-image/:jobId
 //  Generate an AI album cover image for a beat using gpt-image-1.
-//  Returns base64 data URL directly — no D1 caching (b64 ~1.5 MB is too large).
-//  The client may sessionStorage-cache the result itself.
+//  Caching strategy (generate ONCE, serve forever — $0.02 total per track):
+//    1. Check D1 job record for a stored image_url → return immediately (free)
+//    2. If no cached URL: call gpt-image-1, get b64_json
+//    3. Upload the raw JPEG bytes to R2 under covers/<jobId>.jpg
+//    4. Save the R2 public URL back into the D1 job record
+//    5. Return the permanent R2 URL to the client
+//  The client receives a real HTTPS URL, not a data URL — no sessionStorage needed.
 //  Auth: session cookie required.
 // ═══════════════════════════════════════════════════════════════
 app.get('/api/cover-image/:jobId', async (c) => {
@@ -948,22 +954,27 @@ app.get('/api/cover-image/:jobId', async (c) => {
   } catch { /* fall through */ }
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  // Build a genre/mood-aware prompt — bright & vibrant by default, dark only when warranted
+  // ── Step 1: Return cached permanent URL immediately (zero cost) ──
+  const cachedUrl = (job as any).image_url as string | undefined
+  // Only trust http(s) URLs — not legacy data: or pollinations URLs
+  if (cachedUrl && cachedUrl.startsWith('http') && !cachedUrl.includes('pollinations')) {
+    return c.json({ url: cachedUrl, cached: true })
+  }
+
+  // ── Step 2: Build genre/mood-aware prompt ──
   const bp = job.blueprint as any
   const genre  = (bp?.genre  || 'music').toLowerCase()
   const mood   = (bp?.mood   || 'uplifting').toLowerCase()
   const energy = (bp?.energy || 'medium').toLowerCase()
   const title  = ((job as any).title || genre).toLowerCase()
 
-  // Detect whether this track is genuinely dark
-  const darkKeywords = ['dark','cold','menacing','aggressive','hard','gritty','sinister','evil','haunted','ominous','drill','noir','horror','gothic','trap','sad','melancholy','depressed']
+  const darkKeywords   = ['dark','cold','menacing','aggressive','hard','gritty','sinister','evil','haunted','ominous','drill','noir','horror','gothic','trap','sad','melancholy','depressed']
   const brightKeywords = ['happy','uplifting','joyful','warm','sunny','vibrant','energetic','summer','beach','festival','party','dance','groovy','funky','positive','love','romantic','smooth','chill','peaceful']
-  const genreDark = ['drill','dark trap','hard trap','horror','gothic'].some(g => genre.includes(g))
-  const moodDark  = darkKeywords.some(w => mood.includes(w) || title.includes(w))
+  const genreDark  = ['drill','dark trap','hard trap','horror','gothic'].some(g => genre.includes(g))
+  const moodDark   = darkKeywords.some(w => mood.includes(w) || title.includes(w))
   const moodBright = brightKeywords.some(w => mood.includes(w) || title.includes(w))
   const isDark = genreDark || (moodDark && !moodBright)
 
-  // Genre → visual style lookup for variety
   const genreVisuals: Record<string,string> = {
     'pop':        'colorful confetti burst, bright pastel palette, glossy sheen, pop-art energy, vivid neon highlights',
     'r&b':        'warm golden hour light, silhouetted figure, rich amber and burgundy tones, soul and sensuality',
@@ -982,13 +993,11 @@ app.get('/api/cover-image/:jobId', async (c) => {
     'reggae':     'lush tropical greens, warm sun rays through palm trees, peaceful island vibes',
   }
 
-  // Pick visual style — match partial genre key
   let visualStyle = ''
   for (const [key, style] of Object.entries(genreVisuals)) {
     if (genre.includes(key)) { visualStyle = style; break }
   }
 
-  // Build the prompt
   let aestheticLine: string
   if (isDark) {
     aestheticLine = visualStyle
@@ -1000,7 +1009,6 @@ app.get('/api/cover-image/:jobId', async (c) => {
       : `Vibrant bold colors, bright dynamic lighting, energetic and visually striking, rich saturated palette.`
   }
 
-  // Add energy modifier
   const energyLine = energy === 'high'
     ? 'High energy, explosive, dynamic composition.'
     : energy === 'low'
@@ -1012,6 +1020,7 @@ app.get('/api/cover-image/:jobId', async (c) => {
     `No text, no words, no letters, no numbers. Abstract music visual, professional artwork, highly detailed, 4K quality.`
 
   try {
+    // ── Step 3: Generate image with gpt-image-1 ──
     const imgRes = await fetch(`${OPENAI_BASE}/images/generations`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
@@ -1029,11 +1038,61 @@ app.get('/api/cover-image/:jobId', async (c) => {
       return c.json({ error: imgData.error?.message || 'Image generation failed' }, 500)
     }
     const b64 = imgData.data[0].b64_json as string
-    // Return as a data URL — browser loads it directly, no CDN redirect needed
-    return c.json({ url: 'data:image/jpeg;base64,' + b64 })
+
+    // ── Step 4: Store JPEG in R2 (if binding available) ──
+    const r2Key = `covers/${jobId}.jpg`
+    let publicUrl: string
+
+    if (c.env.IMAGES) {
+      // Decode base64 → binary and upload to R2
+      const binaryStr = atob(b64)
+      const bytes = new Uint8Array(binaryStr.length)
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i)
+
+      await c.env.IMAGES.put(r2Key, bytes.buffer, {
+        httpMetadata: { contentType: 'image/jpeg' }
+      })
+
+      // ── Step 5: Build the public URL ──
+      // We serve R2 objects through our own /api/cover-art/:key route (no need for public bucket)
+      publicUrl = `${c.env.SITE_URL}/api/cover-art/${jobId}`
+    } else {
+      // R2 not available — fall back to returning data URL (old behaviour, still works)
+      publicUrl = 'data:image/jpeg;base64,' + b64
+    }
+
+    // ── Step 6: Save permanent URL into D1 job record ──
+    if (c.env.IMAGES) {
+      const updatedJob = { ...job, image_url: publicUrl } as any
+      await setJob(c.env.DB, updatedJob)
+    }
+
+    return c.json({ url: publicUrl })
   } catch (err: any) {
     return c.json({ error: err?.message || 'Image generation failed' }, 500)
   }
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  GET /api/cover-art/:jobId
+//  Serve the cover JPEG directly from R2 with long-lived cache headers.
+//  This avoids needing a public R2 bucket — the worker proxies the bytes.
+//  Auth: none required (URL is not guessable, jobId is a UUID).
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/cover-art/:jobId', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const jobId = c.req.param('jobId')
+  const obj = await c.env.IMAGES.get(`covers/${jobId}.jpg`)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  const data = await obj.arrayBuffer()
+  return new Response(data, {
+    headers: {
+      'Content-Type': 'image/jpeg',
+      // Cache for 1 year — image never changes for a given jobId
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Content-Length': String(data.byteLength),
+    }
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════
