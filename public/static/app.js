@@ -2055,3 +2055,28 @@ window.saveSongEdit = function() {
     alert('Network error. Please try again.');
   });
 };
+
+
+// ── Developer plan activation (gated by ADMIN_EMAIL secret) ──────
+// Called from the hidden developer plan card on the homepage/pricing page.
+// The card is only shown when the user manually runs: 
+//   document.getElementById('developer-plan-card').style.display='block'
+// in the browser console. This keeps it hidden from public users.
+window.activateDeveloperPlan = async function() {
+  const btn = document.getElementById('dev-activate-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Activating...'; }
+  try {
+    const res = await fetch('/api/admin/activate-developer', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      if (btn) { btn.textContent = '✅ Developer Plan Active!'; btn.style.background = '#10b981'; btn.style.color = '#fff'; }
+      setTimeout(() => window.location.href = '/dashboard', 1200);
+    } else {
+      alert('Error: ' + (data.error || 'Activation failed.\n\nMake sure ADMIN_EMAIL secret is set to your email in Cloudflare.'));
+      if (btn) { btn.disabled = false; btn.textContent = 'Activate Developer Plan'; }
+    }
+  } catch(e) {
+    alert('Network error. Please try again.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Activate Developer Plan'; }
+  }
+};
