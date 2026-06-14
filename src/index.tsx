@@ -929,8 +929,9 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/cover-image/:jobId
-//  Generate a DALL-E 3 album cover image for a beat.
-//  Result is cached in the job record for 55 min to avoid re-charging.
+//  Generate an AI album cover image for a beat using gpt-image-1.
+//  Returns base64 data URL directly — no D1 caching (b64 ~1.5 MB is too large).
+//  The client may sessionStorage-cache the result itself.
 //  Auth: session cookie required.
 // ═══════════════════════════════════════════════════════════════
 app.get('/api/cover-image/:jobId', async (c) => {
@@ -947,15 +948,7 @@ app.get('/api/cover-image/:jobId', async (c) => {
   } catch { /* fall through */ }
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  // Return cached image_url if it's less than 55 minutes old
-  const cached = (job as any).image_url as string | undefined
-  const cachedAt = (job as any).image_url_generated_at as number | undefined
-  const now = Date.now()
-  if (cached && cachedAt && (now - cachedAt) < 55 * 60 * 1000) {
-    return c.json({ url: cached })
-  }
-
-  // Build a descriptive DALL-E 3 prompt from the beat's blueprint
+  // Build a descriptive prompt from the beat's blueprint
   const bp = job.blueprint as any
   const genre  = bp?.genre  || 'music'
   const mood   = bp?.mood   || 'atmospheric'
@@ -964,25 +957,28 @@ app.get('/api/cover-image/:jobId', async (c) => {
 
   const imagePrompt = `Album cover art for a ${genre} track titled "${title}". ${mood} mood, ${energy} energy. ` +
     `Cinematic, dark studio aesthetic, moody atmospheric lighting, no text, no words, no letters, ` +
-    `abstract music visual, professional album artwork, highly detailed, 4K quality.`
+    `abstract music visual, professional album artwork, highly detailed.`
 
   try {
     const imgRes = await fetch(`${OPENAI_BASE}/images/generations`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'dall-e-3', prompt: imagePrompt, n: 1, size: '1024x1024', quality: 'standard' })
+      body: JSON.stringify({
+        model: 'gpt-image-1',
+        prompt: imagePrompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'low',
+        output_format: 'jpeg'
+      })
     })
     const imgData = await imgRes.json() as any
-    if (!imgRes.ok || !imgData.data?.[0]?.url) {
+    if (!imgRes.ok || !imgData.data?.[0]?.b64_json) {
       return c.json({ error: imgData.error?.message || 'Image generation failed' }, 500)
     }
-    const url = imgData.data[0].url as string
-
-    // Cache back into job record
-    const updatedJob = { ...job, image_url: url, image_url_generated_at: now } as any
-    await setJob(c.env.DB, updatedJob)
-
-    return c.json({ url })
+    const b64 = imgData.data[0].b64_json as string
+    // Return as a data URL — browser loads it directly, no CDN redirect needed
+    return c.json({ url: 'data:image/jpeg;base64,' + b64 })
   } catch (err: any) {
     return c.json({ error: err?.message || 'Image generation failed' }, 500)
   }

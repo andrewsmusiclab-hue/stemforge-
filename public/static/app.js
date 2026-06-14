@@ -516,7 +516,7 @@ document.addEventListener('DOMContentLoaded', () => {
                           : `<span class="export-badge export-badge--locked" onclick="event.stopPropagation();document.getElementById('sf-dash-upgrade')&&(document.getElementById('sf-dash-upgrade').style.display='flex')" title="Upgrade to download"><i class="fas fa-lock"></i> Stereo</span>`)
                       : ''}
                     ${p.stereo_url
-                      ? `<a class="export-badge export-badge--stems-cta" href="#" onclick="event.preventDefault();event.stopPropagation();openStemsPopup('${p.id}')" title="Get stems"><i class="fas fa-layer-group"></i> Get Stems</a>`
+                      ? `<a class="export-badge export-badge--stems-cta" href="#" onclick="event.preventDefault();event.stopPropagation();openStemsPopup('${p.id}','${p.zip_url||''}')" title="Get stems"><i class="fas fa-layer-group"></i> Get Stems</a>`
                       : ''}
                   </div>
                 </div>
@@ -592,8 +592,17 @@ document.addEventListener('DOMContentLoaded', () => {
             artEl.style.backgroundPosition = 'center';
           } catch(e) { /* gradient fallback already shown */ }
 
-          // Step 2: load real DALL-E image async (only if job has a valid id)
+          // Step 2: load real AI image async (only if job has a valid id)
           if (!jobId) return;
+          // Check sessionStorage cache first — data URL is ~1.5 MB, no need to re-fetch
+          const imgCacheKey = 'cover_img_' + jobId;
+          const cachedUrl = sessionStorage.getItem(imgCacheKey);
+          if (cachedUrl) {
+            artEl.style.backgroundImage = `url('${cachedUrl}')`;
+            artEl.style.backgroundSize = 'cover';
+            artEl.style.backgroundPosition = 'center';
+            return;
+          }
           // Small stagger to avoid hammering the API simultaneously for all cards
           const cardIndex = Array.from(projectGrid.querySelectorAll('.project-card[data-hue]')).indexOf(card);
           setTimeout(() => {
@@ -601,6 +610,8 @@ document.addEventListener('DOMContentLoaded', () => {
               .then(r => r.ok ? r.json() : null)
               .then(data => {
                 if (!data || !data.url) return;
+                // Cache data URL so back-nav / re-render skips the API call
+                try { sessionStorage.setItem(imgCacheKey, data.url); } catch(e) { /* storage full */ }
                 const img = new Image();
                 img.onload = () => {
                   artEl.style.backgroundImage = `url('${data.url}')`;
@@ -1535,7 +1546,20 @@ window.closeSongEditModal = function() {
 };
 
 // ── Stems popup modal — shown when user clicks "Get Stems" on a library card ──
-window.openStemsPopup = async function(jobId) {
+window.openStemsPopup = async function(jobId, existingZipUrl) {
+  // ── Fast-path: stems already extracted — skip credit prompt entirely ──
+  // Check 1: sessionStorage (set after a successful extraction this session)
+  const cacheKey = 'stems_extracted_' + jobId;
+  if (sessionStorage.getItem(cacheKey)) {
+    window.location.href = '/stems/' + jobId;
+    return;
+  }
+  // Check 2: zip_url already exists in D1 (passed from the card render)
+  if (existingZipUrl && existingZipUrl.startsWith('http')) {
+    window.location.href = '/stems/' + jobId;
+    return;
+  }
+
   // Remove stale modal if exists
   const old = document.getElementById('sf-stems-popup');
   if (old) old.remove();
