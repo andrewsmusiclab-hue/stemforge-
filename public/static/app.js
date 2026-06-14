@@ -671,7 +671,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const items = [
       { icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) },
-      { icon: 'fa-layer-group', label: 'Get Stems', action: () => openStemsPopup(jobId, zipUrl) },
+      { icon: 'fa-layer-group', label: 'Get Stems', action: () => {
+          // Helper to show upgrade prompt from the dashboard upgrade modal
+          function dashUpgradePrompt() {
+            const m = document.getElementById('sf-dash-upgrade');
+            if (m) m.style.display = 'flex';
+            else window.location.href = '/pricing';
+          }
+          // Use the two-card tier picker (same as the export panel button)
+          const user = window._sfUser;
+          if (user && user.plan !== 'free') {
+            openStemPickerModal(jobId, user);
+          } else if (!user) {
+            // Race condition guard: _sfUser not loaded yet — fetch then open
+            fetch('/api/auth/me').then(r => r.json()).then(me => {
+              const u = me && me.user;
+              if (!u || u.plan === 'free') { dashUpgradePrompt(); return; }
+              window._sfUser = window._sfUser || u;
+              openStemPickerModal(jobId, u);
+            }).catch(() => dashUpgradePrompt());
+          } else {
+            dashUpgradePrompt();
+          }
+        } },
       { icon: 'fa-download', label: 'Download Full Track', action: () => openDownloadModal(jobId, stereoUrl, safeTitle) },
     ];
 
@@ -1992,44 +2014,17 @@ window.sfStemsGo = async function(jobId) {
   window.location.href = '/stems/' + jobId;
 };
 
-// Request stems on-demand — called from "Get Stems" button in 3-dot modal
-window.requestStems = async function() {
-  const jobId  = document.getElementById('edit-job-id')?.value;
-  const btn    = document.getElementById('edit-get-stems-btn');
-  const status = document.getElementById('edit-stems-status');
+// Request stems — called from "Get Stems" button in the Edit Track modal.
+// Instead of extracting inline, navigates to the stems player page with the
+// selected tier as a query param.  The stems player will handle extraction.
+window.requestStems = function() {
+  const jobId = document.getElementById('edit-job-id')?.value;
+  const btn   = document.getElementById('edit-get-stems-btn');
   if (!jobId || !btn) return;
-
+  const tier = _editStemTier || 'basic';
   btn.disabled = true;
-  const origLabel = document.getElementById('edit-stems-btn-label')?.textContent || 'Get Stems';
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting…';
-  if (status) { status.style.display = 'block'; status.style.background = 'rgba(99,102,241,.12)'; status.style.color = 'var(--text)'; status.textContent = '⏳ Extracting stems — this takes ~15 seconds…'; }
-
-  try {
-    const res  = await fetch('/api/job/stems', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id: jobId, stem_tier: _editStemTier || 'basic' })
-    });
-    const data = await res.json();
-
-    if (!res.ok || data.error) {
-      if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ ' + (data.error || 'Stem extraction failed.'); }
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-layer-group"></i> <span>' + origLabel + '</span>';
-      return;
-    }
-
-    // Update cached job
-    const job = window._sfProjects[jobId];
-    if (job) { job.zip_url = data.zip_url; if (data.midi_zip_url) job.midi_zip_url = data.midi_zip_url; }
-
-    if (status) { status.style.background = 'rgba(16,185,129,.12)'; status.style.color = '#34d399'; status.textContent = '✅ Done! Opening stems player…'; }
-    setTimeout(() => { window.location.href = '/stems/' + jobId; }, 800);
-
-  } catch(e) {
-    if (status) { status.style.background = 'rgba(239,68,68,.12)'; status.style.color = '#f87171'; status.textContent = '❌ Network error. Please try again.'; }
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fas fa-layer-group"></i> <span>' + origLabel + '</span>';
-  }
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening stems player…';
+  window.location.href = '/stems/' + jobId + '?tier=' + tier;
 };
 
 // ── Stem Tier Picker Modal ─────────────────────────────────────────────────

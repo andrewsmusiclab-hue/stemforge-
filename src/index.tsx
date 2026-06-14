@@ -2308,12 +2308,16 @@ app.get('/api/subscription/upgrade-preview', async (c) => {
   try {
     // Fetch live subscription from Stripe to get accurate period dates
     const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
-    const periodStart: number = sub.current_period_start // unix seconds
-    const periodEnd: number   = sub.current_period_end   // unix seconds
+    // Stripe API ≥ 2025-03-31.basil moved current_period_start/end from the
+    // subscription top-level to subscription items.  Fall back gracefully so
+    // the code works with both old and new API versions.
+    const item0 = sub.items?.data?.[0]
+    const periodStart: number = item0?.current_period_start ?? sub.current_period_start
+    const periodEnd: number   = item0?.current_period_end   ?? sub.current_period_end
     const nowSec = Math.floor(Date.now() / 1000)
 
     // Guard against Stripe returning undefined/null period dates
-    if (!periodStart || !periodEnd || isNaN(periodStart) || isNaN(periodEnd)) {
+    if (!periodStart || !periodEnd || isNaN(Number(periodStart)) || isNaN(Number(periodEnd))) {
       return c.json({
         has_subscription: false,
         target_plan,
@@ -3302,6 +3306,19 @@ function homePage() {
   </div>
 </section>
 
+<!-- Home page downgrade confirmation modal -->
+<div id="home-downgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;max-width:420px;width:90%;text-align:center">
+    <i class="fas fa-arrow-down" style="font-size:2rem;color:#ff6464;margin-bottom:16px"></i>
+    <h3 style="margin-bottom:8px">Confirm Downgrade</h3>
+    <p id="home-downgrade-msg" style="color:var(--muted);margin-bottom:24px;line-height:1.5"></p>
+    <div style="display:flex;gap:12px;justify-content:center">
+      <button class="btn btn--outline btn--sm" onclick="document.getElementById('home-downgrade-modal').style.display='none'">Cancel</button>
+      <button class="btn btn--sm" id="home-downgrade-confirm" style="background:#ff4444;border:none;color:white">Confirm Downgrade</button>
+    </div>
+  </div>
+</div>
+
 <!-- Home page upgrade confirmation modal (same as subscription page) -->
 <div id="home-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;padding:16px">
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
@@ -3372,25 +3389,61 @@ function homePage() {
 (function(){
   let _humPlan = null;
 
-  // Convert plan card buttons: logged-in users get preview modal, logged-out go to checkout
+  // Convert plan card buttons: logged-in users get upgrade/downgrade modal, logged-out go to checkout
+  let _homeDgPlan = null;
   document.querySelectorAll('.home-plan-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       const plan = btn.dataset.plan;
       if (!plan) return;
-      // Quick auth check
       try {
         const me = await fetch('/api/auth/me').then(r => r.json());
         const user = me.user;
         if (!user) { window.location.href = '/checkout?plan=' + plan; return; }
-        // Already on this plan or higher — go to subscription page
         const rank = { free:0, creator:1, pro:2, developer:3 };
-        if ((rank[user.plan]||0) >= (rank[plan]||0)) { window.location.href = '/subscription'; return; }
-        // Has existing subscription — show proration modal
+        const userRank = rank[user.plan] || 0;
+        const planRank = rank[plan] || 0;
+        if (userRank === planRank) { window.location.href = '/subscription'; return; }
+        if (userRank > planRank) {
+          // Downgrade path
+          _homeDgPlan = plan;
+          const msg = document.getElementById('home-downgrade-msg');
+          if (plan === 'free') {
+            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.';
+          } else if (plan === 'creator') {
+            msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 gen/month) at the end of your current billing cycle. You keep all features until then.';
+          }
+          document.getElementById('home-downgrade-modal').style.display = 'flex';
+          return;
+        }
+        // Upgrade path — show proration modal
         openHomeUpgradeModal(plan);
       } catch(e) {
         window.location.href = '/checkout?plan=' + plan;
       }
     });
+  });
+
+  // Home page downgrade confirm button
+  const homeDgConfirm = document.getElementById('home-downgrade-confirm');
+  if (homeDgConfirm) {
+    homeDgConfirm.addEventListener('click', async () => {
+      if (!_homeDgPlan) return;
+      homeDgConfirm.disabled = true; homeDgConfirm.textContent = 'Processing…';
+      try {
+        const res = await fetch('/api/subscription/downgrade', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ target_plan: _homeDgPlan })
+        });
+        const data = await res.json();
+        document.getElementById('home-downgrade-modal').style.display = 'none';
+        if (data.ok) { alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.'); window.location.reload(); }
+        else { alert('Error: ' + (data.error || 'Downgrade failed')); }
+      } catch(e) { alert('Network error. Please try again.'); }
+      finally { homeDgConfirm.disabled = false; homeDgConfirm.textContent = 'Confirm Downgrade'; }
+    });
+  }
+  document.getElementById('home-downgrade-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
   });
 
   window.openHomeUpgradeModal = function(plan) {
@@ -3466,6 +3519,38 @@ function homePage() {
   document.getElementById('home-upgrade-modal').addEventListener('click', function(e) {
     if (e.target === this) closeHomeUpgradeModal();
   });
+
+  // On page load: update plan button labels based on logged-in user plan
+  // Pro users see "Downgrade to Creator" on Creator card
+  // Developer users see "Downgrade" on both Creator and Pro cards
+  (async function() {
+    try {
+      const me = await fetch('/api/auth/me').then(r => r.json());
+      const user = me && me.user;
+      if (!user) return;
+      const rank = { free:0, creator:1, pro:2, developer:3 };
+      const userRank = rank[user.plan] || 0;
+      document.querySelectorAll('.home-plan-btn').forEach(btn => {
+        const plan = btn.dataset.plan;
+        const planRank = rank[plan] || 0;
+        if (userRank === planRank) {
+          btn.textContent = 'Current plan';
+          btn.disabled = true;
+          btn.style.opacity = '0.6';
+          btn.style.cursor = 'default';
+        } else if (userRank > planRank) {
+          // Downgrade
+          const label = plan === 'creator' ? 'Downgrade to Creator' : plan === 'free' ? 'Cancel plan' : 'Downgrade';
+          btn.textContent = label;
+          btn.classList.remove('btn--primary');
+          btn.classList.add('btn--outline');
+          btn.style.borderColor = 'rgba(255,100,100,.5)';
+          btn.style.color = '#ff7070';
+        }
+        // upgrade case: leave button as-is (handled by click handler)
+      });
+    } catch(e) { /* not logged in or error — leave buttons as default */ }
+  })();
 })();
 </script>
 </main>`)
@@ -5640,7 +5725,7 @@ function subscriptionPage(user: User, env: Bindings) {
           ${user.plan === 'creator'
             ? '<span class="sub-current-badge">Current plan</span>'
             : user.plan === 'pro' || user.plan === 'developer'
-              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator">Downgrade to Creator</button>`
+              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator</button>`
               : `<button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator">Upgrade — $19/mo</button>`
           }
         </div>
@@ -5658,7 +5743,7 @@ function subscriptionPage(user: User, env: Bindings) {
           ${user.plan === 'pro'
             ? '<span class="sub-current-badge">Current plan</span>'
             : user.plan === 'developer'
-              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="pro">Switch to Pro Artist</button>`
+              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="pro" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Switch to Pro Artist</button>`
               : `<button class="btn btn--outline btn--sm sub-upgrade-btn" data-target="pro">Upgrade — $39/mo</button>`
           }
         </div>
