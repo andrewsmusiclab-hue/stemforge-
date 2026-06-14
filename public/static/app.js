@@ -759,6 +759,25 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // ── Chips scroll arrows ───────────────────────────────────────
+  const chipsScroll = document.getElementById('style-chips-scroll');
+  const arrowLeft   = document.getElementById('chips-arrow-left');
+  const arrowRight  = document.getElementById('chips-arrow-right');
+  if (chipsScroll && arrowLeft && arrowRight) {
+    const SCROLL_STEP = 140;
+    const updateArrows = () => {
+      const atStart = chipsScroll.scrollLeft <= 2;
+      const atEnd   = chipsScroll.scrollLeft + chipsScroll.clientWidth >= chipsScroll.scrollWidth - 2;
+      arrowLeft.disabled  = atStart;
+      arrowRight.disabled = atEnd;
+    };
+    arrowLeft.addEventListener('click',  () => { chipsScroll.scrollLeft -= SCROLL_STEP; });
+    arrowRight.addEventListener('click', () => { chipsScroll.scrollLeft += SCROLL_STEP; });
+    chipsScroll.addEventListener('scroll', updateArrows, { passive: true });
+    // Run once on load so right arrow is enabled correctly
+    updateArrows();
+  }
+
   // ── More Options collapse ─────────────────────────────────────
   const moreToggle = document.getElementById('more-options-toggle');
   const moreBody   = document.getElementById('more-body');

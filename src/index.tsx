@@ -948,16 +948,68 @@ app.get('/api/cover-image/:jobId', async (c) => {
   } catch { /* fall through */ }
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  // Build a descriptive prompt from the beat's blueprint
+  // Build a genre/mood-aware prompt — bright & vibrant by default, dark only when warranted
   const bp = job.blueprint as any
-  const genre  = bp?.genre  || 'music'
-  const mood   = bp?.mood   || 'atmospheric'
-  const energy = bp?.energy || 'medium'
-  const title  = (job as any).title || genre
+  const genre  = (bp?.genre  || 'music').toLowerCase()
+  const mood   = (bp?.mood   || 'uplifting').toLowerCase()
+  const energy = (bp?.energy || 'medium').toLowerCase()
+  const title  = ((job as any).title || genre).toLowerCase()
 
-  const imagePrompt = `Album cover art for a ${genre} track titled "${title}". ${mood} mood, ${energy} energy. ` +
-    `Cinematic, dark studio aesthetic, moody atmospheric lighting, no text, no words, no letters, ` +
-    `abstract music visual, professional album artwork, highly detailed.`
+  // Detect whether this track is genuinely dark
+  const darkKeywords = ['dark','cold','menacing','aggressive','hard','gritty','sinister','evil','haunted','ominous','drill','noir','horror','gothic','trap','sad','melancholy','depressed']
+  const brightKeywords = ['happy','uplifting','joyful','warm','sunny','vibrant','energetic','summer','beach','festival','party','dance','groovy','funky','positive','love','romantic','smooth','chill','peaceful']
+  const genreDark = ['drill','dark trap','hard trap','horror','gothic'].some(g => genre.includes(g))
+  const moodDark  = darkKeywords.some(w => mood.includes(w) || title.includes(w))
+  const moodBright = brightKeywords.some(w => mood.includes(w) || title.includes(w))
+  const isDark = genreDark || (moodDark && !moodBright)
+
+  // Genre → visual style lookup for variety
+  const genreVisuals: Record<string,string> = {
+    'pop':        'colorful confetti burst, bright pastel palette, glossy sheen, pop-art energy, vivid neon highlights',
+    'r&b':        'warm golden hour light, silhouetted figure, rich amber and burgundy tones, soul and sensuality',
+    'afrobeats':  'vivid orange and gold African sunset, bold tribal patterns, vibrant earth tones, joyful motion blur',
+    'reggaeton':  'neon city night, Latin street art, hot pink and electric blue, urban energy, pulse and rhythm',
+    'house':      'electric dance floor, strobing colored lights, abstract geometric shapes, euphoric rave energy',
+    'gospel':     'radiant golden light rays, soaring heavenly clouds, warm divine glow, inspiring and uplifting',
+    'soul':       'warm vintage bokeh, rich mahogany tones, candlelit intimacy, analog warmth',
+    'jazz':       'smoky blue jazz club, vintage brass instruments silhouette, soft amber spotlights, sophisticated',
+    'lo-fi':      'cozy late-night room, analog grain, warm lamp glow, rainy window, nostalgic and intimate',
+    'boom bap':   'gritty urban street art, bold graffiti colors, raw concrete texture, street energy',
+    'cinematic':  'epic widescreen landscape, dramatic sky, sweeping orchestral atmosphere, breathtaking scale',
+    'trap':       'purple and cyan neon haze, urban rooftop at night, moody and electric, street luxury',
+    'drill':      'cold grey concrete, dark blue tones, stark shadows, hard urban grit, stark and intense',
+    'hip hop':    'dynamic bold colors, spray paint splatter, confident urban portrait, cultural richness',
+    'reggae':     'lush tropical greens, warm sun rays through palm trees, peaceful island vibes',
+  }
+
+  // Pick visual style — match partial genre key
+  let visualStyle = ''
+  for (const [key, style] of Object.entries(genreVisuals)) {
+    if (genre.includes(key)) { visualStyle = style; break }
+  }
+
+  // Build the prompt
+  let aestheticLine: string
+  if (isDark) {
+    aestheticLine = visualStyle
+      ? `${visualStyle}. Deep shadows, dramatic contrast, moody atmosphere.`
+      : `Dark moody atmosphere, dramatic shadows, cinematic lighting, deep rich tones, intense energy.`
+  } else {
+    aestheticLine = visualStyle
+      ? `${visualStyle}. Bright, vivid, high contrast, visually striking.`
+      : `Vibrant bold colors, bright dynamic lighting, energetic and visually striking, rich saturated palette.`
+  }
+
+  // Add energy modifier
+  const energyLine = energy === 'high'
+    ? 'High energy, explosive, dynamic composition.'
+    : energy === 'low'
+    ? 'Calm, intimate, soft and refined composition.'
+    : 'Balanced composition, visually engaging.'
+
+  const imagePrompt = `Professional album cover art for a ${genre} track titled "${(job as any).title || genre}". ` +
+    `${aestheticLine} ${energyLine} ` +
+    `No text, no words, no letters, no numbers. Abstract music visual, professional artwork, highly detailed, 4K quality.`
 
   try {
     const imgRes = await fetch(`${OPENAI_BASE}/images/generations`, {
@@ -3201,6 +3253,7 @@ function generatorPage() {
           maxlength="200"/>
         <div class="suno-style-chips-row">
           <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
+          <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left" disabled><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
             <button class="suno-chip" data-style="trap">Trap</button>
             <button class="suno-chip" data-style="drill">Drill</button>
@@ -3215,6 +3268,7 @@ function generatorPage() {
             <button class="suno-chip" data-style="jazz">Jazz</button>
             <button class="suno-chip" data-style="soul">Soul</button>
           </div>
+          <button class="suno-chips-arrow" id="chips-arrow-right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
         </div>
       </div>
     </div>

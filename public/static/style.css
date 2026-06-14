@@ -1680,11 +1680,32 @@ p  { color: var(--sub); }
 .suno-style-chips-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px 14px;
+  gap: 6px;
+  padding: 8px 10px 14px;
   border-top: 1px solid var(--border);
-  overflow: hidden;
+  position: relative;
+  overflow: visible; /* allow scroll arrows to appear */
 }
+/* Scroll arrow buttons */
+.suno-chips-arrow {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface-2, #1e2130);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .7rem;
+  transition: opacity .15s, background .15s;
+  padding: 0;
+  line-height: 1;
+}
+.suno-chips-arrow:hover { background: rgba(255,255,255,.12); color: var(--text); }
+.suno-chips-arrow:disabled { opacity: 0.2; cursor: default; pointer-events: none; }
 .suno-style-chips {
   display: flex;
   gap: 6px;
@@ -1692,6 +1713,7 @@ p  { color: var(--sub); }
   scrollbar-width: none;
   flex: 1;
   padding-bottom: 2px;
+  scroll-behavior: smooth;
 }
 .suno-style-chips::-webkit-scrollbar { display: none; }
 
