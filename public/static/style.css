@@ -3063,3 +3063,232 @@ a.export-badge:hover {
   background: rgba(78,159,255,.12);
   box-shadow: 0 0 0 2px rgba(78,159,255,.2);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   NEW FEATURES CSS BLOCK — Tasks 1-16
+═══════════════════════════════════════════════════════════ */
+
+/* ── Parallax background ─────────────────────────────────── */
+body {
+  background-attachment: fixed;
+  background-size: cover;
+}
+.gs-app-wrap, .suno-gen-page, .gs-content, .inner-page, .sub-page {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Sidebar: Studio Coming Soon + Feedback ─────────────── */
+.gs-sidebar__nav-item--coming-soon {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: .875rem;
+  font-weight: 500;
+  opacity: 0.5;
+  cursor: not-allowed;
+  user-select: none;
+  position: relative;
+}
+.gs-coming-soon-badge {
+  margin-left: auto;
+  font-size: .65rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  background: rgba(139,92,246,.18);
+  color: #a78bfa;
+  border: 1px solid rgba(139,92,246,.3);
+  border-radius: 5px;
+  padding: 1px 6px;
+  text-transform: uppercase;
+}
+
+/* ── Tooltip system ──────────────────────────────────────── */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(10,15,30,.96);
+  color: #e2e8f0;
+  font-size: .72rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  max-width: 240px;
+  white-space: normal;
+  text-align: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.1);
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s, visibility .15s;
+}
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgba(10,15,30,.96);
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s, visibility .15s;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* ── Vocal toggle ────────────────────────────────────────── */
+.vocal-toggle-group {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+.vocal-toggle-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2, rgba(255,255,255,.04));
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.vocal-toggle-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.vocal-toggle-btn--active {
+  background: rgba(78,159,255,.12);
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(78,159,255,.18);
+}
+.vocal-toggle-btn--off {
+  color: var(--muted);
+}
+.vocal-toggle-btn--off.vocal-toggle-btn--active {
+  background: rgba(100,116,139,.15);
+  border-color: rgba(100,116,139,.5);
+  color: var(--text);
+  box-shadow: none;
+}
+
+/* ── Beat count toggle ──────────────────────────────────── */
+.beat-count-group {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+.beat-count-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2, rgba(255,255,255,.04));
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.beat-count-btn:hover { border-color: var(--primary); color: var(--primary); }
+.beat-count-btn--active {
+  background: rgba(78,159,255,.12);
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(78,159,255,.18);
+}
+.beat-count-credit-badge {
+  font-size: .65rem;
+  background: rgba(139,92,246,.2);
+  color: #a78bfa;
+  border-radius: 4px;
+  padding: 1px 5px;
+  border: 1px solid rgba(139,92,246,.3);
+}
+
+/* ── Export buttons Pro additions ────────────────────────── */
+.export-btn--pro {
+  background: linear-gradient(135deg, rgba(109,40,217,.12), rgba(139,92,246,.08));
+  border-color: rgba(139,92,246,.3);
+  color: #a78bfa;
+}
+.export-btn--pro:hover {
+  background: linear-gradient(135deg, rgba(109,40,217,.2), rgba(139,92,246,.15));
+  border-color: #a78bfa;
+  color: #c4b5fd;
+}
+.export-btn--stems {
+  background: linear-gradient(135deg, rgba(16,185,129,.12), rgba(5,150,105,.08));
+  border-color: rgba(16,185,129,.3);
+  color: #34d399;
+}
+.export-btn--stems:hover {
+  background: linear-gradient(135deg, rgba(16,185,129,.2), rgba(5,150,105,.15));
+  border-color: #34d399;
+  color: #10b981;
+}
+
+/* ── Downgrade pending banner ────────────────────────────── */
+.sub-downgrade-pending-wrap { margin-top: 4px; }
+.sub-downgrade-pending-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(234,179,8,.08);
+  border: 1px solid rgba(234,179,8,.25);
+  border-radius: 8px;
+  color: #fbbf24;
+  font-size: .78rem;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+/* ── Account danger zone ──────────────────────────────────── */
+.account-card--danger-zone {
+  border-color: rgba(239,68,68,.2) !important;
+}
+.account-card--danger-zone h3 {
+  color: var(--danger, #ef4444);
+}
+
+/* ── Clip picker UI ────────────────────────────────────────── */
+#ref-clip-window {
+  transition: left .1s, width .1s;
+}
+
+/* ── Feedback page ──────────────────────────────────────── */
+#feedback-text {
+  line-height: 1.6;
+}
+

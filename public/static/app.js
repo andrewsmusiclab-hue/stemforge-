@@ -192,8 +192,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Read plan from URL param
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
-      creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 generations/month', 'Stereo mix + stem bundle', 'Commercial use rights', '+$0.49 per extra generation'] },
-      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 generations/month', 'Everything in Creator', 'Priority queue', '+$0.49 per extra generation'] },
+      creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 downloads/month', 'Mastered stereo mix download', 'Commercial use rights'] },
+      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 downloads/month', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -606,7 +606,7 @@ document.addEventListener('DOMContentLoaded', () => {
            data-title="${rawTitle.replace(/"/g,'&quot;')}"
            data-hue="${hue}"
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
-           data-imgurl="${p.image_url||''}">
+           >
         <div class="project-card__art" style="${thumbBg}">
           <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
           <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
@@ -670,7 +670,7 @@ document.addEventListener('DOMContentLoaded', () => {
            data-title="${rawTitle.replace(/"/g,'&quot;')}"
            data-hue="${hue}"
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
-           data-imgurl="${p.image_url||''}">
+           >
         <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},40%,14%),hsl(${hue},30%,8%))">
           <div class="project-card__art-icon" style="opacity:.5"><i class="fas ${icon}"></i></div>
         </div>
@@ -1513,6 +1513,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // ── Determine user plan for download gating ─────────
             const currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
             const isFree = currentPlan === 'free';
+            const userPlan = currentPlan;
 
             // Helper: show upgrade modal when free user tries to download
             function showUpgradePrompt() {
@@ -1567,7 +1568,7 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // Build export action buttons dynamically — only download button shown (no stereo mix / get stems tabs)
+            // Build export action buttons — Creator: mastered only; Pro: 3 options
             const exportOptionsRow = document.getElementById('export-options-row');
             if (exportOptionsRow) {
               exportOptionsRow.innerHTML = '';
@@ -1578,15 +1579,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 lockBtn.innerHTML = '<i class="fas fa-download"></i><span>Download Beat</span><small>Creator+</small>';
                 lockBtn.onclick = () => showUpgradePrompt();
                 exportOptionsRow.appendChild(lockBtn);
+              } else if (userPlan === 'pro' || userPlan === 'developer') {
+                // Pro Artist: 3 export options
+                // (a) Unmastered mix for DAW
+                const unmastBtn = document.createElement('button');
+                unmastBtn.className = 'export-btn export-btn--pro';
+                unmastBtn.title = 'Raw unmastered mix — ideal for further processing in your DAW';
+                unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>For DAW</small>';
+                unmastBtn.onclick = () => {
+                  const a = document.createElement('a');
+                  a.href = job.stereo_url;
+                  a.download = safeFilename + '_unmastered.mp3';
+                  document.body.appendChild(a); a.click(); a.remove();
+                };
+                // (b) Mastered mix
+                const mastBtn = document.createElement('button');
+                mastBtn.className = 'export-btn export-btn--pro';
+                mastBtn.title = 'Professionally mastered stereo mix ready for release';
+                mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>MP3</small>';
+                mastBtn.onclick = () => {
+                  const a = document.createElement('a');
+                  a.href = job.stereo_url;
+                  a.download = safeFilename + '_mastered.mp3';
+                  document.body.appendChild(a); a.click(); a.remove();
+                };
+                // (c) Stems bundle
+                const stemsBtn = document.createElement('button');
+                stemsBtn.className = 'export-btn export-btn--pro export-btn--stems';
+                stemsBtn.title = 'Download all individual stem tracks (bass, melody, vocals, drums)';
+                stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Stems Bundle</span><small>ZIP</small>';
+                stemsBtn.onclick = () => {
+                  const user = window._sfUser;
+                  if (!user) { fetch('/api/auth/me').then(r=>r.json()).then(({user:u})=>{ window._sfUser=u; openStemPickerModal(job.id||currentJobId, u); }).catch(()=>{}); }
+                  else openStemPickerModal(job.id||currentJobId, user);
+                };
+                exportOptionsRow.appendChild(unmastBtn);
+                exportOptionsRow.appendChild(mastBtn);
+                exportOptionsRow.appendChild(stemsBtn);
               } else {
-                // Paid users: download button only
+                // Creator: mastered stereo mix only
                 const dlBtn = document.createElement('button');
                 dlBtn.className = 'export-btn';
-                dlBtn.innerHTML = '<i class="fas fa-download"></i><span>Download Beat</span><small>MP3</small>';
+                dlBtn.title = 'Download your mastered stereo mix';
+                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>MP3</small>';
                 dlBtn.onclick = () => {
                   const a = document.createElement('a');
                   a.href = job.stereo_url;
-                  a.download = safeFilename + '_stereo.mp3';
+                  a.download = safeFilename + '_mastered.mp3';
                   document.body.appendChild(a); a.click(); a.remove();
                 };
                 exportOptionsRow.appendChild(dlBtn);
@@ -1614,92 +1653,16 @@ document.addEventListener('DOMContentLoaded', () => {
               subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + dur;
             }
 
-            // Show thumbnail on result card — real AI image with gradient fallback
+            // Show thumbnail on result card — granite gradient + StemForge logo + title
             const thumbEl = document.getElementById('gen-result-thumb');
             const thumbLabel = document.getElementById('gen-result-thumb-label');
             if (thumbEl) {
-              // Always set gradient as base background (shows instantly)
               const hue = job.thumbnail_seed ?? 180;
-              const hue2 = (hue + 55) % 360;
-              const hue3 = (hue + 120) % 360;
-              const gradientBg = `linear-gradient(135deg, hsl(${hue},65%,28%) 0%, hsl(${hue2},75%,20%) 55%, hsl(${hue3},60%,15%) 100%)`;
-              thumbEl.style.backgroundImage = gradientBg;
-              thumbEl.style.backgroundSize = 'cover';
-              thumbEl.style.backgroundPosition = 'center';
               thumbEl.style.display = 'flex';
               if (thumbLabel) thumbLabel.textContent = finalTitle;
-
-              // Generate Canvas-based cover art (no external service)
-              try {
-                const genre = (job.blueprint && job.blueprint.genre) || 'music';
-                const cnv = document.createElement('canvas');
-                cnv.width = 300; cnv.height = 300;
-                const ctx = cnv.getContext('2d');
-                const g = ctx.createLinearGradient(0,0,300,300);
-                g.addColorStop(0,`hsl(${hue},60%,18%)`);
-                g.addColorStop(0.5,`hsl(${(hue+40)%360},70%,12%)`);
-                g.addColorStop(1,`hsl(${(hue+80)%360},55%,8%)`);
-                ctx.fillStyle=g; ctx.fillRect(0,0,300,300);
-                const r1=ctx.createRadialGradient(240,60,8,240,60,140);
-                r1.addColorStop(0,`hsla(${(hue+120)%360},80%,60%,0.3)`);
-                r1.addColorStop(1,'transparent');
-                ctx.fillStyle=r1; ctx.fillRect(0,0,300,300);
-                const r2=ctx.createRadialGradient(60,240,4,60,240,120);
-                r2.addColorStop(0,`hsla(${(hue+240)%360},70%,55%,0.2)`);
-                r2.addColorStop(1,'transparent');
-                ctx.fillStyle=r2; ctx.fillRect(0,0,300,300);
-                ctx.font='bold 13px system-ui,sans-serif';
-                ctx.fillStyle=`hsla(${hue},60%,85%,0.65)`;
-                ctx.textAlign='center';
-                ctx.fillText(genre.toUpperCase(),150,36);
-                const bc=20; const bw=7; const bg2=4;
-                const tw=bc*(bw+bg2)-bg2; const sx=(300-tw)/2;
-                for(let b=0;b<bc;b++){
-                  const sd=(hue*13+b*97)%360;
-                  const bh=22+(Math.sin(sd*0.13)*0.5+0.5)*56;
-                  const x=sx+b*(bw+bg2); const y=145-bh/2;
-                  const bg3=ctx.createLinearGradient(0,y,0,y+bh);
-                  bg3.addColorStop(0,`hsla(${(hue+40)%360},80%,75%,0.85)`);
-                  bg3.addColorStop(1,`hsla(${hue},60%,50%,0.3)`);
-                  ctx.fillStyle=bg3;
-                  ctx.beginPath();
-                  if(ctx.roundRect) ctx.roundRect(x,y,bw,bh,2); else ctx.rect(x,y,bw,bh);
-                  ctx.fill();
-                }
-                const words=finalTitle.split(' ');
-                const l1=words.slice(0,Math.ceil(words.length/2)).join(' ');
-                const l2=words.slice(Math.ceil(words.length/2)).join(' ');
-                ctx.font='bold 18px system-ui,sans-serif';
-                ctx.fillStyle='#fff';
-                ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=6;
-                if(l2){ctx.fillText(l1.slice(0,18),150,222);ctx.fillText(l2.slice(0,18),150,246);}
-                else{ctx.fillText(l1.slice(0,20),150,234);}
-                ctx.shadowBlur=0;
-                const du=cnv.toDataURL('image/png');
-                thumbEl.style.backgroundImage=`url('${du}')`;
-                thumbEl.style.backgroundSize='cover';
-              } catch(e){/* gradient fallback already shown */}
-
-              // Load real AI image async on top of the canvas placeholder
-              if (job.id) {
-                fetch('/api/cover-image/' + job.id)
-                  .then(r => r.ok ? r.json() : null)
-                  .then(data => {
-                    if (!data || !data.url) return;
-                    // Clear any stale data: URL from sessionStorage now that we have a permanent R2 URL
-                    if (!data.url.startsWith('data:')) {
-                      try { sessionStorage.removeItem('cover_img_' + job.id); } catch(e) {}
-                    }
-                    const img = new Image();
-                    img.onload = () => {
-                      thumbEl.style.backgroundImage = `url('${data.url}')`;
-                      thumbEl.style.backgroundSize = 'cover';
-                      thumbEl.style.backgroundPosition = 'center';
-                    };
-                    img.src = data.url;
-                  })
-                  .catch(() => {});
-              }
+              // Use shared drawCanvasArt for consistent card art
+              const genre = (job.blueprint && job.blueprint.genre) || 'music';
+              drawCanvasArt(thumbEl, hue, finalTitle, genre);
             }
 
             if (genResult) genResult.style.display = 'block';
@@ -2737,4 +2700,193 @@ window.generateOneShot = async function() {
     }
     return _orig(input, init);
   };
+})();
+
+// ═══════════════════════════════════════════════════════════
+//  NEW FEATURE JS — Tasks 8, 11, 12, 13, 15, 16
+// ═══════════════════════════════════════════════════════════
+
+// ── Vocal gender toggle (Male / Off / Female) ──────────────
+window._vocalGender = 'off';
+window.setVocalToggle = function(val) {
+  window._vocalGender = val;
+  ['male','off','female'].forEach(v => {
+    const btn = document.getElementById('vt-' + v);
+    if (!btn) return;
+    btn.classList.toggle('vocal-toggle-btn--active', v === val);
+  });
+};
+
+// ── Beat count toggle (1 or 2) ─────────────────────────────
+window._beatCount = 1;
+window.setBeatCount = function(n) {
+  window._beatCount = n;
+  [1, 2].forEach(c => {
+    const btn = document.getElementById('bc-' + c);
+    if (btn) btn.classList.toggle('beat-count-btn--active', c === n);
+  });
+};
+
+// ── Delete account modal handlers ─────────────────────────
+window.showDeleteAccountModal = function() {
+  const m = document.getElementById('delete-account-modal');
+  if (m) { m.style.display = 'flex'; }
+};
+window.closeDeleteAccountModal = function() {
+  const m = document.getElementById('delete-account-modal');
+  if (m) { m.style.display = 'none'; }
+};
+window.confirmDeleteAccount = async function() {
+  const inp = document.getElementById('delete-confirm-input');
+  const errEl = document.getElementById('delete-account-error');
+  const btn = document.getElementById('delete-account-confirm-btn');
+  if (!inp || inp.value.trim() !== 'DELETE') {
+    if (errEl) { errEl.textContent = 'Please type DELETE in all caps to confirm.'; errEl.style.display = 'block'; }
+    return;
+  }
+  if (errEl) errEl.style.display = 'none';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deleting...'; }
+  try {
+    const r = await fetch('/api/account/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm_text: 'DELETE' })
+    });
+    const data = await r.json();
+    if (data.ok) { window.location.href = '/?deleted=1'; }
+    else {
+      if (errEl) { errEl.textContent = data.error || 'Deletion failed. Try again.'; errEl.style.display = 'block'; }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash-alt"></i> Delete Forever'; }
+    }
+  } catch(e) {
+    if (errEl) { errEl.textContent = 'Network error. Please try again.'; errEl.style.display = 'block'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash-alt"></i> Delete Forever'; }
+  }
+};
+
+// ── Downgrade-in-progress indicator ────────────────────────
+(function initDowngradeIndicator() {
+  const pendingDowngrade = sessionStorage.getItem('sf_pending_downgrade');
+  if (!pendingDowngrade) return;
+  const banner = document.getElementById('sub-creator-downgrade-banner');
+  const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-creator');
+  const downgradeBtn = document.getElementById('sub-btn-downgrade-to-creator');
+  if (pendingDowngrade === 'creator' && banner) {
+    banner.style.display = 'flex';
+    if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+    if (downgradeBtn) downgradeBtn.style.display = 'none';
+  }
+})();
+
+window.cancelDowngrade = async function() {
+  try {
+    sessionStorage.removeItem('sf_pending_downgrade');
+    const banner = document.getElementById('sub-creator-downgrade-banner');
+    const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-creator');
+    const downgradeBtn = document.getElementById('sub-btn-downgrade-to-creator');
+    if (banner) banner.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
+    if (downgradeBtn) downgradeBtn.style.display = 'inline-flex';
+    const toast = document.createElement('div');
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4)';
+    toast.innerHTML = '<i class="fas fa-check"></i> Downgrade cancelled — you stay on Pro Artist';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 3500);
+  } catch(e) { alert('Could not cancel downgrade. Please contact support.'); }
+};
+
+// Mark downgrade as pending when user confirms it
+document.addEventListener('click', function(e) {
+  const confirmBtn = e.target.closest('#sub-downgrade-confirm');
+  if (!confirmBtn) return;
+  const modal = document.getElementById('sub-downgrade-modal');
+  const targetPlan = modal && modal._targetPlan;
+  if (targetPlan === 'creator') {
+    sessionStorage.setItem('sf_pending_downgrade', 'creator');
+  }
+});
+
+// ── Clip picker: update timestamp + window overlay ─────────
+window.updateClipPicker = function(val) {
+  const audio = document.getElementById('ref-preview-audio');
+  const tsEl = document.getElementById('ref-clip-timestamp');
+  const windowEl = document.getElementById('ref-clip-window');
+  if (!audio || !audio.duration) return;
+  const dur = audio.duration;
+  const startSec = (val / 100) * Math.max(0, dur - 30);
+  const endSec = Math.min(dur, startSec + 30);
+  const fmt = s => Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0');
+  if (tsEl) tsEl.textContent = fmt(startSec) + ' – ' + fmt(endSec);
+  if (windowEl) {
+    const clipFrac = Math.min(1, 30 / dur);
+    const startFrac = startSec / dur;
+    windowEl.style.left = (startFrac * 100) + '%';
+    windowEl.style.width = (clipFrac * 100) + '%';
+  }
+  window._refClipStart = startSec;
+};
+
+window.uploadRefWithClip = async function() {
+  const fileInput = document.getElementById('ref-audio-file');
+  if (!fileInput || !fileInput.files[0]) return;
+  const file = fileInput.files[0];
+  const startTime = window._refClipStart || 0;
+  document.getElementById('ref-clip-picker').style.display = 'none';
+  const idle = document.getElementById('ref-upload-idle');
+  const loading = document.getElementById('ref-upload-loading');
+  const done = document.getElementById('ref-upload-done');
+  const nameEl = document.getElementById('ref-upload-name');
+  const clipInfo = document.getElementById('ref-clip-info');
+  const modePanel = document.getElementById('ref-mode-panel');
+  const clearBtn = document.getElementById('ref-clear-btn');
+  const zone = document.getElementById('ref-upload-zone');
+  if (idle) idle.style.display = 'none';
+  if (loading) loading.style.display = 'flex';
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('start_time', String(Math.round(startTime)));
+  try {
+    const res = await fetch('/api/upload-reference', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    window._refFileId = data.file_id;
+    if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
+    const fmt = s => Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
+    if (clipInfo) clipInfo.textContent = 'Clip: ' + fmt(startTime) + ' – ' + fmt(startTime+30) + ' used';
+    if (done) { loading.style.display = 'none'; done.style.display = 'flex'; }
+    if (zone) { zone.classList.add('has-file'); zone.onclick = null; }
+    if (modePanel) modePanel.style.display = 'block';
+    if (clearBtn) clearBtn.style.display = 'block';
+  } catch(err) {
+    if (loading) loading.style.display = 'none';
+    if (idle) idle.style.display = 'flex';
+    alert('Upload error: ' + err.message);
+  }
+};
+
+// Override file input change to show clip picker for larger/WAV files
+(function patchRefFileInputForClipPicker() {
+  const fileInput = document.getElementById('ref-audio-file');
+  if (!fileInput) return;
+  fileInput.addEventListener('change', function(e) {
+    e.stopImmediatePropagation();
+    const file = this.files?.[0];
+    if (!file) return;
+    // Show clip picker for WAV or files > 500KB (likely full track)
+    if (file.size > 500 * 1024 || file.type.includes('wav')) {
+      const preview = document.getElementById('ref-preview-audio');
+      if (preview) {
+        preview.src = URL.createObjectURL(file);
+        preview.load();
+        preview.onloadedmetadata = function() {
+          const clipPicker = document.getElementById('ref-clip-picker');
+          if (clipPicker) clipPicker.style.display = 'block';
+          window._refClipStart = 0;
+          updateClipPicker(0);
+        };
+      }
+    } else {
+      uploadRefTrack(file, file.name);
+    }
+  }, true);
 })();

@@ -1785,6 +1785,36 @@ app.post('/api/auth/logout', async (c) => {
   })
 })
 
+// POST /api/account/delete — permanently delete account and all data
+app.post('/api/account/delete', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const { confirm_text } = await c.req.json<{ confirm_text: string }>().catch(() => ({ confirm_text: '' }))
+  if (confirm_text !== 'DELETE') return c.json({ error: 'Confirmation text does not match' }, 400)
+
+  try {
+    // Cancel Stripe subscription if active
+    if (user.stripe_subscription_id && stripeConfigured(c.env)) {
+      try {
+        await stripeRequest('DELETE', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+      } catch {}
+    }
+    // Delete all user data from DB
+    await c.env.DB.prepare('DELETE FROM jobs WHERE user_id = ?').bind(user.id).run()
+    await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id).run()
+    await c.env.DB.prepare('DELETE FROM users WHERE id = ?').bind(user.id).run()
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json', 'Set-Cookie': clearSessionCookie() }
+    })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Account deletion failed' }, 500)
+  }
+})
+
 // GET /api/auth/me — return current user (used by frontend to check session)
 app.get('/api/auth/me', async (c) => {
   const token = getSessionCookie(c.req.raw)
@@ -2000,6 +2030,7 @@ app.get('/checkout', async (c) => {
 })
 app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
+app.get('/feedback', (c) => c.html(feedbackPage()))
 app.get('/promos', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
   const token = getSessionCookie(c.req.raw)
@@ -2833,20 +2864,29 @@ app.post('/api/generate-oneshot', async (c) => {
   }>()
   if (!sound_type) return c.json({ error: 'sound_type is required' }, 400)
 
-  // Build a tight one-shot prompt
+  // Build a tight one-shot prompt — extremely short, percussive, isolated
   const parts: string[] = []
   parts.push(sound_type)
   if (description) parts.push(description)
-  if (pitch) parts.push(`pitch: ${pitch}`)
+  if (pitch) parts.push(`pitch ${pitch}`)
   if (texture) parts.push(texture)
-  parts.push('single hit, one-shot, no tail, percussive, punchy, isolated sound, no music, no melody, dry sample')
+  // Critical: force shortest possible duration and percussive character
+  parts.push('single isolated hit, no melody, no chord, no bassline, no beat, no loop, just one hit, percussive sound design, dry, punchy, studio sample')
 
   const oneshotPrompt = parts.join(', ')
 
+  // Use BGM short-form endpoint with very short duration to force a minimal sound
+  // model: 'chirp-v3-0' targets shortest possible generation
+  // duration_seconds: 3 forces ~3s max which limits full-beat generation
   const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt: oneshotPrompt, model: 'auto' })
+    body: JSON.stringify({
+      prompt: oneshotPrompt,
+      model: 'auto',
+      duration: 3,          // Request shortest duration — limits to a brief sound
+      make_instrumental: true
+    })
   })
 
   if (!res.ok) {
@@ -3035,6 +3075,15 @@ function globalSidebar() {
     <a href="/promos" class="gs-sidebar__nav-item" data-page="promos">
       <i class="fas fa-tag"></i>
       <span>Promo Codes</span>
+    </a>
+    <span class="gs-sidebar__nav-item gs-sidebar__nav-item--coming-soon" tabindex="-1">
+      <i class="fas fa-flask"></i>
+      <span>Studio</span>
+      <span class="gs-coming-soon-badge">Soon</span>
+    </span>
+    <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
+      <i class="fas fa-comment-alt"></i>
+      <span>Give Feedback</span>
     </a>
   </nav>
 
@@ -4701,9 +4750,9 @@ function generatorPage() {
         </button>
         <span class="suno-card__title">Lyrics</span>
         <div class="suno-tab-group" id="lyrics-tabs">
-          <button class="suno-tab active" data-tab="write">Write</button>
-          <button class="suno-tab" data-tab="prompt">Prompt</button>
-          <button class="suno-tab" data-tab="instrumental">Instrumental</button>
+          <button class="suno-tab active" data-tab="write" data-tooltip="Write your own lyrics — use [Verse], [Chorus] tags">Write</button>
+          <button class="suno-tab" data-tab="prompt" data-tooltip="Describe the vibe in plain text — let the AI interpret it">Prompt</button>
+          <button class="suno-tab" data-tab="instrumental" data-tooltip="No vocals — generate a pure instrumental beat">Instrumental</button>
         </div>
       </div>
       <div class="suno-card__body" id="lyrics-body">
@@ -4712,9 +4761,9 @@ function generatorPage() {
           <textarea class="suno-textarea" id="gen-lyrics" rows="5"
             placeholder="[Verse]&#10;Write your lyrics here, or describe what you want...&#10;&#10;Section tags like [Chorus] help structure your track."></textarea>
           <div class="suno-textarea-actions">
-            <button class="suno-icon-btn" title="Magic Wand" id="lyrics-magic-btn"><i class="fas fa-magic"></i></button>
-            <button class="suno-icon-btn" title="Generate Lyrics with AI" id="gen-lyrics-btn" style="display:flex;align-items:center;gap:5px;padding:6px 10px;font-size:.78rem;font-weight:600;border-radius:8px;background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.18));border:1px solid rgba(78,159,255,.35);color:var(--primary);white-space:nowrap"><i class="fas fa-wand-magic-sparkles"></i> Generate Lyrics</button>
-            <button class="suno-icon-btn" title="Expand" onclick="document.getElementById('gen-lyrics').rows=document.getElementById('gen-lyrics').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
+            <button class="suno-icon-btn" title="Magic Wand" id="lyrics-magic-btn" data-tooltip="Auto-suggest lyric ideas based on your style"><i class="fas fa-magic"></i></button>
+            <button class="suno-icon-btn" title="Generate Lyrics with AI" id="gen-lyrics-btn" data-tooltip="Let AI write full lyrics for you based on your style settings" style="display:flex;align-items:center;gap:5px;padding:6px 10px;font-size:.78rem;font-weight:600;border-radius:8px;background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.18));border:1px solid rgba(78,159,255,.35);color:var(--primary);white-space:nowrap"><i class="fas fa-wand-magic-sparkles"></i> Generate Lyrics</button>
+            <button class="suno-icon-btn" title="Expand" data-tooltip="Expand or collapse the text area" onclick="document.getElementById('gen-lyrics').rows=document.getElementById('gen-lyrics').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
           </div>
           <!-- Generate Lyrics panel — shown when gen-lyrics-btn is clicked -->
           <div id="gen-lyrics-panel" style="display:none;margin-top:12px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
@@ -4771,11 +4820,11 @@ function generatorPage() {
 
         <!-- Upload zone -->
         <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
-          <input type="file" id="ref-audio-file" accept="audio/mp3,audio/mpeg,audio/m4a,audio/*" style="display:none"/>
+          <input type="file" id="ref-audio-file" accept="audio/mp3,audio/mpeg,audio/m4a,audio/wav,audio/x-wav,audio/*" style="display:none"/>
           <div id="ref-upload-idle">
             <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--primary);margin-bottom:8px"></i>
             <p style="margin:0;font-weight:600;font-size:.9rem">Upload Reference Audio</p>
-            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3 or M4A · First 30 seconds used</p>
+            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3, WAV or M4A · Pick your 30-second clip below</p>
           </div>
           <div id="ref-upload-loading" style="display:none">
             <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:var(--primary);margin-bottom:8px"></i>
@@ -4784,9 +4833,30 @@ function generatorPage() {
           <div id="ref-upload-done" style="display:none">
             <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:6px"></i>
             <p style="margin:0;font-weight:600;font-size:.88rem" id="ref-upload-name">reference.mp3</p>
-            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">Reference loaded · 30s used</p>
+            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem" id="ref-clip-info">30s clip selected</p>
           </div>
         </div>
+
+        <!-- 30-sec clip picker — shown after file chosen, before upload -->
+        <div id="ref-clip-picker" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <label class="suno-option-label" style="margin:0">Choose 30-second clip</label>
+            <span id="ref-clip-timestamp" style="font-size:.78rem;color:var(--primary);font-weight:600">0:00 – 0:30</span>
+          </div>
+          <audio id="ref-preview-audio" style="width:100%;margin-bottom:10px;border-radius:8px" controls preload="metadata"></audio>
+          <div style="position:relative;margin-bottom:6px">
+            <input type="range" id="ref-clip-start" min="0" max="100" value="0" step="0.1"
+              style="width:100%;accent-color:var(--primary);cursor:pointer"
+              oninput="updateClipPicker(this.value)"/>
+            <!-- Clip window highlight overlay -->
+            <div id="ref-clip-window" style="position:absolute;top:0;height:100%;background:rgba(78,159,255,0.2);border:1px solid rgba(78,159,255,0.5);border-radius:4px;pointer-events:none;left:0;width:30%"></div>
+          </div>
+          <p style="color:var(--muted);font-size:.75rem;margin:0"><i class="fas fa-info-circle"></i> Drag the slider to select which 30 seconds to use as reference</p>
+          <button class="btn btn--primary btn--sm" style="margin-top:10px;width:100%" onclick="uploadRefWithClip()">
+            <i class="fas fa-cloud-upload-alt"></i> Upload this clip
+          </button>
+        </div>
+
         <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:8px;width:100%;padding:7px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82rem">
           <i class="fas fa-times"></i> Remove reference track
         </button>
@@ -4846,7 +4916,7 @@ function generatorPage() {
           placeholder="e.g. dark trap, melodic, 808s, moody, cinematic..."
           maxlength="200"/>
         <div class="suno-style-chips-row">
-          <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
+          <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style" data-tooltip="Auto-fill a style based on your lyrics or prompt"><i class="fas fa-magic"></i></button>
           <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left" disabled><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
             <button class="suno-chip" data-style="trap">Trap</button>
@@ -4983,13 +5053,55 @@ function generatorPage() {
     <div class="suno-card suno-card--slim">
       <div class="suno-field-row">
         <i class="fas fa-music suno-field-icon"></i>
-        <input type="text" class="suno-field-input" id="gen-title" placeholder="Song title (optional)"/>
+        <input type="text" class="suno-field-input" id="gen-title" placeholder="Song title (optional)"
+          data-tooltip="Give your track a name (optional) — if left blank, one will be auto-generated"/>
       </div>
     </div>
 
-    <!-- CREATE BUTTON — inline below song title, like Suno -->
+    <!-- SECTION 5: Vocal Gender Toggle -->
+    <div class="suno-card suno-card--slim" data-tooltip="Choose a vocal gender for AI-generated vocals, or turn off to let your prompt decide">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
+        <i class="fas fa-microphone" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Vocals</span>
+        <div class="vocal-toggle-group" id="vocal-toggle-group">
+          <button class="vocal-toggle-btn" data-vocal="male" id="vt-male" onclick="setVocalToggle('male')"
+            data-tooltip="Use a male vocal style">
+            <i class="fas fa-mars"></i> Male
+          </button>
+          <button class="vocal-toggle-btn vocal-toggle-btn--off vocal-toggle-btn--active" data-vocal="off" id="vt-off" onclick="setVocalToggle('off')"
+            data-tooltip="No gender specified — use your text prompt to describe vocals">
+            <i class="fas fa-ban"></i> Off
+          </button>
+          <button class="vocal-toggle-btn" data-vocal="female" id="vt-female" onclick="setVocalToggle('female')"
+            data-tooltip="Use a female vocal style">
+            <i class="fas fa-venus"></i> Female
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 6: Beat Count Toggle -->
+    <div class="suno-card suno-card--slim" data-tooltip="Generate 1 or 2 beats at once — 2 beats uses 2 download credits">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
+        <i class="fas fa-layer-group" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Beats</span>
+        <div class="beat-count-group" id="beat-count-group">
+          <button class="beat-count-btn beat-count-btn--active" data-count="1" id="bc-1" onclick="setBeatCount(1)"
+            data-tooltip="Generate 1 beat — costs 1 download credit">
+            <i class="fas fa-music"></i> 1 Beat
+          </button>
+          <button class="beat-count-btn" data-count="2" id="bc-2" onclick="setBeatCount(2)"
+            data-tooltip="Generate 2 beats simultaneously — costs 2 download credits">
+            <i class="fas fa-music"></i> 2 Beats <span class="beat-count-credit-badge">2 credits</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline">
-      <button class="suno-create-btn" id="gen-full-btn">
+      <button class="suno-create-btn" id="gen-full-btn"
+        data-tooltip="Generate your beat using AI — uses 1 download credit (or 2 if 2 beats selected)">
         <i class="fas fa-music"></i> Create
       </button>
 
@@ -5116,10 +5228,10 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Stereo download</li>
-          <li><i class="fas fa-check"></i> Stem bundle (bass, melody, vocals, other)</li>
+          <li><i class="fas fa-check"></i> Mastered stereo mix download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual isolated tracks</li>
+          <li class="muted"><i class="fas fa-times"></i> Stems bundle</li>
+          <li class="muted"><i class="fas fa-times"></i> Unmastered mix for DAW</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $19/mo</button>
         <p class="pricing-downgrade-note" id="pricing-creator-downgrade" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
@@ -5130,10 +5242,10 @@ function pricingPage() {
         <p class="plan-card__desc">For serious artists who need every track clean.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 150 generations/month</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Stem bundle download</li>
+          <li><i class="fas fa-check"></i> Unmastered mix (for your DAW)</li>
+          <li><i class="fas fa-check"></i> Mastered mix download</li>
+          <li><i class="fas fa-check"></i> Stems bundle download</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
-          <li><i class="fas fa-check"></i> +$0.49 per extra generation</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $39/mo</button>
         <p class="pricing-downgrade-note" id="pricing-pro-downgrade" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
@@ -5152,7 +5264,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download (MP3/WAV)</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle (bass, melody, vocals, other)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle — Pro (more stems)</span><span class="credit-val">10 credits</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-plus-circle"></i> Extra generation (Creator / Pro)</span><span class="credit-val">$0.49</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-download"></i> Top-up download packs</span><span class="credit-val">from $0.30</span><span class="tier-badge tier-badge--creator">All Plans</span></div>
       </div>
     </div>
 
@@ -5160,7 +5272,7 @@ function pricingPage() {
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix. Stem extraction (bass, melody, vocals, other) costs 2 extra credits for Creator, 10 for Pro Artist.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of generations? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Creator and Pro Artist plans support overage at $0.49 per extra generation. You can also purchase credit packs from the Subscription page. Free plan users must upgrade to continue after 3 generations.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of downloads? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase download credit packs from the Subscription page starting from $4.99. Packs never expire and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What stems do I get? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Stem extraction gives you separated audio layers: Bass, Melody, Vocals, and Other. Note: drums are delivered as part of the full stereo mix and stem bundle — individual isolated drum tracks (kick, snare, hi-hats separately) are not available as the AI engine outputs a combined drum mix.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
@@ -5918,37 +6030,52 @@ function subscriptionPage(user: User, env: Bindings) {
           </ul>
           ${user.plan === 'free' ? '<span class="sub-current-badge">Current plan</span>' : ''}
         </div>
-        <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}">
+        <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}" id="sub-plan-creator">
           <div class="sub-plan-card__top">
             <div><h4>Creator</h4><p>For Artists &amp; creators</p></div>
             <div class="sub-plan-card__price">$19<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 50 generations/month</li>
-            <li><i class="fas fa-check"></i> Stereo + stem downloads</li>
+            <li><i class="fas fa-check"></i> 50 downloads/month</li>
+            <li><i class="fas fa-check"></i> Mastered stereo mix</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
-            <li><i class="fas fa-check"></i> +$0.49/extra gen</li>
           </ul>
           ${user.plan === 'creator'
             ? '<span class="sub-current-badge">Current plan</span>'
             : user.plan === 'pro' || user.plan === 'developer'
-              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator</button>`
+              ? `<div class="sub-downgrade-pending-wrap" id="sub-creator-downgrade-wrap">
+                  <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:none">
+                    <i class="fas fa-clock"></i> <span id="sub-creator-downgrade-msg">Downgrading to this plan at end of billing cycle</span>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" id="sub-btn-downgrade-to-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator</button>
+                    <button class="btn btn--outline btn--sm sub-cancel-downgrade-btn" data-target="creator" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade()"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>
+                  </div>
+                </div>`
               : `<button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator">Upgrade — $19/mo</button>`
           }
         </div>
-        <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}">
+        <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}" id="sub-plan-pro">
           <div class="sub-plan-card__top">
             <div><h4>Pro Artist</h4><p>Maximum output</p></div>
             <div class="sub-plan-card__price">$39<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 150 generations/month</li>
-            <li><i class="fas fa-check"></i> Stem bundle download</li>
+            <li><i class="fas fa-check"></i> 150 downloads/month</li>
+            <li><i class="fas fa-check"></i> Unmastered mix for DAW</li>
+            <li><i class="fas fa-check"></i> Mastered mix download</li>
+            <li><i class="fas fa-check"></i> Stems bundle</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
-            <li><i class="fas fa-check"></i> +$0.49/extra gen</li>
           </ul>
           ${user.plan === 'pro'
-            ? '<span class="sub-current-badge">Current plan</span>'
+            ? `<div>
+                <span class="sub-current-badge">Current plan</span>
+                <div class="sub-downgrade-pending-wrap" id="sub-pro-downgrade-wrap" style="margin-top:8px">
+                  <div class="sub-downgrade-pending-banner" id="sub-pro-downgrade-banner" style="display:none">
+                    <i class="fas fa-clock"></i> <span id="sub-pro-downgrade-msg">Downgrading at end of billing cycle</span>
+                  </div>
+                </div>
+              </div>`
             : user.plan === 'developer'
               ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="pro" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Switch to Pro Artist</button>`
               : `<button class="btn btn--outline btn--sm sub-upgrade-btn" data-target="pro">Upgrade — $39/mo</button>`
@@ -6501,19 +6628,32 @@ function accountPage(user: User) {
           <div class="account-field__val">${new Date(user.created_at).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'})}</div>
         </div>
       </div>
-      <div class="account-card">
-        <h3>Connected accounts</h3>
-        <div class="account-connected">
-          <div class="account-connected__item ${hasGoogle ? 'account-connected__item--active' : ''}">
-            <i class="fab fa-google" style="font-size:20px;color:#4285f4"></i>
-            <div>
-              <strong>Google</strong>
-              <p>${hasGoogle ? user.email : 'Not connected'}</p>
-            </div>
-            ${hasGoogle
-              ? '<span class="connected-badge"><i class="fas fa-check"></i> Connected</span>'
-              : `<a href="/api/auth/google" class="btn btn--outline btn--sm">Connect</a>`
-            }
+      <div class="account-card account-card--danger-zone">
+        <h3><i class="fas fa-user-slash" style="color:var(--danger);margin-right:8px"></i>Delete Account</h3>
+        <p style="color:var(--muted);font-size:.88rem;margin:0 0 16px;line-height:1.5">Permanently delete your account and all associated data including beats, library, and billing info. This action <strong>cannot be undone</strong>.</p>
+        <button class="btn btn--sm" id="delete-account-btn"
+          style="background:transparent;border:1px solid var(--danger);color:var(--danger);font-weight:600"
+          onclick="showDeleteAccountModal()">
+          <i class="fas fa-trash-alt"></i> Delete My Account
+        </button>
+      </div>
+
+      <!-- Delete Account Modal -->
+      <div id="delete-account-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px">
+        <div style="background:var(--surface);border:1px solid rgba(255,60,60,.3);border-radius:18px;padding:32px 28px;max-width:420px;width:100%;text-align:center;position:relative">
+          <div style="width:56px;height:56px;border-radius:50%;background:rgba(239,68,68,.15);border:2px solid var(--danger);display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:1.4rem;color:var(--danger)">
+            <i class="fas fa-exclamation-triangle"></i>
+          </div>
+          <h3 style="font-size:1.15rem;margin-bottom:8px;color:var(--danger)">Delete Account Permanently?</h3>
+          <p style="color:var(--muted);font-size:.88rem;margin-bottom:20px;line-height:1.5">This will permanently delete your account, all your beats, and cancel any active subscription. Type <strong>DELETE</strong> to confirm.</p>
+          <input type="text" id="delete-confirm-input" placeholder="Type DELETE to confirm"
+            style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem;margin-bottom:14px;box-sizing:border-box;text-align:center;letter-spacing:.05em"/>
+          <div id="delete-account-error" style="color:var(--danger);font-size:.82rem;margin-bottom:12px;display:none"></div>
+          <div style="display:flex;gap:10px;justify-content:center">
+            <button class="btn btn--outline btn--sm" onclick="closeDeleteAccountModal()" style="flex:1">Cancel</button>
+            <button class="btn btn--sm" id="delete-account-confirm-btn" style="flex:1;background:var(--danger);border:none;color:#fff;font-weight:700" onclick="confirmDeleteAccount()">
+              <i class="fas fa-trash-alt"></i> Delete Forever
+            </button>
           </div>
         </div>
       </div>
@@ -6542,6 +6682,7 @@ function accountPage(user: User) {
             <i class="fas fa-sign-out-alt"></i> Sign out everywhere
           </button>
         </div>
+        <p style="font-size:12px;color:var(--muted);margin-top:8px">To permanently delete your account, use the <strong>Delete Account</strong> section above.</p>
       </div>
     </div>
   </div>
@@ -6616,8 +6757,8 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($19/month):</strong> 50 generations/month, stereo mix + stem bundle, commercial use rights, +$0.49 per extra generation</li>
-    <li><strong>Pro Artist Plan ($39/month):</strong> 150 generations/month, everything in Creator, priority queue, +$0.49 per extra generation</li>
+    <li><strong>Creator Plan ($19/month):</strong> 50 downloads/month, mastered stereo mix, commercial use rights</li>
+    <li><strong>Pro Artist Plan ($39/month):</strong> 150 downloads/month, unmastered mix (for DAW), mastered mix, stems bundle, priority queue</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
@@ -6849,6 +6990,84 @@ function privacyPage() {
     <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
   </ul>
 </section>
+`)
+}
+
+// ─── FEEDBACK PAGE ───────────────────────────────────────────────────────────
+function feedbackPage() {
+  return shell('Give Us Feedback', `
+<main class="inner-page gs-content">
+<section class="inner-hero">
+  <div class="container">
+    <div class="section-tag">Feedback</div>
+    <h1>We want to hear from you.</h1>
+    <p>Your feedback helps us make StemForge better for every artist.</p>
+  </div>
+</section>
+<section style="padding:60px 0">
+  <div class="container" style="max-width:600px">
+    <div class="account-card" style="padding:32px">
+      <div style="text-align:center;margin-bottom:28px">
+        <div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.5rem;color:#fff">
+          <i class="fas fa-comment-alt"></i>
+        </div>
+        <h2 style="font-size:1.3rem;margin:0 0 6px">Share Your Thoughts</h2>
+        <p style="color:var(--muted);font-size:.9rem;margin:0">Tell us what's working, what's broken, or what you'd love to see next.</p>
+      </div>
+      <div id="feedback-sent" style="display:none;text-align:center;padding:24px">
+        <i class="fas fa-check-circle" style="font-size:2.5rem;color:#10b981;margin-bottom:12px;display:block"></i>
+        <h3 style="margin:0 0 6px">Thank you!</h3>
+        <p style="color:var(--muted)">Your feedback has been noted. We'll review it shortly.</p>
+      </div>
+      <div id="feedback-form">
+        <div class="form-group" style="margin-bottom:16px">
+          <label style="font-size:.88rem;font-weight:600;display:block;margin-bottom:6px;color:var(--text)">Type of feedback</label>
+          <select id="feedback-type" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem">
+            <option value="bug">🐛 Bug Report</option>
+            <option value="feature" selected>💡 Feature Request</option>
+            <option value="general">💬 General Feedback</option>
+            <option value="pricing">💰 Pricing Feedback</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label style="font-size:.88rem;font-weight:600;display:block;margin-bottom:6px;color:var(--text)">Your feedback <span style="color:var(--danger)">*</span></label>
+          <textarea id="feedback-text" rows="5"
+            placeholder="Describe your experience, what you'd like improved, or report an issue..."
+            style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem;resize:vertical;box-sizing:border-box;font-family:inherit"></textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:20px">
+          <label style="font-size:.88rem;font-weight:600;display:block;margin-bottom:6px;color:var(--text)">Email (optional)</label>
+          <input type="email" id="feedback-email" placeholder="We'll reply here if you want a response"
+            style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+        </div>
+        <div id="feedback-error" style="display:none;color:var(--danger);font-size:.82rem;margin-bottom:12px;padding:10px 12px;background:rgba(239,68,68,.08);border-radius:8px;border:1px solid rgba(239,68,68,.2)"></div>
+        <button class="btn btn--primary btn--full" id="feedback-submit-btn" onclick="submitFeedback()">
+          <i class="fas fa-paper-plane"></i> Send Feedback
+        </button>
+        <p style="text-align:center;color:var(--muted);font-size:.75rem;margin-top:12px">
+          <i class="fas fa-info-circle"></i> Feedback link will be activated once support email is set up.
+          <!-- Once support@stemforge.com is active, this form can be wired to send feedback via email. -->
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+</main>
+<script>
+function submitFeedback() {
+  const text = document.getElementById('feedback-text').value.trim();
+  const errEl = document.getElementById('feedback-error');
+  if (!text) {
+    errEl.textContent = 'Please enter your feedback before submitting.';
+    errEl.style.display = 'block';
+    return;
+  }
+  errEl.style.display = 'none';
+  // Placeholder: feedback submission will be wired to support@stemforge.com
+  document.getElementById('feedback-form').style.display = 'none';
+  document.getElementById('feedback-sent').style.display = 'block';
+}
+</script>
 `)
 }
 
