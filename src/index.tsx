@@ -1749,7 +1749,6 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user  = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  // Free plan: stem audio playback locked
   if (user.plan === 'free') {
     return c.json({ error: 'Stem audio playback requires a Pro Artist plan. Your stems are saved — upgrade to listen and download.', locked: true, upgrade: true }, 403)
   }
@@ -1761,58 +1760,51 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
   const zipUrl = job.zip_url
 
-  // ── R2 cache check — serve cached WAV if already extracted ──────────────
+  // ── R2 cache check ──────────────────────────────────────────
   if (c.env.IMAGES) {
     try {
       const r2CacheKey = `stem-cache/${jobId}/${stemKey}.wav`
       const cached = await c.env.IMAGES.get(r2CacheKey)
       if (cached) {
-        console.log(`[StemAudio] R2 cache HIT: ${r2CacheKey}`)
-        // Stream directly from R2 body — no buffering
-        return new Response(cached.body, {
+        const buf = await cached.arrayBuffer()
+        return new Response(buf, {
           headers: {
             'Content-Type': 'audio/wav',
-            'Content-Length': String(cached.size),
+            'Content-Length': String(buf.byteLength),
             'Cache-Control': 'public, max-age=86400',
             'Access-Control-Allow-Origin': '*',
-            'X-Stem-Source': 'r2-cache',
           }
         })
       }
     } catch (_) { /* R2 miss — fall through */ }
   }
 
-  // ── ZIP-based extraction: find the stem entry, then STREAM decompress ──
-  // Strategy: read ZIP central directory (small range) to find offset+size of
-  // the stem, then fetch just that entry and pipe it through DecompressionStream
-  // WITHOUT buffering the entire output — stream directly to the response.
-  // This avoids the "26MB in Worker memory" CPU timeout that killed the old approach.
   try {
-    // Step 1: HEAD to get total ZIP size
+    // Step 1: HEAD to get ZIP size
     const headRes = await fetch(zipUrl, { method: 'HEAD' })
-    if (!headRes.ok) return c.json({ error: 'ZIP not accessible: ' + headRes.status }, 502)
+    if (!headRes.ok) throw new Error('ZIP HEAD failed: ' + headRes.status)
     const totalSize = parseInt(headRes.headers.get('content-length') || '0', 10)
-    if (!totalSize) return c.json({ error: 'ZIP size unknown' }, 502)
+    if (!totalSize) throw new Error('ZIP size unknown')
 
-    // Step 2: Fetch last 65KB (EOCD + central directory usually fit here)
+    // Step 2: Fetch last 65KB (EOCD + central directory)
     const tailSize  = Math.min(65536, totalSize)
     const tailStart = totalSize - tailSize
     const tailRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${tailStart}-${totalSize - 1}` } })
-    if (!tailRes.ok && tailRes.status !== 206) return c.json({ error: 'ZIP tail fetch failed' }, 502)
+    if (!tailRes.ok && tailRes.status !== 206) throw new Error('ZIP tail fetch failed: ' + tailRes.status)
     const tailBuf  = await tailRes.arrayBuffer()
     const tailView = new DataView(tailBuf)
 
-    // Step 3: Find EOCD (0x06054b50)
+    // Step 3: Find EOCD signature (0x06054b50)
     let eocdOffset = -1
     for (let i = tailBuf.byteLength - 22; i >= 0; i--) {
       if (tailView.getUint32(i, true) === 0x06054b50) { eocdOffset = i; break }
     }
-    if (eocdOffset < 0) return c.json({ error: 'EOCD not found' }, 502)
+    if (eocdOffset < 0) throw new Error('EOCD not found in ZIP tail')
 
     const cdOffsetInFile = tailView.getUint32(eocdOffset + 16, true)
     const cdSize         = tailView.getUint32(eocdOffset + 12, true)
 
-    // Step 4: Get central directory (may already be in tail buffer)
+    // Step 4: Get central directory
     let cdBuf: ArrayBuffer
     if (cdOffsetInFile >= tailStart) {
       const s = cdOffsetInFile - tailStart
@@ -1822,12 +1814,12 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       cdBuf = await cdRes.arrayBuffer()
     }
 
-    // Step 5: Parse central directory to find matching stem entry
+    // Step 5: Parse central directory to find stem
     const stemKeywords: Record<string, string[]> = {
       drums:    ['drum'],
       bass:     ['bass'],
       vocals:   ['vocal'],
-      other:    ['other', 'melody', 'piano', 'synth'],
+      other:    ['other', 'melody', 'synth'],
       piano:    ['piano', 'keys', 'rhodes'],
       guitar:   ['guitar'],
       strings:  ['string'],
@@ -1840,12 +1832,9 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
     const cdView = new DataView(cdBuf)
     let pos = 0
-    let foundLocalOffset = -1
-    let foundCompressed  = -1
-    let foundUncompressed = -1
-    let foundCompMethod  = -1
-    let foundFilename    = ''
-    const audioEntries: Array<{filename: string, localOffset: number, compressed: number, uncompressed: number, compMethod: number}> = []
+    let foundLocalOffset = -1, foundCompressed = -1, foundUncompressed = -1
+    let foundCompMethod = -1, foundFilename = ''
+    const audioEntries: Array<{filename:string,localOffset:number,compressed:number,uncompressed:number,compMethod:number}> = []
 
     while (pos < cdBuf.byteLength - 4) {
       if (cdView.getUint32(pos, true) !== 0x02014b50) break
@@ -1856,140 +1845,86 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       const extLen       = cdView.getUint16(pos + 30, true)
       const cmtLen       = cdView.getUint16(pos + 32, true)
       const localOffset  = cdView.getUint32(pos + 42, true)
-      const fnBytes      = new Uint8Array(cdBuf, pos + 46, fnLen)
-      const fn           = new TextDecoder().decode(fnBytes)
+      const fn           = new TextDecoder().decode(new Uint8Array(cdBuf, pos + 46, fnLen))
       const fnLower      = fn.toLowerCase()
-
       if (fnLower.endsWith('.wav') || fnLower.endsWith('.mp3')) {
         audioEntries.push({ filename: fn, localOffset, compressed, uncompressed, compMethod })
         if (keywords.some(kw => fnLower.includes(kw))) {
-          foundLocalOffset  = localOffset
-          foundCompressed   = compressed
-          foundUncompressed = uncompressed
-          foundCompMethod   = compMethod
-          foundFilename     = fn
+          foundLocalOffset = localOffset; foundCompressed = compressed
+          foundUncompressed = uncompressed; foundCompMethod = compMethod; foundFilename = fn
         }
       }
       pos += 46 + fnLen + extLen + cmtLen
     }
 
-    // Fallback: assign by stem index order if no keyword match
     if (foundLocalOffset < 0 && audioEntries.length > 0) {
       const stemOrder = ['drums','bass','vocals','other','piano','guitar','strings','synth','brass','woodwind','fx']
       const idx = stemOrder.indexOf(stemKey)
       const entry = audioEntries[idx >= 0 && idx < audioEntries.length ? idx : 0]
-      foundLocalOffset  = entry.localOffset
-      foundCompressed   = entry.compressed
-      foundUncompressed = entry.uncompressed
-      foundCompMethod   = entry.compMethod
-      foundFilename     = entry.filename
+      foundLocalOffset = entry.localOffset; foundCompressed = entry.compressed
+      foundUncompressed = entry.uncompressed; foundCompMethod = entry.compMethod; foundFilename = entry.filename
     }
 
     if (foundLocalOffset < 0) return c.json({ error: 'Stem not found in ZIP' }, 404)
 
-    // Step 6: Read local file header to get actual data start offset
+    // Step 6: Read local file header for actual data offset
     const lhRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${foundLocalOffset}-${foundLocalOffset + 29}` } })
     const lhBuf  = await lhRes.arrayBuffer()
     const lhView = new DataView(lhBuf)
-    const lhFnLen  = lhView.getUint16(26, true)
-    const lhExtLen = lhView.getUint16(28, true)
-    const dataOffset = foundLocalOffset + 30 + lhFnLen + lhExtLen
+    const dataOffset = foundLocalOffset + 30 + lhView.getUint16(26, true) + lhView.getUint16(28, true)
+
+    // Step 7: Fetch compressed bytes
+    const dataRes  = await fetch(zipUrl, { headers: { 'Range': `bytes=${dataOffset}-${dataOffset + foundCompressed - 1}` } })
+    const compData = await dataRes.arrayBuffer()
+
+    // Step 8: Decompress
+    let audioData: ArrayBuffer
+    if (foundCompMethod === 0) {
+      audioData = compData
+    } else if (foundCompMethod === 8) {
+      const ds     = new DecompressionStream('deflate-raw')
+      const writer = ds.writable.getWriter()
+      const reader = ds.readable.getReader()
+      writer.write(new Uint8Array(compData))
+      writer.close()
+      const chunks: Uint8Array[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+      const total = chunks.reduce((s, c) => s + c.length, 0)
+      const out   = new Uint8Array(total)
+      let off = 0; for (const ch of chunks) { out.set(ch, off); off += ch.length }
+      audioData = out.buffer
+    } else {
+      throw new Error(`Unsupported ZIP compression method: ${foundCompMethod}`)
+    }
 
     const contentType = foundFilename.toLowerCase().endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav'
 
-    console.log(`[StemAudio] Streaming ${stemKey} (${foundFilename}): method=${foundCompMethod}, compressed=${foundCompressed}, uncompressed=${foundUncompressed}, offset=${dataOffset}`)
-
-    // Step 7: Fetch compressed data and STREAM-decompress to client
-    // Using TransformStream so the Worker never buffers the full 26MB output.
-    // The decompressed bytes are piped directly to the response body.
-    if (foundCompMethod === 0) {
-      // Stored (no compression) — direct range proxy, zero CPU
-      const dataRes = await fetch(zipUrl, {
-        headers: { 'Range': `bytes=${dataOffset}-${dataOffset + foundCompressed - 1}` }
-      })
-      return new Response(dataRes.body, {
-        headers: {
-          'Content-Type': contentType,
-          'Content-Length': String(foundCompressed),
-          'Cache-Control': 'public, max-age=86400',
-          'Access-Control-Allow-Origin': '*',
-          'X-Stem-Source': 'zip-stored',
-        }
-      })
-    } else if (foundCompMethod === 8) {
-      // Deflate — stream decompress via DecompressionStream pipeline
-      // Fetch compressed data as a stream
-      const dataRes = await fetch(zipUrl, {
-        headers: { 'Range': `bytes=${dataOffset}-${dataOffset + foundCompressed - 1}` }
-      })
-      if (!dataRes.body) return c.json({ error: 'No body from ZIP range fetch' }, 502)
-
-      // Pipe: compressed bytes → DecompressionStream('deflate-raw') → client
-      const ds = new DecompressionStream('deflate-raw')
-      const decompressed = dataRes.body.pipeThrough(ds)
-
-      // ── Also write to R2 cache in background via waitUntil ──────────────
-      // We tee the stream: one branch to the client, one to R2
-      // Only do this if R2 is available and file is not too large (< 40MB uncompressed)
-      if (c.env.IMAGES && foundUncompressed < 40 * 1024 * 1024) {
-        try {
-          const [clientStream, cacheStream] = decompressed.tee()
-          // Cache branch: collect all chunks and write to R2
-          const cachePromise = (async () => {
-            try {
-              const reader = cacheStream.getReader()
-              const chunks: Uint8Array[] = []
-              let totalBytes = 0
-              while (true) {
-                const { done, value } = await reader.read()
-                if (done) break
-                chunks.push(value)
-                totalBytes += value.length
-              }
-              const out = new Uint8Array(totalBytes)
-              let off = 0
-              for (const ch of chunks) { out.set(ch, off); off += ch.length }
-              await c.env.IMAGES!.put(`stem-cache/${jobId}/${stemKey}.wav`, out.buffer, {
-                httpMetadata: { contentType }
-              })
-              console.log(`[StemAudio] R2 cache WRITTEN: stem-cache/${jobId}/${stemKey}.wav (${totalBytes} bytes)`)
-            } catch (ce) {
-              console.error(`[StemAudio] R2 cache write failed for ${stemKey}:`, ce)
-            }
-          })()
-          try { (c.executionCtx as any).waitUntil(cachePromise) } catch { /* no executionCtx */ }
-
-          return new Response(clientStream, {
-            headers: {
-              'Content-Type': contentType,
-              'Cache-Control': 'public, max-age=86400',
-              'Access-Control-Allow-Origin': '*',
-              'X-Stem-Source': 'zip-deflate-stream',
-            }
-          })
-        } catch (_) {
-          // tee failed — fall through to simple stream without caching
-        }
-      }
-
-      // Simple stream path (no R2 tee)
-      return new Response(decompressed, {
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=86400',
-          'Access-Control-Allow-Origin': '*',
-          'X-Stem-Source': 'zip-deflate-stream-nocache',
-        }
-      })
-    } else {
-      return c.json({ error: `Unsupported ZIP compression method: ${foundCompMethod}` }, 500)
+    // Write to R2 cache for next request
+    if (c.env.IMAGES) {
+      try {
+        await c.env.IMAGES.put(`stem-cache/${jobId}/${stemKey}.wav`, audioData, {
+          httpMetadata: { contentType }
+        })
+      } catch (_) { /* non-fatal */ }
     }
+
+    return new Response(audioData, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(audioData.byteLength),
+        'Content-Disposition': `inline; filename="${foundFilename}"`,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=86400'
+      }
+    })
   } catch (err: any) {
-    console.error('[StemAudio] error:', err)
     return c.json({ error: err?.message || 'Stem extract failed' }, 500)
   }
 })
-
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/stems — on-demand stem extraction
@@ -5103,20 +5038,6 @@ async function stemsInit() {
       return;
     }
 
-    // job.zip_url exists — check user plan for download access
-    const meCheck  = await fetch('/api/auth/me');
-    const meCheckD = await meCheck.json();
-    const userNow  = meCheckD.user;
-    if (userNow && userNow.plan === 'free') {
-      // Stems extracted & saved — show locked player with upgrade prompt
-      showState('free-locked');
-      return;
-    }
-    if (userNow && userNow.plan === 'creator') {
-      showState('creator-blocked');
-      return;
-    }
-
     // Save to sessionStorage so back-navigation skips the prompt
     try {
       sessionStorage.setItem(cacheKey, JSON.stringify({
@@ -5284,36 +5205,21 @@ async function buildStemsPlayer(job) {
 async function loadStemsAudio(jobId, tracks) {
   console.log('[StemForge] loadStemsAudio start, jobId:', jobId, 'tracks:', tracks.length);
 
-  // Init AudioContext early (page load counts as user interaction in some browsers)
   let ctx = null;
   try { ctx = getAudioCtx(); } catch(ae) { console.warn('[StemForge] AudioContext init failed:', ae); }
 
   let primaryStem = null;
 
-  // Load ALL stems in PARALLEL — not sequentially.
-  // Each stem is ~15MB compressed → ~26MB decompressed streamed through the Worker.
-  // Sequential loading would mean 4 × wait time = very long before any audio is ready.
-  // Parallel loading means all stems arrive together (limited by the slowest one).
-  async function loadOneStem(t) {
+  for (const t of tracks) {
     try {
       const stemUrl = '/api/stem-audio/' + jobId + '/' + t.stem;
       console.log('[StemForge] Fetching stem:', t.stem, stemUrl);
 
-      // 90-second timeout per stem — streaming 26MB WAV through the Worker can be slow
-      // on first request (no R2 cache). After first load R2 cache kicks in and it's instant.
-      const controller = new AbortController();
-      const stemTimeout = setTimeout(() => controller.abort(), 90000);
-      let resp;
-      try {
-        resp = await fetch(stemUrl, { signal: controller.signal });
-      } finally {
-        clearTimeout(stemTimeout);
-      }
+      const resp = await fetch(stemUrl);
       if (!resp.ok) {
-        const errText = await resp.text().catch(() => '');
-        console.warn('[StemForge] stem fetch failed:', t.stem, resp.status, errText);
+        console.warn('[StemForge] stem fetch failed:', t.stem, resp.status, await resp.text().catch(()=>''));
         drawRandomWaveform(t.stem, t.color);
-        return;
+        continue;
       }
 
       const arrayBuf = await resp.arrayBuffer();
@@ -5326,7 +5232,6 @@ async function loadStemsAudio(jobId, tracks) {
       audio.preload = 'auto';
       stemAudios[t.stem] = audio;
 
-      // First stem to load drives the seek bar + time display
       if (!primaryStem) {
         primaryStem = t.stem;
         audio.addEventListener('timeupdate', () => {
@@ -5344,7 +5249,6 @@ async function loadStemsAudio(jobId, tracks) {
         });
       }
 
-      // Wire AudioContext analyser for real waveform
       if (ctx) {
         try {
           const src      = ctx.createMediaElementSource(audio);
@@ -5357,7 +5261,6 @@ async function loadStemsAudio(jobId, tracks) {
           stemSources[t.stem]   = src;
         } catch(ae) { console.warn('[StemForge] analyser fail', t.stem, ae); }
 
-        // Draw real waveform from decoded audio data
         try {
           const decoded = await ctx.decodeAudioData(arrayBuf.slice(0));
           drawStaticWaveform(t.stem, decoded, t.color);
@@ -5367,17 +5270,10 @@ async function loadStemsAudio(jobId, tracks) {
       }
 
     } catch(err) {
-      if (err && err.name === 'AbortError') {
-        console.warn('[StemForge] stem timed out (90s):', t.stem, '— showing placeholder waveform');
-      } else {
-        console.warn('[StemForge] error loading stem', t.stem, err);
-      }
+      console.warn('[StemForge] error loading stem', t.stem, err);
       drawRandomWaveform(t.stem, t.color);
     }
   }
-
-  // Fire all stem loads simultaneously
-  await Promise.all(tracks.map(t => loadOneStem(t)));
 
   const loadedCount = Object.keys(stemAudios).length;
   console.log('[StemForge] Audio load complete:', loadedCount, '/', tracks.length, 'stems loaded');
