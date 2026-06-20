@@ -5259,16 +5259,7 @@ function setVIMode(mode) {
 async function stemsInit() {
   showState('loading');
   try {
-    // ── Plan gate: authenticate first, block free + creator before anything renders ──
-    const meRes  = await fetch('/api/auth/me');
-    const meData = await meRes.json();
-    const user   = meData.user;
-    if (!user) { showState('upgrade'); return; }
-    // Free plan: cannot access stem player at all
-    if (user.plan === 'free') { showState('creator-blocked'); return; }
-    // Creator plan: stems are a Pro-only feature
-    if (user.plan === 'creator') { showState('creator-blocked'); return; }
-
+    // Step 1: load the job — no auth check yet
     const res = await fetch('/api/job/' + STEMS_JOB_ID);
     let job;
     try { job = await res.json(); } catch(je) { throw new Error('Server returned bad response (HTTP ' + res.status + ')'); }
@@ -5294,12 +5285,17 @@ async function stemsInit() {
     }
 
     if (!job.zip_url) {
+      // No stems yet — auth/plan gate: only check when stems haven't been extracted
+      const meRes  = await fetch('/api/auth/me');
+      const meData = await meRes.json();
+      const user   = meData.user;
+      if (!user || user.plan === 'free') { showState('upgrade'); return; }
+
       // If user navigated back AFTER extraction (sessionStorage key exists but zip_url
       // not yet in job record, e.g. async write lag), treat as already extracted
       // and go straight back to library rather than showing the credit prompt again.
       const extractedKey = 'stems_extracted_' + STEMS_JOB_ID;
       if (sessionStorage.getItem(extractedKey)) {
-        // Already extracted this session — go back silently instead of re-prompting
         history.back();
         return;
       }
@@ -5312,7 +5308,7 @@ async function stemsInit() {
         return;
       }
 
-      // Pro plan — show extraction prompt (2 credits)
+      // Show extraction prompt (2 credits)
       showState('no-stems');
       return;
     }
