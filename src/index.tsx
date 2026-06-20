@@ -774,24 +774,27 @@ async function pollReplicate(predictionId: string, apiKey: string, maxWaitMs = 4
 // audioUrl: publicly accessible URL to the WAV file to split
 // Returns: map of stem name → output URL  e.g. { drums: '...', bass: '...', other: '...', ... }
 async function runDemucsOnUrl(audioUrl: string, apiKey: string): Promise<Record<string, string>> {
-  const body = {
-    version: 'b3e0d1ac2f93e2b3a5a1a7d5f6f3c0c1a2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7', // htdemucs_6s placeholder
-    input: {
-      audio: audioUrl,
-      model: 'htdemucs_6s',
-      stem: 'none'   // split all stems
-    }
-  }
-
-  // Use the correct latest Replicate endpoint for demucs
-  const r = await fetch(`${REPLICATE_BASE}/models/meta/demucs/predictions`, {
+  // cjwbw/demucs version 25a173... (htdemucs_6s, 6-stem output: drums/bass/vocals/guitar/piano/other)
+  // Input schema: { audio, model_name, output_format }  — do NOT set stem (leave empty = all stems)
+  // Endpoint: POST /predictions  (NOT /models/meta/demucs/predictions — that model was removed)
+  const r = await fetch(`${REPLICATE_BASE}/predictions`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'Prefer': 'wait=60'   // wait up to 60s for fast models
+      'Prefer': 'wait=60'   // wait up to 60s synchronously
     },
-    body: JSON.stringify({ input: { audio: audioUrl, model: 'htdemucs_6s', stem: 'none' } })
+    body: JSON.stringify({
+      version: '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953',
+      input: {
+        audio: audioUrl,
+        model_name: 'htdemucs_6s',   // 6-stem model: drums, bass, vocals, guitar, piano, other
+        output_format: 'mp3',          // smaller outputs, faster delivery
+        shifts: 1,
+        overlap: 0.25
+        // stem: omitted → split ALL stems (enum has no 'none' value)
+      }
+    })
   })
 
   if (!r.ok) {
