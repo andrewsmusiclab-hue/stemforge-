@@ -3106,54 +3106,7 @@ body {
   text-transform: uppercase;
 }
 
-/* ── Tooltip system ──────────────────────────────────────── */
-[data-tooltip] {
-  position: relative;
-}
-[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(10,15,30,.96);
-  color: #e2e8f0;
-  font-size: .72rem;
-  font-weight: 500;
-  line-height: 1.4;
-  white-space: nowrap;
-  max-width: 240px;
-  white-space: normal;
-  text-align: center;
-  padding: 6px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(255,255,255,.1);
-  box-shadow: 0 4px 16px rgba(0,0,0,.5);
-  z-index: 99999;
-  pointer-events: none;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity .15s, visibility .15s;
-}
-[data-tooltip]::before {
-  content: '';
-  position: absolute;
-  bottom: calc(100% + 2px);
-  left: 50%;
-  transform: translateX(-50%);
-  border: 5px solid transparent;
-  border-top-color: rgba(10,15,30,.96);
-  z-index: 99999;
-  pointer-events: none;
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity .15s, visibility .15s;
-}
-[data-tooltip]:hover::after,
-[data-tooltip]:hover::before {
-  opacity: 1;
-  visibility: visible;
-}
+/* ── Tooltip system removed — using native browser title tooltips instead ── */
 
 /* ── Vocal toggle ────────────────────────────────────────── */
 .vocal-toggle-group {

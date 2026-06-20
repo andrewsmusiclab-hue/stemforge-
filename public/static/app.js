@@ -2258,7 +2258,6 @@ window.openStemsPopup = async function(jobId, existingZipUrl) {
   const isPro = plan === 'pro';
   const isFree = plan === 'free';
   const creditCost = 2; // V1 only — all plans that can extract use 2 credits
-  const stemCount  = '5 stems';
   const planLabel  = isPro ? 'Pro Artist' : isFree ? 'Free' : 'Creator';
   const freeNote   = isFree
     ? `<div style="margin-bottom:16px;padding:10px 14px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:8px;font-size:.8rem;color:#c084fc;text-align:left">
@@ -2271,7 +2270,6 @@ window.openStemsPopup = async function(jobId, existingZipUrl) {
     <div style="width:100%">
       <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-layer-group"></i></div>
       <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Extract Stems</h3>
-      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track — Drums, Bass, Melody, Vocals, and Other.</p>
       <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px"><strong>${creditCost} credits</strong> will be used from your ${planLabel} plan.</p>
       ${freeNote}
       <div style="display:flex;gap:10px;justify-content:center">

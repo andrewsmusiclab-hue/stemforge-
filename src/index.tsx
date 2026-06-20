@@ -639,10 +639,20 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
     prompt: murekaPrompt,
     model: 'auto'
   }
-  // Pass user-specified or blueprint duration to Mureka if available
+  // Pass user-specified or blueprint duration to Mureka
+  // Mureka uses "duration" in seconds — include it even if API doesn't honor it exactly
+  // Also bake it into the prompt so the AI knows the target length
   const durationSec = userDurationSec || blueprint.duration_seconds
   if (durationSec && durationSec > 0) {
     body.duration = durationSec
+    // Also reinforce duration in the prompt text itself
+    const durMin = Math.floor(durationSec / 60)
+    const durSec = durationSec % 60
+    const durStr = `${durMin}:${String(durSec).padStart(2,'0')}`
+    if (!murekaPrompt.includes('minute') && !murekaPrompt.includes('second') && !murekaPrompt.includes(':')) {
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + `, duration ${durStr}`
+      body.prompt = murekaPrompt
+    }
   }
   // If a reference audio file ID was supplied, pass it for style matching
   if (refFileId) {
@@ -1751,6 +1761,25 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
   const zipUrl = job.zip_url
 
+  // ── R2 cache check — serve cached WAV if already extracted ──
+  if (c.env.IMAGES) {
+    try {
+      const r2CacheKey = `stem-cache/${jobId}/${stemKey}.wav`
+      const cached = await c.env.IMAGES.get(r2CacheKey)
+      if (cached) {
+        const buf = await cached.arrayBuffer()
+        return new Response(buf, {
+          headers: {
+            'Content-Type': 'audio/wav',
+            'Content-Length': String(buf.byteLength),
+            'Cache-Control': 'public, max-age=86400',
+            'Access-Control-Allow-Origin': '*',
+          }
+        })
+      }
+    } catch (_) { /* R2 miss — fall through to ZIP extraction */ }
+  }
+
   try {
     // ── Step 1: Read the last 65KB of the ZIP to find the End-of-Central-Directory ──
     const headRes = await fetch(zipUrl, { method: 'HEAD' })
@@ -1804,11 +1833,11 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       drums:    ['drum'],
       bass:     ['bass'],
       vocals:   ['vocal'],
-      other:    ['other', 'melody', 'synth'],
+      other:    ['other', 'melody'],
       piano:    ['piano'],
       guitar:   ['guitar'],
       strings:  ['string'],
-      synth:    ['synth'],
+      synth:    ['synth', 'pad', 'lead'],
       brass:    ['brass'],
       woodwind: ['woodwind', 'wind'],
       fx:       ['fx'],
@@ -1903,13 +1932,25 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
     }
 
     const ext = foundFilename.toLowerCase().endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav'
+    const contentType = ext
+
+    // ── Write to R2 cache so next request is instant ──
+    if (c.env.IMAGES) {
+      try {
+        const r2CacheKey = `stem-cache/${jobId}/${stemKey}.wav`
+        await c.env.IMAGES.put(r2CacheKey, audioData, {
+          httpMetadata: { contentType }
+        })
+      } catch (_) { /* non-fatal — cache write failed, still serve */ }
+    }
+
     return new Response(audioData, {
       headers: {
-        'Content-Type': ext,
+        'Content-Type': contentType,
         'Content-Length': String(audioData.byteLength),
         'Content-Disposition': `inline; filename="${foundFilename}"`,
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=3600'
+        'Cache-Control': 'public, max-age=86400'
       }
     })
   } catch (err: any) {
@@ -5670,11 +5711,21 @@ function stemToggleSolo(stem) {
 }
 
 // ── Apply volumes ─────────────────────────────────────────────
+// Stems that Mureka can put vocal content into
+const VOCAL_STEMS = new Set(['vocals', 'vocal', 'vox', 'fx']);
+function isStemVocal(stem) {
+  if (VOCAL_STEMS.has(stem)) return true;
+  // Also check the loaded track metadata for family=vocals
+  const track = stemsJob && stemsJob.tracks ? stemsJob.tracks.find(t => t.stem === stem) : null;
+  if (track && (track.family === 'vocals' || track.mureka_track_type === 'vocals')) return true;
+  return false;
+}
 function applyVolumes() {
   Object.entries(stemAudios).forEach(([stem, audio]) => {
     const muted  = stemMuted[stem];
     const soloed = hasSoloActive && !stemSolo[stem];
-    const viMuted = viMode === 'instrumental' && stem === 'vocals';
+    // Instrumental mode: mute any stem that is or could contain vocals
+    const viMuted = viMode === 'instrumental' && isStemVocal(stem);
     audio.volume = (muted || soloed || viMuted) ? 0 : masterVolume * stemGains[stem];
   });
 }
@@ -6124,7 +6175,57 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- SECTION 2: Styles -->
+    <!-- SECTION 2: Duration Picker -->
+    <div class="suno-card suno-card--slim" id="card-duration">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
+        <i class="fas fa-clock" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Duration</span>
+        <div class="beat-count-group" id="duration-btn-group" style="flex-wrap:wrap">
+          <button class="beat-count-btn" data-dur="0" id="dur-auto" onclick="setDuration(0)">
+            Auto
+          </button>
+          <button class="beat-count-btn" data-dur="60" id="dur-60" onclick="setDuration(60)">
+            1:00
+          </button>
+          <button class="beat-count-btn" data-dur="90" id="dur-90" onclick="setDuration(90)">
+            1:30
+          </button>
+          <button class="beat-count-btn" data-dur="120" id="dur-120" onclick="setDuration(120)">
+            2:00
+          </button>
+          <button class="beat-count-btn" data-dur="150" id="dur-150" onclick="setDuration(150)">
+            2:30
+          </button>
+          <button class="beat-count-btn" data-dur="180" id="dur-180" onclick="setDuration(180)">
+            3:00
+          </button>
+          <button class="beat-count-btn" data-dur="210" id="dur-210" onclick="setDuration(210)">
+            3:30
+          </button>
+          <button class="beat-count-btn" data-dur="240" id="dur-240" onclick="setDuration(240)">
+            4:00
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 3: Beat Count Toggle -->
+    <div class="suno-card suno-card--slim">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
+        <i class="fas fa-layer-group" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Beats</span>
+        <div class="beat-count-group" id="beat-count-group">
+          <button class="beat-count-btn beat-count-btn--active" data-count="1" id="bc-1" onclick="setBeatCount(1)">
+            <i class="fas fa-music"></i> 1 Beat
+          </button>
+          <button class="beat-count-btn" data-count="2" id="bc-2" onclick="setBeatCount(2)">
+            <i class="fas fa-music"></i> 2 Beats <span class="beat-count-credit-badge">2 credits</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 4: Styles -->
     <div class="suno-card" id="card-styles">
       <div class="suno-card__header">
         <button class="suno-card__collapse" id="styles-collapse-btn" aria-label="Toggle">
@@ -6137,7 +6238,7 @@ function generatorPage() {
           placeholder="e.g. dark trap, melodic, 808s, moody, cinematic..."
           maxlength="200"/>
         <div class="suno-style-chips-row">
-          <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style" data-tooltip="Auto-fill a style based on your lyrics or prompt"><i class="fas fa-magic"></i></button>
+          <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
           <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left" disabled><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
             <button class="suno-chip" data-style="trap">Trap</button>
@@ -6158,7 +6259,7 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- SECTION 3: More Options (collapsible) -->
+    <!-- SECTION 5: More Options (collapsible) -->
     <div class="suno-card suno-card--collapsed" id="card-more">
       <div class="suno-card__header" id="more-options-toggle" style="cursor:pointer">
         <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
@@ -6177,64 +6278,12 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- SECTION 3b: Duration Picker -->
-    <div class="suno-card suno-card--slim" id="card-duration" data-tooltip="Choose how long your track should be — AI will generate a beat close to this duration">
-      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
-        <i class="fas fa-clock" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
-        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Duration</span>
-        <div class="beat-count-group" id="duration-btn-group" style="flex-wrap:wrap">
-          <button class="beat-count-btn" data-dur="0" id="dur-auto" onclick="setDuration(0)" data-tooltip="Let the AI decide the length based on your plan">
-            Auto
-          </button>
-          <button class="beat-count-btn" data-dur="60" id="dur-60" onclick="setDuration(60)" data-tooltip="~1 minute — great for loops and short intros">
-            1:00
-          </button>
-          <button class="beat-count-btn" data-dur="90" id="dur-90" onclick="setDuration(90)" data-tooltip="~1.5 minutes — compact beat">
-            1:30
-          </button>
-          <button class="beat-count-btn" data-dur="120" id="dur-120" onclick="setDuration(120)" data-tooltip="~2 minutes — standard beat length">
-            2:00
-          </button>
-          <button class="beat-count-btn" data-dur="150" id="dur-150" onclick="setDuration(150)" data-tooltip="~2.5 minutes — full arrangement">
-            2:30
-          </button>
-          <button class="beat-count-btn" data-dur="180" id="dur-180" onclick="setDuration(180)" data-tooltip="~3 minutes — full track with sections">
-            3:00
-          </button>
-          <button class="beat-count-btn" data-dur="210" id="dur-210" onclick="setDuration(210)" data-tooltip="~3.5 minutes — extended arrangement">
-            3:30
-          </button>
-          <button class="beat-count-btn" data-dur="240" id="dur-240" onclick="setDuration(240)" data-tooltip="~4 minutes — epic full-length track">
-            4:00
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- SECTION 4: Song Title -->
+    <!-- SECTION 6: Song Title -->
     <div class="suno-card suno-card--slim">
       <div class="suno-field-row">
         <i class="fas fa-music suno-field-icon"></i>
         <input type="text" class="suno-field-input" id="gen-title" placeholder="Song title (optional)"
-          data-tooltip="Give your track a name (optional) — if left blank, one will be auto-generated"/>
-      </div>
-    </div>
-
-    <!-- SECTION 6: Beat Count Toggle -->
-    <div class="suno-card suno-card--slim" data-tooltip="Generate 1 or 2 beats at once — 2 beats uses 2 download credits">
-      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
-        <i class="fas fa-layer-group" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
-        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Beats</span>
-        <div class="beat-count-group" id="beat-count-group">
-          <button class="beat-count-btn beat-count-btn--active" data-count="1" id="bc-1" onclick="setBeatCount(1)"
-            data-tooltip="Generate 1 beat — costs 1 download credit">
-            <i class="fas fa-music"></i> 1 Beat
-          </button>
-          <button class="beat-count-btn" data-count="2" id="bc-2" onclick="setBeatCount(2)"
-            data-tooltip="Generate 2 beats simultaneously — costs 2 download credits">
-            <i class="fas fa-music"></i> 2 Beats <span class="beat-count-credit-badge">2 credits</span>
-          </button>
-        </div>
+          title="Give your track a name (optional) — if left blank, one will be auto-generated"/>
       </div>
     </div>
 
