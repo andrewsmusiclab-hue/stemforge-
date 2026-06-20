@@ -1351,7 +1351,7 @@ app.post('/api/poll/:id', async (c) => {
     } : null,
     stereo_url: job.stereo_url || null,
     zip_url: job.zip_url || null,
-    tracks: job.tracks.map(t => ({
+    tracks: (job.tracks || []).map(t => ({
       name: t.name,
       stem: t.stem,
       family: t.family,
@@ -1397,7 +1397,7 @@ app.get('/api/job/:id', async (c) => {
     } : null,
     stereo_url: job.stereo_url || null,
     zip_url: job.zip_url || null,
-    tracks: job.tracks.map(t => ({
+    tracks: (job.tracks || []).map(t => ({
       name: t.name,
       stem: t.stem,
       family: t.family,
@@ -5270,8 +5270,9 @@ async function stemsInit() {
     if (user.plan === 'creator') { showState('creator-blocked'); return; }
 
     const res = await fetch('/api/job/' + STEMS_JOB_ID);
-    const job = await res.json();
-    if (!res.ok || job.error) throw new Error(job.error || 'Job not found');
+    let job;
+    try { job = await res.json(); } catch(je) { throw new Error('Server returned bad response (HTTP ' + res.status + ')'); }
+    if (!res.ok || job.error) throw new Error(job.error || ('Job fetch failed: HTTP ' + res.status));
     stemsJob = job;
     populateHero(job);
 
