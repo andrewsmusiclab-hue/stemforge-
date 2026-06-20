@@ -484,55 +484,114 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Canvas art generator (shared helper) ───────────────────
   function drawCanvasArt(artEl, hue, title, genre) {
     try {
+      const W = 320, H = 320;
       const canvas = document.createElement('canvas');
-      canvas.width = 256; canvas.height = 256;
+      canvas.width = W; canvas.height = H;
       const ctx = canvas.getContext('2d');
-      const grad = ctx.createLinearGradient(0, 0, 256, 256);
-      grad.addColorStop(0, `hsl(${hue},65%,18%)`);
-      grad.addColorStop(0.5, `hsl(${(hue+40)%360},75%,12%)`);
-      grad.addColorStop(1, `hsl(${(hue+80)%360},60%,8%)`);
-      ctx.fillStyle = grad; ctx.fillRect(0, 0, 256, 256);
-      const r1 = ctx.createRadialGradient(200, 60, 10, 200, 60, 120);
-      r1.addColorStop(0, `hsla(${(hue+120)%360},80%,60%,0.35)`);
+
+      // ── Background gradient (unique per hue) ──
+      const grad = ctx.createLinearGradient(0, 0, W, H);
+      grad.addColorStop(0,   `hsl(${hue},70%,16%)`);
+      grad.addColorStop(0.5, `hsl(${(hue+50)%360},80%,10%)`);
+      grad.addColorStop(1,   `hsl(${(hue+100)%360},65%,7%)`);
+      ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+
+      // ── Accent glow spots ──
+      const r1 = ctx.createRadialGradient(W*0.75, H*0.22, 10, W*0.75, H*0.22, W*0.48);
+      r1.addColorStop(0, `hsla(${(hue+130)%360},90%,65%,0.38)`);
       r1.addColorStop(1, 'transparent');
-      ctx.fillStyle = r1; ctx.fillRect(0, 0, 256, 256);
-      const r2 = ctx.createRadialGradient(50, 200, 5, 50, 200, 100);
-      r2.addColorStop(0, `hsla(${(hue+240)%360},70%,55%,0.25)`);
+      ctx.fillStyle = r1; ctx.fillRect(0, 0, W, H);
+
+      const r2 = ctx.createRadialGradient(W*0.2, H*0.78, 5, W*0.2, H*0.78, W*0.4);
+      r2.addColorStop(0, `hsla(${(hue+250)%360},75%,60%,0.28)`);
       r2.addColorStop(1, 'transparent');
-      ctx.fillStyle = r2; ctx.fillRect(0, 0, 256, 256);
-      ctx.font = 'bold 13px system-ui,sans-serif';
-      ctx.fillStyle = `hsla(${hue},60%,85%,0.7)`;
-      ctx.textAlign = 'center';
-      ctx.fillText((genre||'music').toUpperCase(), 128, 36);
-      const barCount = 18; const barW = 6; const gap = 4;
+      ctx.fillStyle = r2; ctx.fillRect(0, 0, W, H);
+
+      // ── Subtle noise grain ──
+      for (let i = 0; i < 200; i++) {
+        const nx = (Math.sin(i * 127.1 + hue) * 0.5 + 0.5) * W;
+        const ny = (Math.sin(i * 311.7 + hue * 0.3) * 0.5 + 0.5) * H;
+        const a = 0.03 + (Math.sin(i * 53.7) * 0.5 + 0.5) * 0.08;
+        ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+        ctx.fillRect(nx, ny, 1.5, 1.5);
+      }
+
+      // ── Waveform bars (centre) ──
+      const barCount = 22, barW = 7, gap = 3;
       const totalW = barCount * (barW + gap) - gap;
-      const startX = (256 - totalW) / 2;
+      const startX = (W - totalW) / 2;
+      const centreY = H * 0.52;
       for (let b = 0; b < barCount; b++) {
-        const seed = (hue * 13 + b * 97) % 360;
-        const h = 20 + (Math.sin(seed * 0.13) * 0.5 + 0.5) * 55;
-        const x = startX + b * (barW + gap); const y = 128 - h / 2;
-        const barGrad = ctx.createLinearGradient(0, y, 0, y + h);
-        barGrad.addColorStop(0, `hsla(${(hue+40)%360},80%,75%,0.9)`);
-        barGrad.addColorStop(1, `hsla(${hue},60%,50%,0.4)`);
-        ctx.fillStyle = barGrad;
+        const seed = hue * 17 + b * 83;
+        const h = 14 + (Math.sin(seed * 0.11) * 0.5 + 0.5) * 52;
+        const x = startX + b * (barW + gap);
+        const y = centreY - h / 2;
+        const bg = ctx.createLinearGradient(0, y, 0, y + h);
+        bg.addColorStop(0, `hsla(${(hue+30)%360},85%,78%,0.95)`);
+        bg.addColorStop(1, `hsla(${hue},65%,45%,0.45)`);
+        ctx.fillStyle = bg;
         ctx.beginPath();
-        ctx.roundRect ? ctx.roundRect(x, y, barW, h, 2) : ctx.rect(x, y, barW, h);
+        if (ctx.roundRect) ctx.roundRect(x, y, barW, h, 2);
+        else ctx.rect(x, y, barW, h);
         ctx.fill();
       }
-      const words = (title||'').split(' ');
-      const line1 = words.slice(0, Math.ceil(words.length/2)).join(' ');
-      const line2 = words.slice(Math.ceil(words.length/2)).join(' ');
-      ctx.font = 'bold 18px system-ui,sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.shadowColor = 'rgba(0,0,0,0.8)'; ctx.shadowBlur = 6;
+
+      // ── Genre label (top) ──
+      ctx.font = 'bold 11px system-ui,sans-serif';
+      ctx.fillStyle = `hsla(${hue},65%,85%,0.65)`;
       ctx.textAlign = 'center';
-      if (line2) { ctx.fillText(line1.slice(0,18), 128, 185); ctx.fillText(line2.slice(0,18), 128, 207); }
-      else { ctx.fillText(line1.slice(0,20), 128, 197); }
+      ctx.letterSpacing = '1.5px';
+      ctx.fillText((genre||'music').toUpperCase().slice(0,16), W/2, 26);
+      ctx.letterSpacing = '0';
+
+      // ── Song title (bottom) — large, bold, white with shadow ──
+      const displayTitle = (title || 'Untitled Beat').trim();
+      const maxChars = 18;
+      const words = displayTitle.split(' ');
+      let line1 = '', line2 = '';
+      // Split into 2 lines smartly
+      let cur = '';
+      for (let i = 0; i < words.length; i++) {
+        const test = cur ? cur + ' ' + words[i] : words[i];
+        if (test.length <= maxChars) { cur = test; }
+        else { line1 = cur; cur = words[i]; }
+      }
+      if (!line1) { line1 = cur; cur = ''; }
+      line2 = cur;
+
+      // Semi-transparent title background strip
+      const titleY = line2 ? H - 60 : H - 44;
+      const stripH = line2 ? 54 : 38;
+      const stripGrad = ctx.createLinearGradient(0, titleY - 8, 0, titleY + stripH);
+      stripGrad.addColorStop(0, 'rgba(0,0,0,0)');
+      stripGrad.addColorStop(1, 'rgba(0,0,0,0.72)');
+      ctx.fillStyle = stripGrad;
+      ctx.fillRect(0, titleY - 8, W, stripH + 16);
+
+      ctx.shadowColor = 'rgba(0,0,0,0.9)';
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      if (line2) {
+        ctx.font = 'bold 17px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 14);
+        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 35);
+      } else {
+        ctx.font = 'bold 19px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 20);
+      }
       ctx.shadowBlur = 0;
+
+      // ── StemForge "SF" monogram mark (bottom-right corner) ──
+      ctx.font = 'bold 10px system-ui,sans-serif';
+      ctx.fillStyle = `hsla(${hue},70%,75%,0.45)`;
+      ctx.textAlign = 'right';
+      ctx.fillText('STEMFORGE', W - 10, H - 8);
+
       artEl.style.backgroundImage = `url('${canvas.toDataURL('image/png')}')`;
       artEl.style.backgroundSize = 'cover';
       artEl.style.backgroundPosition = 'center';
-    } catch(e) { /* gradient fallback already shown */ }
+    } catch(e) { /* gradient fallback */ }
   }
 
   // ── Load AI cover images async for a grid element ───────────
@@ -572,8 +631,7 @@ document.addEventListener('DOMContentLoaded', () => {
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
            data-dur="${dur}"
            >
-        <div class="project-card__art" style="${thumbBg}">
-          <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
+        <div class="project-card__art" style="background:hsl(${hue},50%,10%)">
           <div class="project-card__play" onclick="playDashProject(this)">
             <i class="fas fa-play"></i>${dur ? `<span class="card-play-dur">${dur}</span>` : ''}
           </div>
@@ -973,24 +1031,45 @@ document.addEventListener('DOMContentLoaded', () => {
     // Create mini player
     const player = document.createElement('div');
     player.id = 'dash-mini-player';
-    player.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--card-bg);border:1px solid var(--border);border-radius:16px;padding:16px 24px;display:flex;align-items:center;gap:16px;z-index:9999;box-shadow:0 8px 40px rgba(0,0,0,.5);min-width:320px;max-width:560px';
+    // Get duration from card data attribute (populated from blueprint)
+    const cardDur = card.dataset.dur || '';
+    player.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--card-bg,#1a1a2e);border:1px solid var(--border,#333);border-radius:16px;padding:14px 20px;display:flex;align-items:center;gap:14px;z-index:9999;box-shadow:0 8px 40px rgba(0,0,0,.6);min-width:340px;max-width:580px;backdrop-filter:blur(12px)';
     player.innerHTML = `
       <audio id="dash-audio" src="${stereoUrl}" preload="auto"></audio>
-      <button id="dash-play-pause" style="width:40px;height:40px;border-radius:50%;background:var(--primary);border:none;cursor:pointer;color:#fff;font-size:16px;flex-shrink:0" onclick="dashTogglePlay()"><i class="fas fa-play"></i></button>
+      <button id="dash-play-pause" style="width:42px;height:42px;border-radius:50%;background:var(--primary,#4e9fff);border:none;cursor:pointer;color:#fff;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center" onclick="dashTogglePlay()"><i class="fas fa-pause"></i></button>
       <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600;margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${card.querySelector('h4').textContent}</div>
-        <input type="range" id="dash-seek" min="0" max="100" value="0" step="0.1" style="width:100%;accent-color:var(--primary);cursor:pointer"/>
+        <div style="font-size:13px;font-weight:600;margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${card.querySelector('h4')?.textContent || trackTitle}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="dash-time-cur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px">0:00</span>
+          <input type="range" id="dash-seek" min="0" max="100" value="0" step="0.1" style="flex:1;accent-color:var(--primary,#4e9fff);cursor:pointer;height:3px"/>
+          <span id="dash-time-dur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px;text-align:right">${cardDur || '—'}</span>
+        </div>
       </div>
-      ${stereoUrl ? `<a href="${stereoUrl}" download="${(trackTitle||'beat').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase()}_stereo.mp3" style="font-size:18px;color:var(--muted)"><i class="fas fa-download"></i></a>` : ''}
-      <button onclick="document.getElementById('dash-mini-player').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px"><i class="fas fa-times"></i></button>
+      <button onclick="document.getElementById('dash-mini-player').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted,#888);font-size:18px;flex-shrink:0;line-height:1"><i class="fas fa-times"></i></button>
     `;
     document.body.appendChild(player);
     const audio = document.getElementById('dash-audio');
     const seekBar = document.getElementById('dash-seek');
+    const timeCur = document.getElementById('dash-time-cur');
+    const timeDur = document.getElementById('dash-time-dur');
+
+    function fmtSecs(s) {
+      if (!isFinite(s)) return '0:00';
+      const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+      return m + ':' + String(sec).padStart(2, '0');
+    }
+
     audio.play().catch(()=>{});
-    document.getElementById('dash-play-pause').innerHTML = '<i class="fas fa-pause"></i>';
+    audio.addEventListener('loadedmetadata', () => {
+      if (timeDur && !cardDur) timeDur.textContent = fmtSecs(audio.duration);
+      else if (timeDur && cardDur) timeDur.textContent = cardDur; // use blueprint dur
+    });
     audio.addEventListener('timeupdate', () => {
-      if (audio.duration) seekBar.value = (audio.currentTime / audio.duration) * 100;
+      if (audio.duration) {
+        seekBar.value = (audio.currentTime / audio.duration) * 100;
+        if (timeCur) timeCur.textContent = fmtSecs(audio.currentTime);
+        if (timeDur && audio.duration) timeDur.textContent = fmtSecs(audio.duration);
+      }
     });
     seekBar.addEventListener('input', () => {
       if (audio.duration) audio.currentTime = (seekBar.value / 100) * audio.duration;
@@ -998,14 +1077,20 @@ document.addEventListener('DOMContentLoaded', () => {
     audio.addEventListener('ended', () => {
       document.getElementById('dash-play-pause').innerHTML = '<i class="fas fa-play"></i>';
       seekBar.value = 0;
+      if (timeCur) timeCur.textContent = '0:00';
     });
   };
   window.dashTogglePlay = function() {
     const audio = document.getElementById('dash-audio');
     const btn = document.getElementById('dash-play-pause');
     if (!audio) return;
-    if (audio.paused) { audio.play(); btn.innerHTML = '<i class="fas fa-pause"></i>'; }
-    else { audio.pause(); btn.innerHTML = '<i class="fas fa-play"></i>'; }
+    if (audio.paused) {
+      audio.play().catch(()=>{});
+      if (btn) btn.innerHTML = '<i class="fas fa-pause"></i>';
+    } else {
+      audio.pause();
+      if (btn) btn.innerHTML = '<i class="fas fa-play"></i>';
+    }
   };
 
   // ── Scroll fade-in ─────────────────────────────────────────────
@@ -2793,55 +2878,66 @@ window.confirmDeleteAccount = async function() {
 };
 
 // ── Downgrade-in-progress indicator ────────────────────────
+// Supports all three downgrade targets: free, creator
 (function initDowngradeIndicator() {
   const pendingDowngrade = sessionStorage.getItem('sf_pending_downgrade');
   if (!pendingDowngrade) return;
-  const banner = document.getElementById('sub-creator-downgrade-banner');
-  const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-creator');
-  const downgradeBtn = document.getElementById('sub-btn-downgrade-to-creator');
-  if (pendingDowngrade === 'creator' && banner) {
-    banner.style.display = 'flex';
-    if (cancelBtn) cancelBtn.style.display = 'inline-flex';
-    if (downgradeBtn) downgradeBtn.style.display = 'none';
+
+  // Helper: show banner + cancel button for a target
+  function showDowngradeBanner(target) {
+    const banner    = document.getElementById('sub-' + target + '-downgrade-banner');
+    const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-' + target);
+    const dlBtn     = document.getElementById('sub-btn-downgrade-to-' + target);
+    if (banner)    { banner.style.display = 'flex'; }
+    if (cancelBtn) { cancelBtn.style.display = 'inline-flex'; }
+    if (dlBtn)     { dlBtn.style.display = 'none'; }
   }
+
+  if (pendingDowngrade === 'creator') showDowngradeBanner('creator');
+  if (pendingDowngrade === 'free')    showDowngradeBanner('free');
 })();
 
-window.cancelDowngrade = async function() {
-  const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-creator');
+window.cancelDowngrade = async function(targetOverride) {
+  // Determine which target from sessionStorage or passed arg
+  const target = targetOverride || sessionStorage.getItem('sf_pending_downgrade') || 'creator';
+  const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-' + target);
   if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…'; }
+
   try {
-    // Call real Stripe API to remove scheduled downgrade
-    const res = await fetch('/api/subscription/cancel-downgrade', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const res = await fetch('/api/subscription/cancel-downgrade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Server error');
 
-    // Clear UI state
+    // Clear UI state for the specific target
     sessionStorage.removeItem('sf_pending_downgrade');
-    const banner = document.getElementById('sub-creator-downgrade-banner');
-    const downgradeBtn = document.getElementById('sub-btn-downgrade-to-creator');
-    if (banner) banner.style.display = 'none';
+    const banner = document.getElementById('sub-' + target + '-downgrade-banner');
+    const dlBtn  = document.getElementById('sub-btn-downgrade-to-' + target);
+    if (banner)    { banner.style.display = 'none'; }
     if (cancelBtn) { cancelBtn.style.display = 'none'; cancelBtn.disabled = false; }
-    if (downgradeBtn) downgradeBtn.style.display = 'inline-flex';
+    if (dlBtn)     { dlBtn.style.display = 'inline-flex'; }
 
     const toast = document.createElement('div');
     toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4)';
-    toast.innerHTML = '<i class="fas fa-check"></i> ' + (data.message || 'Downgrade cancelled — you stay on your current plan');
+    toast.innerHTML = '<i class="fas fa-check"></i> ' + (data.message || 'Downgrade cancelled — your plan stays as-is');
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4000);
+    setTimeout(() => toast.remove(), 4500);
   } catch(e) {
     if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.innerHTML = '<i class="fas fa-undo"></i> Cancel Downgrade'; }
     alert('Could not cancel downgrade: ' + (e.message || 'Please contact stemforgesupport@gmail.com'));
   }
 };
 
-// Mark downgrade as pending when user confirms it
+// Mark downgrade as pending when user confirms it (both creator and free targets)
 document.addEventListener('click', function(e) {
   const confirmBtn = e.target.closest('#sub-downgrade-confirm');
   if (!confirmBtn) return;
   const modal = document.getElementById('sub-downgrade-modal');
   const targetPlan = modal && modal._targetPlan;
-  if (targetPlan === 'creator') {
-    sessionStorage.setItem('sf_pending_downgrade', 'creator');
+  if (targetPlan === 'creator' || targetPlan === 'free') {
+    sessionStorage.setItem('sf_pending_downgrade', targetPlan);
   }
 });
 

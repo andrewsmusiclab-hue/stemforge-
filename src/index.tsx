@@ -5158,6 +5158,25 @@ function generatorPage() {
       </div>
     </div>
 
+    <!-- SECTION 1.5: Vocal Gender Toggle — below Lyrics, above Reference Track -->
+    <div class="suno-card suno-card--slim" data-tooltip="Choose vocal gender feel, or turn off for instrumental">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
+        <i class="fas fa-microphone" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Vocals</span>
+        <div class="vocal-toggle-group" id="vocal-toggle-group">
+          <button class="vocal-toggle-btn" data-vocal="male" id="vt-male" onclick="setVocalToggle('male')" data-tooltip="Male vocal feel">
+            <i class="fas fa-mars"></i> Male
+          </button>
+          <button class="vocal-toggle-btn vocal-toggle-btn--off vocal-toggle-btn--active" data-vocal="off" id="vt-off" onclick="setVocalToggle('off')" data-tooltip="Off — no vocal specification">
+            <i class="fas fa-ban"></i> Off
+          </button>
+          <button class="vocal-toggle-btn" data-vocal="female" id="vt-female" onclick="setVocalToggle('female')" data-tooltip="Female vocal feel">
+            <i class="fas fa-venus"></i> Female
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- SECTION 1b: Reference Track (Pro Artist only) -->
     <div class="suno-card suno-card--pro" id="card-reference">
       <div class="suno-card__header" id="ref-header" style="cursor:pointer" onclick="toggleRefCard()">
@@ -5387,28 +5406,6 @@ function generatorPage() {
         <i class="fas fa-music suno-field-icon"></i>
         <input type="text" class="suno-field-input" id="gen-title" placeholder="Song title (optional)"
           data-tooltip="Give your track a name (optional) — if left blank, one will be auto-generated"/>
-      </div>
-    </div>
-
-    <!-- SECTION 5: Vocal Gender Toggle -->
-    <div class="suno-card suno-card--slim" data-tooltip="Choose a vocal gender for AI-generated vocals, or turn off to let your prompt decide">
-      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
-        <i class="fas fa-microphone" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
-        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Vocals</span>
-        <div class="vocal-toggle-group" id="vocal-toggle-group">
-          <button class="vocal-toggle-btn" data-vocal="male" id="vt-male" onclick="setVocalToggle('male')"
-            data-tooltip="Use a male vocal style">
-            <i class="fas fa-mars"></i> Male
-          </button>
-          <button class="vocal-toggle-btn vocal-toggle-btn--off vocal-toggle-btn--active" data-vocal="off" id="vt-off" onclick="setVocalToggle('off')"
-            data-tooltip="No gender specified — use your text prompt to describe vocals">
-            <i class="fas fa-ban"></i> Off
-          </button>
-          <button class="vocal-toggle-btn" data-vocal="female" id="vt-female" onclick="setVocalToggle('female')"
-            data-tooltip="Use a female vocal style">
-            <i class="fas fa-venus"></i> Female
-          </button>
-        </div>
       </div>
     </div>
 
@@ -6348,7 +6345,7 @@ function subscriptionPage(user: User, env: Bindings) {
     <div class="sub-plans-section">
       <h3>Available Plans</h3>
       <div class="sub-plans-grid">
-        <div class="sub-plan-card ${user.plan === 'free' ? 'sub-plan-card--current' : ''}">
+        <div class="sub-plan-card ${user.plan === 'free' ? 'sub-plan-card--current' : ''}" id="sub-plan-free">
           <div class="sub-plan-card__top">
             <div><h4>Free</h4><p>Try the engine</p></div>
             <div class="sub-plan-card__price">$0<span>/mo</span></div>
@@ -6357,7 +6354,20 @@ function subscriptionPage(user: User, env: Bindings) {
             <li><i class="fas fa-check"></i> 3 generations/month</li>
             <li><i class="fas fa-check"></i> Stereo preview</li>
           </ul>
-          ${user.plan === 'free' ? '<span class="sub-current-badge">Current plan</span>' : ''}
+          ${user.plan === 'free'
+            ? '<span class="sub-current-badge">Current plan</span>'
+            : (user.plan === 'creator' || user.plan === 'pro' || user.plan === 'developer')
+              ? `<div class="sub-downgrade-pending-wrap" id="sub-free-downgrade-wrap">
+                  <div class="sub-downgrade-pending-banner" id="sub-free-downgrade-banner" style="display:none">
+                    <i class="fas fa-clock"></i> <span>Downgrading to Free at end of billing cycle</span>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Cancel Subscription</button>
+                    <button class="btn btn--outline btn--sm sub-cancel-downgrade-btn" data-target="free" id="sub-btn-cancel-downgrade-free" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>
+                  </div>
+                </div>`
+              : ''
+          }
         </div>
         <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}" id="sub-plan-creator">
           <div class="sub-plan-card__top">
@@ -6378,7 +6388,7 @@ function subscriptionPage(user: User, env: Bindings) {
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
                     <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" id="sub-btn-downgrade-to-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator</button>
-                    <button class="btn btn--outline btn--sm sub-cancel-downgrade-btn" data-target="creator" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade()"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>
+                    <button class="btn btn--outline btn--sm sub-cancel-downgrade-btn" data-target="creator" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('creator')"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>
                   </div>
                 </div>`
               : `<button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator">Upgrade — $19/mo</button>`
