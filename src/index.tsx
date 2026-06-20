@@ -5227,7 +5227,8 @@ function showState(state) {
   ss('stems-creator-blocked', state==='creator-blocked' ? 'block' : 'none');
   // adv-split panel is controlled by setVIMode, not showState
   if (state !== 'player') {
-    document.getElementById('stems-adv-split').style.display = 'none';
+    var advSplit = document.getElementById('stems-adv-split');
+    if (advSplit) advSplit.style.display = 'none';
   }
   const viStrip = document.getElementById('stems-vi-toggle');
   if (viStrip) viStrip.style.display = state==='player' ? 'flex' : 'none';
@@ -5236,9 +5237,9 @@ function showState(state) {
 // ── Vocals / Instrumental / Advanced Split toggle ─────────────
 function setVIMode(mode) {
   viMode = mode;
-  document.getElementById('vi-vocals-btn').classList.toggle('stems-vi-btn--active', mode==='vocals');
-  document.getElementById('vi-instrumental-btn').classList.toggle('stems-vi-btn--active', mode==='instrumental');
-  document.getElementById('vi-advsplit-btn').classList.toggle('stems-vi-btn--active', mode==='advsplit');
+  var vb = document.getElementById('vi-vocals-btn');      if (vb) vb.classList.toggle('stems-vi-btn--active', mode==='vocals');
+  var ib = document.getElementById('vi-instrumental-btn'); if (ib) ib.classList.toggle('stems-vi-btn--active', mode==='instrumental');
+  var ab = document.getElementById('vi-advsplit-btn');     if (ab) ab.classList.toggle('stems-vi-btn--active', mode==='advsplit');
 
   // Show stems list for vocals/instrumental; show adv split panel for advsplit tab
   const listEl    = document.getElementById('stems-list');
@@ -5333,9 +5334,9 @@ async function stemsInit() {
 function populateHero(job) {
   const title = job.title || (job.blueprint ? job.blueprint.genre + ' — ' + job.blueprint.key : 'Beat');
   const meta  = job.blueprint ? (job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + job.blueprint.genre) : '';
-  document.getElementById('stems-track-title').textContent = title;
-  document.getElementById('stems-hero-title').textContent  = title;
-  document.getElementById('stems-hero-meta').textContent   = meta;
+  var ttEl = document.getElementById('stems-track-title'); if (ttEl) ttEl.textContent = title;
+  var htEl = document.getElementById('stems-hero-title');  if (htEl) htEl.textContent = title;
+  var hmEl = document.getElementById('stems-hero-meta');   if (hmEl) hmEl.textContent = meta;
 
   const artEl = document.getElementById('stems-hero-art');
   const hue   = job.thumbnail_seed != null ? job.thumbnail_seed : 180;
@@ -7729,8 +7730,7 @@ function subscriptionPage(user: User, env: Bindings) {
           <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">10</div>
-            <div class="credit-pack__label">Downloads</div>
-            <div class="credit-pack__per">$0.50 / download</div>
+            <div class="credit-pack__label">Credits / Downloads</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$4.99</span>
@@ -7744,8 +7744,7 @@ function subscriptionPage(user: User, env: Bindings) {
           <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">25</div>
-            <div class="credit-pack__label">Downloads</div>
-            <div class="credit-pack__per">$0.40 / download</div>
+            <div class="credit-pack__label">Credits / Downloads</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$9.99</span>
@@ -7758,8 +7757,7 @@ function subscriptionPage(user: User, env: Bindings) {
           <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">50</div>
-            <div class="credit-pack__label">Downloads</div>
-            <div class="credit-pack__per">$0.36 / download</div>
+            <div class="credit-pack__label">Credits / Downloads</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$17.99</span>
@@ -7772,8 +7770,7 @@ function subscriptionPage(user: User, env: Bindings) {
           <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">100</div>
-            <div class="credit-pack__label">Downloads</div>
-            <div class="credit-pack__per">$0.30 / download</div>
+            <div class="credit-pack__label">Credits / Downloads</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$29.99</span>
