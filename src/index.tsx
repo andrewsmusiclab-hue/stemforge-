@@ -111,7 +111,7 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
       avatar TEXT,
       plan TEXT NOT NULL DEFAULT 'free',
       gens_used INTEGER NOT NULL DEFAULT 0,
-      gens_limit INTEGER NOT NULL DEFAULT 3,
+      gens_limit INTEGER NOT NULL DEFAULT 5,
       password_hash TEXT,
       google_id TEXT,
       stripe_customer_id TEXT,
@@ -267,7 +267,7 @@ async function createUser(db: D1Database, data: {
     `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, created_at)
      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
-    planLimits[plan] || 3, data.password_hash || null, data.google_id || null, Date.now()).run()
+    planLimits[plan] || 5, data.password_hash || null, data.google_id || null, Date.now()).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
@@ -275,7 +275,7 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
   const planLimits: Record<string, number> = { free:5, creator:50, pro:200 }
   // Apply rollover: unused downloads carry over, capped at 500
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
-  const newLimit = planLimits[plan] || 3
+  const newLimit = planLimits[plan] || 5
   let rolledLimit = newLimit
   if (currentUser) {
     const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
@@ -289,7 +289,7 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
   const planLimits: Record<string, number> = { free:5, creator:50, pro:200 }
-  const newMonthBase = planLimits[plan] || 3
+  const newMonthBase = planLimits[plan] || 5
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
   if (!currentUser) return
   const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
@@ -2516,7 +2516,7 @@ app.post('/api/stripe/webhook', async (c) => {
       const customerId = sub.customer
       if (customerId) {
         await c.env.DB.prepare(
-          `UPDATE users SET plan='free', gens_limit=3, stripe_subscription_id=NULL WHERE stripe_customer_id=?`
+          `UPDATE users SET plan='free', gens_limit=5, stripe_subscription_id=NULL WHERE stripe_customer_id=?`
         ).bind(customerId).run()
       }
     }
