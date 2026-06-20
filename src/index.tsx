@@ -2968,6 +2968,33 @@ app.post('/api/subscription/cancel-downgrade', async (c) => {
   }
 })
 
+// ─── CANCEL UPGRADE ──────────────────────────────────────────────────────────
+// POST /api/subscription/cancel-upgrade — cancels a scheduled upgrade (subscription schedule)
+app.post('/api/subscription/cancel-upgrade', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (!user.stripe_subscription_id) return c.json({ error: 'No active subscription' }, 400)
+
+  try {
+    // Check if there's an active subscription schedule (scheduled upgrade)
+    const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const activeSchedule = schedules?.data?.find((s: any) => s.status === 'active' && s.subscription === user.stripe_subscription_id)
+    if (activeSchedule) {
+      // Release the schedule — removes the future upgrade, subscription stays as-is
+      await stripeRequest('POST', `/subscription_schedules/${activeSchedule.id}/release`, {}, c.env.STRIPE_SECRET_KEY)
+      return c.json({ ok: true, message: 'Scheduled upgrade cancelled. Your current plan continues.' })
+    }
+
+    return c.json({ ok: false, message: 'No pending upgrade found to cancel.' })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Cancel upgrade failed' }, 500)
+  }
+})
+
 // ─── UPGRADE PREVIEW ─────────────────────────────────────────────────────────
 // GET /api/subscription/upgrade-preview?plan=pro|creator
 // Returns the exact prorated charge the user will see BEFORE they confirm.
@@ -4430,8 +4457,11 @@ function homePage() {
         });
         const data = await res.json();
         document.getElementById('home-downgrade-modal').style.display = 'none';
-        if (data.ok) { alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.'); window.location.reload(); }
-        else { alert('Error: ' + (data.error || 'Downgrade failed')); }
+        if (data.ok) {
+          sessionStorage.setItem('sf_pending_downgrade', _homeDgPlan);
+          alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.');
+          window.location.reload();
+        } else { alert('Error: ' + (data.error || 'Downgrade failed')); }
       } catch(e) { alert('Network error. Please try again.'); }
       finally { homeDgConfirm.disabled = false; homeDgConfirm.textContent = 'Confirm Downgrade'; }
     });
@@ -4505,8 +4535,11 @@ function homePage() {
       const data = await res.json();
       closeHomeUpgradeModal();
       if (data.redirect) { window.location.href = data.redirect; return; }
-      if (data.ok) { alert(data.message || 'Upgrade successful!'); window.location.href = '/dashboard'; }
-      else { alert('Error: ' + (data.error || 'Upgrade failed')); }
+      if (data.ok) {
+        sessionStorage.setItem('sf_pending_upgrade', _humPlan);
+        alert(data.message || 'Upgrade successful!');
+        window.location.href = '/dashboard';
+      } else { alert('Error: ' + (data.error || 'Upgrade failed')); }
     } catch(e) { closeHomeUpgradeModal(); alert('Network error. Please try again.'); }
   };
 
@@ -4514,59 +4547,126 @@ function homePage() {
     if (e.target === this) closeHomeUpgradeModal();
   });
 
-  // On page load: update plan button labels based on logged-in user plan
-  // Pro users see "Downgrade to Creator" on Creator card
-  // Developer users see "Downgrade" on both Creator and Pro cards
+  // ── On page load: update plan card buttons to match user's current plan ──────
+  // Mirrors subscription page logic exactly:
+  // Free user   → Creator card: "Upgrade to Creator" | Pro card: "Upgrade to Pro Artist"
+  // Creator user → Free card: "Downgrade to Free"   | Pro card:  "Upgrade to Pro Artist"
+  // Pro user    → Free card: "Downgrade to Free"    | Creator card: "Downgrade to Creator"
   (async function() {
     try {
       const me = await fetch('/api/auth/me').then(r => r.json());
       const user = me && me.user;
       if (!user) return;
+
       const rank = { free:0, creator:1, pro:2, developer:3 };
-      const userRank = rank[user.plan] || 0;
-      document.querySelectorAll('.home-plan-btn').forEach(btn => {
-        const plan = btn.dataset.plan;
-        const planRank = rank[plan] || 0;
-        if (userRank === planRank) {
-          btn.textContent = 'Current plan';
-          btn.disabled = true;
-          btn.style.opacity = '0.6';
-          btn.style.cursor = 'default';
-        } else if (userRank > planRank) {
-          // Downgrade
-          const label = plan === 'creator' ? 'Downgrade to Creator' : plan === 'free' ? 'Cancel plan' : 'Downgrade';
-          btn.textContent = label;
-          btn.classList.remove('btn--primary');
-          btn.classList.add('btn--outline');
-          btn.style.borderColor = 'rgba(255,100,100,.5)';
-          btn.style.color = '#ff7070';
-        }
-        // upgrade case: leave button as-is (handled by click handler)
-      });
-      // Update the Free tier <a> button separately (it's not a .home-plan-btn)
+      const userRank = rank[user.plan] ?? 0;
+      const pendingDowngrade = sessionStorage.getItem('sf_pending_downgrade');
+      const pendingUpgrade   = sessionStorage.getItem('sf_pending_upgrade');
+
+      // ── FREE tier button (it's an <a> tag, not a .home-plan-btn) ──
       const freePlanBtn = document.getElementById('home-free-plan-btn');
       if (freePlanBtn) {
+        freePlanBtn.removeAttribute('href');
         if (userRank === 0) {
-          // On free plan — "Current plan"
           freePlanBtn.textContent = 'Current plan';
           freePlanBtn.style.opacity = '0.6';
           freePlanBtn.style.pointerEvents = 'none';
-          freePlanBtn.removeAttribute('href');
-        } else if (userRank > 0) {
-          // On paid plan — show "Cancel / downgrade to free"
-          freePlanBtn.textContent = 'Cancel plan';
-          freePlanBtn.removeAttribute('href');
+        } else {
+          // Paid user → can downgrade to free
+          freePlanBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Free';
           freePlanBtn.style.borderColor = 'rgba(255,100,100,.5)';
           freePlanBtn.style.color = '#ff7070';
           freePlanBtn.style.cursor = 'pointer';
-          freePlanBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            _homeDgPlan = 'free';
-            document.getElementById('home-downgrade-modal').style.display = 'flex';
-          });
+          if (pendingDowngrade === 'free') {
+            freePlanBtn.innerHTML = '<i class="fas fa-clock" style="font-size:.8rem;margin-right:4px"></i>Pending Downgrade';
+            freePlanBtn.style.opacity = '0.7';
+            freePlanBtn.style.pointerEvents = 'none';
+          } else {
+            freePlanBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              _homeDgPlan = 'free';
+              const msg = document.getElementById('home-downgrade-msg');
+              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.';
+              document.getElementById('home-downgrade-modal').style.display = 'flex';
+            });
+          }
         }
       }
-    } catch(e) { /* not logged in or error — leave buttons as default */ }
+
+      // ── CREATOR & PRO buttons (.home-plan-btn) ──
+      document.querySelectorAll('.home-plan-btn').forEach(btn => {
+        const plan = btn.dataset.plan;
+        if (!plan) return;
+        const planRank = rank[plan] ?? 0;
+
+        if (userRank === planRank) {
+          // Current plan
+          btn.innerHTML = 'Current plan';
+          btn.disabled = true;
+          btn.style.opacity = '0.6';
+          btn.style.cursor = 'default';
+          btn.classList.remove('btn--primary');
+          btn.classList.add('btn--outline');
+        } else if (userRank > planRank) {
+          // Downgrade path
+          const isPendingDg = pendingDowngrade === plan;
+          if (isPendingDg) {
+            btn.innerHTML = '<i class="fas fa-clock" style="font-size:.8rem;margin-right:4px"></i>Pending Downgrade';
+            btn.disabled = true;
+            btn.style.opacity = '0.7';
+            btn.classList.remove('btn--primary');
+            btn.classList.add('btn--outline');
+            btn.style.borderColor = 'rgba(234,179,8,.4)';
+            btn.style.color = '#fbbf24';
+          } else {
+            const label = plan === 'creator' ? 'Downgrade to Creator' : 'Downgrade to Free';
+            btn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>' + label;
+            btn.classList.remove('btn--primary');
+            btn.classList.add('btn--outline');
+            btn.style.borderColor = 'rgba(255,100,100,.5)';
+            btn.style.color = '#ff7070';
+            // Remove old listeners by cloning
+            const newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', () => {
+              _homeDgPlan = plan;
+              const msg = document.getElementById('home-downgrade-msg');
+              if (plan === 'free') {
+                if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.';
+              } else if (plan === 'creator') {
+                if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 gen/month) at the end of your current billing cycle. You keep all features until then.';
+              }
+              document.getElementById('home-downgrade-modal').style.display = 'flex';
+            });
+          }
+        } else {
+          // Upgrade path
+          const isPendingUp = pendingUpgrade === plan;
+          if (isPendingUp) {
+            btn.innerHTML = '<i class="fas fa-clock" style="font-size:.8rem;margin-right:4px"></i>Pending Upgrade';
+            btn.disabled = true;
+            btn.style.opacity = '0.7';
+            btn.classList.remove('btn--outline');
+            btn.classList.add('btn--primary');
+            btn.style.background = 'rgba(108,58,255,.3)';
+          } else {
+            const label = plan === 'creator' ? 'Upgrade to Creator' : 'Upgrade to Pro Artist';
+            btn.innerHTML = '<i class="fas fa-arrow-up" style="font-size:.8rem;margin-right:4px"></i>' + label;
+            // Leave upgrade button class as-is (already btn--primary for creator, btn--outline for pro)
+            // Remove old listeners by cloning
+            const newBtn = btn.cloneNode(true);
+            btn.parentNode.replaceChild(newBtn, btn);
+            newBtn.addEventListener('click', () => openHomeUpgradeModal(plan));
+          }
+        }
+      });
+
+      // Show developer card if applicable
+      if (user.plan === 'developer') {
+        const devCard = document.getElementById('developer-plan-card');
+        if (devCard) devCard.style.display = '';
+      }
+    } catch(e) { /* not logged in — leave buttons as default */ }
   })();
 })();
 </script>
@@ -6934,6 +7034,8 @@ function subscriptionPage(user: User, env: Bindings) {
     <div class="sub-plans-section">
       <h3>Available Plans</h3>
       <div class="sub-plans-grid">
+
+        <!-- ── FREE CARD ────────────────────────────────────────────── -->
         <div class="sub-plan-card ${user.plan === 'free' ? 'sub-plan-card--current' : ''}" id="sub-plan-free">
           <div class="sub-plan-card__top">
             <div><h4>Free</h4><p>Try the engine</p></div>
@@ -6946,18 +7048,24 @@ function subscriptionPage(user: User, env: Bindings) {
           ${user.plan === 'free'
             ? '<span class="sub-current-badge">Current plan</span>'
             : (user.plan === 'creator' || user.plan === 'pro' || user.plan === 'developer')
-              ? `<div class="sub-downgrade-pending-wrap" id="sub-free-downgrade-wrap">
+              ? `<div class="sub-action-wrap" id="sub-free-action-wrap">
                   <div class="sub-downgrade-pending-banner" id="sub-free-downgrade-banner" style="display:none">
                     <i class="fas fa-clock"></i> <span>Downgrading to Free at end of billing cycle</span>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Cancel Subscription</button>
-                    <button class="btn btn--outline btn--sm sub-cancel-downgrade-btn" data-target="free" id="sub-btn-cancel-downgrade-free" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>
+                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free" style="border-color:rgba(255,100,100,.4);color:#ff7070">
+                      <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Free
+                    </button>
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-free" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')">
+                      <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+                    </button>
                   </div>
                 </div>`
               : ''
           }
         </div>
+
+        <!-- ── CREATOR CARD ──────────────────────────────────────────── -->
         <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}" id="sub-plan-creator">
           <div class="sub-plan-card__top">
             <div><h4>Creator</h4><p>For Artists &amp; creators</p></div>
@@ -6969,20 +7077,51 @@ function subscriptionPage(user: User, env: Bindings) {
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
           ${user.plan === 'creator'
-            ? '<span class="sub-current-badge">Current plan</span>'
+            ? `<div class="sub-action-wrap" id="sub-creator-action-wrap">
+                <span class="sub-current-badge">Current plan</span>
+                <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:none;margin-top:8px">
+                  <i class="fas fa-clock"></i> <span id="sub-creator-banner-msg">Downgrading to Free at end of billing cycle</span>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                  <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free-from-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070">
+                    <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Free
+                  </button>
+                  <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')">
+                    <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+                  </button>
+                </div>
+              </div>`
             : user.plan === 'pro' || user.plan === 'developer'
-              ? `<div class="sub-downgrade-pending-wrap" id="sub-creator-downgrade-wrap">
+              ? `<div class="sub-action-wrap" id="sub-creator-action-wrap">
                   <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:none">
-                    <i class="fas fa-clock"></i> <span id="sub-creator-downgrade-msg">Downgrading to this plan at end of billing cycle</span>
+                    <i class="fas fa-clock"></i> <span id="sub-creator-banner-msg">Downgrading to Creator at end of billing cycle</span>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" id="sub-btn-downgrade-to-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator</button>
-                    <button class="btn btn--outline btn--sm sub-cancel-downgrade-btn" data-target="creator" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('creator')"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>
+                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" id="sub-btn-downgrade-to-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070">
+                      <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator
+                    </button>
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('creator')">
+                      <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+                    </button>
                   </div>
                 </div>`
-              : `<button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator">Upgrade — $19/mo</button>`
+              : `<div class="sub-action-wrap" id="sub-creator-action-wrap">
+                  <div class="sub-upgrade-pending-banner" id="sub-creator-upgrade-banner" style="display:none">
+                    <i class="fas fa-clock"></i> <span>Upgrading to Creator at end of billing cycle</span>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator" id="sub-btn-upgrade-to-creator">
+                      <i class="fas fa-arrow-up" style="font-size:.75rem;margin-right:4px"></i>Upgrade to Creator
+                    </button>
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-upgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelUpgrade('creator')">
+                      <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Upgrade
+                    </button>
+                  </div>
+                </div>`
           }
         </div>
+
+        <!-- ── PRO ARTIST CARD ───────────────────────────────────────── -->
         <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}" id="sub-plan-pro">
           <div class="sub-plan-card__top">
             <div><h4>Pro Artist</h4><p>Maximum output</p></div>
@@ -6996,17 +7135,24 @@ function subscriptionPage(user: User, env: Bindings) {
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
           ${user.plan === 'pro'
-            ? `<div>
+            ? `<div class="sub-action-wrap" id="sub-pro-action-wrap">
                 <span class="sub-current-badge">Current plan</span>
-                <div class="sub-downgrade-pending-wrap" id="sub-pro-downgrade-wrap" style="margin-top:8px">
-                  <div class="sub-downgrade-pending-banner" id="sub-pro-downgrade-banner" style="display:none">
-                    <i class="fas fa-clock"></i> <span id="sub-pro-downgrade-msg">Downgrading at end of billing cycle</span>
-                  </div>
-                </div>
               </div>`
             : user.plan === 'developer'
-              ? `<button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="pro" style="border-color:rgba(255,100,100,.4);color:#ff7070"><i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Switch to Pro Artist</button>`
-              : `<button class="btn btn--outline btn--sm sub-upgrade-btn" data-target="pro">Upgrade — $39/mo</button>`
+              ? `<span class="sub-current-badge" style="opacity:.5">Dev override</span>`
+              : `<div class="sub-action-wrap" id="sub-pro-action-wrap">
+                  <div class="sub-upgrade-pending-banner" id="sub-pro-upgrade-banner" style="display:none">
+                    <i class="fas fa-clock"></i> <span>Upgrading to Pro Artist at end of billing cycle</span>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="pro" id="sub-btn-upgrade-to-pro">
+                      <i class="fas fa-arrow-up" style="font-size:.75rem;margin-right:4px"></i>Upgrade to Pro Artist
+                    </button>
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-upgrade-pro" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelUpgrade('pro')">
+                      <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Upgrade
+                    </button>
+                  </div>
+                </div>`
           }
         </div>
         ${user.plan === 'developer' ? `
@@ -7023,17 +7169,6 @@ function subscriptionPage(user: User, env: Bindings) {
           <span class="sub-current-badge">Active</span>
         </div>` : ''}
       </div>
-      ${canDowngrade ? `
-      <div class="sub-downgrade-section">
-        <h4>Downgrade Plan</h4>
-        <p>Downgrade takes effect at the end of your current billing cycle. You keep all features until then.</p>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:12px">
-          ${downgradeOptions.map(opt => `
-          <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="${opt.value}" style="border-color:rgba(255,100,100,.4);color:#ff6464;">
-            <i class="fas fa-arrow-down"></i> ${opt.label}
-          </button>`).join('')}
-        </div>
-      </div>` : ''}
     </div>
   </div>
 </main>
@@ -7234,6 +7369,7 @@ function subscriptionPage(user: User, env: Bindings) {
       closeUpgradeModal();
       if (data.redirect) { window.location.href = data.redirect; return; }
       if (data.ok) {
+        sessionStorage.setItem('sf_pending_upgrade', _upgradePendingPlan);
         alert(data.message || 'Upgrade successful! Access granted immediately.');
         window.location.reload();
       } else {

@@ -603,10 +603,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const genre = card.dataset.genre || 'music';
       const artEl = card.querySelector('.project-card__art');
       if (!artEl) return;
-      // Draw granite gradient + StemForge logo canvas art
+      // Draw canvas art — this sets artEl.style.backgroundImage to the canvas data URL
+      // NOTE: do NOT clear backgroundImage after calling drawCanvasArt — that would wipe the canvas art
       drawCanvasArt(artEl, hue, title, genre);
-      // Clear any leftover image background from previous sessions
-      artEl.style.backgroundImage = '';
     });
   }
 
@@ -2877,60 +2876,109 @@ window.confirmDeleteAccount = async function() {
   }
 };
 
-// ── Downgrade-in-progress indicator ────────────────────────
-// Supports all three downgrade targets: free, creator
-(function initDowngradeIndicator() {
+// ── Pending subscription indicator (downgrade + upgrade) ───
+(function initPendingSubIndicator() {
   const pendingDowngrade = sessionStorage.getItem('sf_pending_downgrade');
-  if (!pendingDowngrade) return;
+  const pendingUpgrade   = sessionStorage.getItem('sf_pending_upgrade');
 
-  // Helper: show banner + cancel button for a target
   function showDowngradeBanner(target) {
-    const banner    = document.getElementById('sub-' + target + '-downgrade-banner');
+    // Possible downgrade banner IDs: sub-free-downgrade-banner, sub-creator-downgrade-banner
+    const banner    = document.getElementById('sub-' + target + '-downgrade-banner') ||
+                      document.getElementById('sub-creator-downgrade-banner'); // creator-on-creator uses same banner
     const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-' + target);
-    const dlBtn     = document.getElementById('sub-btn-downgrade-to-' + target);
-    if (banner)    { banner.style.display = 'flex'; }
-    if (cancelBtn) { cancelBtn.style.display = 'inline-flex'; }
-    if (dlBtn)     { dlBtn.style.display = 'none'; }
+    // Main downgrade button (may have different IDs depending on current plan)
+    const dlBtn     = document.getElementById('sub-btn-downgrade-to-' + target) ||
+                      document.getElementById('sub-btn-downgrade-to-' + target + '-from-creator');
+    if (banner)    banner.style.display = 'flex';
+    if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+    if (dlBtn)     dlBtn.style.display = 'none';
+  }
+
+  function showUpgradeBanner(target) {
+    const banner    = document.getElementById('sub-' + target + '-upgrade-banner');
+    const cancelBtn = document.getElementById('sub-btn-cancel-upgrade-' + target);
+    const upBtn     = document.getElementById('sub-btn-upgrade-to-' + target);
+    if (banner)    banner.style.display = 'flex';
+    if (cancelBtn) cancelBtn.style.display = 'inline-flex';
+    if (upBtn)     upBtn.style.display = 'none';
   }
 
   if (pendingDowngrade === 'creator') showDowngradeBanner('creator');
   if (pendingDowngrade === 'free')    showDowngradeBanner('free');
+  if (pendingUpgrade === 'creator')   showUpgradeBanner('creator');
+  if (pendingUpgrade === 'pro')       showUpgradeBanner('pro');
 })();
 
+// ── Cancel a scheduled downgrade ───────────────────────────
 window.cancelDowngrade = async function(targetOverride) {
-  // Determine which target from sessionStorage or passed arg
   const target = targetOverride || sessionStorage.getItem('sf_pending_downgrade') || 'creator';
   const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-' + target);
   if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…'; }
 
   try {
     const res = await fetch('/api/subscription/cancel-downgrade', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }
+      method: 'POST', headers: { 'Content-Type': 'application/json' }
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Server error');
 
-    // Clear UI state for the specific target
     sessionStorage.removeItem('sf_pending_downgrade');
-    const banner = document.getElementById('sub-' + target + '-downgrade-banner');
-    const dlBtn  = document.getElementById('sub-btn-downgrade-to-' + target);
-    if (banner)    { banner.style.display = 'none'; }
-    if (cancelBtn) { cancelBtn.style.display = 'none'; cancelBtn.disabled = false; }
-    if (dlBtn)     { dlBtn.style.display = 'inline-flex'; }
 
-    const toast = document.createElement('div');
-    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4)';
-    toast.innerHTML = '<i class="fas fa-check"></i> ' + (data.message || 'Downgrade cancelled — your plan stays as-is');
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4500);
+    // Hide banner, hide cancel btn, restore the downgrade btn
+    const banner = document.getElementById('sub-' + target + '-downgrade-banner') ||
+                   document.getElementById('sub-creator-downgrade-banner');
+    const dlBtn  = document.getElementById('sub-btn-downgrade-to-' + target) ||
+                   document.getElementById('sub-btn-downgrade-to-' + target + '-from-creator');
+    if (banner)    banner.style.display = 'none';
+    if (cancelBtn) { cancelBtn.style.display = 'none'; cancelBtn.disabled = false; }
+    if (dlBtn)     dlBtn.style.display = 'inline-flex';
+
+    showSubToast('<i class="fas fa-check"></i> ' + (data.message || 'Downgrade cancelled — your plan continues as normal'), '#10b981', 'rgba(16,185,129,.4)');
   } catch(e) {
     if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.innerHTML = '<i class="fas fa-undo"></i> Cancel Downgrade'; }
     alert('Could not cancel downgrade: ' + (e.message || 'Please contact stemforgesupport@gmail.com'));
   }
 };
 
-// Mark downgrade as pending when user confirms it (both creator and free targets)
+// ── Cancel a scheduled upgrade ──────────────────────────────
+window.cancelUpgrade = async function(targetOverride) {
+  const target = targetOverride || sessionStorage.getItem('sf_pending_upgrade') || 'pro';
+  const cancelBtn = document.getElementById('sub-btn-cancel-upgrade-' + target);
+  if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…'; }
+
+  try {
+    const res = await fetch('/api/subscription/cancel-upgrade', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    sessionStorage.removeItem('sf_pending_upgrade');
+
+    // Hide banner, hide cancel btn, restore the upgrade btn
+    const banner = document.getElementById('sub-' + target + '-upgrade-banner');
+    const upBtn  = document.getElementById('sub-btn-upgrade-to-' + target);
+    if (banner)    banner.style.display = 'none';
+    if (cancelBtn) { cancelBtn.style.display = 'none'; cancelBtn.disabled = false; }
+    if (upBtn)     upBtn.style.display = 'inline-flex';
+
+    showSubToast('<i class="fas fa-check"></i> ' + (data.message || 'Upgrade cancelled — your current plan continues'), '#10b981', 'rgba(16,185,129,.4)');
+  } catch(e) {
+    if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.innerHTML = '<i class="fas fa-undo"></i> Cancel Upgrade'; }
+    alert('Could not cancel upgrade: ' + (e.message || 'Please contact stemforgesupport@gmail.com'));
+  }
+};
+
+// ── Shared toast helper ─────────────────────────────────────
+function showSubToast(html, bg, shadow) {
+  const toast = document.createElement('div');
+  toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:' + bg + ';color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px ' + shadow;
+  toast.innerHTML = html;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 4500);
+}
+
+// Mark downgrade as pending when user confirms it (subscription page modal)
 document.addEventListener('click', function(e) {
   const confirmBtn = e.target.closest('#sub-downgrade-confirm');
   if (!confirmBtn) return;

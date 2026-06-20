@@ -3260,7 +3260,9 @@ body {
 
 /* ── Downgrade pending banner ────────────────────────────── */
 .sub-downgrade-pending-wrap { margin-top: 4px; }
-.sub-downgrade-pending-banner {
+.sub-action-wrap { margin-top: 4px; }
+.sub-downgrade-pending-banner,
+.sub-upgrade-pending-banner {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3272,6 +3274,11 @@ body {
   font-size: .78rem;
   font-weight: 500;
   margin-bottom: 8px;
+}
+.sub-upgrade-pending-banner {
+  background: rgba(108,58,255,.1);
+  border-color: rgba(168,85,247,.3);
+  color: #c084fc;
 }
 
 /* ── Account danger zone ──────────────────────────────────── */
