@@ -2082,7 +2082,7 @@ app.post('/api/job/stems', async (c) => {
         plan: user.plan
       })
     }
-    return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, sub_stems: (job as any).sub_stems || [], already_extracted: true })
+    return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, already_extracted: true })
   }
 
   // Credit cost: 2 credits for all plans (V1 only)
@@ -2209,33 +2209,6 @@ app.post('/api/job/stems', async (c) => {
         }
       })()
       try { (c.executionCtx as any).waitUntil(cachePromise) } catch { /* no executionCtx */ }
-    }
-
-    // ── Demucs sub-stem splitting (async, non-blocking) ───────
-    // Fires in background so the client gets their stems response immediately.
-    // Splits: drums.wav → drum kit sub-stems, other/fx.wav → instrument sub-stems.
-    // Results stored in R2 and saved back to job.sub_stems when done.
-    const detectedStemKeys = detectedStems.map(s => s.stem as string)
-    const replicateKey = (c.env as any).REPLICATE_API_KEY as string | undefined
-    if (replicateKey && replicateKey.length > 10 && !replicateKey.includes('PASTE_') && c.env.IMAGES) {
-      // Run in background via executionCtx.waitUntil if available, else fire-and-forget
-      const demucsPromise = splitWithDemucs(
-        job, zip_url, detectedStemKeys, c.env.IMAGES, replicateKey, c.env.SITE_URL || ''
-      ).then(async (subStems) => {
-        if (subStems.length > 0) {
-          const latestRow = await c.env.DB.prepare('SELECT data FROM jobs WHERE id = ?')
-            .bind(job.id).first<{ data: string }>()
-          if (latestRow) {
-            const latestJob = JSON.parse(latestRow.data) as any
-            latestJob.sub_stems = subStems
-            await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?')
-              .bind(JSON.stringify(latestJob), job.id).run()
-          }
-        }
-      }).catch(e => console.error('[Demucs] Background split failed:', e))
-
-      // Use waitUntil to keep the Worker alive for background work
-      try { (c.executionCtx as any).waitUntil(demucsPromise) } catch { /* no executionCtx */ }
     }
 
     // Free plan: stems are now saved in R2/D1 — return locked response (no download URLs)
@@ -5285,14 +5258,6 @@ async function buildStemsPlayer(job) {
   showState('player');
   setVIMode('vocals');
 
-  // Render sub-stems if already available (e.g. returning user with cached job)
-  if (job.sub_stems && job.sub_stems.length > 0) {
-    renderSubStems(job.sub_stems);
-  } else {
-    // Poll for Demucs sub-stems in background — they arrive after Mureka stems
-    startSubStemPolling(STEMS_JOB_ID);
-  }
-
   // Load audio in background (non-blocking) — uses /api/stem-audio per stem, never downloads full ZIP
   loadStemsAudio(STEMS_JOB_ID, tracks).catch(e => {
     console.error('[StemForge] background audio load failed:', e);
@@ -5553,60 +5518,11 @@ function startWaveAnimation(stem, canvas) {
   tick();
 }
 
-// ── Sub-stem polling — checks /api/job/:id/sub-stems until ready ─
-let _subStemPollTimer = null;
-let _subStemPollCount = 0;
-
-function startSubStemPolling(jobId) {
-  // First check immediately — if no sub-stems are coming, bail out silently
-  // (Demucs may not be configured, or stems are already cached)
-  fetch('/api/job/' + jobId + '/sub-stems').then(r => r.json()).then(d => {
-    if (d.ready && d.sub_stems && d.sub_stems.length > 0) {
-      // Already done — render and stop
-      renderSubStems(d.sub_stems);
-      return;
-    }
-    // Only show the pending badge and start polling if there's a realistic chance
-    // Demucs is running (Replicate would have been triggered on extraction).
-    // We poll for max 3 attempts (30s total) then give up quietly — don't keep a
-    // 10-minute spinner that confuses users.
-    showSubStemPending();
-    _subStemPollCount = 0;
-    _subStemPollTimer = setInterval(async () => {
-      _subStemPollCount++;
-      if (_subStemPollCount > 3) { // stop after 30s — don't block the UI
-        clearInterval(_subStemPollTimer);
-        hideSubStemPending();
-        return;
-      }
-      try {
-        const r = await fetch('/api/job/' + jobId + '/sub-stems');
-        if (!r.ok) { clearInterval(_subStemPollTimer); hideSubStemPending(); return; }
-        const d = await r.json();
-        if (d.ready && d.sub_stems && d.sub_stems.length > 0) {
-          clearInterval(_subStemPollTimer);
-          hideSubStemPending();
-          renderSubStems(d.sub_stems);
-        }
-      } catch { clearInterval(_subStemPollTimer); hideSubStemPending(); }
-    }, 10000); // poll every 10 seconds
-  }).catch(() => { /* no-op — polling is optional */ });
-}
-
-function showSubStemPending() {
-  // Inject a subtle processing badge on the Drums row
-  const drumsRow = document.querySelector('[data-stem="drums"]');
-  if (!drumsRow || drumsRow.querySelector('.drum-kit-pending')) return;
-  const badge = document.createElement('div');
-  badge.className = 'drum-kit-pending';
-  badge.innerHTML = '<i class="fas fa-spinner fa-spin" style="font-size:.7rem;margin-right:5px"></i>Processing drum kit...';
-  badge.style.cssText = 'font-size:.72rem;color:var(--muted);padding:4px 12px 4px 52px;opacity:.7;font-style:italic';
-  drumsRow.appendChild(badge);
-}
-
-function hideSubStemPending() {
-  document.querySelectorAll('.drum-kit-pending').forEach(el => el.remove());
-}
+// ── Sub-stem polling disabled (Demucs integration removed) ────
+// Stubs kept so no ReferenceErrors if old code paths reference them.
+function startSubStemPolling(_jobId) { /* no-op: Demucs disabled */ }
+function showSubStemPending()        { /* no-op */ }
+function hideSubStemPending()        { /* no-op */ }
 
 // ── Render sub-stems as expandable sections under their parent stem ─
 function renderSubStems(subStems) {
