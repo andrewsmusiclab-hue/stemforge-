@@ -1749,9 +1749,8 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user  = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (user.plan === 'free') {
-    return c.json({ error: 'Stem audio playback requires a Pro Artist plan. Your stems are saved — upgrade to listen and download.', locked: true, upgrade: true }, 403)
-  }
+  // No plan gate here — any authenticated user with a zip_url can stream their stems.
+  // Plan gates are enforced at extraction time (POST /api/job/stems).
 
   const jobId   = c.req.param('jobId')
   const stemKey = c.req.param('stem').toLowerCase()
