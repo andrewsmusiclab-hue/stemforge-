@@ -17,7 +17,7 @@
     "STRIPE_PRO_PRICE_ID": "price_1TfYsHCoM6UOJZCWuwYk19gL",
     "SESSION_SECRET": "REDACTED_SESSION_SECRET",
     "SITE_URL": "https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com",
-    "REPLICATE_API_KEY": "PASTE_YOUR_REPLICATE_TOKEN_HERE"
+    "REPLICATE_API_KEY": "REDACTED_REPLICATE_KEY"
   },
   "d1_databases": [
     {
