@@ -22,14 +22,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "andrew-pryce-db",
-      "database_id": "ffd0c782-4ccc-42c2-9f35-4c577105516b"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "IMAGES",
-      "bucket_name": "andrew-pryce-media"
+      "database_name": "473bb3a0-5a11-4e55-b6ea-c81157be4dc1-db",
+      "database_id": "c1736857-2c26-4ede-8fc7-5776d924df8d"
     }
   ]
 }
