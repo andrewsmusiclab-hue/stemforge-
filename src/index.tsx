@@ -1902,7 +1902,7 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/stems — on-demand stem extraction
-//  Creator: V1 (5 stems, 2 credits) — Pro: V2 (up to 12 stems + MIDI, 10 credits)
+//  All plans: V1 (5 stems: drums, bass, vocals, other) — 2 credits
 //  Free plan: not allowed
 // ═══════════════════════════════════════════════════════════════
 
@@ -1953,11 +1953,8 @@ app.post('/api/job/stems', async (c) => {
   // stem_tier: 'basic' = 5 stems (V1, 2 credits), 'pro' = up to 12 stems (V2, 10 credits, Pro plan only)
   if (!job_id) return c.json({ error: 'job_id required' }, 400)
 
-  // Validate stem_tier: only Pro/Developer can request 'pro' tier
-  const wantPro = stem_tier === 'pro'
-  if (wantPro && user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Up to 12 stems requires the Pro Artist plan.', upgrade: true }, 403)
-  }
+  // V1 only — 5 stems for all plans (V2 disabled)
+  const wantPro = false
 
   // Fetch job AND its owner user_id from the DB row (user_id is NOT in JSON blob)
   let job: Job | null = null
@@ -1977,8 +1974,8 @@ app.post('/api/job/stems', async (c) => {
     return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, sub_stems: (job as any).sub_stems || [], already_extracted: true })
   }
 
-  // Credit cost: basic=2 (V1, 5 stems), pro=10 (V2, up to 12 stems + MIDI)
-  const creditCost = wantPro ? 10 : 2
+  // Credit cost: 2 credits for all plans (V1 only)
+  const creditCost = 2
   if (user.gens_used + creditCost > user.gens_limit) {
     return c.json({
       error: `Not enough downloads. This costs ${creditCost} credits and you only have ${user.gens_limit - user.gens_used} remaining.`,
@@ -1991,9 +1988,10 @@ app.post('/api/job/stems', async (c) => {
     .bind(creditCost, user.id).run()
 
   try {
-    // basic tier: V1 (5 fixed stems) — pro tier: V2 (up to 12 stems + MIDI)
-    const isPro = wantPro
-    const model = isPro ? 'audio-separation-2' : 'audio-separation-1'
+    // All plans use V1 (audio-separation-1) — 5 stems: drums, bass, vocals, other
+    // V2 (audio-separation-2) disabled — too expensive at current scale
+    const isPro = false  // locked to V1 for all plans
+    const model = 'audio-separation-1'
     const { zip_url, midi_zip_url } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, model)
 
     // Blueprint instruments — use to smartly label stems from the beat's own instrument list
@@ -4606,56 +4604,35 @@ function stemsPage(jobId: string) {
     <i class="fas fa-spinner fa-spin" style="font-size:2rem;margin-bottom:16px;display:block"></i>
     <p>Loading stems...</p>
   </div>
-  <div id="stems-no-stems" style="display:none;padding:40px 20px;max-width:560px;margin:0 auto">
-    <div style="text-align:center;margin-bottom:28px">
+  <div id="stems-no-stems" style="display:none;padding:40px 20px;max-width:480px;margin:0 auto">
+    <div style="text-align:center;margin-bottom:24px">
       <i class="fas fa-layer-group" style="font-size:2.5rem;color:var(--primary);margin-bottom:12px;display:block;opacity:.6"></i>
-      <h3 style="margin-bottom:6px">Choose Your Stem Pack</h3>
-      <p style="color:var(--muted);font-size:.9rem">Select how many stems to extract from this beat.</p>
+      <h3 style="margin-bottom:6px">Extract Stems</h3>
+      <p style="color:var(--muted);font-size:.9rem">Separate this beat into individual layers you can mix and download.</p>
     </div>
 
-    <!-- Stem tier cards -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px">
-
-      <!-- 5 Stems — available to all Creator+ -->
-      <div class="stem-tier-card" id="stem-tier-basic" onclick="selectStemTier('basic')" style="cursor:pointer;border:2px solid var(--primary);border-radius:16px;padding:20px 16px;background:rgba(108,58,255,.08);position:relative;transition:all .2s">
-        <div style="font-size:1.8rem;font-weight:800;color:var(--primary);line-height:1">5</div>
-        <div style="font-size:.85rem;font-weight:600;margin:4px 0 2px">Stems</div>
-        <div style="font-size:.75rem;color:var(--muted);margin-bottom:12px">Drums · Bass · Melody · Vocals · Other</div>
-        <div style="font-size:.8rem;color:var(--text);font-weight:600">2 credits</div>
-        <div style="position:absolute;top:10px;right:10px;width:18px;height:18px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center" id="stem-check-basic">
-          <i class="fas fa-check" style="color:white;font-size:.6rem"></i>
+    <!-- Single stem pack info -->
+    <div style="border:2px solid var(--primary);border-radius:16px;padding:20px 20px 18px;background:rgba(78,159,255,.07);margin-bottom:22px">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+        <div style="font-size:2rem;font-weight:800;color:var(--primary);line-height:1;flex-shrink:0">5</div>
+        <div>
+          <div style="font-size:.9rem;font-weight:700">Stems</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-top:2px">Drums · Bass · Vocals · Melody · Other</div>
         </div>
+        <div style="margin-left:auto;font-size:.85rem;font-weight:700;color:var(--primary)">2 credits</div>
       </div>
-
-      <!-- Up to 12 Stems — Pro only -->
-      <div class="stem-tier-card" id="stem-tier-pro" onclick="selectStemTier('pro')" style="cursor:pointer;border:2px solid var(--border);border-radius:16px;padding:20px 16px;background:var(--surface);position:relative;transition:all .2s" id="stem-tier-pro-card">
-        <div style="font-size:1.8rem;font-weight:800;color:#a855f7;line-height:1">12</div>
-        <div style="font-size:.85rem;font-weight:600;margin:4px 0 2px">Stems</div>
-        <div style="font-size:.75rem;color:var(--muted);margin-bottom:12px">+ Guitar · Strings · Synth · Brass · FX · MIDI</div>
-        <div style="font-size:.8rem;color:var(--text);font-weight:600">10 credits</div>
-        <!-- Pro Artist badge / locked label -->
-        <div id="stem-pro-badge" style="position:absolute;top:10px;right:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);border-radius:6px;padding:2px 7px;font-size:.65rem;font-weight:700;color:white;white-space:nowrap">
-          <i class="fas fa-crown" style="margin-right:3px"></i>Pro Artist
-        </div>
-        <div style="position:absolute;top:10px;right:10px;width:18px;height:18px;border-radius:50%;background:#a855f7;display:flex;align-items:center;justify-content:center;display:none" id="stem-check-pro">
-          <i class="fas fa-check" style="color:white;font-size:.6rem"></i>
-        </div>
-        <!-- Locked overlay for non-pro -->
-        <div id="stem-pro-lock" style="display:none;position:absolute;inset:0;border-radius:14px;background:rgba(0,0,0,.45);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px">
-          <i class="fas fa-lock" style="color:#a855f7;font-size:1.2rem"></i>
-          <span style="font-size:.7rem;color:rgba(255,255,255,.7);font-weight:600">Pro Artist only</span>
-        </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <div style="font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#ef4444;flex-shrink:0;display:inline-block"></span>Drums (+ drum kit split)</div>
+        <div style="font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#3b82f6;flex-shrink:0;display:inline-block"></span>Bass</div>
+        <div style="font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#ec4899;flex-shrink:0;display:inline-block"></span>Vocals</div>
+        <div style="font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:50%;background:#8b5cf6;flex-shrink:0;display:inline-block"></span>Melody (+ instrument split)</div>
       </div>
-    </div>
-
-    <div id="stem-tier-locked-note" style="display:none;text-align:center;margin-bottom:16px;font-size:.82rem;color:var(--muted)">
-      <i class="fas fa-crown" style="color:#a855f7;margin-right:4px"></i>Up to 12 stems is a <a href="/pricing" style="color:#a855f7;text-decoration:underline">Pro Artist</a> feature
     </div>
 
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
       <button class="btn btn--outline" onclick="history.back()"><i class="fas fa-times"></i> Cancel</button>
-      <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()" style="min-width:180px">
-        <i class="fas fa-layer-group"></i> <span id="stems-extract-btn-label">Extract 5 Stems — 2 Credits</span>
+      <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()" style="min-width:200px">
+        <i class="fas fa-layer-group"></i> <span id="stems-extract-btn-label">Extract Stems — 2 Credits</span>
       </button>
     </div>
     <div id="stems-extract-status" style="margin-top:16px;font-size:.88rem;display:none;text-align:center"></div>
@@ -4715,8 +4692,6 @@ function stemsPage(jobId: string) {
 // ═══════════════════════════════════════════════════════════════
 
 const STEMS_JOB_ID = '${jobId}';
-const STEMS_TIER_PARAM = new URLSearchParams(location.search).get('tier') || 'basic';
-
 // ── State ─────────────────────────────────────────────────────
 let stemsJob       = null;
 let stemAudios     = {};   // { stem: HTMLAudioElement }
@@ -4732,8 +4707,6 @@ let stemAnalysers  = {};   // { stem: AnalyserNode }
 let stemSources    = {};   // { stem: MediaElementSourceNode }
 let waveRAF        = {};   // { stem: rAF id }
 let viMode         = 'vocals'; // 'vocals' | 'instrumental'
-let _planForConfirm = 'creator';
-let _stemTier = 'basic'; // 'basic' | 'pro'
 
 // ── JSZip loader ─────────────────────────────────────────────
 function loadJSZip() {
@@ -4780,36 +4753,6 @@ function setVIMode(mode) {
   applyVolumes();
 }
 
-// ── Init ──────────────────────────────────────────────────────
-function selectStemTier(tier) {
-  const isPro = tier === 'pro';
-  // Check if Pro tier is actually locked for this user
-  const proLock = document.getElementById('stem-pro-lock');
-  if (isPro && proLock && proLock.style.display !== 'none') return; // locked — ignore click
-
-  _stemTier = tier;
-
-  const basicCard  = document.getElementById('stem-tier-basic');
-  const proCard    = document.getElementById('stem-tier-pro');
-  const basicCheck = document.getElementById('stem-check-basic');
-  const proCheck   = document.getElementById('stem-check-pro');
-  const btnLabel   = document.getElementById('stems-extract-btn-label');
-  const btn        = document.getElementById('stems-extract-btn');
-
-  if (basicCard) basicCard.style.borderColor = isPro ? 'var(--border)' : 'var(--primary)';
-  if (proCard && !(proLock && proLock.style.display !== 'none'))
-    proCard.style.borderColor = isPro ? '#a855f7' : 'var(--border)';
-  if (basicCheck) basicCheck.style.display = isPro ? 'none' : 'flex';
-  if (proCheck)   proCheck.style.display   = isPro ? 'flex' : 'none';
-
-  if (btnLabel) btnLabel.textContent = isPro
-    ? 'Extract Up to 12 Stems — 10 Credits'
-    : 'Extract 5 Stems — 2 Credits';
-  if (btn) {
-    btn.style.background = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
-  }
-}
-
 async function stemsInit() {
   showState('loading');
   try {
@@ -4841,42 +4784,17 @@ async function stemsInit() {
       const meData = await meRes.json();
       const user   = meData.user;
       if (!user || user.plan === 'free') { showState('upgrade'); return; }
-      _planForConfirm = user.plan || 'creator';
-      const isPro = user.plan === 'pro' || user.plan === 'developer';
 
-      // Check if user already chose a tier for this track this session — auto-extract without showing picker
-      const savedTierKey = 'stem_tier_' + STEMS_JOB_ID;
-      const savedTier = sessionStorage.getItem(savedTierKey);
-      if (savedTier && (savedTier === 'basic' || (savedTier === 'pro' && isPro))) {
-        _stemTier = savedTier;
-        _planForConfirm = user.plan;
-        // Auto-extract silently with saved tier
+      // Check if user already confirmed for this track this session — auto-extract
+      const savedKey = 'stems_confirmed_' + STEMS_JOB_ID;
+      if (sessionStorage.getItem(savedKey)) {
         showState('loading');
         await stemsExtract();
         return;
       }
 
-      // Default to tier from URL param, fall back to basic
-      _stemTier = (STEMS_TIER_PARAM === 'pro' && isPro) ? 'pro' : 'basic';
+      // Show the simple single-pack confirmation screen
       showState('no-stems');
-      // Set up the tier picker: lock/unlock Pro card
-      const proCard  = document.getElementById('stem-tier-pro');
-      const proLock  = document.getElementById('stem-pro-lock');
-      const proBadge = document.getElementById('stem-pro-badge');
-      const proNote  = document.getElementById('stem-tier-locked-note');
-      if (!isPro) {
-        // Non-pro: lock the 12-stem card, show note
-        if (proCard)  { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
-        if (proLock)  { proLock.style.display = 'flex'; }
-        if (proBadge) { proBadge.style.display = 'none'; }
-        if (proNote)  { proNote.style.display = 'block'; }
-      } else {
-        if (proLock)  { proLock.style.display = 'none'; }
-        if (proBadge) { proBadge.style.display = 'block'; }
-        if (proNote)  { proNote.style.display = 'none'; }
-      }
-      // Highlight pre-selected tier (from URL param or default basic)
-      selectStemTier(_stemTier);
       return;
     }
 
@@ -5569,7 +5487,7 @@ async function stemsExtract() {
   try {
     const res  = await fetch('/api/job/stems', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ job_id: STEMS_JOB_ID, stem_tier: _stemTier || 'basic' })
+      body: JSON.stringify({ job_id: STEMS_JOB_ID, stem_tier: 'basic' })
     });
     const data = await res.json();
     if (!res.ok || data.error) {
@@ -5588,8 +5506,7 @@ async function stemsExtract() {
         tracks:  data.tracks || [],
         midi_zip_url: data.midi_zip_url || null
       }));
-      // Save the chosen tier so re-visiting this track skips the picker entirely
-      sessionStorage.setItem('stem_tier_' + STEMS_JOB_ID, _stemTier || 'basic');
+      sessionStorage.setItem('stems_confirmed_' + STEMS_JOB_ID, '1');
     } catch(e) { /* storage full — ignore */ }
     populateHero(stemsJob);
     await buildStemsPlayer(stemsJob);
@@ -6261,7 +6178,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat generation</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download (MP3/WAV)</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle (bass, melody, vocals, other)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle — Pro (more stems)</span><span class="credit-val">10 credits</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Top-up download packs</span><span class="credit-val">from $0.30</span><span class="tier-badge tier-badge--creator">All Plans</span></div>
       </div>
     </div>
