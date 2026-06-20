@@ -22,14 +22,14 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "stemforge-jobs",
-      "database_id": "placeholder"
+      "database_name": "andrew-pryce-db",
+      "database_id": "ffd0c782-4ccc-42c2-9f35-4c577105516b"
     }
   ],
   "r2_buckets": [
     {
       "binding": "IMAGES",
-      "bucket_name": "stemforge-images"
+      "bucket_name": "andrew-pryce-media"
     }
   ]
 }
