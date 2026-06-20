@@ -5516,27 +5516,39 @@ let _subStemPollTimer = null;
 let _subStemPollCount = 0;
 
 function startSubStemPolling(jobId) {
-  // Show a subtle "Processing drum kit..." hint below the drums row
-  showSubStemPending();
-  _subStemPollCount = 0;
-  _subStemPollTimer = setInterval(async () => {
-    _subStemPollCount++;
-    if (_subStemPollCount > 60) { // stop after 10 min
-      clearInterval(_subStemPollTimer);
-      hideSubStemPending();
+  // First check immediately — if no sub-stems are coming, bail out silently
+  // (Demucs may not be configured, or stems are already cached)
+  fetch('/api/job/' + jobId + '/sub-stems').then(r => r.json()).then(d => {
+    if (d.ready && d.sub_stems && d.sub_stems.length > 0) {
+      // Already done — render and stop
+      renderSubStems(d.sub_stems);
       return;
     }
-    try {
-      const r = await fetch('/api/job/' + jobId + '/sub-stems');
-      if (!r.ok) return;
-      const d = await r.json();
-      if (d.ready && d.sub_stems && d.sub_stems.length > 0) {
+    // Only show the pending badge and start polling if there's a realistic chance
+    // Demucs is running (Replicate would have been triggered on extraction).
+    // We poll for max 3 attempts (30s total) then give up quietly — don't keep a
+    // 10-minute spinner that confuses users.
+    showSubStemPending();
+    _subStemPollCount = 0;
+    _subStemPollTimer = setInterval(async () => {
+      _subStemPollCount++;
+      if (_subStemPollCount > 3) { // stop after 30s — don't block the UI
         clearInterval(_subStemPollTimer);
         hideSubStemPending();
-        renderSubStems(d.sub_stems);
+        return;
       }
-    } catch { /* ignore poll errors */ }
-  }, 10000); // poll every 10 seconds
+      try {
+        const r = await fetch('/api/job/' + jobId + '/sub-stems');
+        if (!r.ok) { clearInterval(_subStemPollTimer); hideSubStemPending(); return; }
+        const d = await r.json();
+        if (d.ready && d.sub_stems && d.sub_stems.length > 0) {
+          clearInterval(_subStemPollTimer);
+          hideSubStemPending();
+          renderSubStems(d.sub_stems);
+        }
+      } catch { clearInterval(_subStemPollTimer); hideSubStemPending(); }
+    }, 10000); // poll every 10 seconds
+  }).catch(() => { /* no-op — polling is optional */ });
 }
 
 function showSubStemPending() {
