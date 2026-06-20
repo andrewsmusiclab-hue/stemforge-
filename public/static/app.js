@@ -1757,7 +1757,7 @@ document.addEventListener('DOMContentLoaded', () => {
               const cl = document.getElementById('gs-credits-label');
               if (cl) cl.textContent = 'Downloads';
               // Always show downloads used / limit directly
-              const limitMap = { free: 3, creator: 50, pro: 150 };
+              const limitMap = { free: 5, creator: 50, pro: 200 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
               if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
               if (gb) {
@@ -1942,14 +1942,17 @@ function _renderStemsSection(job, user) {
 
 function showStemsSection(job) {
   // If user data is already available, render immediately
-  if (window._sfUser && window._sfUser.plan !== 'free') {
+  if (window._sfUser) {
+    // Creator plan: stems blocked — don't show the stems section in the edit modal
+    if (window._sfUser.plan === 'creator') return;
     _renderStemsSection(job, window._sfUser);
     return;
   }
   // User not yet loaded (race condition) — fetch it now
   fetch('/api/auth/me').then(r => r.json()).then(data => {
     const user = data && data.user;
-    if (!user || user.plan === 'free') return; // Free plan — no stems
+    if (!user) return;
+    if (user.plan === 'creator') return; // Creator: stems blocked
     window._sfUser = window._sfUser || user; // cache if not already set
     _renderStemsSection(job, user);
   }).catch(() => {});
@@ -2236,35 +2239,56 @@ window.openStemsPopup = async function(jobId, existingZipUrl) {
     const me = await fetch('/api/auth/me');
     const md = await me.json();
     plan = md.user?.plan || 'creator';
-    if (!md.user || plan === 'free') {
+
+    // Not logged in
+    if (!md.user) {
       document.getElementById('sf-stems-popup-body').innerHTML = `
         <div>
           <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-lock"></i></div>
-          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Stems require a paid plan</h3>
-          <p style="color:var(--muted);font-size:.9rem;margin-bottom:20px;line-height:1.5">Extract individual stems with a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
-          <div style="display:flex;flex-direction:column;gap:10px">
-            <a href="/pricing?plan=creator" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem"><i class="fas fa-crown"></i> Creator — $19/mo</a>
-            <a href="/pricing?plan=pro" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem"><i class="fas fa-star"></i> Pro Artist — $39/mo</a>
-          </div>
+          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Sign in to extract stems</h3>
+          <p style="color:var(--muted);font-size:.9rem;margin-bottom:20px;line-height:1.5">Create a free account to get started.</p>
+          <a href="/login" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem;text-align:center"><i class="fas fa-sign-in-alt"></i> Sign In</a>
+        </div>`;
+      return;
+    }
+
+    // Creator plan: stems blocked
+    if (plan === 'creator') {
+      document.getElementById('sf-stems-popup-body').innerHTML = `
+        <div>
+          <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-lock"></i></div>
+          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Stems are a Pro Artist feature</h3>
+          <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Your Creator plan includes mastered WAV &amp; MP3 downloads.</p>
+          <p style="color:var(--muted);font-size:.85rem;margin-bottom:20px;line-height:1.5">Upgrade to <strong>Pro Artist</strong> to split beats into individual stems.</p>
+          <a href="/pricing?plan=pro" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem;text-align:center;margin-bottom:8px"><i class="fas fa-star"></i> Upgrade to Pro Artist — $39/mo</a>
+          <button onclick="document.getElementById('sf-stems-popup').remove()" style="width:100%;padding:10px;background:none;border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:.88rem">Cancel</button>
         </div>`;
       return;
     }
   } catch(e) { /* ignore — show default creator copy */ }
 
   const isPro = plan === 'pro';
-  const creditCost = isPro ? 10 : 2;
-  const stemCount  = isPro ? 'up to 12 stems + MIDI' : '5 stems';
-  const planLabel  = isPro ? 'Pro Artist' : 'Creator';
+  const isFree = plan === 'free';
+  const creditCost = 2; // V1 only — all plans that can extract use 2 credits
+  const stemCount  = '5 stems';
+  const planLabel  = isPro ? 'Pro Artist' : isFree ? 'Free' : 'Creator';
+  const freeNote   = isFree
+    ? `<div style="margin-bottom:16px;padding:10px 14px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:8px;font-size:.8rem;color:#c084fc;text-align:left">
+        <i class="fas fa-info-circle" style="margin-right:4px"></i>
+        <strong>Free plan:</strong> Stems are extracted &amp; saved. Upgrade to <a href="/pricing?plan=pro" style="color:#a855f7">Pro Artist</a> to listen &amp; download.
+      </div>`
+    : '';
 
   document.getElementById('sf-stems-popup-body').innerHTML = `
     <div style="width:100%">
       <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-layer-group"></i></div>
       <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Extract Stems</h3>
-      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track${isPro ? ' — Kick/Snare/Hi-Hats, Bass, Melody, Synth, Guitar, Strings, and more — plus MIDI export' : ' — Drums, Bass, Melody, Vocals, and Other'}. Preview and download each one individually.</p>
-      <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px"><strong>${creditCost} download credits</strong> will be used from your ${planLabel} plan.</p>
+      <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Extract <strong>${stemCount}</strong> from this track — Drums, Bass, Melody, Vocals, and Other.</p>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px"><strong>${creditCost} credits</strong> will be used from your ${planLabel} plan.</p>
+      ${freeNote}
       <div style="display:flex;gap:10px;justify-content:center">
         <button id="sf-stems-popup-go" onclick="sfStemsGo('${jobId}')" style="flex:1;padding:11px 16px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:.92rem">
-          <i class="fas fa-layer-group"></i> Extract Stems — ${creditCost} Credits
+          <i class="fas fa-layer-group"></i> ${isFree ? 'Extract &amp; Save — 2 Credits' : 'Extract Stems — 2 Credits'}
         </button>
         <button onclick="document.getElementById('sf-stems-popup').remove()" style="padding:11px 18px;background:var(--surface-2,#1e2130);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:600;cursor:pointer;font-size:.92rem">
           <i class="fas fa-times"></i> Cancel

@@ -261,7 +261,7 @@ async function createUser(db: D1Database, data: {
   password_hash?: string, google_id?: string, plan?: string
 }): Promise<void> {
   await ensureAuthTables(db)
-  const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
+  const planLimits: Record<string, number> = { free:5, creator:50, pro:200 }
   const plan = data.plan || 'free'
   await db.prepare(
     `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, created_at)
@@ -272,7 +272,7 @@ async function createUser(db: D1Database, data: {
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
+  const planLimits: Record<string, number> = { free:5, creator:50, pro:200 }
   // Apply rollover: unused downloads carry over, capped at 500
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
   const newLimit = planLimits[plan] || 3
@@ -288,7 +288,7 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
 
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:3, creator:50, pro:150 }
+  const planLimits: Record<string, number> = { free:5, creator:50, pro:200 }
   const newMonthBase = planLimits[plan] || 3
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
   if (!currentUser) return
@@ -1350,6 +1350,12 @@ app.get('/api/job/:id', async (c) => {
 // GET /api/zip-proxy?url=... — server-side proxy to fetch ZIP files from CDN
 // Needed to avoid CORS issues when browser fetches Mureka CDN ZIPs directly
 app.get('/api/zip-proxy', async (c) => {
+  // Gate for free plan users — stems ZIP download locked until upgrade
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (user && user.plan === 'free') {
+    return c.json({ error: 'ZIP download requires a Pro Artist plan. Your stems are saved — upgrade anytime to access them.', locked: true, upgrade: true }, 403)
+  }
   const url = c.req.query('url')
   if (!url) return c.json({ error: 'url param required' }, 400)
 
@@ -1726,6 +1732,10 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user  = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  // Free plan: stem audio playback locked (stems are saved but not streamable until upgrade)
+  if (user.plan === 'free') {
+    return c.json({ error: 'Stem audio playback requires a Pro Artist plan. Your stems are saved — upgrade to listen and download.', locked: true, upgrade: true }, 403)
+  }
 
   const jobId   = c.req.param('jobId')
   const stemKey = c.req.param('stem').toLowerCase()
@@ -1902,8 +1912,9 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/stems — on-demand stem extraction
-//  All plans: V1 (5 stems: drums, bass, vocals, other) — 2 credits
-//  Free plan: not allowed
+//  Free plan:    allowed (runs extraction + stores to R2/D1), but returns locked:true — no download URLs
+//  Creator plan: BLOCKED — only mastered WAV/MP3 download; stems are a Pro Artist feature
+//  Pro plan:     full access — extraction + download URLs
 // ═══════════════════════════════════════════════════════════════
 
 // Blueprint-aware stem label helpers — give each stem its real instrument name
@@ -1945,9 +1956,17 @@ app.post('/api/job/stems', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Must be logged in', redirect: '/login' }, 401)
 
-  if (user.plan === 'free') {
-    return c.json({ error: 'Stem extraction requires a Creator or Pro Artist plan.', upgrade: true }, 403)
+  // Creator plan: stems are blocked — only mastered WAV/MP3 download allowed
+  if (user.plan === 'creator') {
+    return c.json({
+      error: 'Stem extraction is a Pro Artist feature. Upgrade to Pro to split your tracks into individual stems.',
+      upgrade: true,
+      creator_blocked: true
+    }, 403)
   }
+
+  // Track whether this is a free plan user (allowed to extract but downloads locked)
+  const isFreeUser = user.plan === 'free'
 
   const { job_id, stem_tier } = await c.req.json()
   // stem_tier: 'basic' = 5 stems (V1, 2 credits), 'pro' = up to 12 stems (V2, 10 credits, Pro plan only)
@@ -1969,8 +1988,19 @@ app.post('/api/job/stems', async (c) => {
   if (job.status !== 'ready') return c.json({ error: 'Beat is not ready yet' }, 400)
   if (!job.stereo_url) return c.json({ error: 'No stereo audio available' }, 400)
 
-  // Already has stems — return existing zip (include sub_stems if Demucs already ran)
+  // Already has stems — return existing data; lock download URLs for free plan
   if (job.zip_url) {
+    if (isFreeUser) {
+      // Free users: stems are saved — confirm they're safe, but suppress download URLs
+      return c.json({
+        ok: true,
+        locked: true,
+        stems_saved: true,
+        already_extracted: true,
+        tracks: (job.tracks || []).map((t: any) => ({ ...t, zip_url: null })),
+        plan: user.plan
+      })
+    }
     return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, sub_stems: (job as any).sub_stems || [], already_extracted: true })
   }
 
@@ -2103,6 +2133,19 @@ app.post('/api/job/stems', async (c) => {
       try { (c.executionCtx as any).waitUntil(demucsPromise) } catch { /* no executionCtx */ }
     }
 
+    // Free plan: stems are now saved in R2/D1 — return locked response (no download URLs)
+    // Stems are preserved until user upgrades, then they can download
+    if (isFreeUser) {
+      return c.json({
+        ok: true,
+        locked: true,
+        stems_saved: true,
+        tracks: tracks.map((t: any) => ({ ...t, zip_url: null })),
+        credits_used: creditCost,
+        plan: user.plan
+      })
+    }
+
     return c.json({
       ok: true,
       zip_url,
@@ -2154,6 +2197,10 @@ app.get('/api/sub-stem-audio/:jobId/:key', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user  = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  // Free plan: sub-stem audio download locked
+  if (user.plan === 'free') {
+    return c.json({ error: 'Sub-stem audio download requires a Pro Artist plan. Your stems are saved — upgrade to access them.', locked: true, upgrade: true }, 403)
+  }
 
   // Look up the sub-stem's R2 key from job.sub_stems
   const job = await getJob(c.env.DB, jobId)
@@ -3170,7 +3217,7 @@ app.post('/api/subscription/upgrade', async (c) => {
       return c.json({ error: 'Payment incomplete. Please check your payment method in the billing portal.' }, 402)
     }
     // Payment confirmed — grant access
-    const newLimit = target_plan === 'pro' ? 150 : 50
+    const newLimit = target_plan === 'pro' ? 200 : 50
     await c.env.DB.prepare(`UPDATE users SET plan=?, gens_limit=? WHERE id=?`)
       .bind(target_plan, newLimit, user.id).run()
     return c.json({ ok: true, message: `Upgraded to ${target_plan === 'pro' ? 'Pro Artist' : 'Creator'} — access granted immediately.` })
@@ -3785,6 +3832,10 @@ app.get('/api/download-wav/:id', async (c) => {
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login')
+  // Free plan: downloads locked — stems and tracks are saved until upgrade
+  if (user.plan === 'free') {
+    return c.json({ error: 'Downloads require a Creator or Pro Artist plan. Your tracks are saved — upgrade anytime to download.', locked: true, upgrade: true }, 403)
+  }
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
   if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
@@ -4264,11 +4315,11 @@ function homePage() {
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 3 generations/month</li>
-          <li><i class="fas fa-check"></i> Stereo preview & playback</li>
-          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
+          <li><i class="fas fa-check"></i> 5 credits/month</li>
+          <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
+          <li><i class="fas fa-check"></i> Stem extraction (saved, not downloadable)</li>
+          <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
       </div>
@@ -4276,13 +4327,13 @@ function homePage() {
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
-        <p class="plan-card__desc">For Artists, writers, and content creators.</p>
+        <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 50 generations/month</li>
-          <li><i class="fas fa-check"></i> Full stereo beats</li>
-          <li><i class="fas fa-check"></i> Stem bundle download</li>
-          <li><i class="fas fa-check"></i> Commercial use</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
+          <li><i class="fas fa-check"></i> 50 credits/month</li>
+          <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
+          <li><i class="fas fa-check"></i> Commercial use rights</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
+          <li class="muted"><i class="fas fa-times"></i> Individual stem download</li>
         </ul>
         <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
       </div>
@@ -4291,9 +4342,10 @@ function homePage() {
         <div class="plan-card__price"><span class="plan-card__amount">$39</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 150 generations/month</li>
-          <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Stem bundle download</li>
+          <li><i class="fas fa-check"></i> 200 credits/month</li>
+          <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
+          <li><i class="fas fa-check"></i> Stem extraction + download</li>
+          <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
@@ -4429,9 +4481,9 @@ function homePage() {
           _homeDgPlan = plan;
           const msg = document.getElementById('home-downgrade-msg');
           if (plan === 'free') {
-            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.';
+            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.';
           } else if (plan === 'creator') {
-            msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 gen/month) at the end of your current billing cycle. You keep all features until then.';
+            msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/month) at the end of your current billing cycle. You keep all features until then.';
           }
           document.getElementById('home-downgrade-modal').style.display = 'flex';
           return;
@@ -4586,7 +4638,7 @@ function homePage() {
               e.preventDefault();
               _homeDgPlan = 'free';
               const msg = document.getElementById('home-downgrade-msg');
-              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.';
+              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.';
               document.getElementById('home-downgrade-modal').style.display = 'flex';
             });
           }
@@ -4632,9 +4684,9 @@ function homePage() {
               _homeDgPlan = plan;
               const msg = document.getElementById('home-downgrade-msg');
               if (plan === 'free') {
-                if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.';
+                if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.';
               } else if (plan === 'creator') {
-                if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 gen/month) at the end of your current billing cycle. You keep all features until then.';
+                if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/month) at the end of your current billing cycle. You keep all features until then.';
               }
               document.getElementById('home-downgrade-modal').style.display = 'flex';
             });
@@ -4729,6 +4781,14 @@ function stemsPage(jobId: string) {
       </div>
     </div>
 
+    <!-- Free plan note — hidden by default, shown for free users via JS -->
+    <div id="stems-free-note" style="display:none;margin-bottom:18px;padding:12px 16px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:10px;font-size:.82rem;color:#c084fc;text-align:left;line-height:1.5">
+      <i class="fas fa-info-circle" style="margin-right:5px"></i>
+      <strong>Free plan:</strong> We'll extract and safely save your stems.
+      You can <strong>listen and download</strong> them after upgrading to <a href="/pricing?plan=pro" style="color:#a855f7;text-decoration:underline">Pro Artist</a>.
+      Your stems never expire.
+    </div>
+
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
       <button class="btn btn--outline" onclick="history.back()"><i class="fas fa-times"></i> Cancel</button>
       <button class="btn btn--primary" id="stems-extract-btn" onclick="stemsExtract()" style="min-width:200px">
@@ -4779,8 +4839,62 @@ function stemsPage(jobId: string) {
 
   <!-- Extract flow for free users nudge -->
   <div id="stems-upgrade-nudge" style="display:none;text-align:center;padding:24px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:14px;margin-top:20px">
-    <p style="margin-bottom:12px"><i class="fas fa-lock" style="color:var(--primary)"></i> <strong>Stems require a Creator or Pro plan</strong></p>
+    <p style="margin-bottom:12px"><i class="fas fa-lock" style="color:var(--primary)"></i> <strong>Stems require a Pro Artist plan</strong></p>
     <a href="/pricing" class="btn btn--primary btn--sm">View Plans</a>
+  </div>
+
+  <!-- Free plan: stems extracted & saved, but downloads locked -->
+  <div id="stems-free-locked" style="display:none;padding:40px 20px;max-width:500px;margin:0 auto;text-align:center">
+    <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.6rem;color:#fff">
+      <i class="fas fa-layer-group"></i>
+    </div>
+    <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Your stems are saved!</h3>
+    <p style="color:var(--muted);font-size:.92rem;margin-bottom:6px;line-height:1.6">
+      We've extracted and saved your stems — <strong>Drums, Bass, Vocals, Melody, and Other</strong>.
+    </p>
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:28px;line-height:1.5">
+      <i class="fas fa-lock" style="color:#a855f7;margin-right:4px"></i>
+      Free plan can extract stems, but <strong>listening and downloading</strong> requires a <strong>Pro Artist</strong> plan.
+      Your stems are stored safely — upgrade anytime to access them.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:12px;max-width:320px;margin:0 auto">
+      <a href="/pricing?plan=pro" style="display:block;padding:13px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+        <i class="fas fa-star"></i> Upgrade to Pro Artist — $39/mo
+      </a>
+      <a href="/pricing?plan=creator" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.88rem">
+        <i class="fas fa-crown"></i> Creator Plan — $19/mo (beats only, no stems)
+      </a>
+    </div>
+    <p style="color:var(--muted);font-size:.75rem;margin-top:20px">
+      <i class="fas fa-check-circle" style="color:#22c55e;margin-right:4px"></i>
+      Your stems are saved and won't expire. Come back after upgrading.
+    </p>
+  </div>
+
+  <!-- Creator plan: stems blocked — upgrade to Pro to access -->
+  <div id="stems-creator-blocked" style="display:none;padding:40px 20px;max-width:500px;margin:0 auto;text-align:center">
+    <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.6rem;color:#fff">
+      <i class="fas fa-lock"></i>
+    </div>
+    <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Stems are a Pro Artist feature</h3>
+    <p style="color:var(--muted);font-size:.92rem;margin-bottom:6px;line-height:1.6">
+      Your <strong>Creator plan</strong> includes unlimited mastered WAV and MP3 downloads.
+    </p>
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:28px;line-height:1.5">
+      To split your beats into individual stems (Drums, Bass, Vocals, Melody, and more) and download them separately,
+      you need the <strong>Pro Artist plan</strong>.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:12px;max-width:320px;margin:0 auto">
+      <a href="/pricing?plan=pro" style="display:block;padding:13px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+        <i class="fas fa-star"></i> Upgrade to Pro Artist — $39/mo
+      </a>
+      <a href="/" style="display:block;padding:11px 20px;background:var(--surface-2,#1e2130);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:600;text-decoration:none;font-size:.88rem">
+        <i class="fas fa-arrow-left"></i> Back to Dashboard
+      </a>
+    </div>
+    <p style="color:var(--muted);font-size:.75rem;margin-top:20px">
+      Creator plan includes: 50 beats/month · Mastered WAV &amp; MP3 · Commercial use rights
+    </p>
   </div>
 
 
@@ -4835,12 +4949,14 @@ function fmtTime(s) {
 
 // ── UI state switcher ─────────────────────────────────────────
 function showState(state) {
-  document.getElementById('stems-loading').style.display   = state==='loading'  ? 'block' : 'none';
-  document.getElementById('stems-no-stems').style.display  = state==='no-stems' ? 'block' : 'none';
-  document.getElementById('stems-error').style.display     = state==='error'    ? 'block' : 'none';
-  document.getElementById('stems-transport').style.display = state==='player'   ? 'flex'  : 'none';
-  document.getElementById('stems-list').style.display      = state==='player'   ? 'block' : 'none';
-  document.getElementById('stems-upgrade-nudge').style.display = state==='upgrade' ? 'block' : 'none';
+  document.getElementById('stems-loading').style.display         = state==='loading'         ? 'block' : 'none';
+  document.getElementById('stems-no-stems').style.display        = state==='no-stems'        ? 'block' : 'none';
+  document.getElementById('stems-error').style.display           = state==='error'           ? 'block' : 'none';
+  document.getElementById('stems-transport').style.display       = state==='player'          ? 'flex'  : 'none';
+  document.getElementById('stems-list').style.display            = state==='player'          ? 'block' : 'none';
+  document.getElementById('stems-upgrade-nudge').style.display   = state==='upgrade'         ? 'block' : 'none';
+  document.getElementById('stems-free-locked').style.display     = state==='free-locked'     ? 'block' : 'none';
+  document.getElementById('stems-creator-blocked').style.display = state==='creator-blocked' ? 'block' : 'none';
   const viStrip = document.getElementById('stems-vi-toggle');
   if (viStrip) viStrip.style.display = state==='player' ? 'flex' : 'none';
 }
@@ -4883,7 +4999,10 @@ async function stemsInit() {
       const meRes  = await fetch('/api/auth/me');
       const meData = await meRes.json();
       const user   = meData.user;
-      if (!user || user.plan === 'free') { showState('upgrade'); return; }
+      if (!user) { showState('upgrade'); return; }
+
+      // Creator plan: stems are blocked — they only get mastered WAV/MP3
+      if (user.plan === 'creator') { showState('creator-blocked'); return; }
 
       // Check if user already confirmed for this track this session — auto-extract
       const savedKey = 'stems_confirmed_' + STEMS_JOB_ID;
@@ -4893,8 +5012,30 @@ async function stemsInit() {
         return;
       }
 
-      // Show the simple single-pack confirmation screen
+      // Free or Pro plan — show extraction prompt
+      // Free: runs extraction, stems saved, downloads locked until upgrade
+      // Pro: full access
       showState('no-stems');
+      if (user.plan === 'free') {
+        const btnLabel = document.getElementById('stems-extract-btn-label');
+        if (btnLabel) btnLabel.textContent = 'Extract & Save Stems — 2 Credits';
+        const freeNote = document.getElementById('stems-free-note');
+        if (freeNote) freeNote.style.display = 'block';
+      }
+      return;
+    }
+
+    // job.zip_url exists — check user plan for download access
+    const meCheck  = await fetch('/api/auth/me');
+    const meCheckD = await meCheck.json();
+    const userNow  = meCheckD.user;
+    if (userNow && userNow.plan === 'free') {
+      // Stems extracted & saved — show locked player with upgrade prompt
+      showState('free-locked');
+      return;
+    }
+    if (userNow && userNow.plan === 'creator') {
+      showState('creator-blocked');
       return;
     }
 
@@ -5595,6 +5736,13 @@ async function stemsExtract() {
       btn.disabled=false; btn.innerHTML='<i class="fas fa-layer-group"></i> Retry';
       return;
     }
+    // Free plan: stems saved but locked — show upgrade screen
+    if (data.locked && data.stems_saved) {
+      sessionStorage.setItem('stems_confirmed_' + STEMS_JOB_ID, '1');
+      showState('free-locked');
+      return;
+    }
+
     if (status) { status.textContent='✅ Done! Building player...'; status.style.color='var(--accent-2)'; }
     stemsJob.zip_url = data.zip_url;
     stemsJob.tracks  = data.tracks || stemsJob.tracks;
@@ -6223,14 +6371,14 @@ function pricingPage() {
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 3 generations/month</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 5 credits/month</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
-          <li><i class="fas fa-check"></i> Stereo preview & playback</li>
-          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
+          <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
+          <li><i class="fas fa-check"></i> Stem extraction (saved for later)</li>
+          <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual tracks</li>
-          <li class="muted"><i class="fas fa-times"></i> Overage add-ons</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem download / playback</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full">Start free</a>
       </div>
@@ -6238,15 +6386,15 @@ function pricingPage() {
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
-        <p class="plan-card__desc">For Artists, writers, and content creators.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 50 generations/month</div>
+        <p class="plan-card__desc">For artists, writers, and content creators.</p>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 50 credits/month</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
-          <li><i class="fas fa-check"></i> Stereo download</li>
-          <li><i class="fas fa-check"></i> Mastered stereo mix download</li>
+          <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li class="muted"><i class="fas fa-times"></i> Stems bundle</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
           <li class="muted"><i class="fas fa-times"></i> Unmastered mix for DAW</li>
+          <li class="muted"><i class="fas fa-times"></i> Individual stem download</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $19/mo</button>
         <p class="pricing-downgrade-note" id="pricing-creator-downgrade" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
@@ -6255,11 +6403,12 @@ function pricingPage() {
         <div class="plan-card__tier">Pro Artist</div>
         <div class="plan-card__price"><span class="plan-card__amount">$39</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track clean.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 150 generations/month</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 200 credits/month</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Unmastered mix (for your DAW)</li>
-          <li><i class="fas fa-check"></i> Mastered mix download</li>
-          <li><i class="fas fa-check"></i> Stems bundle download</li>
+          <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
+          <li><i class="fas fa-check"></i> Stem extraction + download</li>
+          <li><i class="fas fa-check"></i> Drums, Bass, Melody, Vocals, Other</li>
+          <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $39/mo</button>
@@ -6275,9 +6424,10 @@ function pricingPage() {
       </div>
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat generation</span><span class="credit-val">1 gen</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download (MP3/WAV)</span><span class="credit-val">Free</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem bundle (bass, melody, vocals, other)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat generation</span><span class="credit-val">1 credit</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download (MP3 / WAV)</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem extraction (saved, no download)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--free">Free</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem extraction + download</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Top-up download packs</span><span class="credit-val">from $0.30</span><span class="tier-badge tier-badge--creator">All Plans</span></div>
       </div>
@@ -6534,10 +6684,10 @@ function pricingPage() {
   function openPricingDowngradeModal(plan, label) {
     _pdgPlan = plan;
     const msg = plan === 'free'
-      ? 'Your subscription will be cancelled. You will move to the Free plan (3 gen/month) after your billing cycle ends.'
+      ? 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.'
       : plan === 'creator'
-        ? 'You will be downgraded to the Creator plan ($19/mo, 50 gen/month) at the end of your current billing cycle.'
-        : 'You will be switched to Pro Artist ($39/mo, 150 gen/month) at end of your billing cycle.';
+        ? 'You will be downgraded to the Creator plan ($19/mo, 50 credits/month) at the end of your current billing cycle.'
+        : 'You will be switched to Pro Artist ($39/mo, 150 credits/month) at end of your billing cycle.';
     document.getElementById('pricing-downgrade-msg').textContent = msg;
     document.getElementById('pricing-downgrade-modal').style.display = 'flex';
   }
@@ -6633,7 +6783,7 @@ function projectPage() {
 <div style="display:none" class="app-sidebar app-sidebar--dash">
   <nav class="dash-nav"><a href="/dashboard" class="dash-nav__item"><i class="fas fa-arrow-left"></i> Back</a></nav>
   <div class="project-meta-card"><div class="project-meta-card__art project-card__art--1"></div><h4>Surf Noir Trap</h4><p>90 BPM · D Minor · 2:14</p><div class="project-meta-card__plan plan-badge plan-badge--creator">Creator plan</div></div>
-  <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Generations used</div><div class="dash-credits-card__val">32 <small>/ 50 gen</small></div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Upgrade plan</a></div>
+  <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Generations used</div><div class="dash-credits-card__val">32 <small>/ 50 credits</small></div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Upgrade plan</a></div>
 </div>
 <div class="app-main">
   <div class="dash-header"><h2>Surf Noir Trap <span class="dash-header__sub">Export</span></h2></div>
@@ -6800,7 +6950,7 @@ function checkoutPage() {
           <div class="checkout-plan-summary__price"><span id="co-plan-price">$19</span><span>/mo</span></div>
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
-          <li><i class="fas fa-check"></i> 50 generations/month</li>
+          <li><i class="fas fa-check"></i> 50 credits/month</li>
           <li><i class="fas fa-check"></i> Stereo mix + stem bundle download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
@@ -6825,7 +6975,7 @@ function checkoutPage() {
           <i class="fas fa-lock"></i> <span id="co-btn-text">Continue to payment — $19/mo</span>
         </button>
         <p class="auth-card__sub" style="margin-top:16px;font-size:13px">
-          Not ready to pay? <a href="/signup">Try free (3 generations)</a>
+          Not ready to pay? <a href="/signup">Try free (5 credits)</a>
         </p>
       </div>
     </div>
@@ -7042,8 +7192,9 @@ function subscriptionPage(user: User, env: Bindings) {
             <div class="sub-plan-card__price">$0<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 3 generations/month</li>
-            <li><i class="fas fa-check"></i> Stereo preview</li>
+            <li><i class="fas fa-check"></i> 5 credits/month</li>
+            <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
+            <li><i class="fas fa-check"></i> Stem extraction (saved)</li>
           </ul>
           ${user.plan === 'free'
             ? '<span class="sub-current-badge">Current plan</span>'
@@ -7072,8 +7223,8 @@ function subscriptionPage(user: User, env: Bindings) {
             <div class="sub-plan-card__price">$19<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 50 downloads/month</li>
-            <li><i class="fas fa-check"></i> Mastered stereo mix</li>
+            <li><i class="fas fa-check"></i> 50 credits/month</li>
+            <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
           ${user.plan === 'creator'
@@ -7128,10 +7279,10 @@ function subscriptionPage(user: User, env: Bindings) {
             <div class="sub-plan-card__price">$39<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 150 downloads/month</li>
-            <li><i class="fas fa-check"></i> Unmastered mix for DAW</li>
-            <li><i class="fas fa-check"></i> Mastered mix download</li>
-            <li><i class="fas fa-check"></i> Stems bundle</li>
+            <li><i class="fas fa-check"></i> 200 credits/month</li>
+            <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
+            <li><i class="fas fa-check"></i> Stem extraction + download</li>
+            <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
           ${user.plan === 'pro'
@@ -7420,9 +7571,9 @@ function subscriptionPage(user: User, env: Bindings) {
       const modal = document.getElementById('sub-downgrade-modal');
       const msg = document.getElementById('sub-downgrade-msg');
       if (pendingTarget === 'free') {
-        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (3 gen/month) after that.';
+        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (5 credits/month) after that.';
       } else if (pendingTarget === 'creator') {
-        msg.textContent = 'You will be downgraded to the Creator plan ($19/mo, 50 gen/month) at the end of your current billing cycle.';
+        msg.textContent = 'You will be downgraded to the Creator plan ($19/mo, 50 credits/month) at the end of your current billing cycle.';
       }
       modal.style.display = 'flex';
     });
@@ -7822,8 +7973,8 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($19/month):</strong> 50 downloads/month, mastered stereo mix, commercial use rights</li>
-    <li><strong>Pro Artist Plan ($39/month):</strong> 150 downloads/month, unmastered mix (for DAW), mastered mix, stems bundle, priority queue</li>
+    <li><strong>Creator Plan ($19/month):</strong> 50 credits/month, mastered WAV &amp; MP3 download, commercial use rights (no stem extraction)</li>
+    <li><strong>Pro Artist Plan ($39/month):</strong> 200 credits/month, mastered &amp; unmastered WAV/MP3, stem extraction + download, priority queue</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
