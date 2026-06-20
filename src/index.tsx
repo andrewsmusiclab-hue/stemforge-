@@ -2191,7 +2191,7 @@ app.get('/api/sub-stem-audio/:jobId/:key', async (c) => {
   const parent = c.req.query('parent')   // present for source files (public access for Replicate)
 
   // Source files (for Replicate to fetch) — no auth required, served directly from R2
-  if (key.startsWith('source_') && parent) {
+  if ((key.startsWith('source_') || key.startsWith('adv_source_')) && parent) {
     const r2Key = `sub-stems/${jobId}/${parent}/${key}.wav`
     const obj = await c.env.IMAGES.get(r2Key)
     if (!obj) return c.json({ error: 'Not found' }, 404)
@@ -2248,6 +2248,160 @@ app.get('/api/job/:id/sub-stems', async (c) => {
 
   const subStems: SubStem[] = (job as any).sub_stems || []
   return c.json({ sub_stems: subStems, ready: subStems.length > 0 })
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/job/stems/advanced-split
+//  Target: 'drums'    → Demucs drum-kit split on drums.wav
+//          'melodies' → Demucs instrument split on other/piano/synth stems
+//  Returns: { stems: [{ name, url }] }
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/job/stems/advanced-split', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer')
+    return c.json({ error: 'Advanced Split requires a Pro Artist plan.' }, 403)
+
+  const { job_id, target } = await c.req.json() as any
+  if (!job_id || !['drums', 'melodies'].includes(target))
+    return c.json({ error: 'job_id and target (drums|melodies) required' }, 400)
+
+  const job = await getJob(c.env.DB, job_id)
+  if (!job || !job.zip_url) return c.json({ error: 'Job not found or stems not extracted yet' }, 404)
+  if ((job as any).user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+
+  if (!c.env.REPLICATE_API_KEY)
+    return c.json({ error: 'REPLICATE_API_KEY not configured — contact support.' }, 503)
+  if (!c.env.IMAGES) return c.json({ error: 'R2 storage not available' }, 503)
+
+  const siteUrl  = c.env.SITE_URL || ''
+  const replicateKey = c.env.REPLICATE_API_KEY as string
+  const r2 = c.env.IMAGES as R2Bucket
+  const zipUrl = job.zip_url
+
+  try {
+    if (target === 'drums') {
+      // Extract drums.wav from the Mureka ZIP, upload to R2, run Demucs
+      const drumBytes = await extractStemBytesFromZip(zipUrl, 'drums')
+      if (!drumBytes || drumBytes.byteLength === 0)
+        return c.json({ error: 'Could not extract drums stem from ZIP' }, 422)
+
+      const drumR2Key = `sub-stems/${job_id}/adv/source_drums.wav`
+      await r2.put(drumR2Key, drumBytes, { httpMetadata: { contentType: 'audio/wav' } })
+      const drumPublicUrl = `${siteUrl}/api/sub-stem-audio/${job_id}/adv_source_drums?parent=adv`
+
+      // Store source so sub-stem-audio route can serve it
+      const srcStored = `sub-stems/${job_id}/adv/adv_source_drums.wav`
+      await r2.put(srcStored, drumBytes, { httpMetadata: { contentType: 'audio/wav' } })
+
+      const demucsOut = await runDemucsOnUrl(drumPublicUrl, replicateKey)
+
+      const drumMapping = [
+        { demucsKey: 'drums',  name: 'Kick + Snare' },
+        { demucsKey: 'other',  name: 'Hi-Hats + Cymbals' },
+        { demucsKey: 'piano',  name: 'Toms' },
+        { demucsKey: 'guitar', name: 'Snare Elements' },
+      ]
+
+      const stems: Array<{ name: string; url: string }> = []
+      for (const m of drumMapping) {
+        const url = demucsOut[m.demucsKey]
+        if (!url) continue
+        try {
+          const resp = await fetch(url)
+          if (!resp.ok) continue
+          const buf = await resp.arrayBuffer()
+          const slugKey = m.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+          const r2Key = `sub-stems/${job_id}/adv/drums_${slugKey}.wav`
+          await r2.put(r2Key, buf, { httpMetadata: { contentType: 'audio/wav' } })
+          const serveKey = 'adv_drums_' + slugKey
+          stems.push({ name: m.name, url: `${siteUrl}/api/sub-stem-audio/${job_id}/${serveKey}` })
+        } catch { /* skip */ }
+      }
+
+      // Persist new sub_stems back to job record (merge with existing)
+      const existing: SubStem[] = (job as any).sub_stems || []
+      const newSubStems = existing.filter(s => s.family !== 'drums_adv')
+      stems.forEach(s => {
+        const slugKey = s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+        newSubStems.push({
+          key: 'adv_drums_' + slugKey,
+          name: s.name, family: 'drums_adv', color: '#ef4444',
+          url: `sub-stems/${job_id}/adv/drums_${slugKey}.wav`, parent: 'drums'
+        })
+      })
+      const updatedJob = { ...job, sub_stems: newSubStems } as any
+      await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?')
+        .bind(JSON.stringify(updatedJob), job_id).run()
+
+      return c.json({ ok: true, target: 'drums', stems })
+    }
+
+    if (target === 'melodies') {
+      // Extract other.wav (melody/other stem) and run Demucs instruments pass
+      const otherBytes = await extractStemBytesFromZip(zipUrl, 'other')
+      if (!otherBytes || otherBytes.byteLength === 0)
+        return c.json({ error: 'Could not extract melody stem from ZIP' }, 422)
+
+      const srcR2Key = `sub-stems/${job_id}/adv/source_other.wav`
+      await r2.put(srcR2Key, otherBytes, { httpMetadata: { contentType: 'audio/wav' } })
+      const otherPublicUrl = `${siteUrl}/api/sub-stem-audio/${job_id}/adv_source_other?parent=adv`
+
+      // Store for serving
+      const srcStored2 = `sub-stems/${job_id}/adv/adv_source_other.wav`
+      await r2.put(srcStored2, otherBytes, { httpMetadata: { contentType: 'audio/wav' } })
+
+      const demucsOut = await runDemucsOnUrl(otherPublicUrl, replicateKey)
+
+      const instrMapping = [
+        { demucsKey: 'piano',  name: 'Piano' },
+        { demucsKey: 'guitar', name: 'Guitar / Synth Lead' },
+        { demucsKey: 'other',  name: 'Other Melody' },
+        { demucsKey: 'vocals', name: 'Melody Vocals' },
+        { demucsKey: 'bass',   name: 'Sub Bass Elements' },
+      ]
+
+      const stems: Array<{ name: string; url: string }> = []
+      for (const m of instrMapping) {
+        const url = demucsOut[m.demucsKey]
+        if (!url) continue
+        try {
+          const resp = await fetch(url)
+          if (!resp.ok) continue
+          const buf = await resp.arrayBuffer()
+          const slugKey = m.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+          const r2Key = `sub-stems/${job_id}/adv/melody_${slugKey}.wav`
+          await r2.put(r2Key, buf, { httpMetadata: { contentType: 'audio/wav' } })
+          const serveKey = 'adv_melody_' + slugKey
+          stems.push({ name: m.name, url: `${siteUrl}/api/sub-stem-audio/${job_id}/${serveKey}` })
+        } catch { /* skip */ }
+      }
+
+      // Persist
+      const existing2: SubStem[] = (job as any).sub_stems || []
+      const newSubStems2 = existing2.filter(s => s.family !== 'melody_adv')
+      stems.forEach(s => {
+        const slugKey = s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
+        newSubStems2.push({
+          key: 'adv_melody_' + slugKey,
+          name: s.name, family: 'melody_adv', color: '#8b5cf6',
+          url: `sub-stems/${job_id}/adv/melody_${slugKey}.wav`, parent: 'other'
+        })
+      })
+      const updatedJob2 = { ...job, sub_stems: newSubStems2 } as any
+      await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?')
+        .bind(JSON.stringify(updatedJob2), job_id).run()
+
+      return c.json({ ok: true, target: 'melodies', stems })
+    }
+
+    return c.json({ error: 'Unknown target' }, 400)
+  } catch(e: any) {
+    console.error('[AdvSplit] Error:', e?.message)
+    return c.json({ error: e?.message || 'Advanced split failed' }, 500)
+  }
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -3641,10 +3795,10 @@ app.get('/api/credit-packs', async (c) => {
 })
 
 const defaultCreditPacks = [
-  { id: 'pack_10',  name: '10 Downloads',  credits: 10,  price_cents: 499,  label: '$4.99',  popular: false },
-  { id: 'pack_25',  name: '25 Downloads',  credits: 25,  price_cents: 999,  label: '$9.99',  popular: true  },
-  { id: 'pack_50',  name: '50 Downloads',  credits: 50,  price_cents: 1799, label: '$17.99', popular: false },
-  { id: 'pack_100', name: '100 Downloads', credits: 100, price_cents: 2999, label: '$29.99', popular: false },
+  { id: 'pack_10',  name: '10 Credits/Downloads',  credits: 10,  price_cents: 499,  label: '$4.99',  popular: false },
+  { id: 'pack_25',  name: '25 Credits/Downloads',  credits: 25,  price_cents: 999,  label: '$9.99',  popular: true  },
+  { id: 'pack_50',  name: '50 Credits/Downloads',  credits: 50,  price_cents: 1799, label: '$17.99', popular: false },
+  { id: 'pack_100', name: '100 Credits/Downloads', credits: 100, price_cents: 2999, label: '$29.99', popular: false },
 ]
 
 // POST /api/credit-packs/purchase — create a one-time Stripe payment for a credit pack
@@ -4327,7 +4481,7 @@ function homePage() {
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 5 credits/month</li>
+          <li><i class="fas fa-check"></i> 5 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           <li><i class="fas fa-check"></i> Stem extraction (saved, not downloadable)</li>
           <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
@@ -4341,7 +4495,7 @@ function homePage() {
         <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 50 credits/month</li>
+          <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
@@ -4354,7 +4508,7 @@ function homePage() {
         <div class="plan-card__price"><span class="plan-card__amount">$39</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 200 credits/month</li>
+          <li><i class="fas fa-check"></i> 200 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
           <li><i class="fas fa-check"></i> Stem extraction + download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -4493,9 +4647,9 @@ function homePage() {
           _homeDgPlan = plan;
           const msg = document.getElementById('home-downgrade-msg');
           if (plan === 'free') {
-            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.';
+            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
           } else if (plan === 'creator') {
-            msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/month) at the end of your current billing cycle. You keep all features until then.';
+            msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/downloads monthly) at the end of your current billing cycle. You keep all features until then.';
           }
           document.getElementById('home-downgrade-modal').style.display = 'flex';
           return;
@@ -4650,7 +4804,7 @@ function homePage() {
               e.preventDefault();
               _homeDgPlan = 'free';
               const msg = document.getElementById('home-downgrade-msg');
-              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.';
+              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
               document.getElementById('home-downgrade-modal').style.display = 'flex';
             });
           }
@@ -4696,9 +4850,9 @@ function homePage() {
               _homeDgPlan = plan;
               const msg = document.getElementById('home-downgrade-msg');
               if (plan === 'free') {
-                if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.';
+                if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
               } else if (plan === 'creator') {
-                if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/month) at the end of your current billing cycle. You keep all features until then.';
+                if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/downloads monthly) at the end of your current billing cycle. You keep all features until then.';
               }
               document.getElementById('home-downgrade-modal').style.display = 'flex';
             });
@@ -4849,6 +5003,65 @@ function stemsPage(jobId: string) {
   <!-- Stem tracks -->
   <div id="stems-list" style="display:none" class="stems-list"></div>
 
+  <!-- Advanced Split tab (shown once player is active) -->
+  <div id="stems-adv-split" style="display:none;margin-top:28px;padding:0 0 40px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
+      <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="fas fa-magic" style="color:#fff;font-size:.85rem"></i>
+      </div>
+      <div>
+        <div style="font-size:1rem;font-weight:700">Advanced Split</div>
+        <div style="font-size:.78rem;color:var(--muted)">Re-generate stems with zero bleed — exact timing preserved</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:640px">
+
+      <!-- Split Drum Kit -->
+      <div style="border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface-2,#1e2130);position:relative">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <span style="font-size:1.4rem">🥁</span>
+          <div>
+            <div style="font-weight:700;font-size:.95rem">Split Drum Kit</div>
+            <div style="font-size:.75rem;color:var(--muted)">Kick · Snare · Hi-hat · Toms</div>
+          </div>
+        </div>
+        <p style="font-size:.8rem;color:var(--muted);line-height:1.5;margin-bottom:14px">
+          Demucs isolates each drum element from your stems with no bleed from other instruments.
+        </p>
+        <div id="adv-drums-status" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;display:none"></div>
+        <div id="adv-drums-result" style="display:none;margin-bottom:12px"></div>
+        <button id="adv-drums-btn" class="btn btn--primary btn--sm" onclick="advSplitRequest('drums')" style="width:100%">
+          <i class="fas fa-cut"></i> Split Drum Kit
+        </button>
+      </div>
+
+      <!-- Split Melodies -->
+      <div style="border:1px solid var(--border);border-radius:14px;padding:20px;background:var(--surface-2,#1e2130);position:relative">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <span style="font-size:1.4rem">🎹</span>
+          <div>
+            <div style="font-weight:700;font-size:.95rem">Split Melodies</div>
+            <div style="font-size:.75rem;color:var(--muted)">Piano · Synth · Guitar · Other</div>
+          </div>
+        </div>
+        <p style="font-size:.8rem;color:var(--muted);line-height:1.5;margin-bottom:14px">
+          Re-generates your melody stems individually using AI separation — preserves exact timing, eliminates bleed.
+        </p>
+        <div id="adv-melodies-status" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;display:none"></div>
+        <div id="adv-melodies-result" style="display:none;margin-bottom:12px"></div>
+        <button id="adv-melodies-btn" class="btn btn--primary btn--sm" onclick="advSplitRequest('melodies')" style="width:100%;background:linear-gradient(135deg,#6c3aff,#a855f7)">
+          <i class="fas fa-sliders-h"></i> Split Melodies
+        </button>
+      </div>
+
+    </div>
+    <p style="font-size:.72rem;color:var(--muted);margin-top:12px;max-width:640px">
+      <i class="fas fa-info-circle" style="margin-right:4px"></i>
+      Advanced Split runs in the background (1–3 min). Results appear here and in the Sub-Stems panel above each track.
+    </p>
+  </div>
+
   <!-- Extract flow for free users nudge -->
   <div id="stems-upgrade-nudge" style="display:none;text-align:center;padding:24px;background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.2);border-radius:14px;margin-top:20px">
     <p style="margin-bottom:12px"><i class="fas fa-lock" style="color:var(--primary)"></i> <strong>Stems require a Pro Artist plan</strong></p>
@@ -4883,18 +5096,17 @@ function stemsPage(jobId: string) {
     </p>
   </div>
 
-  <!-- Creator plan: stems blocked — upgrade to Pro to access -->
+  <!-- Free / Creator plan: stems blocked — upgrade to Pro to access -->
   <div id="stems-creator-blocked" style="display:none;padding:40px 20px;max-width:500px;margin:0 auto;text-align:center">
     <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.6rem;color:#fff">
       <i class="fas fa-lock"></i>
     </div>
     <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Stems are a Pro Artist feature</h3>
     <p style="color:var(--muted);font-size:.92rem;margin-bottom:6px;line-height:1.6">
-      Your <strong>Creator plan</strong> includes unlimited mastered WAV and MP3 downloads.
+      The Stem Player — including playback, downloads, and Advanced Split — is exclusive to <strong>Pro Artist</strong> members.
     </p>
     <p style="color:var(--muted);font-size:.88rem;margin-bottom:28px;line-height:1.5">
-      To split your beats into individual stems (Drums, Bass, Vocals, Melody, and more) and download them separately,
-      you need the <strong>Pro Artist plan</strong>.
+      Upgrade to split any beat into individual stems (Drums, Bass, Vocals, Melody, and more), play them back independently, and download each layer separately.
     </p>
     <div style="display:flex;flex-direction:column;gap:12px;max-width:320px;margin:0 auto">
       <a href="/pricing?plan=pro" style="display:block;padding:13px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
@@ -4905,7 +5117,7 @@ function stemsPage(jobId: string) {
       </a>
     </div>
     <p style="color:var(--muted);font-size:.75rem;margin-top:20px">
-      Creator plan includes: 50 beats/month · Mastered WAV &amp; MP3 · Commercial use rights
+      Pro Artist: 200 credits/downloads monthly · All stems · Advanced Split · Priority queue
     </p>
   </div>
 
@@ -4969,6 +5181,7 @@ function showState(state) {
   document.getElementById('stems-upgrade-nudge').style.display   = state==='upgrade'         ? 'block' : 'none';
   document.getElementById('stems-free-locked').style.display     = state==='free-locked'     ? 'block' : 'none';
   document.getElementById('stems-creator-blocked').style.display = state==='creator-blocked' ? 'block' : 'none';
+  document.getElementById('stems-adv-split').style.display       = state==='player'          ? 'block' : 'none';
   const viStrip = document.getElementById('stems-vi-toggle');
   if (viStrip) viStrip.style.display = state==='player' ? 'flex' : 'none';
 }
@@ -4984,6 +5197,16 @@ function setVIMode(mode) {
 async function stemsInit() {
   showState('loading');
   try {
+    // ── Plan gate: authenticate first, block free + creator before anything renders ──
+    const meRes  = await fetch('/api/auth/me');
+    const meData = await meRes.json();
+    const user   = meData.user;
+    if (!user) { showState('upgrade'); return; }
+    // Free plan: cannot access stem player at all
+    if (user.plan === 'free') { showState('creator-blocked'); return; }
+    // Creator plan: stems are a Pro-only feature
+    if (user.plan === 'creator') { showState('creator-blocked'); return; }
+
     const res = await fetch('/api/job/' + STEMS_JOB_ID);
     const job = await res.json();
     if (!res.ok || job.error) throw new Error(job.error || 'Job not found');
@@ -5008,13 +5231,15 @@ async function stemsInit() {
     }
 
     if (!job.zip_url) {
-      const meRes  = await fetch('/api/auth/me');
-      const meData = await meRes.json();
-      const user   = meData.user;
-      if (!user) { showState('upgrade'); return; }
-
-      // Creator plan: stems are blocked — they only get mastered WAV/MP3
-      if (user.plan === 'creator') { showState('creator-blocked'); return; }
+      // If user navigated back AFTER extraction (sessionStorage key exists but zip_url
+      // not yet in job record, e.g. async write lag), treat as already extracted
+      // and go straight back to library rather than showing the credit prompt again.
+      const extractedKey = 'stems_extracted_' + STEMS_JOB_ID;
+      if (sessionStorage.getItem(extractedKey)) {
+        // Already extracted this session — go back silently instead of re-prompting
+        history.back();
+        return;
+      }
 
       // Check if user already confirmed for this track this session — auto-extract
       const savedKey = 'stems_confirmed_' + STEMS_JOB_ID;
@@ -5024,16 +5249,8 @@ async function stemsInit() {
         return;
       }
 
-      // Free or Pro plan — show extraction prompt
-      // Free: runs extraction, stems saved, downloads locked until upgrade
-      // Pro: full access
+      // Pro plan — show extraction prompt (2 credits)
       showState('no-stems');
-      if (user.plan === 'free') {
-        const btnLabel = document.getElementById('stems-extract-btn-label');
-        if (btnLabel) btnLabel.textContent = 'Extract & Save Stems — 2 Credits';
-        const freeNote = document.getElementById('stems-free-note');
-        if (freeNote) freeNote.style.display = 'block';
-      }
       return;
     }
 
@@ -5067,73 +5284,84 @@ function populateHero(job) {
   const grad = 'linear-gradient(135deg,hsl('+hue+',65%,28%) 0%,hsl('+h2+',75%,20%) 55%,hsl('+h3+',60%,15%) 100%)';
   artEl.style.cssText = 'background:'+grad+';background-size:cover;background-position:center;';
 
-  // Generate Canvas album art for hero (no external service needed)
-  try {
-    const genre = (job.blueprint && job.blueprint.genre) || 'music';
-    const canvas = document.createElement('canvas');
-    canvas.width = 400; canvas.height = 400;
-    const ctx = canvas.getContext('2d');
-    const g = ctx.createLinearGradient(0,0,400,400);
-    g.addColorStop(0,'hsl('+hue+',60%,18%)');
-    g.addColorStop(0.5,'hsl('+((hue+40)%360)+',70%,12%)');
-    g.addColorStop(1,'hsl('+((hue+80)%360)+',55%,8%)');
-    ctx.fillStyle=g; ctx.fillRect(0,0,400,400);
-    const r1=ctx.createRadialGradient(320,80,10,320,80,180);
-    r1.addColorStop(0,'hsla('+((hue+120)%360)+',80%,60%,0.3)');
-    r1.addColorStop(1,'transparent');
-    ctx.fillStyle=r1; ctx.fillRect(0,0,400,400);
-    const r2=ctx.createRadialGradient(80,320,5,80,320,150);
-    r2.addColorStop(0,'hsla('+((hue+240)%360)+',70%,55%,0.2)');
-    r2.addColorStop(1,'transparent');
-    ctx.fillStyle=r2; ctx.fillRect(0,0,400,400);
-    ctx.font='bold 16px system-ui,sans-serif';
-    ctx.fillStyle='hsla('+hue+',60%,85%,0.65)';
-    ctx.textAlign='center';
-    ctx.fillText(genre.toUpperCase(),200,44);
-    const barCount=24; const barW=8; const gap=5;
-    const totalW=barCount*(barW+gap)-gap;
-    const startX=(400-totalW)/2;
-    for(let b=0;b<barCount;b++){
-      const seed=(hue*13+b*97)%360;
-      const bh=28+(Math.sin(seed*0.13)*0.5+0.5)*70;
-      const x=startX+b*(barW+gap); const y=190-bh/2;
-      const bg=ctx.createLinearGradient(0,y,0,y+bh);
-      bg.addColorStop(0,'hsla('+((hue+40)%360)+',80%,75%,0.85)');
-      bg.addColorStop(1,'hsla('+hue+',60%,50%,0.3)');
-      ctx.fillStyle=bg;
-      ctx.beginPath();
-      if(ctx.roundRect) ctx.roundRect(x,y,barW,bh,2); else ctx.rect(x,y,barW,bh);
-      ctx.fill();
-    }
-    const words=title.split(' ');
-    const l1=words.slice(0,Math.ceil(words.length/2)).join(' ');
-    const l2=words.slice(Math.ceil(words.length/2)).join(' ');
-    ctx.font='bold 24px system-ui,sans-serif';
-    ctx.fillStyle='#fff';
-    ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=8;
-    if(l2){ctx.fillText(l1.slice(0,22),200,300);ctx.fillText(l2.slice(0,22),200,330);}
-    else{ctx.fillText(l1.slice(0,24),200,316);}
-    ctx.shadowBlur=0;
-    const dataUrl=canvas.toDataURL('image/png');
-    artEl.style.backgroundImage="url('"+dataUrl+"')";
-    artEl.style.backgroundSize='cover';
-  } catch(e){/* fallback to gradient */}
+  // If we already have a permanent AI cover art URL (same as library cards use), show it immediately
+  if (job.image_url && job.image_url.includes('/api/cover-art/')) {
+    const img = new Image();
+    img.onload = function() {
+      artEl.style.backgroundImage = "url('"+job.image_url+"')";
+      artEl.style.backgroundSize = 'cover';
+      artEl.style.backgroundPosition = 'center';
+    };
+    img.src = job.image_url;
+  } else {
+    // No cached art yet — generate canvas placeholder then async-fetch the real image
+    try {
+      const genre = (job.blueprint && job.blueprint.genre) || 'music';
+      const canvas = document.createElement('canvas');
+      canvas.width = 400; canvas.height = 400;
+      const ctx = canvas.getContext('2d');
+      const g = ctx.createLinearGradient(0,0,400,400);
+      g.addColorStop(0,'hsl('+hue+',60%,18%)');
+      g.addColorStop(0.5,'hsl('+((hue+40)%360)+',70%,12%)');
+      g.addColorStop(1,'hsl('+((hue+80)%360)+',55%,8%)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,400,400);
+      const r1=ctx.createRadialGradient(320,80,10,320,80,180);
+      r1.addColorStop(0,'hsla('+((hue+120)%360)+',80%,60%,0.3)');
+      r1.addColorStop(1,'transparent');
+      ctx.fillStyle=r1; ctx.fillRect(0,0,400,400);
+      const r2=ctx.createRadialGradient(80,320,5,80,320,150);
+      r2.addColorStop(0,'hsla('+((hue+240)%360)+',70%,55%,0.2)');
+      r2.addColorStop(1,'transparent');
+      ctx.fillStyle=r2; ctx.fillRect(0,0,400,400);
+      ctx.font='bold 16px system-ui,sans-serif';
+      ctx.fillStyle='hsla('+hue+',60%,85%,0.65)';
+      ctx.textAlign='center';
+      ctx.fillText(genre.toUpperCase(),200,44);
+      const barCount=24; const barW=8; const gap=5;
+      const totalW=barCount*(barW+gap)-gap;
+      const startX=(400-totalW)/2;
+      for(let b=0;b<barCount;b++){
+        const seed=(hue*13+b*97)%360;
+        const bh=28+(Math.sin(seed*0.13)*0.5+0.5)*70;
+        const x=startX+b*(barW+gap); const y=190-bh/2;
+        const bg=ctx.createLinearGradient(0,y,0,y+bh);
+        bg.addColorStop(0,'hsla('+((hue+40)%360)+',80%,75%,0.85)');
+        bg.addColorStop(1,'hsla('+hue+',60%,50%,0.3)');
+        ctx.fillStyle=bg;
+        ctx.beginPath();
+        if(ctx.roundRect) ctx.roundRect(x,y,barW,bh,2); else ctx.rect(x,y,barW,bh);
+        ctx.fill();
+      }
+      const words=title.split(' ');
+      const l1=words.slice(0,Math.ceil(words.length/2)).join(' ');
+      const l2=words.slice(Math.ceil(words.length/2)).join(' ');
+      ctx.font='bold 24px system-ui,sans-serif';
+      ctx.fillStyle='#fff';
+      ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=8;
+      if(l2){ctx.fillText(l1.slice(0,22),200,300);ctx.fillText(l2.slice(0,22),200,330);}
+      else{ctx.fillText(l1.slice(0,24),200,316);}
+      ctx.shadowBlur=0;
+      const dataUrl=canvas.toDataURL('image/png');
+      artEl.style.backgroundImage="url('"+dataUrl+"')";
+      artEl.style.backgroundSize='cover';
+    } catch(e){/* fallback to gradient */}
 
-  // Load real DALL-E image async on top of the canvas placeholder
-  if (job.id) {
-    fetch('/api/cover-image/' + job.id)
-      .then(function(r){ return r.ok ? r.json() : null; })
-      .then(function(data){
-        if (!data || !data.url) return;
-        const img = new Image();
-        img.onload = function(){
-          artEl.style.backgroundImage = "url('"+data.url+"')";
-          artEl.style.backgroundSize = 'cover';
-          artEl.style.backgroundPosition = 'center';
-        };
-        img.src = data.url;
-      })
-      .catch(function(){ /* keep canvas art */ });
+    // Fetch real AI cover art async — upgrades the canvas placeholder once loaded
+    if (job.id) {
+      fetch('/api/cover-image/' + job.id)
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(data){
+          if (!data || !data.url) return;
+          const img = new Image();
+          img.onload = function(){
+            artEl.style.backgroundImage = "url('"+data.url+"')";
+            artEl.style.backgroundSize = 'cover';
+            artEl.style.backgroundPosition = 'center';
+          };
+          img.src = data.url;
+        })
+        .catch(function(){ /* keep canvas art */ });
+    }
   }
 
   if (job.zip_url) {
@@ -5536,6 +5764,61 @@ function downloadSubStem(key, name) {
   a.href = url;
   a.download = (name || key).replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ +/g,'_').toLowerCase() + '.wav';
   document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ── Advanced Split ─────────────────────────────────────────────
+async function advSplitRequest(target) {
+  const isD = target === 'drums';
+  const btnId = isD ? 'adv-drums-btn' : 'adv-melodies-btn';
+  const statusId = isD ? 'adv-drums-status' : 'adv-melodies-status';
+  const resultId = isD ? 'adv-drums-result' : 'adv-melodies-result';
+  const btn = document.getElementById(btnId);
+  const statusEl = document.getElementById(statusId);
+  const resultEl = document.getElementById(resultId);
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...'; }
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Starting AI split — this takes 1-3 minutes...'; }
+  if (resultEl) { resultEl.style.display = 'none'; resultEl.innerHTML = ''; }
+
+  try {
+    const res = await fetch('/api/job/stems/advanced-split', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: STEMS_JOB_ID, target: target })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Split failed');
+
+    if (statusEl) statusEl.textContent = 'Split complete!';
+    if (resultEl) {
+      resultEl.style.display = 'block';
+      let html = '<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">';
+      const stems = data.stems || [];
+      stems.forEach(function(s) {
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:rgba(255,255,255,.04);border-radius:8px;font-size:.8rem">' +
+          '<span style="font-weight:600">' + s.name + '</span>' +
+          '<div style="display:flex;gap:6px">' +
+            '<button onclick="advStemPlay(&quot;' + s.url + '&quot;)" title="Play" style="background:none;border:none;color:var(--primary);cursor:pointer;padding:2px 6px"><i class="fas fa-play"></i></button>' +
+            '<a href="' + s.url + '" download="' + s.name.replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ /g,'_').toLowerCase() + '.wav" style="color:var(--muted);padding:2px 6px" title="Download"><i class="fas fa-download"></i></a>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+      resultEl.innerHTML = html;
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Done — Split Again'; }
+  } catch(e) {
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Error: ' + (e.message || 'Split failed'); }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-redo"></i> Retry'; }
+  }
+}
+
+// Simple inline audio player for advanced split results
+var _advAudio = null;
+function advStemPlay(url) {
+  if (_advAudio) { _advAudio.pause(); _advAudio = null; }
+  _advAudio = new Audio(url);
+  _advAudio.play().catch(function(){});
 }
 
 // ── Build stem row ────────────────────────────────────────────
@@ -6294,7 +6577,7 @@ function pricingPage() {
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 5 credits/month</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 5 credits/downloads monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
@@ -6310,7 +6593,7 @@ function pricingPage() {
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$19</span><span>/month</span></div>
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 50 credits/month</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 50 credits/downloads monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
@@ -6326,7 +6609,7 @@ function pricingPage() {
         <div class="plan-card__tier">Pro Artist</div>
         <div class="plan-card__price"><span class="plan-card__amount">$39</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track clean.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 200 credits/month</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 200 credits/downloads monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
           <li><i class="fas fa-check"></i> Stem extraction + download</li>
@@ -6607,10 +6890,10 @@ function pricingPage() {
   function openPricingDowngradeModal(plan, label) {
     _pdgPlan = plan;
     const msg = plan === 'free'
-      ? 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.'
+      ? 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.'
       : plan === 'creator'
-        ? 'You will be downgraded to the Creator plan ($19/mo, 50 credits/month) at the end of your current billing cycle.'
-        : 'You will be switched to Pro Artist ($39/mo, 200 credits/month) at end of your billing cycle.';
+        ? 'You will be downgraded to the Creator plan ($19/mo, 50 credits/downloads monthly) at the end of your current billing cycle.'
+        : 'You will be switched to Pro Artist ($39/mo, 200 credits/downloads monthly) at end of your billing cycle.';
     document.getElementById('pricing-downgrade-msg').textContent = msg;
     document.getElementById('pricing-downgrade-modal').style.display = 'flex';
   }
@@ -6873,7 +7156,7 @@ function checkoutPage() {
           <div class="checkout-plan-summary__price"><span id="co-plan-price">$19</span><span>/mo</span></div>
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
-          <li><i class="fas fa-check"></i> 50 credits/month</li>
+          <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> Stereo mix + stem bundle download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
@@ -7115,7 +7398,7 @@ function subscriptionPage(user: User, env: Bindings) {
             <div class="sub-plan-card__price">$0<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 5 credits/month</li>
+            <li><i class="fas fa-check"></i> 5 credits/downloads monthly</li>
             <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
             <li><i class="fas fa-check"></i> Stem extraction (saved)</li>
           </ul>
@@ -7146,7 +7429,7 @@ function subscriptionPage(user: User, env: Bindings) {
             <div class="sub-plan-card__price">$19<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 50 credits/month</li>
+            <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
             <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
@@ -7202,7 +7485,7 @@ function subscriptionPage(user: User, env: Bindings) {
             <div class="sub-plan-card__price">$39<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 200 credits/month</li>
+            <li><i class="fas fa-check"></i> 200 credits/downloads monthly</li>
             <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
             <li><i class="fas fa-check"></i> Stem extraction + download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -7494,9 +7777,9 @@ function subscriptionPage(user: User, env: Bindings) {
       const modal = document.getElementById('sub-downgrade-modal');
       const msg = document.getElementById('sub-downgrade-msg');
       if (pendingTarget === 'free') {
-        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (5 credits/month) after that.';
+        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (5 credits/downloads monthly) after that.';
       } else if (pendingTarget === 'creator') {
-        msg.textContent = 'You will be downgraded to the Creator plan ($19/mo, 50 credits/month) at the end of your current billing cycle.';
+        msg.textContent = 'You will be downgraded to the Creator plan ($19/mo, 50 credits/downloads monthly) at the end of your current billing cycle.';
       }
       modal.style.display = 'flex';
     });
@@ -7896,8 +8179,8 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($19/month):</strong> 50 credits/month, mastered WAV &amp; MP3 download, commercial use rights (no stem extraction)</li>
-    <li><strong>Pro Artist Plan ($39/month):</strong> 200 credits/month, mastered &amp; unmastered WAV/MP3, stem extraction + download, priority queue</li>
+    <li><strong>Creator Plan ($19/month):</strong> 50 credits/downloads monthly, mastered WAV &amp; MP3 download, commercial use rights (no stem extraction)</li>
+    <li><strong>Pro Artist Plan ($39/month):</strong> 200 credits/downloads monthly, mastered &amp; unmastered WAV/MP3, stem extraction + download, priority queue</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
