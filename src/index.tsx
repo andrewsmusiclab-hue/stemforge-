@@ -2268,9 +2268,13 @@ app.post('/api/job/stems/advanced-split', async (c) => {
   if (!job_id || !['drums', 'melodies'].includes(target))
     return c.json({ error: 'job_id and target (drums|melodies) required' }, 400)
 
-  const job = await getJob(c.env.DB, job_id)
-  if (!job || !job.zip_url) return c.json({ error: 'Job not found or stems not extracted yet' }, 404)
-  if ((job as any).user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+  // user_id is stored as a separate DB column — NOT in the job JSON blob
+  const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?')
+    .bind(job_id).first<{ data: string; user_id: string | null }>()
+  if (!row) return c.json({ error: 'Job not found' }, 404)
+  const job = JSON.parse(row.data) as Job
+  if (!job.zip_url) return c.json({ error: 'Stems not extracted yet for this job' }, 404)
+  if (row.user_id && row.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
 
   if (!c.env.REPLICATE_API_KEY)
     return c.json({ error: 'REPLICATE_API_KEY not configured — contact support.' }, 503)
@@ -4969,13 +4973,16 @@ function stemsPage(jobId: string) {
     <button class="btn btn--outline" style="margin-top:16px" onclick="stemsInit()">Retry</button>
   </div>
 
-  <!-- Vocals / Instrumental toggle strip (shown with player) -->
+  <!-- Vocals / Instrumental / Advanced Split tab strip (shown with player) -->
   <div id="stems-vi-toggle" style="display:none" class="stems-vi-strip">
     <button class="stems-vi-btn stems-vi-btn--active" id="vi-vocals-btn" onclick="setVIMode('vocals')">
       <i class="fas fa-microphone"></i> Vocals
     </button>
     <button class="stems-vi-btn" id="vi-instrumental-btn" onclick="setVIMode('instrumental')">
       <i class="fas fa-drum"></i> Instrumental
+    </button>
+    <button class="stems-vi-btn" id="vi-advsplit-btn" onclick="setVIMode('advsplit')">
+      <i class="fas fa-magic"></i> Advanced Split
     </button>
   </div>
 
@@ -5003,17 +5010,8 @@ function stemsPage(jobId: string) {
   <!-- Stem tracks -->
   <div id="stems-list" style="display:none" class="stems-list"></div>
 
-  <!-- Advanced Split tab (shown once player is active) -->
-  <div id="stems-adv-split" style="display:none;margin-top:28px;padding:0 0 40px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;padding-bottom:14px;border-bottom:1px solid var(--border)">
-      <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-        <i class="fas fa-magic" style="color:#fff;font-size:.85rem"></i>
-      </div>
-      <div>
-        <div style="font-size:1rem;font-weight:700">Advanced Split</div>
-        <div style="font-size:.78rem;color:var(--muted)">Re-generate stems with zero bleed — exact timing preserved</div>
-      </div>
-    </div>
+  <!-- Advanced Split tab panel (shown when advsplit tab is active) -->
+  <div id="stems-adv-split" style="display:none;padding:24px 0 40px">
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;max-width:640px">
 
@@ -5181,17 +5179,35 @@ function showState(state) {
   document.getElementById('stems-upgrade-nudge').style.display   = state==='upgrade'         ? 'block' : 'none';
   document.getElementById('stems-free-locked').style.display     = state==='free-locked'     ? 'block' : 'none';
   document.getElementById('stems-creator-blocked').style.display = state==='creator-blocked' ? 'block' : 'none';
-  document.getElementById('stems-adv-split').style.display       = state==='player'          ? 'block' : 'none';
+  // adv-split panel is controlled by setVIMode, not showState
+  if (state !== 'player') {
+    document.getElementById('stems-adv-split').style.display = 'none';
+  }
   const viStrip = document.getElementById('stems-vi-toggle');
   if (viStrip) viStrip.style.display = state==='player' ? 'flex' : 'none';
 }
 
-// ── Vocals / Instrumental toggle ──────────────────────────────
+// ── Vocals / Instrumental / Advanced Split toggle ─────────────
 function setVIMode(mode) {
   viMode = mode;
   document.getElementById('vi-vocals-btn').classList.toggle('stems-vi-btn--active', mode==='vocals');
   document.getElementById('vi-instrumental-btn').classList.toggle('stems-vi-btn--active', mode==='instrumental');
-  applyVolumes();
+  document.getElementById('vi-advsplit-btn').classList.toggle('stems-vi-btn--active', mode==='advsplit');
+
+  // Show stems list for vocals/instrumental; show adv split panel for advsplit tab
+  const listEl    = document.getElementById('stems-list');
+  const advEl     = document.getElementById('stems-adv-split');
+  const transportEl = document.getElementById('stems-transport');
+  if (mode === 'advsplit') {
+    if (listEl)      listEl.style.display      = 'none';
+    if (advEl)       advEl.style.display        = 'block';
+    if (transportEl) transportEl.style.display  = 'none';
+  } else {
+    if (listEl)      listEl.style.display      = 'block';
+    if (advEl)       advEl.style.display        = 'none';
+    if (transportEl) transportEl.style.display  = 'flex';
+    applyVolumes();
+  }
 }
 
 async function stemsInit() {
@@ -5279,89 +5295,89 @@ function populateHero(job) {
   document.getElementById('stems-hero-meta').textContent   = meta;
 
   const artEl = document.getElementById('stems-hero-art');
-  const hue = job.thumbnail_seed || 180;
-  const h2  = (hue + 55) % 360, h3 = (hue + 120) % 360;
-  const grad = 'linear-gradient(135deg,hsl('+hue+',65%,28%) 0%,hsl('+h2+',75%,20%) 55%,hsl('+h3+',60%,15%) 100%)';
-  artEl.style.cssText = 'background:'+grad+';background-size:cover;background-position:center;';
+  const hue   = job.thumbnail_seed != null ? job.thumbnail_seed : 180;
+  const genre = (job.blueprint && job.blueprint.genre) || 'music';
 
-  // If we already have a permanent AI cover art URL (same as library cards use), show it immediately
-  if (job.image_url && job.image_url.includes('/api/cover-art/')) {
-    const img = new Image();
-    img.onload = function() {
-      artEl.style.backgroundImage = "url('"+job.image_url+"')";
-      artEl.style.backgroundSize = 'cover';
-      artEl.style.backgroundPosition = 'center';
-    };
-    img.src = job.image_url;
-  } else {
-    // No cached art yet — generate canvas placeholder then async-fetch the real image
-    try {
-      const genre = (job.blueprint && job.blueprint.genre) || 'music';
-      const canvas = document.createElement('canvas');
-      canvas.width = 400; canvas.height = 400;
-      const ctx = canvas.getContext('2d');
-      const g = ctx.createLinearGradient(0,0,400,400);
-      g.addColorStop(0,'hsl('+hue+',60%,18%)');
-      g.addColorStop(0.5,'hsl('+((hue+40)%360)+',70%,12%)');
-      g.addColorStop(1,'hsl('+((hue+80)%360)+',55%,8%)');
-      ctx.fillStyle=g; ctx.fillRect(0,0,400,400);
-      const r1=ctx.createRadialGradient(320,80,10,320,80,180);
-      r1.addColorStop(0,'hsla('+((hue+120)%360)+',80%,60%,0.3)');
-      r1.addColorStop(1,'transparent');
-      ctx.fillStyle=r1; ctx.fillRect(0,0,400,400);
-      const r2=ctx.createRadialGradient(80,320,5,80,320,150);
-      r2.addColorStop(0,'hsla('+((hue+240)%360)+',70%,55%,0.2)');
-      r2.addColorStop(1,'transparent');
-      ctx.fillStyle=r2; ctx.fillRect(0,0,400,400);
-      ctx.font='bold 16px system-ui,sans-serif';
-      ctx.fillStyle='hsla('+hue+',60%,85%,0.65)';
-      ctx.textAlign='center';
-      ctx.fillText(genre.toUpperCase(),200,44);
-      const barCount=24; const barW=8; const gap=5;
-      const totalW=barCount*(barW+gap)-gap;
-      const startX=(400-totalW)/2;
-      for(let b=0;b<barCount;b++){
-        const seed=(hue*13+b*97)%360;
-        const bh=28+(Math.sin(seed*0.13)*0.5+0.5)*70;
-        const x=startX+b*(barW+gap); const y=190-bh/2;
-        const bg=ctx.createLinearGradient(0,y,0,y+bh);
-        bg.addColorStop(0,'hsla('+((hue+40)%360)+',80%,75%,0.85)');
-        bg.addColorStop(1,'hsla('+hue+',60%,50%,0.3)');
-        ctx.fillStyle=bg;
-        ctx.beginPath();
-        if(ctx.roundRect) ctx.roundRect(x,y,barW,bh,2); else ctx.rect(x,y,barW,bh);
-        ctx.fill();
-      }
-      const words=title.split(' ');
-      const l1=words.slice(0,Math.ceil(words.length/2)).join(' ');
-      const l2=words.slice(Math.ceil(words.length/2)).join(' ');
-      ctx.font='bold 24px system-ui,sans-serif';
-      ctx.fillStyle='#fff';
-      ctx.shadowColor='rgba(0,0,0,0.9)'; ctx.shadowBlur=8;
-      if(l2){ctx.fillText(l1.slice(0,22),200,300);ctx.fillText(l2.slice(0,22),200,330);}
-      else{ctx.fillText(l1.slice(0,24),200,316);}
-      ctx.shadowBlur=0;
-      const dataUrl=canvas.toDataURL('image/png');
-      artEl.style.backgroundImage="url('"+dataUrl+"')";
-      artEl.style.backgroundSize='cover';
-    } catch(e){/* fallback to gradient */}
+  // Draw the same canvas art as the library cards (drawCanvasArt algorithm)
+  try {
+    const W = 400, H = 400;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
 
-    // Fetch real AI cover art async — upgrades the canvas placeholder once loaded
-    if (job.id) {
-      fetch('/api/cover-image/' + job.id)
-        .then(function(r){ return r.ok ? r.json() : null; })
-        .then(function(data){
-          if (!data || !data.url) return;
-          const img = new Image();
-          img.onload = function(){
-            artEl.style.backgroundImage = "url('"+data.url+"')";
-            artEl.style.backgroundSize = 'cover';
-            artEl.style.backgroundPosition = 'center';
-          };
-          img.src = data.url;
-        })
-        .catch(function(){ /* keep canvas art */ });
+    // Background gradient — identical stops to app.js drawCanvasArt
+    const grad = ctx.createLinearGradient(0, 0, W, H);
+    grad.addColorStop(0,   'hsl('+hue+',70%,16%)');
+    grad.addColorStop(0.5, 'hsl('+((hue+50)%360)+',80%,10%)');
+    grad.addColorStop(1,   'hsl('+((hue+100)%360)+',65%,7%)');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+
+    // Accent glow spots
+    const r1 = ctx.createRadialGradient(W*0.75, H*0.22, 10, W*0.75, H*0.22, W*0.48);
+    r1.addColorStop(0, 'hsla('+((hue+130)%360)+',90%,65%,0.38)');
+    r1.addColorStop(1, 'transparent');
+    ctx.fillStyle = r1; ctx.fillRect(0, 0, W, H);
+
+    const r2 = ctx.createRadialGradient(W*0.2, H*0.78, 5, W*0.2, H*0.78, W*0.4);
+    r2.addColorStop(0, 'hsla('+((hue+250)%360)+',75%,60%,0.28)');
+    r2.addColorStop(1, 'transparent');
+    ctx.fillStyle = r2; ctx.fillRect(0, 0, W, H);
+
+    // Subtle noise grain
+    for (var i = 0; i < 200; i++) {
+      var nx = (Math.sin(i * 127.1 + hue) * 0.5 + 0.5) * W;
+      var ny = (Math.sin(i * 311.7 + hue * 0.3) * 0.5 + 0.5) * H;
+      var a  = 0.03 + (Math.sin(i * 53.7) * 0.5 + 0.5) * 0.08;
+      ctx.fillStyle = 'rgba(255,255,255,'+a.toFixed(3)+')';
+      ctx.fillRect(nx, ny, 1.5, 1.5);
     }
+
+    // Waveform bars (centre)
+    var barCount = 22, barW = 7, gapW = 3;
+    var totalBW = barCount * (barW + gapW) - gapW;
+    var startX  = (W - totalBW) / 2;
+    var centreY = H * 0.52;
+    for (var b = 0; b < barCount; b++) {
+      var seed = hue * 17 + b * 83;
+      var bh   = 14 + (Math.sin(seed * 0.11) * 0.5 + 0.5) * 52;
+      var bx   = startX + b * (barW + gapW);
+      var by   = centreY - bh / 2;
+      var bg2  = ctx.createLinearGradient(0, by, 0, by + bh);
+      bg2.addColorStop(0, 'hsla('+((hue+30)%360)+',85%,78%,0.95)');
+      bg2.addColorStop(1, 'hsla('+hue+',65%,45%,0.45)');
+      ctx.fillStyle = bg2;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, barW, bh, 2);
+      else ctx.rect(bx, by, barW, bh);
+      ctx.fill();
+    }
+
+    // Genre label (top)
+    ctx.font = 'bold 11px system-ui,sans-serif';
+    ctx.fillStyle = 'hsla('+hue+',65%,85%,0.65)';
+    ctx.textAlign = 'center';
+    ctx.fillText(genre.toUpperCase(), W/2, 22);
+
+    // Track title (bottom)
+    var words = title.split(' ');
+    var l1 = words.slice(0, Math.ceil(words.length/2)).join(' ');
+    var l2 = words.slice(Math.ceil(words.length/2)).join(' ');
+    ctx.font = 'bold 20px system-ui,sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 8;
+    if (l2) {
+      ctx.fillText(l1.slice(0, 22), W/2, H*0.78);
+      ctx.fillText(l2.slice(0, 22), W/2, H*0.78 + 26);
+    } else {
+      ctx.fillText(l1.slice(0, 24), W/2, H*0.8);
+    }
+    ctx.shadowBlur = 0;
+
+    artEl.style.cssText = 'background-size:cover;background-position:center;';
+    artEl.style.backgroundImage = "url('" + canvas.toDataURL('image/png') + "')";
+  } catch(e) {
+    // Fallback: plain gradient
+    artEl.style.cssText = 'background:linear-gradient(135deg,hsl('+hue+',65%,28%),hsl('+((hue+120)%360)+',60%,15%));background-size:cover;';
   }
 
   if (job.zip_url) {
@@ -6052,12 +6068,13 @@ stemsInit();
   background: rgba(15,15,30,0.35);
 }
 .stems-vi-btn {
-  padding: 8px 24px; border: 1px solid var(--border); background: none;
-  color: var(--muted); font-size: .9rem; font-weight: 600; cursor: pointer;
+  padding: 8px 20px; border: 1px solid var(--border); background: none;
+  color: var(--muted); font-size: .88rem; font-weight: 600; cursor: pointer;
   display: flex; align-items: center; gap: 8px; transition: all .18s;
+  border-right: none;
 }
-.stems-vi-btn:first-child { border-radius: 8px 0 0 8px; border-right: none; }
-.stems-vi-btn:last-child  { border-radius: 0 8px 8px 0; border-left: 1px solid var(--border); }
+.stems-vi-btn:first-child { border-radius: 8px 0 0 8px; }
+.stems-vi-btn:last-child  { border-radius: 0 8px 8px 0; border-right: 1px solid var(--border); }
 .stems-vi-btn--active {
   background: var(--primary); border-color: var(--primary); color: #fff;
 }
