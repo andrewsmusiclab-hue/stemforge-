@@ -5449,7 +5449,7 @@ function renderSubStems(subStems) {
     const parentIcon  = parent === 'drums' ? 'fa-drum' : parent === 'other' ? 'fa-music' : 'fa-waveform';
 
     section.innerHTML =
-      '<div class="sub-stems-header" onclick="this.parentElement.classList.toggle(\'sub-stems-section--open\')">' +
+      '<div class="sub-stems-header" onclick="this.parentElement.classList.toggle(&quot;sub-stems-section--open&quot;)">' +
         '<span class="sub-stems-toggle-icon"><i class="fas fa-chevron-right"></i></span>' +
         '<i class="fas ' + (parent === 'drums' ? 'fa-drum' : 'fa-music') + '" style="color:var(--primary);font-size:.75rem"></i>' +
         '<span style="font-size:.8rem;font-weight:600;color:var(--text)">' + parentLabel + '</span>' +
@@ -5461,10 +5461,10 @@ function renderSubStems(subStems) {
             '<div class="sub-stem-row__dot" style="background:' + s.color + '"></div>' +
             '<span class="sub-stem-row__name">' + s.name + '</span>' +
             '<div class="sub-stem-row__controls">' +
-              '<button class="sub-stem-btn" onclick="playSubStem(\'' + s.key + '\')" title="Play/Stop">' +
+              '<button class="sub-stem-btn" onclick="playSubStem(&quot;' + s.key + '&quot;)" title="Play/Stop">' +
                 '<i class="fas fa-play" id="sub-play-icon-' + s.key + '"></i>' +
               '</button>' +
-              '<button class="sub-stem-btn" onclick="downloadSubStem(\'' + s.key + '\',\'' + s.name + '\')" title="Download">' +
+              '<button class="sub-stem-btn" onclick="downloadSubStem(&quot;' + s.key + '&quot;,&quot;' + s.name + '&quot;)" title="Download">' +
                 '<i class="fas fa-download"></i>' +
               '</button>' +
             '</div>' +
@@ -5546,22 +5546,23 @@ function buildStemRow(track) {
     mix:'fa-compact-disc',piano:'fa-piano',guitar:'fa-guitar',strings:'fa-violin',
     synth:'fa-wave-square',brass:'fa-trumpet',woodwind:'fa-music',fx:'fa-magic'};
   const icon = iconMap[track.family] || iconMap[track.stem] || 'fa-music';
-  el.innerHTML = \`
-    <div class="stem-row__left">
-      <div class="stem-row__icon" style="background:\${track.color}"><i class="fas \${icon}"></i></div>
-      <div class="stem-row__info">
-        <div class="stem-row__name" id="stem-name-\${track.stem}">\${track.name}</div>
-        <div class="stem-row__filename">\${track.stem}.wav</div>
-      </div>
-    </div>
-    <div class="stem-row__wave" id="stem-wave-\${track.stem}"></div>
-    <div class="stem-row__controls">
-      <button class="stem-ctrl-btn stem-row__play" id="stem-play-\${track.stem}" onclick="stemPlayPause('\${track.stem}')" title="Play/Pause"><i class="fas fa-play"></i></button>
-      <button class="stem-ctrl-btn stem-row__mute" id="stem-mute-\${track.stem}" onclick="stemToggleMute('\${track.stem}')" title="Mute"><i class="fas fa-volume-mute"></i></button>
-      <button class="stem-ctrl-btn stem-row__solo" id="stem-solo-\${track.stem}" onclick="stemToggleSolo('\${track.stem}')" title="Solo"><span style="font-size:.7rem;font-weight:700">S</span></button>
-      <button class="stem-ctrl-btn" onclick="stemRename('\${track.stem}')" title="Rename"><i class="fas fa-pen" style="font-size:.7rem"></i></button>
-      <button class="stem-ctrl-btn stem-row__dl" onclick="stemDownload('\${track.stem}','\${track.name}')" title="Download"><i class="fas fa-download"></i></button>
-    </div>\`;
+  const st = track.stem, nm = track.name, cl = track.color;
+  el.innerHTML =
+    '<div class="stem-row__left">' +
+      '<div class="stem-row__icon" style="background:' + cl + '"><i class="fas ' + icon + '"></i></div>' +
+      '<div class="stem-row__info">' +
+        '<div class="stem-row__name" id="stem-name-' + st + '">' + nm + '</div>' +
+        '<div class="stem-row__filename">' + st + '.wav</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="stem-row__wave" id="stem-wave-' + st + '"></div>' +
+    '<div class="stem-row__controls">' +
+      '<button class="stem-ctrl-btn stem-row__play" id="stem-play-' + st + '" onclick="stemPlayPause(&quot;' + st + '&quot;)" title="Play/Pause"><i class="fas fa-play"></i></button>' +
+      '<button class="stem-ctrl-btn stem-row__mute" id="stem-mute-' + st + '" onclick="stemToggleMute(&quot;' + st + '&quot;)" title="Mute"><i class="fas fa-volume-mute"></i></button>' +
+      '<button class="stem-ctrl-btn stem-row__solo" id="stem-solo-' + st + '" onclick="stemToggleSolo(&quot;' + st + '&quot;)" title="Solo"><span style="font-size:.7rem;font-weight:700">S</span></button>' +
+      '<button class="stem-ctrl-btn" onclick="stemRename(&quot;' + st + '&quot;)" title="Rename"><i class="fas fa-pen" style="font-size:.7rem"></i></button>' +
+      '<button class="stem-ctrl-btn stem-row__dl" onclick="stemDownload(&quot;' + st + '&quot;,&quot;' + nm + '&quot;)" title="Download"><i class="fas fa-download"></i></button>' +
+    '</div>';
   return el;
 }
 
