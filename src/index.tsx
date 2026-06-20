@@ -773,26 +773,51 @@ async function pollReplicate(predictionId: string, apiKey: string, maxWaitMs = 4
 // Submit one Demucs job to Replicate and wait for result
 // audioUrl: publicly accessible URL to the WAV file to split
 // Returns: map of stem name → output URL  e.g. { drums: '...', bass: '...', other: '...', ... }
-async function runDemucsOnUrl(audioUrl: string, apiKey: string): Promise<Record<string, string>> {
-  // cjwbw/demucs version 25a173... (htdemucs_6s, 6-stem output: drums/bass/vocals/guitar/piano/other)
-  // Input schema: { audio, model_name, output_format }  — do NOT set stem (leave empty = all stems)
-  // Endpoint: POST /predictions  (NOT /models/meta/demucs/predictions — that model was removed)
+// Upload raw audio bytes to Replicate's file API and return a replicate.delivery URL
+// that Replicate can always fetch (no CDN/auth blocks, no Worker URL issues)
+async function uploadBytesToReplicate(bytes: ArrayBuffer, apiKey: string, filename: string): Promise<string> {
+  const formData = new FormData()
+  const blob = new Blob([bytes], { type: 'audio/mpeg' })
+  formData.append('content', blob, filename)
+
+  const r = await fetch(`${REPLICATE_BASE}/files`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+    body: formData
+  })
+  if (!r.ok) {
+    const err = await r.json() as any
+    throw new Error(`Replicate file upload failed: ${err?.detail || r.status}`)
+  }
+  const data = await r.json() as any
+  const url = data?.urls?.get
+  if (!url) throw new Error('Replicate file upload returned no URL')
+  return url
+}
+
+// Run cjwbw/demucs on raw audio bytes — uploads to Replicate first so it can always fetch
+// Returns: { drums, bass, vocals, guitar, piano, other } → output MP3 URLs
+async function runDemucsOnBytes(audioBytes: ArrayBuffer, apiKey: string, stemName: string): Promise<Record<string, string>> {
+  // Step 1: Upload audio to Replicate's own file storage (avoids CDN/auth blocks on external URLs)
+  const audioUrl = await uploadBytesToReplicate(audioBytes, apiKey, `${stemName}.mp3`)
+
+  // Step 2: Submit prediction — cjwbw/demucs v25a173 (htdemucs_6s, 6 stems)
+  // Input schema: { audio, model_name, output_format } — omit stem to get all 6
   const r = await fetch(`${REPLICATE_BASE}/predictions`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'Prefer': 'wait=60'   // wait up to 60s synchronously
+      'Prefer': 'wait=60'
     },
     body: JSON.stringify({
       version: '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953',
       input: {
         audio: audioUrl,
-        model_name: 'htdemucs_6s',   // 6-stem model: drums, bass, vocals, guitar, piano, other
-        output_format: 'mp3',          // smaller outputs, faster delivery
+        model_name: 'htdemucs_6s',
+        output_format: 'mp3',
         shifts: 1,
         overlap: 0.25
-        // stem: omitted → split ALL stems (enum has no 'none' value)
       }
     })
   })
@@ -803,14 +828,9 @@ async function runDemucsOnUrl(audioUrl: string, apiKey: string): Promise<Record<
   }
 
   const pred = await r.json() as any
-
-  // If prediction already completed (Prefer: wait), return immediately
-  if (pred.status === 'succeeded') {
-    return normalizeDemucsOutput(pred.output)
-  }
+  if (pred.status === 'succeeded') return normalizeDemucsOutput(pred.output)
   if (pred.status === 'failed') throw new Error(`Replicate failed immediately: ${pred.error}`)
 
-  // Otherwise poll
   const done = await pollReplicate(pred.id, apiKey)
   return normalizeDemucsOutput(done.output)
 }
@@ -973,16 +993,8 @@ async function splitWithDemucs(
       // Extract drums.wav bytes from Mureka ZIP
       const drumBytes = await extractStemBytesFromZip(zipUrl, 'drums')
       if (drumBytes && drumBytes.byteLength > 0) {
-        // Upload drums.wav to R2 so Replicate can access it via public URL
-        const drumR2Key = `sub-stems/${jobId}/drums/source_drums.wav`
-        await r2.put(drumR2Key, drumBytes, { httpMetadata: { contentType: 'audio/wav' } })
-        const drumPublicUrl = `${siteUrl}/api/sub-stem-audio/${jobId}/source_drums?parent=drums`
-
-        // Run htdemucs_6s on the drums stem — its "drums" output IS the isolated drums,
-        // and since the input is already a drums stem, the model will still separate sub-elements.
-        // For true kick/snare/hihat isolation we need a drum-specific model.
-        // We use htdemucs — on a pure drums input it produces near-isolated components.
-        const demucsOut = await runDemucsOnUrl(drumPublicUrl, replicateApiKey)
+        // Upload drums bytes to Replicate file API — avoids CDN/auth issues with Worker URLs
+        const demucsOut = await runDemucsOnBytes(drumBytes, replicateApiKey, 'drums')
 
         // Map Demucs outputs to sub-stems — from a drums-only input:
         // 'drums' output ≈ kick+snare, 'other' ≈ cymbals, we label them accordingly
@@ -1025,12 +1037,8 @@ async function splitWithDemucs(
       const bundleBytes = await extractStemBytesFromZip(zipUrl, parentStem)
       if (!bundleBytes || bundleBytes.byteLength === 0) continue
 
-      // Upload bundle stem to R2 for Replicate access
-      const srcR2Key = `sub-stems/${jobId}/${parentStem}/source_${parentStem}.wav`
-      await r2.put(srcR2Key, bundleBytes, { httpMetadata: { contentType: 'audio/wav' } })
-      const srcUrl = `${siteUrl}/api/sub-stem-audio/${jobId}/source_${parentStem}?parent=${parentStem}`
-
-      const demucsOut = await runDemucsOnUrl(srcUrl, replicateApiKey)
+      // Upload bundle stem bytes to Replicate file API — avoids CDN/auth issues with Worker URLs
+      const demucsOut = await runDemucsOnBytes(bundleBytes, replicateApiKey, parentStem)
 
       // Map instrument outputs — on an "other/fx" input:
       // 'guitar' → guitar parts, 'piano' → keys/piano parts, 'other' → synth/misc
@@ -2295,15 +2303,8 @@ app.post('/api/job/stems/advanced-split', async (c) => {
       if (!drumBytes || drumBytes.byteLength === 0)
         return c.json({ error: 'Could not extract drums stem from ZIP' }, 422)
 
-      const drumR2Key = `sub-stems/${job_id}/adv/source_drums.wav`
-      await r2.put(drumR2Key, drumBytes, { httpMetadata: { contentType: 'audio/wav' } })
-      const drumPublicUrl = `${siteUrl}/api/sub-stem-audio/${job_id}/adv_source_drums?parent=adv`
-
-      // Store source so sub-stem-audio route can serve it
-      const srcStored = `sub-stems/${job_id}/adv/adv_source_drums.wav`
-      await r2.put(srcStored, drumBytes, { httpMetadata: { contentType: 'audio/wav' } })
-
-      const demucsOut = await runDemucsOnUrl(drumPublicUrl, replicateKey)
+      // Upload bytes directly to Replicate file API — no Worker URL needed
+      const demucsOut = await runDemucsOnBytes(drumBytes, replicateKey, 'adv_drums')
 
       const drumMapping = [
         { demucsKey: 'drums',  name: 'Kick + Snare' },
@@ -2352,15 +2353,8 @@ app.post('/api/job/stems/advanced-split', async (c) => {
       if (!otherBytes || otherBytes.byteLength === 0)
         return c.json({ error: 'Could not extract melody stem from ZIP' }, 422)
 
-      const srcR2Key = `sub-stems/${job_id}/adv/source_other.wav`
-      await r2.put(srcR2Key, otherBytes, { httpMetadata: { contentType: 'audio/wav' } })
-      const otherPublicUrl = `${siteUrl}/api/sub-stem-audio/${job_id}/adv_source_other?parent=adv`
-
-      // Store for serving
-      const srcStored2 = `sub-stems/${job_id}/adv/adv_source_other.wav`
-      await r2.put(srcStored2, otherBytes, { httpMetadata: { contentType: 'audio/wav' } })
-
-      const demucsOut = await runDemucsOnUrl(otherPublicUrl, replicateKey)
+      // Upload bytes directly to Replicate file API — no Worker URL needed
+      const demucsOut = await runDemucsOnBytes(otherBytes, replicateKey, 'adv_other')
 
       const instrMapping = [
         { demucsKey: 'piano',  name: 'Piano' },
