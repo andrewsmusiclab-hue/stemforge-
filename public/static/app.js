@@ -913,22 +913,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
       items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
-        function dashUpgradePrompt() {
-          const m = document.getElementById('sf-dash-upgrade');
-          if (m) m.style.display = 'flex';
-          else window.location.href = '/pricing';
-        }
-        const user = window._sfUser;
-        if (user && user.plan !== 'free') {
-          openStemPickerModal(jobId, user);
-        } else if (!user) {
-          fetch('/api/auth/me').then(r => r.json()).then(me => {
-            const u = me && me.user;
-            if (!u || u.plan === 'free') { dashUpgradePrompt(); return; }
-            window._sfUser = window._sfUser || u;
-            openStemPickerModal(jobId, u);
-          }).catch(() => dashUpgradePrompt());
-        } else { dashUpgradePrompt(); }
+        // Always use the unified popup — handles all plan states (free, creator, pro, not-logged-in)
+        const zipUrl = null; // not available from card context — popup will check plan
+        openStemsPopup(jobId, zipUrl);
       }});
     }
 
@@ -1455,7 +1442,8 @@ document.addEventListener('DOMContentLoaded', () => {
           instruments_exclude: inputs.instruments_exclude,
           title: inputs.title || '',
           vocal_gender: window._vocalGender || 'off',
-          beat_count: window._beatCount || 1
+          beat_count: window._beatCount || 1,
+          user_duration: window._userDuration || 0
         })
       });
 
@@ -1690,7 +1678,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Stem Player</span><small>Interactive</small>';
                 stemsBtn.onclick = () => {
                   const jobIdNav = job.id || currentJobId;
-                  window.location.href = '/stems/' + jobIdNav;
+                  openStemsPopup(jobIdNav, job.zip_url || null);
                 };
 
                 exportOptionsRow.appendChild(unmastBtn);
@@ -2314,12 +2302,11 @@ window.sfStemsGo = async function(jobId) {
 // selected tier as a query param.  The stems player will handle extraction.
 window.requestStems = function() {
   const jobId = document.getElementById('edit-job-id')?.value;
-  const btn   = document.getElementById('edit-get-stems-btn');
-  if (!jobId || !btn) return;
-  const tier = _editStemTier || 'basic';
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening stems player…';
-  window.location.href = '/stems/' + jobId + '?tier=' + tier;
+  if (!jobId) return;
+  // Close edit modal first, then show unified stems popup
+  const editModal = document.getElementById('song-edit-modal');
+  if (editModal) editModal.style.display = 'none';
+  openStemsPopup(jobId, null);
 };
 
 // ── Stem Tier Picker Modal ─────────────────────────────────────────────────
@@ -2831,6 +2818,20 @@ window.setVocalToggle = function(val) {
 
 // ── Beat count toggle (1 or 2) — 2 beats is Pro Artist only ──
 window._beatCount = 1;
+// ── Duration picker ──────────────────────────────────────────
+window._userDuration = 0; // 0 = Auto
+window.setDuration = function(sec) {
+  window._userDuration = sec;
+  document.querySelectorAll('#duration-btn-group .beat-count-btn').forEach(btn => {
+    btn.classList.toggle('beat-count-btn--active', parseInt(btn.dataset.dur||'0') === sec);
+  });
+};
+// Set Auto as default active
+window.addEventListener('DOMContentLoaded', () => {
+  const autoBtn = document.getElementById('dur-auto');
+  if (autoBtn) autoBtn.classList.add('beat-count-btn--active');
+});
+
 window.setBeatCount = function(n) {
   // 2-beat option requires Pro Artist plan
   if (n === 2) {

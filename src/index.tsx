@@ -510,7 +510,7 @@ function pickRandomKey(): string {
   return ALL_KEYS[Math.floor(Math.random() * ALL_KEYS.length)]
 }
 
-async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string, userPlan?: string): Promise<Blueprint & { suggested_title?: string }> {
+async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string, userPlan?: string, userDurationSec?: number): Promise<Blueprint & { suggested_title?: string }> {
   const suggestedKey = pickRandomKey()
 
   // Extract genre/style from the front of the prompt if present (it's always prepended first)
@@ -528,7 +528,7 @@ ABSOLUTE RULES — violating any rule is a failure:
 5. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
 6. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
 7. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", or "ride cymbal".
-8. DURATION: ${userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be between 180 and 240 seconds (3–4 min). Prefer 210 or 240 seconds for epic, expansive arrangements. Maximum is 240 (4:00).' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.'}
+8. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : (userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be between 180 and 240 seconds (3–4 min). Prefer 210 or 240 seconds for epic, expansive arrangements. Maximum is 240 (4:00).' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.')}
 Output valid JSON only — no markdown, no explanation.`
 
   const userPrompt = `Generate a beat blueprint for: "${prompt}"
@@ -558,7 +558,7 @@ Return ONLY this JSON:
   "genre": <EXACT genre string from user input — do not change>,
   "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
   "energy": <"low" | "medium" | "high">,
-  "duration_seconds": <${userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180'}>,  // Pro: max 240 (4:00)
+  "duration_seconds": <${userDurationSec ? userDurationSec : (userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180')}>,  // User-specified or plan default
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
   "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
@@ -617,7 +617,7 @@ Instrument rules:
 //  STEP 2 — MUREKA INSTRUMENTAL GENERATION
 // ═══════════════════════════════════════════════════════════════
 
-async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string): Promise<string> {
+async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number): Promise<string> {
   // Build the mureka prompt — enforce no vocals/vocal chops on instrumental mode
   let murekaPrompt = blueprint.mureka_prompt
   // Always strip any vocal references and explicitly state instrumental only
@@ -638,6 +638,11 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
   const body: Record<string, any> = {
     prompt: murekaPrompt,
     model: 'auto'
+  }
+  // Pass user-specified or blueprint duration to Mureka if available
+  const durationSec = userDurationSec || blueprint.duration_seconds
+  if (durationSec && durationSec > 0) {
+    body.duration = durationSec
   }
   // If a reference audio file ID was supplied, pass it for style matching
   if (refFileId) {
@@ -1082,7 +1087,7 @@ function buildCoverImageUrl(job: Job): string {
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
-async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string) {
+async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -1093,7 +1098,7 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
     await setJob(db, { ...job })
 
     const userTitle = (job as any).title as string | undefined
-    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle, userPlan)
+    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle, userPlan, userDurationSec)
 
     // Auto-name the track if user left title blank
     if (!userTitle && (blueprint as any).suggested_title) {
@@ -1110,7 +1115,7 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
     job.status = 'generating'
     await setJob(db, { ...job })
 
-    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender)
+    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender, userDurationSec)
     job.stereo_task_id = stereoTaskId
     await setJob(db, { ...job })
 
@@ -1175,7 +1180,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude, title, reference_file_id, vocal_gender, beat_count } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, vocal_gender, beat_count } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -1248,7 +1253,9 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan))
+  // Parse user_duration: expect seconds as number (60, 90, 120, etc.)
+  const userDurationSec = user_duration ? Math.max(30, Math.min(300, parseInt(String(user_duration), 10) || 0)) || undefined : undefined
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -5297,13 +5304,18 @@ async function loadStemsAudio(jobId, tracks) {
 
 // ── Loading waveform placeholder ──────────────────────────────
 function drawLoadingWaveform(stem, color) {
-  const canvas = document.getElementById('wave-' + stem);
-  if (!canvas) return;
-  const W = canvas.width || 300, H = canvas.height || 48;
+  const waveEl = document.getElementById('stem-wave-' + stem);
+  if (!waveEl) return;
+  waveEl.innerHTML = '';
+  const canvas = document.createElement('canvas');
+  canvas.width = waveEl.offsetWidth || 300; canvas.height = 32;
+  canvas.style.cssText = 'width:100%;height:32px;display:block;';
+  waveEl.appendChild(canvas);
+  const W = canvas.width, H = canvas.height;
   const ctx2 = canvas.getContext('2d');
   if (!ctx2) return;
   ctx2.clearRect(0, 0, W, H);
-  // Draw subtle bars to indicate loading
+  // Draw subtle pulsing bars to indicate loading
   const bars = 40;
   const bw = Math.max(1, W/bars - 1);
   ctx2.fillStyle = color + '33';
@@ -6165,74 +6177,36 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- SECTION 3b: One Shots (Pro Artist only) -->
-    <div class="suno-card suno-card--pro" id="card-oneshots">
-      <div class="suno-card__header" id="oneshot-header" style="cursor:pointer" onclick="toggleOneShotCard()">
-        <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
-          <i class="fas fa-chevron-right" id="oneshot-collapse-icon"></i>
-        </button>
-        <span class="suno-card__title" style="display:flex;align-items:center;gap:8px">
-          One Shot Creator
-          <span class="pro-badge"><i class="fas fa-crown"></i> Pro</span>
-        </span>
-      </div>
-      <div class="suno-card__body" id="oneshot-body" style="display:none">
-        <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px">Describe any percussive sound — 808, kick, snare, hi-hat, clap, FX impact, or anything else.</p>
-
-        <div class="suno-option-row" style="margin-top:4px">
-          <label class="suno-option-label">Describe your one-shot <span style="color:var(--danger)">*</span></label>
-          <input type="text" id="oneshot-desc" class="suno-style-input" placeholder="e.g. dark distorted 808, punchy boom bap kick, crispy trap snare, hi-hat roll, FX riser…"/>
-        </div>
-
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
-          <div>
-            <label class="suno-option-label" style="margin-bottom:6px">Pitch / Note</label>
-            <select id="oneshot-pitch" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.88rem">
-              <option value="">Auto</option>
-              <option>A</option><option>A#/Bb</option><option>B</option>
-              <option>C</option><option>C#/Db</option><option>D</option>
-              <option>D#/Eb</option><option>E</option><option>F</option>
-              <option>F#/Gb</option><option>G</option><option>G#/Ab</option>
-            </select>
-          </div>
-          <div>
-            <label class="suno-option-label" style="margin-bottom:6px">Texture</label>
-            <select id="oneshot-texture" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.88rem">
-              <option value="">Auto</option>
-              <option>Clean</option>
-              <option>Distorted</option>
-              <option>Saturated</option>
-              <option>Filtered</option>
-              <option>Punchy</option>
-              <option>Soft</option>
-            </select>
-          </div>
-        </div>
-
-        <button class="suno-create-btn" id="oneshot-gen-btn" style="margin-top:16px;width:100%;font-size:.9rem;padding:12px" onclick="generateOneShot()">
-          <i class="fas fa-bolt"></i> Generate One Shot
-        </button>
-
-        <!-- One Shot result -->
-        <div id="oneshot-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <span style="font-weight:600;font-size:.88rem" id="oneshot-result-title">One Shot Ready</span>
-            <span class="status-dot status-dot--ready" style="display:flex;align-items:center;gap:5px;font-size:.78rem;color:var(--accent-2)">
-              <span style="width:7px;height:7px;background:var(--accent-2);border-radius:50%;display:inline-block"></span>Ready
-            </span>
-          </div>
-          <audio id="oneshot-audio" controls style="width:100%;border-radius:8px"></audio>
-          <div style="display:flex;gap:8px;margin-top:10px">
-            <a id="oneshot-dl-mp3" class="btn btn--outline btn--sm" style="flex:1;justify-content:center" download>
-              <i class="fas fa-download"></i> MP3
-            </a>
-            <a id="oneshot-dl-wav" class="btn btn--outline btn--sm" style="flex:1;justify-content:center" download>
-              <i class="fas fa-file-audio"></i> WAV
-            </a>
-          </div>
-        </div>
-        <div id="oneshot-status" style="display:none;margin-top:12px;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px;text-align:center;color:var(--muted);font-size:.85rem">
-          <i class="fas fa-spinner fa-spin" style="margin-right:6px"></i> <span id="oneshot-status-msg">Generating…</span>
+    <!-- SECTION 3b: Duration Picker -->
+    <div class="suno-card suno-card--slim" id="card-duration" data-tooltip="Choose how long your track should be — AI will generate a beat close to this duration">
+      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
+        <i class="fas fa-clock" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Duration</span>
+        <div class="beat-count-group" id="duration-btn-group" style="flex-wrap:wrap">
+          <button class="beat-count-btn" data-dur="0" id="dur-auto" onclick="setDuration(0)" data-tooltip="Let the AI decide the length based on your plan">
+            Auto
+          </button>
+          <button class="beat-count-btn" data-dur="60" id="dur-60" onclick="setDuration(60)" data-tooltip="~1 minute — great for loops and short intros">
+            1:00
+          </button>
+          <button class="beat-count-btn" data-dur="90" id="dur-90" onclick="setDuration(90)" data-tooltip="~1.5 minutes — compact beat">
+            1:30
+          </button>
+          <button class="beat-count-btn" data-dur="120" id="dur-120" onclick="setDuration(120)" data-tooltip="~2 minutes — standard beat length">
+            2:00
+          </button>
+          <button class="beat-count-btn" data-dur="150" id="dur-150" onclick="setDuration(150)" data-tooltip="~2.5 minutes — full arrangement">
+            2:30
+          </button>
+          <button class="beat-count-btn" data-dur="180" id="dur-180" onclick="setDuration(180)" data-tooltip="~3 minutes — full track with sections">
+            3:00
+          </button>
+          <button class="beat-count-btn" data-dur="210" id="dur-210" onclick="setDuration(210)" data-tooltip="~3.5 minutes — extended arrangement">
+            3:30
+          </button>
+          <button class="beat-count-btn" data-dur="240" id="dur-240" onclick="setDuration(240)" data-tooltip="~4 minutes — epic full-length track">
+            4:00
+          </button>
         </div>
       </div>
     </div>
