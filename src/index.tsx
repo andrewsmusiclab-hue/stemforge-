@@ -797,12 +797,20 @@ async function uploadBytesToReplicate(bytes: ArrayBuffer, apiKey: string, filena
 
 // Run cjwbw/demucs on raw audio bytes — uploads to Replicate first so it can always fetch
 // Returns: { drums, bass, vocals, guitar, piano, other } → output MP3 URLs
-async function runDemucsOnBytes(audioBytes: ArrayBuffer, apiKey: string, stemName: string): Promise<Record<string, string>> {
+// runDemucsOnBytes: upload bytes → Replicate file API → submit prediction
+// modelName: 'htdemucs_6s' (6 stems, default) | 'htdemucs_ft' (fine-tuned, best quality 4-stem)
+async function runDemucsOnBytes(
+  audioBytes: ArrayBuffer,
+  apiKey: string,
+  stemName: string,
+  modelName = 'htdemucs_6s'
+): Promise<Record<string, string>> {
   // Step 1: Upload audio to Replicate's own file storage (avoids CDN/auth blocks on external URLs)
   const audioUrl = await uploadBytesToReplicate(audioBytes, apiKey, `${stemName}.wav`)
 
-  // Step 2: Submit prediction — cjwbw/demucs v25a173 (htdemucs_6s, 6 stems)
-  // Input schema: { audio, model_name, output_format } — omit stem to get all 6
+  // Step 2: Submit prediction — cjwbw/demucs v25a173
+  // htdemucs_6s = 6 stems (drums/bass/vocals/guitar/piano/other)
+  // htdemucs_ft = fine-tuned 4-stem (drums/bass/vocals/other) — best quality, 4× slower
   const r = await fetch(`${REPLICATE_BASE}/predictions`, {
     method: 'POST',
     headers: {
@@ -814,7 +822,7 @@ async function runDemucsOnBytes(audioBytes: ArrayBuffer, apiKey: string, stemNam
       version: '25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953',
       input: {
         audio: audioUrl,
-        model_name: 'htdemucs_6s',
+        model_name: modelName,
         output_format: 'mp3',
         shifts: 1,
         overlap: 0.25
@@ -2301,7 +2309,7 @@ app.post('/api/job/stems/advanced-split', async (c) => {
   if (user.plan !== 'pro' && user.plan !== 'developer')
     return c.json({ error: 'Advanced Split requires a Pro Artist plan.' }, 403)
 
-  const { job_id, target } = await c.req.json() as any
+  const { job_id, target, stem: requestedStem } = await c.req.json() as any
   if (!job_id || !['drums', 'melodies'].includes(target))
     return c.json({ error: 'job_id and target (drums|melodies) required' }, 400)
 
@@ -2324,22 +2332,33 @@ app.post('/api/job/stems/advanced-split', async (c) => {
 
   try {
     if (target === 'drums') {
-      // Extract drums.wav from the Mureka ZIP, upload to R2, run Demucs
+      // ── TWO-PASS DRUM KIT SEPARATION ────────────────────────────────
+      // Pass 1: htdemucs_6s on the full song drums stem → isolates clean drums
+      //         (already extracted from ZIP — 35MB WAV, pure drum track)
+      // Pass 2: htdemucs_ft (fine-tuned, best quality) on the clean drum track
+      //         → separates kick / snare+snare / hihat / other_perc
+      //         htdemucs_ft output: drums=kick, bass=snare, vocals=hihat, other=toms+cymbals
+      // Total: 2 Replicate credits used
+      // ────────────────────────────────────────────────────────────────
+
+      // Extract drums.wav from the Mureka ZIP (already decompressed/validated)
       const drumBytes = await extractStemBytesFromZip(zipUrl, 'drums')
       if (!drumBytes || drumBytes.byteLength === 0)
         return c.json({ error: 'Could not extract drums stem from ZIP' }, 422)
 
-      // Upload bytes directly to Replicate file API — no Worker URL needed
-      const demucsOut = await runDemucsOnBytes(drumBytes, replicateKey, 'adv_drums')
+      // Pass 2: run fine-tuned htdemucs_ft on the clean drum track
+      // This is the highest-quality model for 4-stem separation
+      // On a clean drum track it maps: drums→kick, bass→snare, vocals→hihat, other→toms+cymbals
+      const demucsOut = await runDemucsOnBytes(drumBytes, replicateKey, 'adv_drums_pass2', 'htdemucs_ft')
 
       const drumMapping = [
-        { demucsKey: 'drums',  name: 'Kick + Snare' },
-        { demucsKey: 'other',  name: 'Hi-Hats + Cymbals' },
-        { demucsKey: 'piano',  name: 'Toms' },
-        { demucsKey: 'guitar', name: 'Snare Elements' },
+        { demucsKey: 'drums',  name: 'Kick',           color: '#ef4444' },
+        { demucsKey: 'bass',   name: 'Snare',          color: '#f97316' },
+        { demucsKey: 'other',  name: 'Hi-Hats',        color: '#eab308' },
+        { demucsKey: 'vocals', name: 'Toms + Cymbals', color: '#22c55e' },
       ]
 
-      const stems: Array<{ name: string; url: string }> = []
+      const stems: Array<{ name: string; url: string; color: string; key: string }> = []
       for (const m of drumMapping) {
         const url = demucsOut[m.demucsKey]
         if (!url) continue
@@ -2349,9 +2368,14 @@ app.post('/api/job/stems/advanced-split', async (c) => {
           const buf = await resp.arrayBuffer()
           const slugKey = m.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
           const r2Key = `sub-stems/${job_id}/adv/drums_${slugKey}.wav`
-          await r2.put(r2Key, buf, { httpMetadata: { contentType: 'audio/wav' } })
+          await r2.put(r2Key, buf, { httpMetadata: { contentType: 'audio/mpeg' } })
           const serveKey = 'adv_drums_' + slugKey
-          stems.push({ name: m.name, url: `${siteUrl}/api/sub-stem-audio/${job_id}/${serveKey}` })
+          stems.push({
+            name: m.name,
+            color: m.color,
+            key: serveKey,
+            url: `${siteUrl}/api/sub-stem-audio/${job_id}/${serveKey}`
+          })
         } catch { /* skip */ }
       }
 
@@ -2362,7 +2386,7 @@ app.post('/api/job/stems/advanced-split', async (c) => {
         const slugKey = s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
         newSubStems.push({
           key: 'adv_drums_' + slugKey,
-          name: s.name, family: 'drums_adv', color: '#ef4444',
+          name: s.name, family: 'drums_adv', color: s.color,
           url: `sub-stems/${job_id}/adv/drums_${slugKey}.wav`, parent: 'drums'
         })
       })
@@ -2374,23 +2398,28 @@ app.post('/api/job/stems/advanced-split', async (c) => {
     }
 
     if (target === 'melodies') {
-      // Extract other.wav (melody/other stem) and run Demucs instruments pass
-      const otherBytes = await extractStemBytesFromZip(zipUrl, 'other')
-      if (!otherBytes || otherBytes.byteLength === 0)
-        return c.json({ error: 'Could not extract melody stem from ZIP' }, 422)
+      // User picks exactly which stem to split — requestedStem is the ZIP stem key
+      // Allowed: other, piano, guitar, synth, strings, brass, woodwind, fx (anything non-drums/bass/vocals)
+      const ALLOWED_MELODY_STEMS = ['other','piano','guitar','synth','strings','brass','woodwind','fx']
+      const targetStemKey = (requestedStem && ALLOWED_MELODY_STEMS.includes(requestedStem))
+        ? requestedStem : 'other'
 
-      // Upload bytes directly to Replicate file API — no Worker URL needed
-      const demucsOut = await runDemucsOnBytes(otherBytes, replicateKey, 'adv_other')
+      const melodyBytes = await extractStemBytesFromZip(zipUrl, targetStemKey)
+      if (!melodyBytes || melodyBytes.byteLength === 0)
+        return c.json({ error: `Could not extract ${targetStemKey} stem from ZIP` }, 422)
+
+      // htdemucs_6s on the clean melody stem → separates piano/guitar/vocals/bass/other
+      const demucsOut = await runDemucsOnBytes(melodyBytes, replicateKey, `adv_${targetStemKey}`, 'htdemucs_6s')
 
       const instrMapping = [
-        { demucsKey: 'piano',  name: 'Piano' },
-        { demucsKey: 'guitar', name: 'Guitar / Synth Lead' },
-        { demucsKey: 'other',  name: 'Other Melody' },
-        { demucsKey: 'vocals', name: 'Melody Vocals' },
-        { demucsKey: 'bass',   name: 'Sub Bass Elements' },
+        { demucsKey: 'piano',  name: 'Piano',            color: '#6366f1' },
+        { demucsKey: 'guitar', name: 'Guitar / Synth',   color: '#8b5cf6' },
+        { demucsKey: 'other',  name: 'Melody (Other)',   color: '#a855f7' },
+        { demucsKey: 'vocals', name: 'Vocal Melody',     color: '#ec4899' },
+        { demucsKey: 'bass',   name: 'Bass Elements',    color: '#3b82f6' },
       ]
 
-      const stems: Array<{ name: string; url: string }> = []
+      const stems: Array<{ name: string; url: string; color: string; key: string }> = []
       for (const m of instrMapping) {
         const url = demucsOut[m.demucsKey]
         if (!url) continue
@@ -2400,9 +2429,14 @@ app.post('/api/job/stems/advanced-split', async (c) => {
           const buf = await resp.arrayBuffer()
           const slugKey = m.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
           const r2Key = `sub-stems/${job_id}/adv/melody_${slugKey}.wav`
-          await r2.put(r2Key, buf, { httpMetadata: { contentType: 'audio/wav' } })
+          await r2.put(r2Key, buf, { httpMetadata: { contentType: 'audio/mpeg' } })
           const serveKey = 'adv_melody_' + slugKey
-          stems.push({ name: m.name, url: `${siteUrl}/api/sub-stem-audio/${job_id}/${serveKey}` })
+          stems.push({
+            name: m.name,
+            color: m.color,
+            key: serveKey,
+            url: `${siteUrl}/api/sub-stem-audio/${job_id}/${serveKey}`
+          })
         } catch { /* skip */ }
       }
 
@@ -2413,15 +2447,15 @@ app.post('/api/job/stems/advanced-split', async (c) => {
         const slugKey = s.name.toLowerCase().replace(/[^a-z0-9]+/g, '_')
         newSubStems2.push({
           key: 'adv_melody_' + slugKey,
-          name: s.name, family: 'melody_adv', color: '#8b5cf6',
-          url: `sub-stems/${job_id}/adv/melody_${slugKey}.wav`, parent: 'other'
+          name: s.name, family: 'melody_adv', color: s.color,
+          url: `sub-stems/${job_id}/adv/melody_${slugKey}.wav`, parent: targetStemKey
         })
       })
       const updatedJob2 = { ...job, sub_stems: newSubStems2 } as any
       await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?')
         .bind(JSON.stringify(updatedJob2), job_id).run()
 
-      return c.json({ ok: true, target: 'melodies', stems })
+      return c.json({ ok: true, target: 'melodies', sourceStem: targetStemKey, stems })
     }
 
     return c.json({ error: 'Unknown target' }, 400)
@@ -5044,17 +5078,17 @@ function stemsPage(jobId: string) {
           <span style="font-size:1.4rem">🥁</span>
           <div>
             <div style="font-weight:700;font-size:.95rem">Split Drum Kit</div>
-            <div style="font-size:.75rem;color:var(--muted)">Kick · Snare · Hi-hat · Toms</div>
+            <div style="font-size:.75rem;color:var(--muted)">Kick · Snare · Hi-Hats · Toms</div>
           </div>
         </div>
         <p style="font-size:.8rem;color:var(--muted);line-height:1.5;margin-bottom:14px">
-          Demucs isolates each drum element from your stems with no bleed from other instruments.
+          2-pass AI separation — extracts a clean drum track then re-separates kick, snare, hi-hats and toms individually.
         </p>
         <div id="adv-drums-status" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;display:none"></div>
-        <div id="adv-drums-result" style="display:none;margin-bottom:12px"></div>
         <button id="adv-drums-btn" class="btn btn--primary btn--sm" onclick="advSplitRequest('drums')" style="width:100%">
           <i class="fas fa-cut"></i> Split Drum Kit
         </button>
+        <div style="font-size:.68rem;color:var(--muted);margin-top:6px;text-align:center">Uses 2 credits</div>
       </div>
 
       <!-- Split Melodies -->
@@ -5067,19 +5101,19 @@ function stemsPage(jobId: string) {
           </div>
         </div>
         <p style="font-size:.8rem;color:var(--muted);line-height:1.5;margin-bottom:14px">
-          Re-generates your melody stems individually using AI separation — preserves exact timing, eliminates bleed.
+          Pick exactly which grouped melody stem to split — you choose the stem so nothing is wasted.
         </p>
         <div id="adv-melodies-status" style="font-size:.78rem;color:var(--muted);margin-bottom:10px;display:none"></div>
-        <div id="adv-melodies-result" style="display:none;margin-bottom:12px"></div>
-        <button id="adv-melodies-btn" class="btn btn--primary btn--sm" onclick="advSplitRequest('melodies')" style="width:100%;background:linear-gradient(135deg,#6c3aff,#a855f7)">
-          <i class="fas fa-sliders-h"></i> Split Melodies
+        <button id="adv-melodies-btn" class="btn btn--primary btn--sm" onclick="advMelodiesPickStem()" style="width:100%;background:linear-gradient(135deg,#6c3aff,#a855f7)">
+          <i class="fas fa-hand-pointer"></i> Pick Stem to Split
         </button>
+        <div style="font-size:.68rem;color:var(--muted);margin-top:6px;text-align:center">Uses 1 credit</div>
       </div>
 
     </div>
     <p style="font-size:.72rem;color:var(--muted);margin-top:12px;max-width:640px">
       <i class="fas fa-info-circle" style="margin-right:4px"></i>
-      Advanced Split runs in the background (1–3 min). Results appear here and in the Sub-Stems panel above each track.
+      Results appear directly in the stem player. Drum kit split takes 2&ndash;5 min &middot; Melody split 1&ndash;3 min.
     </p>
   </div>
 
@@ -5806,58 +5840,311 @@ function downloadSubStem(key, name) {
 }
 
 // ── Advanced Split ─────────────────────────────────────────────
-async function advSplitRequest(target) {
+// ── Advanced Split: Drums ──────────────────────────────────────
+async function advSplitRequest(target, selectedStem) {
   const isD = target === 'drums';
-  const btnId = isD ? 'adv-drums-btn' : 'adv-melodies-btn';
-  const statusId = isD ? 'adv-drums-status' : 'adv-melodies-status';
-  const resultId = isD ? 'adv-drums-result' : 'adv-melodies-result';
-  const btn = document.getElementById(btnId);
-  const statusEl = document.getElementById(statusId);
-  const resultEl = document.getElementById(resultId);
+  const btn      = document.getElementById(isD ? 'adv-drums-btn' : 'adv-melodies-btn');
+  const statusEl = document.getElementById(isD ? 'adv-drums-status' : 'adv-melodies-status');
 
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...'; }
-  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Starting AI split — this takes 1-3 minutes...'; }
-  if (resultEl) { resultEl.style.display = 'none'; resultEl.innerHTML = ''; }
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing…'; }
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = isD
+      ? 'Running 2-pass drum separation — 2–5 min…'
+      : 'Splitting ' + (selectedStem || 'melody') + ' stem — 1–3 min…';
+  }
 
   try {
-    const res = await fetch('/api/job/stems/advanced-split', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id: STEMS_JOB_ID, target: target })
+    const body = { job_id: STEMS_JOB_ID, target: target };
+    if (!isD && selectedStem) body.stem = selectedStem;
+
+    const res  = await fetch('/api/job/stems/advanced-split', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Split failed');
 
-    if (statusEl) statusEl.textContent = 'Split complete!';
-    if (resultEl) {
-      resultEl.style.display = 'block';
-      let html = '<div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">';
-      const stems = data.stems || [];
-      stems.forEach(function(s) {
-        html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:rgba(255,255,255,.04);border-radius:8px;font-size:.8rem">' +
-          '<span style="font-weight:600">' + s.name + '</span>' +
-          '<div style="display:flex;gap:6px">' +
-            '<button onclick="advStemPlay(&quot;' + s.url + '&quot;)" title="Play" style="background:none;border:none;color:var(--primary);cursor:pointer;padding:2px 6px"><i class="fas fa-play"></i></button>' +
-            '<a href="' + s.url + '" download="' + s.name.replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ /g,'_').toLowerCase() + '.wav" style="color:var(--muted);padding:2px 6px" title="Download"><i class="fas fa-download"></i></a>' +
-          '</div>' +
-        '</div>';
-      });
-      html += '</div>';
-      resultEl.innerHTML = html;
+    if (statusEl) { statusEl.textContent = '✓ Done! Stems added to player.'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = isD ? '<i class="fas fa-cut"></i> Split Drum Kit' : '<i class="fas fa-hand-pointer"></i> Pick Stem to Split'; }
+
+    // ── Close adv split panel and return to stem player ────────
+    setVIMode('vocals');
+
+    // ── Inject new stems into the player list ──────────────────
+    const newStems = data.stems || [];
+    if (newStems.length > 0) {
+      injectAdvSplitStems(newStems, target);
     }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Done — Split Again'; }
+
   } catch(e) {
     if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Error: ' + (e.message || 'Split failed'); }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-redo"></i> Retry'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = isD ? '<i class="fas fa-redo"></i> Retry' : '<i class="fas fa-hand-pointer"></i> Pick Stem to Split'; }
   }
 }
 
-// Simple inline audio player for advanced split results
-var _advAudio = null;
-function advStemPlay(url) {
-  if (_advAudio) { _advAudio.pause(); _advAudio = null; }
-  _advAudio = new Audio(url);
-  _advAudio.play().catch(function(){});
+// ── Inject new split stems into the stem player list ──────────
+function injectAdvSplitStems(newStems, target) {
+  var listEl = document.getElementById('stems-list');
+  if (!listEl) return;
+
+  // Determine icon + family
+  var isD = target === 'drums';
+  var iconMap = {
+    'Kick':           'fa-drum',
+    'Snare':          'fa-drum',
+    'Hi-Hats':        'fa-drum',
+    'Toms + Cymbals': 'fa-drum',
+    'Piano':          'fa-music',
+    'Guitar / Synth': 'fa-guitar',
+    'Melody (Other)': 'fa-wave-square',
+    'Vocal Melody':   'fa-microphone',
+    'Bass Elements':  'fa-guitar',
+  };
+
+  // Build a separator divider if not already present
+  var sepId = isD ? 'adv-sep-drums' : 'adv-sep-melodies';
+  if (!document.getElementById(sepId)) {
+    var sep = document.createElement('div');
+    sep.id = sepId;
+    sep.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 0 4px;opacity:.6';
+    sep.innerHTML = '<div style="flex:1;height:1px;background:var(--border)"></div>' +
+      '<span style="font-size:.68rem;color:var(--muted);white-space:nowrap;text-transform:uppercase;letter-spacing:.06em">' +
+      (isD ? '🥁 Drum Kit' : '🎹 Melody Split') + '</span>' +
+      '<div style="flex:1;height:1px;background:var(--border)"></div>';
+    listEl.appendChild(sep);
+  }
+
+  newStems.forEach(function(s) {
+    // Unique stem key = s.key (e.g. adv_drums_kick)
+    var stemKey = s.key || s.name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
+    // Remove existing row with this key if present
+    var existingRow = listEl.querySelector('[data-stem="' + stemKey + '"]');
+    if (existingRow) existingRow.remove();
+
+    // Build track object for buildStemRow
+    var track = {
+      stem:   stemKey,
+      name:   s.name,
+      color:  s.color || (isD ? '#ef4444' : '#8b5cf6'),
+      family: isD ? 'drums' : 'other',
+      url:    s.url
+    };
+
+    var row = buildStemRow(track);
+    // Mark as adv-split row
+    row.dataset.advSplit = '1';
+    listEl.appendChild(row);
+
+    // Load audio for this stem in background
+    stemMuted[stemKey] = false;
+    stemSolo[stemKey]  = false;
+    stemGains[stemKey] = 1.0;
+    drawLoadingWaveform(stemKey, track.color);
+
+    // Fetch and attach audio
+    fetch(s.url).then(function(r) {
+      if (!r.ok) { drawRandomWaveform(stemKey, track.color); return; }
+      return r.arrayBuffer();
+    }).then(function(buf) {
+      if (!buf) return;
+      var blob  = new Blob([buf], { type: 'audio/mpeg' });
+      var url   = URL.createObjectURL(blob);
+      var audio = new Audio(url);
+      audio.volume  = masterVolume;
+      audio.preload = 'auto';
+      stemAudios[stemKey] = audio;
+      try {
+        var ctx = getAudioCtx();
+        var src = ctx.createMediaElementSource(audio);
+        var gain = ctx.createGain();
+        gain.gain.value = 1.0;
+        src.connect(gain);
+        gain.connect(ctx.destination);
+        stemSources[stemKey]   = src;
+        stemAnalysers[stemKey] = gain; // reuse field for routing
+        drawWaveformFromAudio(stemKey, audio, track.color);
+      } catch(ae) {
+        drawRandomWaveform(stemKey, track.color);
+      }
+    }).catch(function() { drawRandomWaveform(stemKey, track.color); });
+  });
+
+  // Flash the list so user sees what was added
+  listEl.style.transition = 'box-shadow .3s';
+  listEl.style.boxShadow  = '0 0 0 2px #6c3aff';
+  setTimeout(function() { listEl.style.boxShadow = ''; }, 1200);
+}
+
+// ── Melody Stem Pick Mode ──────────────────────────────────────
+// Groups that can be split (everything except drums/bass/vocals)
+var MELODY_STEM_FAMILIES = ['other','piano','guitar','synth','strings','brass','woodwind','fx'];
+var _melodyStemPickMode  = false;
+var _melodyStemSelected  = null;
+
+function advMelodiesPickStem() {
+  // Switch to Vocals tab so user sees the stem list
+  setVIMode('vocals');
+
+  // Enter pick mode after tab transition
+  setTimeout(function() {
+    _melodyStemPickMode = true;
+    _melodyStemSelected = null;
+
+    // Show the pick mode banner at the top of the list
+    var listEl = document.getElementById('stems-list');
+    if (!listEl) return;
+
+    // Remove existing banner if any
+    var oldBanner = document.getElementById('melody-pick-banner');
+    if (oldBanner) oldBanner.remove();
+
+    var banner = document.createElement('div');
+    banner.id = 'melody-pick-banner';
+    banner.style.cssText = [
+      'position:sticky;top:0;z-index:20;',
+      'background:linear-gradient(135deg,#6c3aff,#a855f7);',
+      'color:#fff;padding:12px 16px;border-radius:12px;margin-bottom:8px;',
+      'display:flex;align-items:center;justify-content:space-between;gap:10px;',
+      'box-shadow:0 4px 20px rgba(108,58,255,.4);'
+    ].join('');
+    banner.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px;flex:1">' +
+        '<i class="fas fa-hand-pointer" style="font-size:1.1rem"></i>' +
+        '<div>' +
+          '<div style="font-weight:700;font-size:.88rem">Pick a melody stem to split</div>' +
+          '<div id="melody-pick-hint" style="font-size:.74rem;opacity:.85">Highlighted stems can be split — click one to select</div>' +
+        '</div>' +
+      '</div>' +
+      '<button onclick="advMelodiesCancelPick()" style="background:rgba(255,255,255,.18);border:none;color:#fff;border-radius:8px;padding:5px 12px;cursor:pointer;font-size:.8rem;white-space:nowrap">' +
+        '<i class="fas fa-times"></i> Cancel' +
+      '</button>';
+    listEl.parentNode.insertBefore(banner, listEl);
+
+    // Dim all rows; highlight only melody-family rows
+    var rows = listEl.querySelectorAll('.stem-row');
+    rows.forEach(function(row) {
+      var stemKey = row.dataset.stem || '';
+      var family  = stemKey.replace(/[_-].*/,''); // rough family from key
+      // Check if this stem belongs to a melody family
+      var isMelody = MELODY_STEM_FAMILIES.some(function(f) {
+        return stemKey.toLowerCase().includes(f) || row.querySelector('.stem-row__name')?.textContent?.toLowerCase().includes(f);
+      });
+      // Never highlight drums/bass/vocals stems
+      var isExcluded = ['drums','bass','vocals'].some(function(f) { return stemKey.toLowerCase().startsWith(f); });
+
+      if (isMelody && !isExcluded) {
+        // Highlight: pulsing border, clickable
+        row.style.cssText += ';cursor:pointer;border:2px solid #a855f7;border-radius:12px;animation:melody-pulse 1.2s ease-in-out infinite;';
+        row.setAttribute('data-melody-pick', '1');
+        row.onclick = function() { advMelodiesSelectStem(stemKey, row); };
+      } else {
+        // Dim
+        row.style.opacity = '0.25';
+        row.style.pointerEvents = 'none';
+      }
+    });
+
+    // Add pulse keyframe if not present
+    if (!document.getElementById('melody-pulse-style')) {
+      var s = document.createElement('style');
+      s.id = 'melody-pulse-style';
+      s.textContent = '@keyframes melody-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(168,85,247,.5)} 50%{box-shadow:0 0 0 6px rgba(168,85,247,0)} }';
+      document.head.appendChild(s);
+    }
+  }, 150);
+}
+
+function advMelodiesSelectStem(stemKey, rowEl) {
+  if (!_melodyStemPickMode) return;
+  _melodyStemSelected = stemKey;
+
+  // Update banner to show confirm state
+  var hint = document.getElementById('melody-pick-hint');
+  if (hint) {
+    hint.innerHTML = '<strong style="color:#fff">Selected: ' +
+      (rowEl.querySelector('.stem-row__name')?.textContent || stemKey) +
+      '</strong> — ready to split';
+  }
+
+  // Visually confirm selection on the row
+  var listEl = document.getElementById('stems-list');
+  if (listEl) {
+    listEl.querySelectorAll('[data-melody-pick="1"]').forEach(function(r) {
+      r.style.borderColor = r === rowEl ? '#22c55e' : 'rgba(168,85,247,.3)';
+      r.style.animation   = r === rowEl ? 'none' : 'melody-pulse 1.2s ease-in-out infinite';
+      r.style.opacity     = r === rowEl ? '1' : '0.4';
+    });
+  }
+
+  // Show confirm button in banner
+  var banner = document.getElementById('melody-pick-banner');
+  if (banner) {
+    // Replace hint area with confirm row
+    var left = banner.querySelector('div');
+    if (left) {
+      left.innerHTML =
+        '<i class="fas fa-check-circle" style="font-size:1.1rem;color:#22c55e"></i>' +
+        '<div>' +
+          '<div style="font-weight:700;font-size:.88rem">' +
+            (rowEl.querySelector('.stem-row__name')?.textContent || stemKey) + ' selected' +
+          '</div>' +
+          '<div style="font-size:.74rem;opacity:.85">Confirm to start splitting (1 credit)</div>' +
+        '</div>';
+    }
+    // Add confirm button
+    var cancelBtn = banner.querySelector('button');
+    if (cancelBtn && !document.getElementById('melody-confirm-btn')) {
+      var confirmBtn = document.createElement('button');
+      confirmBtn.id = 'melody-confirm-btn';
+      confirmBtn.style.cssText = 'background:#22c55e;border:none;color:#fff;border-radius:8px;padding:5px 14px;cursor:pointer;font-size:.8rem;font-weight:700;white-space:nowrap';
+      confirmBtn.innerHTML = '<i class="fas fa-cut"></i> Split Now';
+      confirmBtn.onclick = function() { advMelodiesConfirmSplit(); };
+      banner.insertBefore(confirmBtn, cancelBtn);
+    }
+  }
+}
+
+function advMelodiesConfirmSplit() {
+  if (!_melodyStemSelected) return;
+  var stemKey = _melodyStemSelected;
+  advMelodiesCancelPick(); // Clean up pick mode UI
+
+  // Switch back to advsplit tab to show status
+  setVIMode('advsplit');
+
+  // Update the melodies button to show processing
+  var btn = document.getElementById('adv-melodies-btn');
+  var statusEl = document.getElementById('adv-melodies-status');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Splitting…'; }
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Splitting ' + stemKey + ' stem — 1–3 min…'; }
+
+  // Run the split
+  advSplitRequest('melodies', stemKey);
+}
+
+function advMelodiesCancelPick() {
+  _melodyStemPickMode = false;
+  _melodyStemSelected = null;
+
+  // Remove banner
+  var banner = document.getElementById('melody-pick-banner');
+  if (banner) banner.remove();
+
+  // Restore all stem rows
+  var listEl = document.getElementById('stems-list');
+  if (listEl) {
+    listEl.querySelectorAll('.stem-row').forEach(function(row) {
+      row.style.opacity       = '';
+      row.style.pointerEvents = '';
+      row.style.border        = '';
+      row.style.borderRadius  = '';
+      row.style.animation     = '';
+      row.style.cursor        = '';
+      row.removeAttribute('data-melody-pick');
+      // Remove click handler added in pick mode (restore default)
+      row.onclick = null;
+    });
+  }
 }
 
 // ── Build stem row ────────────────────────────────────────────
