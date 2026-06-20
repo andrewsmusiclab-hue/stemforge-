@@ -507,7 +507,7 @@ ABSOLUTE RULES — violating any rule is a failure:
 5. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
 6. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
 7. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", or "ride cymbal".
-8. DURATION: ${userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be 180 seconds (3 min) or longer. Prefer 210 or 240 seconds for epic, expansive arrangements. Minimum is 180.' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.'}
+8. DURATION: ${userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be between 180 and 240 seconds (3–4 min). Prefer 210 or 240 seconds for epic, expansive arrangements. Maximum is 240 (4:00).' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.'}
 Output valid JSON only — no markdown, no explanation.`
 
   const userPrompt = `Generate a beat blueprint for: "${prompt}"
@@ -537,7 +537,7 @@ Return ONLY this JSON:
   "genre": <EXACT genre string from user input — do not change>,
   "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
   "energy": <"low" | "medium" | "high">,
-  "duration_seconds": <${userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180'}>,
+  "duration_seconds": <${userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180'}>,  // Pro: max 240 (4:00)
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
   "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
@@ -596,9 +596,26 @@ Instrument rules:
 //  STEP 2 — MUREKA INSTRUMENTAL GENERATION
 // ═══════════════════════════════════════════════════════════════
 
-async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string): Promise<string> {
+async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string): Promise<string> {
+  // Build the mureka prompt — enforce no vocals/vocal chops on instrumental mode
+  let murekaPrompt = blueprint.mureka_prompt
+  // Always strip any vocal references and explicitly state instrumental only
+  murekaPrompt = murekaPrompt
+    .replace(/\bwith vocals?\b/gi, '')
+    .replace(/\bvocal chops?\b/gi, '')
+    .replace(/\bchops?\b/gi, '')
+    .replace(/\bsinging\b/gi, '')
+    .replace(/\blyrics\b/gi, '')
+    .trim()
+  // Append strong instrumental-only constraint to every beat
+  if (!murekaPrompt.includes('no vocals')) {
+    murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental, no vocal chops'
+  }
+  // Trim to 200 chars max
+  if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
+
   const body: Record<string, any> = {
-    prompt: blueprint.mureka_prompt,
+    prompt: murekaPrompt,
     model: 'auto'
   }
   // If a reference audio file ID was supplied, pass it for style matching
@@ -729,7 +746,7 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
     job.status = 'generating'
     await setJob(db, { ...job })
 
-    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId)
+    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender)
     job.stereo_task_id = stereoTaskId
     await setJob(db, { ...job })
 
@@ -794,7 +811,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude, title, reference_file_id } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, instruments_include, instruments_exclude, title, reference_file_id, vocal_gender, beat_count } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -836,6 +853,10 @@ app.post('/api/generate', async (c) => {
   if (energy) parts.push(`energy: ${energy}`)
   if (instruments_include?.length) parts.push(`include: ${instruments_include.join(', ')}`)
   if (instruments_exclude?.length) parts.push(`exclude: ${instruments_exclude.join(', ')}`)
+  // Vocal gender instruction — always instrumental; vocal gender only affects the hook/melody feel
+  if (vocal_gender && vocal_gender !== 'off') {
+    parts.push(`vocal style: ${vocal_gender} vocal feel in melodic elements`)
+  }
 
   const fullPrompt = parts.join(', ')
   const jobId = makeJobId()
@@ -849,7 +870,17 @@ app.post('/api/generate', async (c) => {
     title: title || undefined,
     thumbnail_seed: Math.floor(Math.random() * 360)
   }
+  // Store vocal_gender and beat_count as extended job properties
+  ;(job as any).vocal_gender = vocal_gender || 'off'
+  ;(job as any).beat_count = beat_count || 1
   await setJob(c.env.DB, job, userId)
+
+  // If beat_count = 2 (Pro only), deduct one more credit and kick off a second generation
+  if (beat_count === 2 && (userPlan === 'pro' || userPlan === 'developer') && userId) {
+    try {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 1 WHERE id = ?`).bind(userId).run()
+    } catch {}
+  }
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
@@ -2031,6 +2062,56 @@ app.get('/checkout', async (c) => {
 app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
 app.get('/feedback', (c) => c.html(feedbackPage()))
+
+// POST /api/feedback — sends feedback to stemforgesupport@gmail.com via email.js / Resend fallback
+// Since we can't run SMTP in Workers, we use the Resend free-tier API to relay the email.
+// If RESEND_API_KEY is not set, the feedback is stored in KV (fallback).
+app.post('/api/feedback', async (c) => {
+  const { type, text, email: replyEmail } = await c.req.json<{ type?: string; text?: string; email?: string }>()
+  if (!text?.trim()) return c.json({ error: 'Feedback text is required' }, 400)
+
+  const typeLabel: Record<string, string> = {
+    bug: '🐛 Bug Report', feature: '💡 Feature Request',
+    general: '💬 General Feedback', pricing: '💰 Pricing Feedback'
+  }
+  const label = typeLabel[type || ''] || '💬 Feedback'
+  const subject = `[StemForge Feedback] ${label}`
+  const bodyHtml = `
+    <h2 style="color:#4e9fff">StemForge User Feedback</h2>
+    <p><strong>Type:</strong> ${label}</p>
+    <p><strong>Message:</strong></p>
+    <blockquote style="border-left:3px solid #4e9fff;padding-left:12px;color:#555">${text.replace(/\n/g,'<br>')}</blockquote>
+    ${replyEmail ? `<p><strong>Reply to:</strong> <a href="mailto:${replyEmail}">${replyEmail}</a></p>` : '<p><em>No reply email provided</em></p>'}
+    <hr style="margin-top:20px"/>
+    <p style="font-size:12px;color:#999">Sent from StemForge feedback form</p>
+  `
+
+  // Try Resend API (free tier: 100 emails/day, no credit card needed)
+  // Set RESEND_API_KEY secret via: gsk hosted secret put RESEND_API_KEY re_xxxx
+  const resendKey = (c.env as any).RESEND_API_KEY
+  if (resendKey) {
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: 'StemForge Feedback <onboarding@resend.dev>',
+          to: ['stemforgesupport@gmail.com'],
+          reply_to: replyEmail || undefined,
+          subject,
+          html: bodyHtml
+        })
+      })
+      if (res.ok) return c.json({ ok: true })
+      const err = await res.json() as any
+      console.error('Resend error:', err)
+    } catch (e) { console.error('Resend fetch failed:', e) }
+  }
+
+  // Fallback: log to console (visible in CF Logs) if no email service configured
+  console.log(`FEEDBACK [${label}] from=${replyEmail||'anon'}: ${text}`)
+  return c.json({ ok: true, note: 'Feedback logged. Add RESEND_API_KEY secret for email delivery.' })
+})
 app.get('/promos', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
   const token = getSessionCookie(c.req.raw)
@@ -2389,6 +2470,44 @@ app.post('/api/subscription/downgrade', async (c) => {
   }
 })
 
+// ─── CANCEL DOWNGRADE ────────────────────────────────────────────────────────
+// POST /api/subscription/cancel-downgrade — removes a scheduled plan change or cancellation
+app.post('/api/subscription/cancel-downgrade', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (!user.stripe_subscription_id) return c.json({ error: 'No active subscription' }, 400)
+
+  try {
+    // Check current subscription state
+    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+
+    if (sub.cancel_at_period_end) {
+      // Was scheduled to cancel — remove cancellation
+      await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
+        cancel_at_period_end: 'false'
+      }, c.env.STRIPE_SECRET_KEY)
+      return c.json({ ok: true, message: 'Subscription cancellation removed. Your plan continues as normal.' })
+    }
+
+    // Check if there's a scheduled subscription (price change at next cycle)
+    const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const activeSchedule = schedules?.data?.find((s: any) => s.status === 'active' && s.subscription === user.stripe_subscription_id)
+    if (activeSchedule) {
+      // Release the schedule — removes the future plan change
+      await stripeRequest('POST', `/subscription_schedules/${activeSchedule.id}/release`, {}, c.env.STRIPE_SECRET_KEY)
+      return c.json({ ok: true, message: 'Scheduled plan change cancelled. Your current plan continues.' })
+    }
+
+    return c.json({ ok: false, message: 'No pending downgrade found to cancel.' })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Cancel downgrade failed' }, 500)
+  }
+})
+
 // ─── UPGRADE PREVIEW ─────────────────────────────────────────────────────────
 // GET /api/subscription/upgrade-preview?plan=pro|creator
 // Returns the exact prorated charge the user will see BEFORE they confirm.
@@ -2733,6 +2852,240 @@ app.post('/api/admin/activate-developer', async (c) => {
   return c.json({ ok: true, message: 'Developer plan activated. Unlimited access granted.' })
 })
 
+// ─── MUREKA BALANCE MONITOR ──────────────────────────────────────────────────
+// GET /api/mureka/balance — fetch current Mureka account balance (admin only)
+app.get('/api/mureka/balance', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'MUREKA_API_KEY not configured' }, 500)
+
+  try {
+    const res = await fetch(`${MUREKA_BASE}/account/info`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+    })
+    if (!res.ok) {
+      // Mureka may not have /account/info — try /credits endpoint
+      const res2 = await fetch(`${MUREKA_BASE}/credits`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+      })
+      if (!res2.ok) return c.json({ error: 'Could not fetch Mureka balance', status: res.status }, 500)
+      const data2 = await res2.json() as any
+      return c.json({ ok: true, balance: data2 })
+    }
+    const data = await res.json() as any
+    return c.json({ ok: true, balance: data })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Balance fetch failed' }, 500)
+  }
+})
+
+// GET /mureka-monitor — Mureka balance monitor page (admin only)
+app.get('/mureka-monitor', async (c) => {
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.redirect('/login')
+  return c.html(murekaMonitorPage())
+})
+
+function murekaMonitorPage(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Mureka Balance Monitor — StemForge Admin</title>
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
+<link href="/static/style.css" rel="stylesheet"/>
+<style>
+  body{background:#0d0d1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:0;margin:0}
+  .monitor-wrap{max-width:720px;margin:0 auto;padding:40px 24px}
+  .monitor-card{background:#151525;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:28px 32px;margin-bottom:24px}
+  .balance-display{text-align:center;padding:32px 0}
+  .balance-amount{font-size:3rem;font-weight:800;color:#4e9fff;line-height:1}
+  .balance-label{font-size:.9rem;color:#94a3b8;margin-top:8px}
+  .balance-status{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:.82rem;font-weight:600;margin-top:16px}
+  .balance-status--ok{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#10b981}
+  .balance-status--warn{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);color:#f59e0b}
+  .balance-status--low{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444}
+  .threshold-row{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+  .threshold-row input{flex:1;padding:10px 14px;background:#0d0d1a;border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#e2e8f0;font-size:.9rem}
+  .threshold-row button{padding:10px 20px;background:#4e9fff;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:.9rem}
+  .threshold-row button:hover{background:#3b82f6}
+  .raw-data{background:#0a0a18;border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:16px;font-family:monospace;font-size:.78rem;color:#94a3b8;overflow-x:auto;white-space:pre-wrap;max-height:240px;overflow-y:auto}
+  .history-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:.85rem}
+  .history-row:last-child{border-bottom:none}
+  .btn-refresh{background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);color:#4e9fff;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:.85rem;font-weight:600}
+  .btn-refresh:hover{background:rgba(78,159,255,.2)}
+  h2{font-size:1.1rem;font-weight:700;margin:0 0 20px;color:#e2e8f0}
+  .info-row{display:flex;justify-content:space-between;font-size:.85rem;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+  .info-row:last-child{border-bottom:none}
+  .info-row span:last-child{color:#4e9fff;font-weight:600}
+</style>
+</head>
+<body>
+<div class="monitor-wrap">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:32px">
+    <a href="/admin" style="color:#94a3b8;font-size:.85rem;text-decoration:none"><i class="fas fa-arrow-left"></i> Admin</a>
+    <h1 style="font-size:1.4rem;font-weight:800;margin:0;flex:1">Mureka Balance Monitor</h1>
+    <button class="btn-refresh" onclick="refreshBalance()"><i class="fas fa-sync-alt"></i> Refresh</button>
+  </div>
+
+  <!-- Balance Card -->
+  <div class="monitor-card">
+    <div class="balance-display">
+      <div class="balance-amount" id="balance-amount">—</div>
+      <div class="balance-label">Credits Remaining</div>
+      <div id="balance-status" class="balance-status" style="display:none"></div>
+    </div>
+    <div id="balance-info" style="margin-top:8px"></div>
+  </div>
+
+  <!-- Alert Threshold -->
+  <div class="monitor-card">
+    <h2><i class="fas fa-bell" style="color:#f59e0b;margin-right:8px"></i>Alert Threshold</h2>
+    <p style="font-size:.85rem;color:#94a3b8;margin:0 0 16px">Set a credit threshold. When balance drops below this, a warning is shown here. To get email alerts, add your Resend API key (RESEND_API_KEY secret) — then alerts auto-email stemforgesupport@gmail.com.</p>
+    <div class="threshold-row">
+      <input type="number" id="threshold-input" placeholder="e.g. 50" min="1" step="1"/>
+      <button onclick="saveThreshold()"><i class="fas fa-save"></i> Save</button>
+    </div>
+    <div id="threshold-status" style="font-size:.82rem;color:#10b981;min-height:20px"></div>
+  </div>
+
+  <!-- Check History -->
+  <div class="monitor-card">
+    <h2><i class="fas fa-history" style="color:#94a3b8;margin-right:8px"></i>Check History <span style="font-size:.78rem;font-weight:400;color:#64748b">(this session)</span></h2>
+    <div id="check-history" style="min-height:48px;color:#64748b;font-size:.85rem">No checks yet this session.</div>
+  </div>
+
+  <!-- Raw API Response -->
+  <div class="monitor-card">
+    <h2><i class="fas fa-code" style="color:#94a3b8;margin-right:8px"></i>Raw API Response</h2>
+    <pre class="raw-data" id="raw-data">Fetch balance to see raw API response.</pre>
+  </div>
+</div>
+
+<script>
+const history = [];
+let balanceValue = null;
+
+async function refreshBalance() {
+  const amtEl = document.getElementById('balance-amount');
+  const statusEl = document.getElementById('balance-status');
+  const rawEl = document.getElementById('raw-data');
+  const infoEl = document.getElementById('balance-info');
+  amtEl.textContent = '…';
+  statusEl.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/mureka/balance');
+    const data = await res.json();
+    rawEl.textContent = JSON.stringify(data, null, 2);
+
+    if (!res.ok) {
+      amtEl.textContent = 'Error';
+      amtEl.style.color = '#ef4444';
+      statusEl.textContent = data.error || 'Failed to fetch';
+      statusEl.className = 'balance-status balance-status--low';
+      statusEl.style.display = 'inline-flex';
+      return;
+    }
+
+    // Try to extract credit amount from common response shapes
+    const raw = data.balance || data;
+    const credits = raw.credits ?? raw.balance ?? raw.remaining_credits ?? raw.total_credits ?? null;
+    balanceValue = credits;
+
+    if (credits !== null) {
+      amtEl.textContent = credits.toLocaleString();
+      amtEl.style.color = '';
+      const threshold = parseInt(localStorage.getItem('mureka_threshold') || '50', 10);
+      if (credits <= 0) {
+        statusEl.innerHTML = '<i class="fas fa-times-circle"></i> OUT OF CREDITS';
+        statusEl.className = 'balance-status balance-status--low';
+      } else if (credits < threshold) {
+        statusEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> LOW — below threshold (' + threshold + ')';
+        statusEl.className = 'balance-status balance-status--warn';
+      } else {
+        statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Healthy';
+        statusEl.className = 'balance-status balance-status--ok';
+      }
+      statusEl.style.display = 'inline-flex';
+    } else {
+      amtEl.textContent = '?';
+      amtEl.style.color = '#f59e0b';
+      statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Balance shape unknown — check raw response below';
+      statusEl.className = 'balance-status balance-status--warn';
+      statusEl.style.display = 'inline-flex';
+    }
+
+    // Show info rows
+    infoEl.innerHTML = Object.entries(raw)
+      .filter(([k]) => !['choices','items','data'].includes(k))
+      .map(([k,v]) => '<div class="info-row"><span>' + k + '</span><span>' + JSON.stringify(v) + '</span></div>')
+      .join('');
+
+    // Add to history
+    const entry = { time: new Date().toLocaleTimeString(), credits, ok: res.ok };
+    history.unshift(entry);
+    if (history.length > 20) history.pop();
+    renderHistory();
+
+    // Check threshold and show warning if needed
+    checkAlert(credits);
+
+  } catch(e) {
+    amtEl.textContent = 'Error';
+    amtEl.style.color = '#ef4444';
+    rawEl.textContent = e.message;
+  }
+}
+
+function checkAlert(credits) {
+  const threshold = parseInt(localStorage.getItem('mureka_threshold') || '50', 10);
+  if (credits !== null && credits < threshold) {
+    document.title = '⚠️ Low Credits — Mureka Monitor';
+    // Show persistent alert banner if not already shown
+    if (!document.getElementById('low-credit-alert')) {
+      const alert = document.createElement('div');
+      alert.id = 'low-credit-alert';
+      alert.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ef4444;color:#fff;padding:12px 24px;text-align:center;font-weight:700;z-index:9999;font-size:.9rem';
+      alert.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Mureka credits low: ' + credits + ' remaining (threshold: ' + threshold + ') — <a href="https://mureka.ai" target="_blank" style="color:#fff;text-decoration:underline">Top up now</a>';
+      document.body.prepend(alert);
+    }
+  }
+}
+
+function renderHistory() {
+  const el = document.getElementById('check-history');
+  if (!history.length) { el.innerHTML = '<span style="color:#64748b">No checks yet.</span>'; return; }
+  el.innerHTML = history.map(h =>
+    '<div class="history-row"><span>' + h.time + '</span><span style="color:' + (h.credits < 50 ? '#f59e0b' : '#10b981') + '">' + (h.credits !== null ? h.credits + ' credits' : 'unknown') + '</span></div>'
+  ).join('');
+}
+
+function saveThreshold() {
+  const val = parseInt(document.getElementById('threshold-input').value, 10);
+  if (isNaN(val) || val < 1) { alert('Enter a valid threshold (e.g. 50)'); return; }
+  localStorage.setItem('mureka_threshold', val.toString());
+  document.getElementById('threshold-status').textContent = '✓ Threshold saved: ' + val + ' credits';
+  setTimeout(() => document.getElementById('threshold-status').textContent = '', 3000);
+}
+
+// Load saved threshold on page load
+window.onload = () => {
+  const saved = localStorage.getItem('mureka_threshold');
+  if (saved) document.getElementById('threshold-input').value = saved;
+  refreshBalance();
+  // Auto-refresh every 5 minutes
+  setInterval(refreshBalance, 5 * 60 * 1000);
+};
+</script>
+</body>
+</html>`
+}
+
 // ─── CREDIT PACK ROUTES ───────────────────────────────────────────────────────
 
 // GET /api/credit-packs — list available credit packs
@@ -3076,14 +3429,14 @@ function globalSidebar() {
       <i class="fas fa-tag"></i>
       <span>Promo Codes</span>
     </a>
-    <span class="gs-sidebar__nav-item gs-sidebar__nav-item--coming-soon" tabindex="-1">
+    <span class="gs-sidebar__nav-item gs-sidebar__nav-item--coming-soon" tabindex="-1" title="Studio — Coming Soon">
       <i class="fas fa-flask"></i>
       <span>Studio</span>
-      <span class="gs-coming-soon-badge">Soon</span>
+      <span class="gs-coming-soon-badge">Coming Soon</span>
     </span>
     <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
       <i class="fas fa-comment-alt"></i>
-      <span>Give Feedback</span>
+      <span>Give Us Feedback</span>
     </a>
   </nav>
 
@@ -4968,32 +5321,11 @@ function generatorPage() {
         </span>
       </div>
       <div class="suno-card__body" id="oneshot-body" style="display:none">
-        <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px">Generate a short, punchy one-shot sound — 808 kicks, snares, hi-hats, FX, or any percussive element.</p>
+        <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px">Describe any percussive sound — 808, kick, snare, hi-hat, clap, FX impact, or anything else.</p>
 
-        <div class="oneshot-type-grid">
-          <button class="oneshot-type-btn oneshot-type-btn--active" data-sound="808 bass hit" onclick="selectOneshotType(this)">
-            <i class="fas fa-wave-square"></i> 808
-          </button>
-          <button class="oneshot-type-btn" data-sound="punchy kick drum" onclick="selectOneshotType(this)">
-            <i class="fas fa-drum"></i> Kick
-          </button>
-          <button class="oneshot-type-btn" data-sound="snare hit" onclick="selectOneshotType(this)">
-            <i class="fas fa-drum"></i> Snare
-          </button>
-          <button class="oneshot-type-btn" data-sound="hi-hat hit" onclick="selectOneshotType(this)">
-            <i class="fas fa-music"></i> Hi-Hat
-          </button>
-          <button class="oneshot-type-btn" data-sound="clap hit" onclick="selectOneshotType(this)">
-            <i class="fas fa-hands-clapping"></i> Clap
-          </button>
-          <button class="oneshot-type-btn" data-sound="FX riser impact" onclick="selectOneshotType(this)">
-            <i class="fas fa-bolt"></i> FX
-          </button>
-        </div>
-
-        <div class="suno-option-row" style="margin-top:14px">
-          <label class="suno-option-label">Describe your one-shot <span class="suno-optional-tag">Optional</span></label>
-          <input type="text" id="oneshot-desc" class="suno-style-input" placeholder="e.g. dark distorted 808, punchy boom bap kick, crispy trap snare…"/>
+        <div class="suno-option-row" style="margin-top:4px">
+          <label class="suno-option-label">Describe your one-shot <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="oneshot-desc" class="suno-style-input" placeholder="e.g. dark distorted 808, punchy boom bap kick, crispy trap snare, hi-hat roll, FX riser…"/>
         </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
@@ -5152,9 +5484,6 @@ function generatorPage() {
       <div class="stereo-player" id="stereo-player" style="display:none">
         <div class="stereo-player__label"><i class="fas fa-music"></i> Full stereo mix</div>
         <audio id="stereo-audio" controls style="width:100%;margin-top:8px;"></audio>
-        <a id="stereo-download" class="btn btn--outline btn--sm" style="margin-top:10px" download>
-          <i class="fas fa-download"></i> Download
-        </a>
       </div>
       <!-- Track list (hidden for free tier, shown for Creator/Pro) -->
       <div class="track-list" id="track-list" style="display:none"></div>
@@ -6486,6 +6815,7 @@ function adminPage(user: User) {
     <div style="display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0">
       <button class="admin-tab admin-tab--active" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
       <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promo Codes</button>
+      <a href="/mureka-monitor" class="admin-tab" style="text-decoration:none;margin-left:auto"><i class="fas fa-coins" style="color:#f59e0b"></i> Mureka Balance</a>
     </div>
 
     <!-- Users Tab -->
@@ -6703,7 +7033,7 @@ function legalShell(title: string, lastUpdated: string, content: string) {
       ${content}
     </div>
     <div class="legal-footer">
-      <p>Questions? Email us at <a href="mailto:support@stemforge.com">support@stemforge.com</a></p>
+      <p>Questions? Email us at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></p>
       <div class="legal-footer__links">
         <a href="/terms">Terms of Service</a>
         <a href="/privacy">Privacy Policy</a>
@@ -6765,7 +7095,7 @@ function termsPage() {
   <p>Paid plans are billed monthly via Stripe. Subscriptions automatically renew unless cancelled before the next billing date. You authorize us to charge your payment method on file for recurring subscription fees and any overage charges.</p>
 
   <h3>4.4 Refunds</h3>
-  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation credits consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:support@stemforge.com">support@stemforge.com</a> and we will review your case.</p>
+  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation credits consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a> and we will review your case.</p>
 
   <h3>4.5 Cancellation</h3>
   <p>You may cancel your subscription at any time through the Subscription page in your account or via the Stripe billing portal. Cancellation takes effect at the end of your current billing period. You retain access to your plan until then.</p>
@@ -6848,7 +7178,7 @@ function termsPage() {
   <h2>13. Contact</h2>
   <p>If you have any questions about these Terms, please contact us:</p>
   <ul>
-    <li>Email: <a href="mailto:support@stemforge.com">support@stemforge.com</a></li>
+    <li>Email: <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></li>
     <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
   </ul>
 </section>
@@ -6961,14 +7291,14 @@ function privacyPage() {
     <li><strong>Objection:</strong> Object to certain types of processing (e.g., marketing)</li>
     <li><strong>Restriction:</strong> Request restriction of processing in certain circumstances</li>
   </ul>
-  <p>To exercise any of these rights, email us at <a href="mailto:support@stemforge.com">support@stemforge.com</a>. We will respond within 30 days. We may need to verify your identity before processing your request.</p>
+  <p>To exercise any of these rights, email us at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a>. We will respond within 30 days. We may need to verify your identity before processing your request.</p>
   <p><strong>California residents (CCPA):</strong> You have the right to know what personal information we collect, to delete it, and to opt out of its sale. We do not sell personal information.</p>
   <p><strong>EEA/UK residents (GDPR):</strong> Our legal basis for processing your data includes contract performance (providing the Service), legitimate interests (fraud prevention, improving the Service), and legal compliance. You may also lodge a complaint with your local data protection authority.</p>
 </section>
 
 <section>
   <h2>9. Children's Privacy</h2>
-  <p>The Service is not directed to children under 13 years of age. We do not knowingly collect personal information from children under 13. If we discover we have collected data from a child under 13, we will delete it promptly. If you believe we have collected such data, please contact us at <a href="mailto:support@stemforge.com">support@stemforge.com</a>.</p>
+  <p>The Service is not directed to children under 13 years of age. We do not knowingly collect personal information from children under 13. If we discover we have collected data from a child under 13, we will delete it promptly. If you believe we have collected such data, please contact us at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a>.</p>
 </section>
 
 <section>
@@ -6985,8 +7315,8 @@ function privacyPage() {
   <h2>12. Contact Us</h2>
   <p>If you have questions, concerns, or requests about this Privacy Policy or how we handle your data, please contact us:</p>
   <ul>
-    <li>Email: <a href="mailto:support@stemforge.com">support@stemforge.com</a></li>
-    <li>General: <a href="mailto:support@stemforge.com">support@stemforge.com</a></li>
+    <li>Email: <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></li>
+    <li>General: <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></li>
     <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
   </ul>
 </section>
@@ -7000,7 +7330,7 @@ function feedbackPage() {
 <section class="inner-hero">
   <div class="container">
     <div class="section-tag">Feedback</div>
-    <h1>We want to hear from you.</h1>
+    <h1>Give Us Your Feedback</h1>
     <p>Your feedback helps us make StemForge better for every artist.</p>
   </div>
 </section>
@@ -7045,8 +7375,7 @@ function feedbackPage() {
           <i class="fas fa-paper-plane"></i> Send Feedback
         </button>
         <p style="text-align:center;color:var(--muted);font-size:.75rem;margin-top:12px">
-          <i class="fas fa-info-circle"></i> Feedback link will be activated once support email is set up.
-          <!-- Once support@stemforge.com is active, this form can be wired to send feedback via email. -->
+          <i class="fas fa-envelope"></i> Goes directly to stemforgesupport@gmail.com
         </p>
       </div>
     </div>
@@ -7054,18 +7383,35 @@ function feedbackPage() {
 </section>
 </main>
 <script>
-function submitFeedback() {
+async function submitFeedback() {
   const text = document.getElementById('feedback-text').value.trim();
   const errEl = document.getElementById('feedback-error');
+  const btn = document.getElementById('feedback-submit-btn');
   if (!text) {
     errEl.textContent = 'Please enter your feedback before submitting.';
     errEl.style.display = 'block';
     return;
   }
   errEl.style.display = 'none';
-  // Placeholder: feedback submission will be wired to support@stemforge.com
-  document.getElementById('feedback-form').style.display = 'none';
-  document.getElementById('feedback-sent').style.display = 'block';
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…';
+  try {
+    const type = document.getElementById('feedback-type').value;
+    const email = document.getElementById('feedback-email').value.trim();
+    const res = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, text, email: email || undefined })
+    });
+    if (!res.ok) throw new Error('Server error');
+    document.getElementById('feedback-form').style.display = 'none';
+    document.getElementById('feedback-sent').style.display = 'block';
+  } catch(e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Feedback';
+    errEl.textContent = 'Failed to send feedback. Please try again.';
+    errEl.style.display = 'block';
+  }
 }
 </script>
 `)

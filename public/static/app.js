@@ -537,54 +537,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Load AI cover images async for a grid element ───────────
   function loadCoverImages(gridEl) {
-    gridEl.querySelectorAll('.project-card[data-hue]').forEach((card, cardIndex) => {
-      const hue    = parseInt(card.dataset.hue || '180', 10);
-      const title  = card.dataset.title || '';
-      const genre  = card.dataset.genre || 'music';
-      const jobId  = card.dataset.id || '';
-      const imgUrl = card.dataset.imgurl || '';
-      const artEl  = card.querySelector('.project-card__art');
+    // Canvas-only art — no external image fetches, no AI cover images
+    gridEl.querySelectorAll('.project-card[data-hue]').forEach((card) => {
+      const hue   = parseInt(card.dataset.hue || '180', 10);
+      const title = card.dataset.title || '';
+      const genre = card.dataset.genre || 'music';
+      const artEl = card.querySelector('.project-card__art');
       if (!artEl) return;
-
-      // Draw canvas art immediately
+      // Draw granite gradient + StemForge logo canvas art
       drawCanvasArt(artEl, hue, title, genre);
-
-      if (!jobId) return;
-
-      // If server already returned a permanent cover-art URL, use it immediately
-      if (imgUrl && imgUrl.includes('/api/cover-art/')) {
-        const img = new Image();
-        img.onload = () => {
-          artEl.style.backgroundImage = `url('${imgUrl}')`;
-          artEl.style.backgroundSize = 'cover';
-          artEl.style.backgroundPosition = 'center';
-        };
-        img.src = imgUrl;
-        return;
-      }
-
-      // Clean up stale data: URLs
-      try {
-        const stale = sessionStorage.getItem('cover_img_' + jobId);
-        if (stale && stale.startsWith('data:')) sessionStorage.removeItem('cover_img_' + jobId);
-      } catch(e) {}
-
-      setTimeout(() => {
-        fetch('/api/cover-image/' + jobId)
-          .then(r => r.ok ? r.json() : null)
-          .then(data => {
-            if (!data || !data.url) return;
-            card.dataset.imgurl = data.url;
-            const img = new Image();
-            img.onload = () => {
-              artEl.style.backgroundImage = `url('${data.url}')`;
-              artEl.style.backgroundSize = 'cover';
-              artEl.style.backgroundPosition = 'center';
-            };
-            img.src = data.url;
-          })
-          .catch(() => {});
-      }, cardIndex * 800);
+      // Clear any leftover image background from previous sessions
+      artEl.style.backgroundImage = '';
     });
   }
 
@@ -594,7 +557,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= p.blueprint ? p.blueprint.genre : '';
-    const dur  = p.blueprint ? Math.floor(p.blueprint.duration_seconds/60) + ':' + String(p.blueprint.duration_seconds%60).padStart(2,'0') : '';
+    const durSecs = p.blueprint ? p.blueprint.duration_seconds : 0;
+    const dur  = durSecs ? Math.floor(durSecs/60) + ':' + String(durSecs%60).padStart(2,'0') : '';
     const label= p.prompt ? p.prompt.slice(0,32) + (p.prompt.length>32?'…':'') : 'Beat';
     const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : label);
     const sub  = [bpm, dur].filter(Boolean).join(' · ');
@@ -606,10 +570,13 @@ document.addEventListener('DOMContentLoaded', () => {
            data-title="${rawTitle.replace(/"/g,'&quot;')}"
            data-hue="${hue}"
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
+           data-dur="${dur}"
            >
         <div class="project-card__art" style="${thumbBg}">
           <div class="project-card__art-icon"><i class="fas fa-wave-square"></i></div>
-          <div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>
+          <div class="project-card__play" onclick="playDashProject(this)">
+            <i class="fas fa-play"></i>${dur ? `<span class="card-play-dur">${dur}</span>` : ''}
+          </div>
         </div>
         <div class="project-card__body">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
@@ -1402,7 +1369,9 @@ document.addEventListener('DOMContentLoaded', () => {
           energy: inputs.energy,
           instruments_include: inputs.instruments_include,
           instruments_exclude: inputs.instruments_exclude,
-          title: inputs.title || ''
+          title: inputs.title || '',
+          vocal_gender: window._vocalGender || 'off',
+          beat_count: window._beatCount || 1
         })
       });
 
@@ -1572,6 +1541,40 @@ document.addEventListener('DOMContentLoaded', () => {
             const exportOptionsRow = document.getElementById('export-options-row');
             if (exportOptionsRow) {
               exportOptionsRow.innerHTML = '';
+
+              // Helper: trigger download in WAV (via /api/download-wav) or MP3 (direct)
+              function doDownload(url, filename, format) {
+                if (format === 'wav') {
+                  const jobIdDl = job.id || currentJobId;
+                  const a = document.createElement('a');
+                  a.href = '/api/download-wav/' + jobIdDl;
+                  a.download = filename + '.wav';
+                  document.body.appendChild(a); a.click(); a.remove();
+                } else {
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = filename + '.mp3';
+                  document.body.appendChild(a); a.click(); a.remove();
+                }
+              }
+
+              // Helper: show format picker popup (WAV / MP3)
+              function showFormatPicker(anchorBtn, label, onPick) {
+                const existing = document.getElementById('export-fmt-popup');
+                if (existing) existing.remove();
+                const popup = document.createElement('div');
+                popup.id = 'export-fmt-popup';
+                popup.style.cssText = 'position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card-bg,#1a1a2e);border:1px solid var(--border,#333);border-radius:10px;padding:8px;display:flex;gap:8px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5);white-space:nowrap';
+                popup.innerHTML = `
+                  <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('mp3')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border,#333);background:var(--surface-2,#222);color:var(--text,#fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-audio"></i> MP3</button>
+                  <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('wav')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid rgba(78,159,255,.4);background:rgba(78,159,255,.1);color:var(--primary,#4e9fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-waveform"></i> WAV</button>
+                `;
+                anchorBtn.style.position = 'relative';
+                anchorBtn.appendChild(popup);
+                const close = (e) => { if (!popup.contains(e.target) && e.target !== anchorBtn) { popup.remove(); document.removeEventListener('click', close); } };
+                setTimeout(() => document.addEventListener('click', close), 50);
+              }
+
               if (isFree) {
                 // Free users: locked download + upgrade nudge
                 const lockBtn = document.createElement('button');
@@ -1580,54 +1583,42 @@ document.addEventListener('DOMContentLoaded', () => {
                 lockBtn.onclick = () => showUpgradePrompt();
                 exportOptionsRow.appendChild(lockBtn);
               } else if (userPlan === 'pro' || userPlan === 'developer') {
-                // Pro Artist: 3 export options
-                // (a) Unmastered mix for DAW
+                // ── Pro Artist: Unmastered Mix (WAV/MP3) + Mastered Mix (WAV/MP3) + Stems (→ player) ──
+
+                // (a) Unmastered mix — WAV or MP3
                 const unmastBtn = document.createElement('button');
                 unmastBtn.className = 'export-btn export-btn--pro';
-                unmastBtn.title = 'Raw unmastered mix — ideal for further processing in your DAW';
-                unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>For DAW</small>';
-                unmastBtn.onclick = () => {
-                  const a = document.createElement('a');
-                  a.href = job.stereo_url;
-                  a.download = safeFilename + '_unmastered.mp3';
-                  document.body.appendChild(a); a.click(); a.remove();
-                };
-                // (b) Mastered mix
+                unmastBtn.title = 'Raw unmastered mix — WAV or MP3, ideal for your DAW';
+                unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>WAV / MP3</small>';
+                unmastBtn.onclick = () => showFormatPicker(unmastBtn, 'Unmastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_unmastered', fmt));
+
+                // (b) Mastered mix — WAV or MP3
                 const mastBtn = document.createElement('button');
                 mastBtn.className = 'export-btn export-btn--pro';
-                mastBtn.title = 'Professionally mastered stereo mix ready for release';
-                mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>MP3</small>';
-                mastBtn.onclick = () => {
-                  const a = document.createElement('a');
-                  a.href = job.stereo_url;
-                  a.download = safeFilename + '_mastered.mp3';
-                  document.body.appendChild(a); a.click(); a.remove();
-                };
-                // (c) Stems bundle
+                mastBtn.title = 'Mastered stereo mix ready for release — WAV or MP3';
+                mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV / MP3</small>';
+                mastBtn.onclick = () => showFormatPicker(mastBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
+
+                // (c) Stems — opens stem player page
                 const stemsBtn = document.createElement('button');
                 stemsBtn.className = 'export-btn export-btn--pro export-btn--stems';
-                stemsBtn.title = 'Download all individual stem tracks (bass, melody, vocals, drums)';
-                stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Stems Bundle</span><small>ZIP</small>';
+                stemsBtn.title = 'Open interactive stem player — play and solo individual tracks';
+                stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Stem Player</span><small>Interactive</small>';
                 stemsBtn.onclick = () => {
-                  const user = window._sfUser;
-                  if (!user) { fetch('/api/auth/me').then(r=>r.json()).then(({user:u})=>{ window._sfUser=u; openStemPickerModal(job.id||currentJobId, u); }).catch(()=>{}); }
-                  else openStemPickerModal(job.id||currentJobId, user);
+                  const jobIdNav = job.id || currentJobId;
+                  window.location.href = '/stems/' + jobIdNav;
                 };
+
                 exportOptionsRow.appendChild(unmastBtn);
                 exportOptionsRow.appendChild(mastBtn);
                 exportOptionsRow.appendChild(stemsBtn);
               } else {
-                // Creator: mastered stereo mix only
+                // ── Creator: Mastered Mix only (WAV or MP3) ──
                 const dlBtn = document.createElement('button');
                 dlBtn.className = 'export-btn';
-                dlBtn.title = 'Download your mastered stereo mix';
-                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>MP3</small>';
-                dlBtn.onclick = () => {
-                  const a = document.createElement('a');
-                  a.href = job.stereo_url;
-                  a.download = safeFilename + '_mastered.mp3';
-                  document.body.appendChild(a); a.click(); a.remove();
-                };
+                dlBtn.title = 'Download your mastered stereo mix — WAV or MP3';
+                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV / MP3</small>';
+                dlBtn.onclick = () => showFormatPicker(dlBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
                 exportOptionsRow.appendChild(dlBtn);
               }
             }
@@ -2614,11 +2605,24 @@ window.generateOneShot = async function() {
   const pitch = document.getElementById('oneshot-pitch')?.value || '';
   const texture = document.getElementById('oneshot-texture')?.value || '';
 
+  // Description is now required (no type tabs)
+  if (!description) {
+    const descEl = document.getElementById('oneshot-desc');
+    if (descEl) { descEl.focus(); descEl.style.borderColor = 'var(--danger,#ef4444)'; setTimeout(() => descEl.style.borderColor = '', 2000); }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+    if (statusEl) statusEl.style.display = 'none';
+    alert('Please describe the one-shot you want to generate.');
+    return;
+  }
+
+  // Use the description directly as the sound type (no preset tabs)
+  const soundType = description;
+
   try {
     const res = await fetch('/api/generate-oneshot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sound_type: oneshotSelectedType, description, pitch, texture })
+      body: JSON.stringify({ sound_type: soundType, description, pitch, texture })
     });
     const data = await res.json();
 
@@ -2717,9 +2721,33 @@ window.setVocalToggle = function(val) {
   });
 };
 
-// ── Beat count toggle (1 or 2) ─────────────────────────────
+// ── Beat count toggle (1 or 2) — 2 beats is Pro Artist only ──
 window._beatCount = 1;
 window.setBeatCount = function(n) {
+  // 2-beat option requires Pro Artist plan
+  if (n === 2) {
+    const plan = (window._currentPlan || window.currentPlan || '').toLowerCase();
+    if (plan !== 'pro' && plan !== 'developer') {
+      // Show upgrade nudge
+      const bc2 = document.getElementById('bc-2');
+      if (bc2) {
+        bc2.style.animation = 'none';
+        bc2.offsetHeight; // reflow
+        bc2.style.animation = 'shake 0.4s ease';
+      }
+      // Create a temporary tooltip
+      let tip = document.getElementById('beat-count-pro-tip');
+      if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'beat-count-pro-tip';
+        tip.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e1e2e;border:1px solid rgba(168,85,247,.4);color:#c4b5fd;padding:10px 18px;border-radius:10px;font-size:.85rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5)';
+        tip.innerHTML = '<i class="fas fa-crown" style="color:#a855f7;margin-right:6px"></i>2 Beats is a <strong>Pro Artist</strong> feature — <a href="/pricing" style="color:#a855f7">upgrade</a>';
+        document.body.appendChild(tip);
+        setTimeout(() => tip && tip.remove(), 3500);
+      }
+      return;
+    }
+  }
   window._beatCount = n;
   [1, 2].forEach(c => {
     const btn = document.getElementById('bc-' + c);
@@ -2779,20 +2807,31 @@ window.confirmDeleteAccount = async function() {
 })();
 
 window.cancelDowngrade = async function() {
+  const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-creator');
+  if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…'; }
   try {
+    // Call real Stripe API to remove scheduled downgrade
+    const res = await fetch('/api/subscription/cancel-downgrade', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Server error');
+
+    // Clear UI state
     sessionStorage.removeItem('sf_pending_downgrade');
     const banner = document.getElementById('sub-creator-downgrade-banner');
-    const cancelBtn = document.getElementById('sub-btn-cancel-downgrade-creator');
     const downgradeBtn = document.getElementById('sub-btn-downgrade-to-creator');
     if (banner) banner.style.display = 'none';
-    if (cancelBtn) cancelBtn.style.display = 'none';
+    if (cancelBtn) { cancelBtn.style.display = 'none'; cancelBtn.disabled = false; }
     if (downgradeBtn) downgradeBtn.style.display = 'inline-flex';
+
     const toast = document.createElement('div');
     toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4)';
-    toast.innerHTML = '<i class="fas fa-check"></i> Downgrade cancelled — you stay on Pro Artist';
+    toast.innerHTML = '<i class="fas fa-check"></i> ' + (data.message || 'Downgrade cancelled — you stay on your current plan');
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3500);
-  } catch(e) { alert('Could not cancel downgrade. Please contact support.'); }
+    setTimeout(() => toast.remove(), 4000);
+  } catch(e) {
+    if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.innerHTML = '<i class="fas fa-undo"></i> Cancel Downgrade'; }
+    alert('Could not cancel downgrade: ' + (e.message || 'Please contact stemforgesupport@gmail.com'));
+  }
 };
 
 // Mark downgrade as pending when user confirms it
