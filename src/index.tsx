@@ -2332,30 +2332,18 @@ app.post('/api/job/stems/advanced-split', async (c) => {
 
   try {
     if (target === 'drums') {
-      // ── TWO-PASS DRUM KIT SEPARATION ────────────────────────────────
-      // Pass 1: htdemucs_6s on the full song drums stem → isolates clean drums
-      //         (already extracted from ZIP — 35MB WAV, pure drum track)
-      // Pass 2: htdemucs_ft (fine-tuned, best quality) on the clean drum track
-      //         → separates kick / snare+snare / hihat / other_perc
-      //         htdemucs_ft output: drums=kick, bass=snare, vocals=hihat, other=toms+cymbals
-      // Total: 2 Replicate credits used
-      // ────────────────────────────────────────────────────────────────
-
       // Extract drums.wav from the Mureka ZIP (already decompressed/validated)
       const drumBytes = await extractStemBytesFromZip(zipUrl, 'drums')
       if (!drumBytes || drumBytes.byteLength === 0)
         return c.json({ error: 'Could not extract drums stem from ZIP' }, 422)
 
-      // Pass 2: run fine-tuned htdemucs_ft on the clean drum track
-      // This is the highest-quality model for 4-stem separation
-      // On a clean drum track it maps: drums→kick, bass→snare, vocals→hihat, other→toms+cymbals
-      const demucsOut = await runDemucsOnBytes(drumBytes, replicateKey, 'adv_drums_pass2', 'htdemucs_ft')
+      // htdemucs_6s on clean drums stem: drums→Kick+Snare, other→Hi-Hats+Cymbals, piano→Toms
+      const demucsOut = await runDemucsOnBytes(drumBytes, replicateKey, 'adv_drums', 'htdemucs_6s')
 
       const drumMapping = [
-        { demucsKey: 'drums',  name: 'Kick',           color: '#ef4444' },
-        { demucsKey: 'bass',   name: 'Snare',          color: '#f97316' },
-        { demucsKey: 'other',  name: 'Hi-Hats',        color: '#eab308' },
-        { demucsKey: 'vocals', name: 'Toms + Cymbals', color: '#22c55e' },
+        { demucsKey: 'drums', name: 'Kick + Snare',     color: '#ef4444' },
+        { demucsKey: 'other', name: 'Hi-Hats + Cymbals',color: '#eab308' },
+        { demucsKey: 'piano', name: 'Toms',             color: '#f97316' },
       ]
 
       const stems: Array<{ name: string; url: string; color: string; key: string }> = []
@@ -5088,7 +5076,7 @@ function stemsPage(jobId: string) {
         <button id="adv-drums-btn" class="btn btn--primary btn--sm" onclick="advSplitRequest('drums')" style="width:100%">
           <i class="fas fa-cut"></i> Split Drum Kit
         </button>
-        <div style="font-size:.68rem;color:var(--muted);margin-top:6px;text-align:center">Uses 2 credits</div>
+        <div style="font-size:.68rem;color:var(--muted);margin-top:6px;text-align:center">Uses 1 credit</div>
       </div>
 
       <!-- Split Melodies -->
@@ -5883,59 +5871,122 @@ async function advSplitRequest(target, selectedStem) {
 }
 
 // ── Inject new split stems into the stem player list ──────────
+// ── Group play/mute helpers ───────────────────────────────────
+// groupStems: { groupId: [stemKey, ...] }
+var groupStems = {};
+var groupPlaying = {};  // groupId → bool
+var groupMuted  = {};   // groupId → bool
+
+function groupTogglePlay(groupId) {
+  var keys   = groupStems[groupId] || [];
+  var nowPlay = !groupPlaying[groupId];
+  groupPlaying[groupId] = nowPlay;
+  keys.forEach(function(k) {
+    var a = stemAudios[k];
+    if (!a) return;
+    getAudioCtx();
+    if (nowPlay) { a.play().catch(function(){}); }
+    else { a.pause(); }
+    var icon = document.getElementById('stem-play-' + k)?.querySelector('i');
+    if (icon) icon.className = nowPlay ? 'fas fa-pause' : 'fas fa-play';
+  });
+  var gBtn = document.getElementById('grp-play-' + groupId);
+  if (gBtn) gBtn.innerHTML = '<i class="fas ' + (nowPlay ? 'fa-pause' : 'fa-play') + '"></i>';
+}
+
+function groupToggleMute(groupId) {
+  var keys    = groupStems[groupId] || [];
+  var nowMute = !groupMuted[groupId];
+  groupMuted[groupId] = nowMute;
+  keys.forEach(function(k) {
+    stemMuted[k] = nowMute;
+    var btn = document.getElementById('stem-mute-' + k);
+    if (btn) btn.classList.toggle('active', nowMute);
+  });
+  var gBtn = document.getElementById('grp-mute-' + groupId);
+  if (gBtn) gBtn.classList.toggle('active', nowMute);
+  applyVolumes();
+}
+
 function injectAdvSplitStems(newStems, target) {
   var listEl = document.getElementById('stems-list');
   if (!listEl) return;
 
-  // Determine icon + family
-  var isD = target === 'drums';
-  var iconMap = {
-    'Kick':           'fa-drum',
-    'Snare':          'fa-drum',
-    'Hi-Hats':        'fa-drum',
-    'Toms + Cymbals': 'fa-drum',
-    'Piano':          'fa-music',
-    'Guitar / Synth': 'fa-guitar',
-    'Melody (Other)': 'fa-wave-square',
-    'Vocal Melody':   'fa-microphone',
-    'Bass Elements':  'fa-guitar',
-  };
+  var isD    = target === 'drums';
+  var groupId = isD ? 'adv_drums' : 'adv_melodies';
+  var accentColor = isD ? '#ef4444' : '#8b5cf6';
+  var label   = isD ? '🥁 Drum Kit' : '🎹 Melody Split';
 
-  // Build a separator divider if not already present
-  var sepId = isD ? 'adv-sep-drums' : 'adv-sep-melodies';
-  if (!document.getElementById(sepId)) {
-    var sep = document.createElement('div');
-    sep.id = sepId;
-    sep.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 0 4px;opacity:.6';
-    sep.innerHTML = '<div style="flex:1;height:1px;background:var(--border)"></div>' +
-      '<span style="font-size:.68rem;color:var(--muted);white-space:nowrap;text-transform:uppercase;letter-spacing:.06em">' +
-      (isD ? '🥁 Drum Kit' : '🎹 Melody Split') + '</span>' +
-      '<div style="flex:1;height:1px;background:var(--border)"></div>';
-    listEl.appendChild(sep);
-  }
+  // Collect stem keys for this group
+  var keys = newStems.map(function(s) {
+    return s.key || s.name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
+  });
+  groupStems[groupId]   = keys;
+  groupPlaying[groupId] = false;
+  groupMuted[groupId]   = false;
 
+  // Remove old header + rows for this group
+  var oldHdr = document.getElementById('adv-hdr-' + groupId);
+  if (oldHdr) oldHdr.remove();
+  keys.forEach(function(k) {
+    var old = listEl.querySelector('[data-stem="' + k + '"]');
+    if (old) old.remove();
+  });
+
+  // ── Group header row ─────────────────────────────────────────
+  var hdr = document.createElement('div');
+  hdr.id = 'adv-hdr-' + groupId;
+  hdr.style.cssText = [
+    'display:flex;align-items:center;justify-content:space-between;',
+    'padding:8px 12px 6px;margin-top:10px;',
+    'background:rgba(255,255,255,.03);border-radius:10px 10px 0 0;',
+    'border:1px solid var(--border);border-bottom:none;'
+  ].join('');
+  hdr.innerHTML =
+    '<span style="font-size:.78rem;font-weight:700;color:' + accentColor + ';letter-spacing:.04em">' + label + '</span>' +
+    '<div style="display:flex;gap:6px;align-items:center">' +
+      // Universal play
+      '<button id="grp-play-' + groupId + '" ' +
+        'onclick="groupTogglePlay(\'' + groupId + '\')" ' +
+        'title="Play / Pause all" ' +
+        'style="background:' + accentColor + ';border:none;color:#fff;border-radius:7px;' +
+               'padding:4px 10px;cursor:pointer;font-size:.78rem;display:flex;align-items:center;gap:5px">' +
+        '<i class="fas fa-play"></i>' +
+      '</button>' +
+      // Universal mute
+      '<button id="grp-mute-' + groupId + '" ' +
+        'onclick="groupToggleMute(\'' + groupId + '\')" ' +
+        'title="Mute / Unmute all" ' +
+        'class="stem-ctrl-btn stem-row__mute" ' +
+        'style="font-size:.72rem">' +
+        '<i class="fas fa-volume-mute"></i>' +
+      '</button>' +
+    '</div>';
+  listEl.appendChild(hdr);
+
+  // ── Individual stem rows ─────────────────────────────────────
   newStems.forEach(function(s) {
-    // Unique stem key = s.key (e.g. adv_drums_kick)
     var stemKey = s.key || s.name.toLowerCase().replace(/[^a-z0-9]+/g,'_');
-    // Remove existing row with this key if present
-    var existingRow = listEl.querySelector('[data-stem="' + stemKey + '"]');
-    if (existingRow) existingRow.remove();
 
-    // Build track object for buildStemRow
     var track = {
       stem:   stemKey,
       name:   s.name,
-      color:  s.color || (isD ? '#ef4444' : '#8b5cf6'),
+      color:  s.color || accentColor,
       family: isD ? 'drums' : 'other',
       url:    s.url
     };
 
     var row = buildStemRow(track);
-    // Mark as adv-split row
     row.dataset.advSplit = '1';
+    row.dataset.groupId  = groupId;
+    // Tighten top border radius since header is above
+    row.style.borderRadius = '0';
+    row.style.borderTop    = 'none';
+    if (s === newStems[newStems.length - 1]) {
+      row.style.borderRadius = '0 0 10px 10px';
+    }
     listEl.appendChild(row);
 
-    // Load audio for this stem in background
     stemMuted[stemKey] = false;
     stemSolo[stemKey]  = false;
     stemGains[stemKey] = 1.0;
@@ -5961,7 +6012,7 @@ function injectAdvSplitStems(newStems, target) {
         src.connect(gain);
         gain.connect(ctx.destination);
         stemSources[stemKey]   = src;
-        stemAnalysers[stemKey] = gain; // reuse field for routing
+        stemAnalysers[stemKey] = gain;
         drawWaveformFromAudio(stemKey, audio, track.color);
       } catch(ae) {
         drawRandomWaveform(stemKey, track.color);
@@ -5969,10 +6020,10 @@ function injectAdvSplitStems(newStems, target) {
     }).catch(function() { drawRandomWaveform(stemKey, track.color); });
   });
 
-  // Flash the list so user sees what was added
-  listEl.style.transition = 'box-shadow .3s';
-  listEl.style.boxShadow  = '0 0 0 2px #6c3aff';
-  setTimeout(function() { listEl.style.boxShadow = ''; }, 1200);
+  // Flash the header to draw attention
+  hdr.style.transition = 'box-shadow .4s';
+  hdr.style.boxShadow  = '0 0 0 2px ' + accentColor;
+  setTimeout(function() { hdr.style.boxShadow = ''; }, 1400);
 }
 
 // ── Melody Stem Pick Mode ──────────────────────────────────────
@@ -6214,9 +6265,21 @@ function stemToggleMute(stem) {
 function stemToggleSolo(stem) {
   stemSolo[stem] = !stemSolo[stem];
   hasSoloActive  = Object.values(stemSolo).some(v => v);
+  // Highlight active solo buttons
   document.querySelectorAll('.stem-row__solo').forEach(b => {
     const s = b.closest('.stem-row')?.dataset.stem;
     if (s) b.classList.toggle('active', !!stemSolo[s]);
+  });
+  // When any solo is active: turn all OTHER mute buttons red to show they are silenced
+  document.querySelectorAll('.stem-row__mute').forEach(b => {
+    const s = b.closest('.stem-row')?.dataset.stem;
+    if (!s) return;
+    if (hasSoloActive && !stemSolo[s]) {
+      // this stem is being silenced by the solo — show mute button red
+      b.classList.add('solo-silenced');
+    } else {
+      b.classList.remove('solo-silenced');
+    }
   });
   applyVolumes();
 }
@@ -6428,6 +6491,7 @@ stemsInit();
 .stem-ctrl-btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 .stem-ctrl-btn.active { background: rgba(99,102,241,.2); border-color: #6366f1; color: #a78bfa; }
 .stem-row__mute.active { background: rgba(239,68,68,.15); border-color: #ef4444; color: #f87171; }
+.stem-row__mute.solo-silenced { background: rgba(239,68,68,.18); border-color: #ef4444; color: #f87171; box-shadow: 0 0 0 1px #ef4444; }
 /* Solo button — YELLOW when active */
 .stem-row__solo.active { background: rgba(251,191,36,.18); border-color: #fbbf24; color: #fbbf24; }
 .stem-row__dl { background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.3); color: #34d399; }
