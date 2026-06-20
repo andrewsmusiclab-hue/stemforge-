@@ -777,7 +777,7 @@ async function pollReplicate(predictionId: string, apiKey: string, maxWaitMs = 4
 // that Replicate can always fetch (no CDN/auth blocks, no Worker URL issues)
 async function uploadBytesToReplicate(bytes: ArrayBuffer, apiKey: string, filename: string): Promise<string> {
   const formData = new FormData()
-  const blob = new Blob([bytes], { type: 'audio/mpeg' })
+  const blob = new Blob([bytes], { type: 'audio/wav' })
   formData.append('content', blob, filename)
 
   const r = await fetch(`${REPLICATE_BASE}/files`, {
@@ -799,7 +799,7 @@ async function uploadBytesToReplicate(bytes: ArrayBuffer, apiKey: string, filena
 // Returns: { drums, bass, vocals, guitar, piano, other } → output MP3 URLs
 async function runDemucsOnBytes(audioBytes: ArrayBuffer, apiKey: string, stemName: string): Promise<Record<string, string>> {
   // Step 1: Upload audio to Replicate's own file storage (avoids CDN/auth blocks on external URLs)
-  const audioUrl = await uploadBytesToReplicate(audioBytes, apiKey, `${stemName}.mp3`)
+  const audioUrl = await uploadBytesToReplicate(audioBytes, apiKey, `${stemName}.wav`)
 
   // Step 2: Submit prediction — cjwbw/demucs v25a173 (htdemucs_6s, 6 stems)
   // Input schema: { audio, model_name, output_format } — omit stem to get all 6
@@ -934,12 +934,38 @@ async function extractStemBytesFromZip(zipUrl: string, stemKey: string): Promise
     const lhExtLen = lhView.getUint16(28, true)
     const dataStart = foundLocalOffset + 30 + lhFnLen + lhExtLen
 
-    // Fetch the raw bytes
+    // Fetch compressed bytes
     const dataRes = await fetch(zipUrl, {
       headers: { 'Range': `bytes=${dataStart}-${dataStart + foundCompressed - 1}` }
     })
     if (!dataRes.ok && dataRes.status !== 206) return null
-    return await dataRes.arrayBuffer()
+    const compData = await dataRes.arrayBuffer()
+
+    // Decompress if needed (Mureka ZIPs use DEFLATE compression method=8)
+    if (foundCompMethod === 0) {
+      // STORED — raw bytes, no decompression needed
+      return compData
+    } else if (foundCompMethod === 8) {
+      // DEFLATE — decompress using DecompressionStream
+      const ds = new DecompressionStream('deflate-raw')
+      const writer = ds.writable.getWriter()
+      const reader = ds.readable.getReader()
+      writer.write(new Uint8Array(compData))
+      writer.close()
+      const chunks: Uint8Array[] = []
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+      const total = chunks.reduce((s, c) => s + c.length, 0)
+      const out = new Uint8Array(total)
+      let off = 0
+      for (const ch of chunks) { out.set(ch, off); off += ch.length }
+      return out.buffer
+    } else {
+      throw new Error(`Unsupported ZIP compression method: ${foundCompMethod}`)
+    }
   } catch { return null }
 }
 
