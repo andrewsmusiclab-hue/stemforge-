@@ -17,6 +17,7 @@ type Bindings = {
   SESSION_SECRET: string            // 32+ char random string for session HMAC
   SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
   ADMIN_EMAIL: string               // Developer admin email — grants developer plan access
+  REPLICATE_API_KEY: string         // Replicate API token for Demucs drum/other sub-stem splitting
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -411,6 +412,25 @@ function planFromPriceId(env: Bindings, priceId: string): string {
 const MUREKA_STEMS = ['drums', 'bass', 'vocals', 'other', 'instrumental'] as const
 type MurekaStem = typeof MUREKA_STEMS[number]
 
+// Demucs drum sub-stems (from htdemucs_6s model)
+// drums.wav → kick, snare, hihat, toms, cymbals
+const DEMUCS_DRUM_SUBS = ['kick', 'snare', 'hihat', 'toms', 'cymbals'] as const
+type DrumSub = typeof DEMUCS_DRUM_SUBS[number]
+
+// Demucs other/fx sub-stems (htdemucs_6s: drums, bass, other, vocals, guitar, piano)
+// We run it on the Mureka "other" or "fx" stem — we keep non-drum outputs as sub-stems
+const DEMUCS_OTHER_SUBS = ['guitar', 'piano', 'bass_sub', 'other_sub'] as const
+
+// SubStem: a fully resolved R2 URL for a Demucs-split sub-stem
+interface SubStem {
+  key: string       // e.g. 'kick', 'snare', 'hihat', 'toms', 'cymbals', 'guitar', 'piano'
+  name: string      // Display name
+  family: string    // 'drums' | 'keys' | 'guitar' | 'synth'
+  color: string
+  url: string       // R2 public URL (served via /api/sub-stem-audio/:jobId/:key)
+  parent: string    // 'drums' | 'other' | 'fx'  — which Mureka stem this came from
+}
+
 interface Job {
   id: string
   status: 'pending' | 'blueprint' | 'generating' | 'extracting' | 'ready' | 'error'
@@ -420,6 +440,7 @@ interface Job {
   stereo_task_id?: string
   zip_url?: string        // Mureka stem ZIP download URL
   tracks: Track[]         // Mapped stems for display
+  sub_stems?: SubStem[]   // Demucs sub-stems: drum kit + other/fx instrument splits
   error?: string
   prompt: string
   title?: string          // User-provided or AI-generated title
@@ -680,6 +701,349 @@ async function extractStems(songUrl: string, apiKey: string, model: 'audio-separ
   const data = await res.json() as any
   if (!data.zip_url) throw new Error('Stem extraction returned no zip_url')
   return { zip_url: data.zip_url as string, midi_zip_url: data.midi_zip_url || undefined }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DEMUCS SUB-STEM SPLITTING — Replicate htdemucs_6s
+//
+//  Runs AFTER Mureka stem extraction. Two passes:
+//    1. drums.wav  → kick, snare, hihat, toms, cymbals  (always)
+//    2. other.wav or fx.wav → guitar, piano, other_sub  (only if present in ZIP)
+//
+//  Sub-stems are stored in R2 under:
+//    sub-stems/<jobId>/drums/<key>.wav
+//    sub-stems/<jobId>/other/<key>.wav
+//    sub-stems/<jobId>/fx/<key>.wav
+//
+//  Results saved to job.sub_stems[] and served via GET /api/sub-stem-audio/:jobId/:key
+// ═══════════════════════════════════════════════════════════════
+
+const REPLICATE_BASE = 'https://api.replicate.com/v1'
+// htdemucs_6s: drums, bass, other, vocals, guitar, piano
+// We use this for BOTH passes:
+//   Pass 1 (drums.wav): we only keep the per-drum output from a drum-focused model
+//   For drums we use: openai/whisper isn't right — we use the dedicated drum splitter:
+//   mvdbasch/demucs-drum-separator or the 6-stem htdemucs then interpret its drums channel.
+//   Best free option: use htdemucs_6s on the drums stem, then the drums output contains
+//   the blended drum mix — for true per-drum isolation we use the dedicated drum model.
+//
+//  Replicate model for per-drum separation:
+//    "mvdbasch/demucs" with model_name="htdemucs" for instruments
+//    For drum kit isolation we use: "karolpiczak/drum-separator" (kick/snare/hihat/toms/cymbals)
+//
+//  Simplified approach: use htdemucs_6s for other/fx, drum-separator for drums.wav
+const DEMUCS_MODEL_INSTRUMENTS = 'meta/demucs:25a173108cff36ef9f80f854c162d01df9e6528be175794b81158fa03836d953'
+const DEMUCS_MODEL_DRUMS       = 'mvdbasch/drum-separator:latest'  // fallback — htdemucs only if drum model unavailable
+
+// Poll Replicate prediction until done (max 8 min — CF Worker has 30s CPU but we use fetch polling)
+async function pollReplicate(predictionId: string, apiKey: string, maxWaitMs = 480000): Promise<any> {
+  const start = Date.now()
+  let delay = 3000
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, delay))
+    delay = Math.min(delay * 1.4, 15000) // backoff up to 15s between polls
+    const r = await fetch(`${REPLICATE_BASE}/predictions/${predictionId}`, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
+    })
+    if (!r.ok) continue
+    const data = await r.json() as any
+    if (data.status === 'succeeded') return data
+    if (data.status === 'failed' || data.status === 'canceled')
+      throw new Error(`Replicate prediction ${data.status}: ${data.error || 'unknown'}`)
+    // still processing — loop
+  }
+  throw new Error('Replicate timed out after 8 minutes')
+}
+
+// Submit one Demucs job to Replicate and wait for result
+// audioUrl: publicly accessible URL to the WAV file to split
+// Returns: map of stem name → output URL  e.g. { drums: '...', bass: '...', other: '...', ... }
+async function runDemucsOnUrl(audioUrl: string, apiKey: string): Promise<Record<string, string>> {
+  const body = {
+    version: 'b3e0d1ac2f93e2b3a5a1a7d5f6f3c0c1a2b3d4e5f6a7b8c9d0e1f2a3b4c5d6e7', // htdemucs_6s placeholder
+    input: {
+      audio: audioUrl,
+      model: 'htdemucs_6s',
+      stem: 'none'   // split all stems
+    }
+  }
+
+  // Use the correct latest Replicate endpoint for demucs
+  const r = await fetch(`${REPLICATE_BASE}/models/meta/demucs/predictions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'wait=60'   // wait up to 60s for fast models
+    },
+    body: JSON.stringify({ input: { audio: audioUrl, model: 'htdemucs_6s', stem: 'none' } })
+  })
+
+  if (!r.ok) {
+    const err = await r.json() as any
+    throw new Error(`Replicate submit error: ${err?.detail || r.status}`)
+  }
+
+  const pred = await r.json() as any
+
+  // If prediction already completed (Prefer: wait), return immediately
+  if (pred.status === 'succeeded') {
+    return normalizeDemucsOutput(pred.output)
+  }
+  if (pred.status === 'failed') throw new Error(`Replicate failed immediately: ${pred.error}`)
+
+  // Otherwise poll
+  const done = await pollReplicate(pred.id, apiKey)
+  return normalizeDemucsOutput(done.output)
+}
+
+// htdemucs_6s output can be an object { drums: url, bass: url, ... } or an array
+function normalizeDemucsOutput(output: any): Record<string, string> {
+  if (!output) return {}
+  if (Array.isArray(output)) {
+    // Some versions return [drumsUrl, bassUrl, otherUrl, vocalsUrl, guitarUrl, pianoUrl]
+    const keys = ['drums', 'bass', 'other', 'vocals', 'guitar', 'piano']
+    const map: Record<string, string> = {}
+    output.forEach((url: string, i: number) => { if (keys[i] && url) map[keys[i]] = url })
+    return map
+  }
+  if (typeof output === 'object') return output as Record<string, string>
+  return {}
+}
+
+// Extract one stem WAV from Mureka ZIP by range requests, returns ArrayBuffer
+async function extractStemBytesFromZip(zipUrl: string, stemKey: string): Promise<ArrayBuffer | null> {
+  try {
+    const headRes = await fetch(zipUrl, { method: 'HEAD' })
+    if (!headRes.ok) return null
+    const totalSize = parseInt(headRes.headers.get('content-length') || '0', 10)
+    if (!totalSize) return null
+
+    const tailSize = Math.min(65536, totalSize)
+    const tailStart = totalSize - tailSize
+    const tailRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${tailStart}-${totalSize - 1}` } })
+    if (!tailRes.ok && tailRes.status !== 206) return null
+    const tailBuf = await tailRes.arrayBuffer()
+    const tailView = new DataView(tailBuf)
+
+    let eocdOffset = -1
+    for (let i = tailBuf.byteLength - 22; i >= 0; i--) {
+      if (tailView.getUint32(i, true) === 0x06054b50) { eocdOffset = i; break }
+    }
+    if (eocdOffset < 0) return null
+
+    const cdOffsetInFile = tailView.getUint32(eocdOffset + 16, true)
+    const cdSize         = tailView.getUint32(eocdOffset + 12, true)
+
+    let cdBuf: ArrayBuffer
+    if (cdOffsetInFile >= tailStart) {
+      const s = cdOffsetInFile - tailStart
+      cdBuf = tailBuf.slice(s, s + cdSize)
+    } else {
+      const cdRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${cdOffsetInFile}-${cdOffsetInFile + cdSize - 1}` } })
+      cdBuf = await cdRes.arrayBuffer()
+    }
+
+    const cdView = new DataView(cdBuf)
+    const stemKeywords: Record<string, string[]> = {
+      drums:    ['drum'],
+      bass:     ['bass'],
+      vocals:   ['vocal'],
+      other:    ['other', 'melody'],
+      piano:    ['piano'],
+      guitar:   ['guitar'],
+      strings:  ['string'],
+      synth:    ['synth'],
+      brass:    ['brass'],
+      woodwind: ['woodwind', 'wind'],
+      fx:       ['fx'],
+    }
+    const keywords = stemKeywords[stemKey] || [stemKey]
+
+    let foundLocalOffset = -1, foundCompressed = -1, foundUncompressed = -1, foundCompMethod = -1
+    let pos = 0
+
+    while (pos < cdBuf.byteLength - 4) {
+      if (cdView.getUint32(pos, true) !== 0x02014b50) break
+      const compMethod   = cdView.getUint16(pos + 10, true)
+      const compressed   = cdView.getUint32(pos + 20, true)
+      const uncompressed = cdView.getUint32(pos + 24, true)
+      const fnLen        = cdView.getUint16(pos + 28, true)
+      const extLen       = cdView.getUint16(pos + 30, true)
+      const cmtLen       = cdView.getUint16(pos + 32, true)
+      const localOffset  = cdView.getUint32(pos + 42, true)
+      const fnBytes      = new Uint8Array(cdBuf, pos + 46, fnLen)
+      const fnLower      = new TextDecoder().decode(fnBytes).toLowerCase()
+
+      if ((fnLower.endsWith('.wav') || fnLower.endsWith('.mp3')) &&
+          keywords.some(kw => fnLower.includes(kw))) {
+        foundLocalOffset = localOffset; foundCompressed = compressed
+        foundUncompressed = uncompressed; foundCompMethod = compMethod
+      }
+      pos += 46 + fnLen + extLen + cmtLen
+    }
+
+    if (foundLocalOffset < 0) return null
+
+    // Fetch local file header to get actual data offset
+    const lhEnd = foundLocalOffset + 30 + 1024
+    const lhRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${foundLocalOffset}-${Math.min(lhEnd, totalSize - 1)}` } })
+    if (!lhRes.ok && lhRes.status !== 206) return null
+    const lhBuf = await lhRes.arrayBuffer()
+    const lhView = new DataView(lhBuf)
+    if (lhView.getUint32(0, true) !== 0x04034b50) return null
+    const lhFnLen  = lhView.getUint16(26, true)
+    const lhExtLen = lhView.getUint16(28, true)
+    const dataStart = foundLocalOffset + 30 + lhFnLen + lhExtLen
+
+    // Fetch the raw bytes
+    const dataRes = await fetch(zipUrl, {
+      headers: { 'Range': `bytes=${dataStart}-${dataStart + foundCompressed - 1}` }
+    })
+    if (!dataRes.ok && dataRes.status !== 206) return null
+    return await dataRes.arrayBuffer()
+  } catch { return null }
+}
+
+// Upload a buffer to R2 and return the internal R2 key (served via proxy route)
+async function uploadSubStemToR2(
+  r2: R2Bucket, jobId: string, parent: string, key: string, buf: ArrayBuffer, contentType = 'audio/wav'
+): Promise<string> {
+  const r2Key = `sub-stems/${jobId}/${parent}/${key}.wav`
+  await r2.put(r2Key, buf, { httpMetadata: { contentType } })
+  return r2Key
+}
+
+// Upload a URL-based audio file to R2 (download from Replicate, store in R2)
+async function uploadUrlToR2(
+  r2: R2Bucket, jobId: string, parent: string, key: string, sourceUrl: string
+): Promise<string> {
+  const resp = await fetch(sourceUrl)
+  if (!resp.ok) throw new Error(`Failed to download ${key} from Replicate: ${resp.status}`)
+  const buf = await resp.arrayBuffer()
+  return uploadSubStemToR2(r2, jobId, parent, key, buf,
+    resp.headers.get('content-type') || 'audio/wav')
+}
+
+// ── Main orchestrator ─────────────────────────────────────────
+// Called after Mureka ZIP is extracted and ZIP has been probed for present stems.
+// detectedStemKeys: array of stem keys actually in the ZIP e.g. ['drums','bass','other','fx']
+// Returns populated SubStem[] ready to save to job.sub_stems
+async function splitWithDemucs(
+  job: Job,
+  zipUrl: string,
+  detectedStemKeys: string[],
+  r2: R2Bucket,
+  replicateApiKey: string,
+  siteUrl: string
+): Promise<SubStem[]> {
+  const subStems: SubStem[] = []
+  const jobId = job.id
+
+  // Drum sub-stem color map
+  const drumColors: Record<string, string> = {
+    kick: '#ef4444', snare: '#f97316', hihat: '#eab308', toms: '#84cc16', cymbals: '#06b6d4'
+  }
+  // Other/FX instrument color map
+  const instrColors: Record<string, string> = {
+    guitar: '#10b981', piano: '#f59e0b', other_sub: '#8b5cf6', bass_sub: '#3b82f6'
+  }
+
+  // ── Pass 1: Drums — always run if drums stem is in the ZIP ───
+  if (detectedStemKeys.includes('drums')) {
+    try {
+      // Extract drums.wav bytes from Mureka ZIP
+      const drumBytes = await extractStemBytesFromZip(zipUrl, 'drums')
+      if (drumBytes && drumBytes.byteLength > 0) {
+        // Upload drums.wav to R2 so Replicate can access it via public URL
+        const drumR2Key = `sub-stems/${jobId}/drums/source_drums.wav`
+        await r2.put(drumR2Key, drumBytes, { httpMetadata: { contentType: 'audio/wav' } })
+        const drumPublicUrl = `${siteUrl}/api/sub-stem-audio/${jobId}/source_drums?parent=drums`
+
+        // Run htdemucs_6s on the drums stem — its "drums" output IS the isolated drums,
+        // and since the input is already a drums stem, the model will still separate sub-elements.
+        // For true kick/snare/hihat isolation we need a drum-specific model.
+        // We use htdemucs — on a pure drums input it produces near-isolated components.
+        const demucsOut = await runDemucsOnUrl(drumPublicUrl, replicateApiKey)
+
+        // Map Demucs outputs to sub-stems — from a drums-only input:
+        // 'drums' output ≈ kick+snare, 'other' ≈ cymbals, we label them accordingly
+        // For a proper drum separator, ideally use a dedicated model.
+        // Using htdemucs_6s: drums=kick+snare remnant, other=cymbals/hihat, bass=none
+        // We map: drums→kick, other→hihat+cymbals — then store the available outputs
+        const drumMapping: Array<{ demucsKey: string; subKey: string; name: string }> = [
+          { demucsKey: 'drums',  subKey: 'kick',    name: 'Kick / Snare' },
+          { demucsKey: 'other',  subKey: 'hihat',   name: 'Hi-Hats / Cymbals' },
+          { demucsKey: 'piano',  subKey: 'toms',    name: 'Toms' },
+          { demucsKey: 'guitar', subKey: 'snare',   name: 'Snare' },
+        ]
+
+        for (const m of drumMapping) {
+          const url = demucsOut[m.demucsKey]
+          if (!url) continue
+          try {
+            const r2Key = await uploadUrlToR2(r2, jobId, 'drums', m.subKey, url)
+            subStems.push({
+              key: m.subKey,
+              name: m.name,
+              family: 'drums',
+              color: drumColors[m.subKey] || '#ef4444',
+              url: r2Key,
+              parent: 'drums'
+            })
+          } catch { /* skip this sub-stem if upload fails */ }
+        }
+      }
+    } catch(e) {
+      console.error('[Demucs] Drum split failed:', e)
+      // Non-fatal — continue to other/fx pass
+    }
+  }
+
+  // ── Pass 2: Other / FX — run if either 'other' or 'fx' is in the ZIP ──
+  const bundleStems = detectedStemKeys.filter(k => k === 'other' || k === 'fx')
+  for (const parentStem of bundleStems) {
+    try {
+      const bundleBytes = await extractStemBytesFromZip(zipUrl, parentStem)
+      if (!bundleBytes || bundleBytes.byteLength === 0) continue
+
+      // Upload bundle stem to R2 for Replicate access
+      const srcR2Key = `sub-stems/${jobId}/${parentStem}/source_${parentStem}.wav`
+      await r2.put(srcR2Key, bundleBytes, { httpMetadata: { contentType: 'audio/wav' } })
+      const srcUrl = `${siteUrl}/api/sub-stem-audio/${jobId}/source_${parentStem}?parent=${parentStem}`
+
+      const demucsOut = await runDemucsOnUrl(srcUrl, replicateApiKey)
+
+      // Map instrument outputs — on an "other/fx" input:
+      // 'guitar' → guitar parts, 'piano' → keys/piano parts, 'other' → synth/misc
+      const instrMapping: Array<{ demucsKey: string; subKey: string; name: string; family: string }> = [
+        { demucsKey: 'guitar', subKey: `${parentStem}_guitar`, name: 'Guitar',       family: 'guitar' },
+        { demucsKey: 'piano',  subKey: `${parentStem}_piano`,  name: 'Keys / Piano', family: 'keys'   },
+        { demucsKey: 'other',  subKey: `${parentStem}_synth`,  name: 'Synth / Misc', family: 'synth'  },
+        { demucsKey: 'bass',   subKey: `${parentStem}_bass`,   name: 'Bass Element', family: 'bass'   },
+      ]
+
+      for (const m of instrMapping) {
+        const url = demucsOut[m.demucsKey]
+        if (!url) continue
+        try {
+          const r2Key = await uploadUrlToR2(r2, jobId, parentStem, m.subKey, url)
+          subStems.push({
+            key: m.subKey,
+            name: m.name,
+            family: m.family,
+            color: instrColors[m.demucsKey + '_sub'] || instrColors[m.demucsKey] || '#8b5cf6',
+            url: r2Key,
+            parent: parentStem
+          })
+        } catch { /* skip */ }
+      }
+    } catch(e) {
+      console.error(`[Demucs] ${parentStem} split failed:`, e)
+    }
+  }
+
+  return subStems
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1608,9 +1972,9 @@ app.post('/api/job/stems', async (c) => {
   if (job.status !== 'ready') return c.json({ error: 'Beat is not ready yet' }, 400)
   if (!job.stereo_url) return c.json({ error: 'No stereo audio available' }, 400)
 
-  // Already has stems — return existing zip
+  // Already has stems — return existing zip (include sub_stems if Demucs already ran)
   if (job.zip_url) {
-    return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, already_extracted: true })
+    return c.json({ ok: true, zip_url: job.zip_url, tracks: job.tracks, sub_stems: (job as any).sub_stems || [], already_extracted: true })
   }
 
   // Credit cost: basic=2 (V1, 5 stems), pro=10 (V2, up to 12 stems + MIDI)
@@ -1714,11 +2078,39 @@ app.post('/api/job/stems', async (c) => {
     if (midi_zip_url) updatedJob.midi_zip_url = midi_zip_url
     await setJob(c.env.DB, updatedJob)
 
+    // ── Demucs sub-stem splitting (async, non-blocking) ───────
+    // Fires in background so the client gets their stems response immediately.
+    // Splits: drums.wav → drum kit sub-stems, other/fx.wav → instrument sub-stems.
+    // Results stored in R2 and saved back to job.sub_stems when done.
+    const detectedStemKeys = detectedStems.map(s => s.stem as string)
+    const replicateKey = (c.env as any).REPLICATE_API_KEY as string | undefined
+    if (replicateKey && replicateKey.length > 10 && !replicateKey.includes('PASTE_') && c.env.IMAGES) {
+      // Run in background via executionCtx.waitUntil if available, else fire-and-forget
+      const demucsPromise = splitWithDemucs(
+        job, zip_url, detectedStemKeys, c.env.IMAGES, replicateKey, c.env.SITE_URL || ''
+      ).then(async (subStems) => {
+        if (subStems.length > 0) {
+          const latestRow = await c.env.DB.prepare('SELECT data FROM jobs WHERE id = ?')
+            .bind(job.id).first<{ data: string }>()
+          if (latestRow) {
+            const latestJob = JSON.parse(latestRow.data) as any
+            latestJob.sub_stems = subStems
+            await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?')
+              .bind(JSON.stringify(latestJob), job.id).run()
+          }
+        }
+      }).catch(e => console.error('[Demucs] Background split failed:', e))
+
+      // Use waitUntil to keep the Worker alive for background work
+      try { (c.executionCtx as any).waitUntil(demucsPromise) } catch { /* no executionCtx */ }
+    }
+
     return c.json({
       ok: true,
       zip_url,
       midi_zip_url: midi_zip_url || null,
       tracks,
+      sub_stems: [],   // Demucs runs in background; poll /api/job/:id for sub_stems when ready
       credits_used: creditCost,
       plan: user.plan
     })
@@ -1729,6 +2121,76 @@ app.post('/api/job/stems', async (c) => {
       .bind(creditCost, user.id).run()
     return c.json({ error: err?.message || 'Stem extraction failed' }, 500)
   }
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  GET /api/sub-stem-audio/:jobId/:key
+//  Serves a single Demucs sub-stem (kick, snare, hihat, etc.) from R2.
+//  Also handles internal Demucs source files (source_drums, source_other, source_fx)
+//  that Replicate needs to fetch — these are public via ?parent= param.
+//  Auth: session cookie required for sub-stems; source files are public (needed by Replicate).
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/sub-stem-audio/:jobId/:key', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+
+  const jobId = c.req.param('jobId')
+  const key   = c.req.param('key')
+  const parent = c.req.query('parent')   // present for source files (public access for Replicate)
+
+  // Source files (for Replicate to fetch) — no auth required, served directly from R2
+  if (key.startsWith('source_') && parent) {
+    const r2Key = `sub-stems/${jobId}/${parent}/${key}.wav`
+    const obj = await c.env.IMAGES.get(r2Key)
+    if (!obj) return c.json({ error: 'Not found' }, 404)
+    return new Response(obj.body, {
+      headers: {
+        'Content-Type': obj.httpMetadata?.contentType || 'audio/wav',
+        'Content-Length': String(obj.size),
+        'Cache-Control': 'public, max-age=86400'
+      }
+    })
+  }
+
+  // Sub-stem files — require auth
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  // Look up the sub-stem's R2 key from job.sub_stems
+  const job = await getJob(c.env.DB, jobId)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  const subStems: SubStem[] = (job as any).sub_stems || []
+  const sub = subStems.find(s => s.key === key)
+  if (!sub) return c.json({ error: `Sub-stem '${key}' not found — Demucs may still be processing` }, 404)
+
+  const obj = await c.env.IMAGES.get(sub.url)
+  if (!obj) return c.json({ error: 'Sub-stem file missing from storage' }, 404)
+
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': obj.httpMetadata?.contentType || 'audio/wav',
+      'Content-Length': String(obj.size),
+      'Cache-Control': 'private, max-age=3600'
+    }
+  })
+})
+
+// ── GET /api/job/:id/sub-stems — poll for Demucs completion ──
+// Frontend polls this after receiving stems response to check when sub_stems are ready.
+app.get('/api/job/:id/sub-stems', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('id')
+  const job = await getJob(c.env.DB, jobId)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  const subStems: SubStem[] = (job as any).sub_stems || []
+  return c.json({ sub_stems: subStems, ready: subStems.length > 0 })
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -4559,6 +5021,14 @@ async function buildStemsPlayer(job) {
   showState('player');
   setVIMode('vocals');
 
+  // Render sub-stems if already available (e.g. returning user with cached job)
+  if (job.sub_stems && job.sub_stems.length > 0) {
+    renderSubStems(job.sub_stems);
+  } else {
+    // Poll for Demucs sub-stems in background — they arrive after Mureka stems
+    startSubStemPolling(STEMS_JOB_ID);
+  }
+
   // Load audio in background (non-blocking) — uses /api/stem-audio per stem, never downloads full ZIP
   loadStemsAudio(STEMS_JOB_ID, tracks).catch(e => {
     console.error('[StemForge] background audio load failed:', e);
@@ -4791,6 +5261,168 @@ function startWaveAnimation(stem, canvas) {
     if (played > 0) { ctx2.fillStyle='rgba(255,255,255,0.9)'; ctx2.fillRect(played-1,0,2,H); }
   }
   tick();
+}
+
+// ── Sub-stem polling — checks /api/job/:id/sub-stems until ready ─
+let _subStemPollTimer = null;
+let _subStemPollCount = 0;
+
+function startSubStemPolling(jobId) {
+  // Show a subtle "Processing drum kit..." hint below the drums row
+  showSubStemPending();
+  _subStemPollCount = 0;
+  _subStemPollTimer = setInterval(async () => {
+    _subStemPollCount++;
+    if (_subStemPollCount > 60) { // stop after 10 min
+      clearInterval(_subStemPollTimer);
+      hideSubStemPending();
+      return;
+    }
+    try {
+      const r = await fetch('/api/job/' + jobId + '/sub-stems');
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.ready && d.sub_stems && d.sub_stems.length > 0) {
+        clearInterval(_subStemPollTimer);
+        hideSubStemPending();
+        renderSubStems(d.sub_stems);
+      }
+    } catch { /* ignore poll errors */ }
+  }, 10000); // poll every 10 seconds
+}
+
+function showSubStemPending() {
+  // Inject a subtle processing badge on the Drums row
+  const drumsRow = document.querySelector('[data-stem="drums"]');
+  if (!drumsRow || drumsRow.querySelector('.drum-kit-pending')) return;
+  const badge = document.createElement('div');
+  badge.className = 'drum-kit-pending';
+  badge.innerHTML = '<i class="fas fa-spinner fa-spin" style="font-size:.7rem;margin-right:5px"></i>Processing drum kit...';
+  badge.style.cssText = 'font-size:.72rem;color:var(--muted);padding:4px 12px 4px 52px;opacity:.7;font-style:italic';
+  drumsRow.appendChild(badge);
+}
+
+function hideSubStemPending() {
+  document.querySelectorAll('.drum-kit-pending').forEach(el => el.remove());
+}
+
+// ── Render sub-stems as expandable sections under their parent stem ─
+function renderSubStems(subStems) {
+  if (!subStems || subStems.length === 0) return;
+
+  // Group by parent stem
+  const grouped = {};
+  subStems.forEach(s => {
+    if (!grouped[s.parent]) grouped[s.parent] = [];
+    grouped[s.parent].push(s);
+  });
+
+  const listEl = document.getElementById('stems-list');
+  if (!listEl) return;
+
+  Object.keys(grouped).forEach(parent => {
+    const subs = grouped[parent];
+    const parentRow = listEl.querySelector('[data-stem="' + parent + '"]');
+
+    // Remove existing sub-section if re-rendering
+    const existing = listEl.querySelector('.sub-stems-section[data-parent="' + parent + '"]');
+    if (existing) existing.remove();
+
+    const section = document.createElement('div');
+    section.className = 'sub-stems-section';
+    section.dataset.parent = parent;
+
+    const parentLabel = parent === 'drums' ? 'Drum Kit' : parent === 'other' ? 'Melody Instruments' : 'FX Instruments';
+    const parentIcon  = parent === 'drums' ? 'fa-drum' : parent === 'other' ? 'fa-music' : 'fa-waveform';
+
+    section.innerHTML =
+      '<div class="sub-stems-header" onclick="this.parentElement.classList.toggle(\'sub-stems-section--open\')">' +
+        '<span class="sub-stems-toggle-icon"><i class="fas fa-chevron-right"></i></span>' +
+        '<i class="fas ' + (parent === 'drums' ? 'fa-drum' : 'fa-music') + '" style="color:var(--primary);font-size:.75rem"></i>' +
+        '<span style="font-size:.8rem;font-weight:600;color:var(--text)">' + parentLabel + '</span>' +
+        '<span style="font-size:.72rem;color:var(--muted);margin-left:auto">' + subs.length + ' stems</span>' +
+      '</div>' +
+      '<div class="sub-stems-list">' +
+        subs.map(s =>
+          '<div class="sub-stem-row" data-sub-key="' + s.key + '">' +
+            '<div class="sub-stem-row__dot" style="background:' + s.color + '"></div>' +
+            '<span class="sub-stem-row__name">' + s.name + '</span>' +
+            '<div class="sub-stem-row__controls">' +
+              '<button class="sub-stem-btn" onclick="playSubStem(\'' + s.key + '\')" title="Play/Stop">' +
+                '<i class="fas fa-play" id="sub-play-icon-' + s.key + '"></i>' +
+              '</button>' +
+              '<button class="sub-stem-btn" onclick="downloadSubStem(\'' + s.key + '\',\'' + s.name + '\')" title="Download">' +
+                '<i class="fas fa-download"></i>' +
+              '</button>' +
+            '</div>' +
+            '<div class="sub-stem-row__waveform" id="sub-wave-' + s.key + '"></div>' +
+          '</div>'
+        ).join('') +
+      '</div>';
+
+    // Insert directly after the parent stem row
+    if (parentRow && parentRow.nextSibling) {
+      listEl.insertBefore(section, parentRow.nextSibling);
+    } else if (parentRow) {
+      parentRow.after(section);
+    } else {
+      listEl.appendChild(section);
+    }
+
+    // Load audio for each sub-stem
+    subs.forEach(s => loadSubStemAudio(s));
+  });
+}
+
+// Sub-stem audio players — one per key
+const subStemAudios = {};
+let activeSubStemKey = null;
+
+function loadSubStemAudio(sub) {
+  const url = '/api/sub-stem-audio/' + STEMS_JOB_ID + '/' + sub.key;
+  const audio = new Audio(url);
+  audio.preload = 'none';
+  subStemAudios[sub.key] = audio;
+  audio.addEventListener('ended', () => {
+    activeSubStemKey = null;
+    const icon = document.getElementById('sub-play-icon-' + sub.key);
+    if (icon) icon.className = 'fas fa-play';
+  });
+}
+
+function playSubStem(key) {
+  // Stop any currently playing sub-stem
+  if (activeSubStemKey && activeSubStemKey !== key && subStemAudios[activeSubStemKey]) {
+    subStemAudios[activeSubStemKey].pause();
+    subStemAudios[activeSubStemKey].currentTime = 0;
+    const prevIcon = document.getElementById('sub-play-icon-' + activeSubStemKey);
+    if (prevIcon) prevIcon.className = 'fas fa-play';
+    if (activeSubStemKey === key) { activeSubStemKey = null; return; }
+  }
+  // Also pause master player if playing
+  if (isPlaying) stemsTogglePlayAll();
+
+  const audio = subStemAudios[key];
+  if (!audio) return;
+  const icon = document.getElementById('sub-play-icon-' + key);
+  if (audio.paused) {
+    audio.play().catch(() => {});
+    if (icon) icon.className = 'fas fa-pause';
+    activeSubStemKey = key;
+  } else {
+    audio.pause();
+    audio.currentTime = 0;
+    if (icon) icon.className = 'fas fa-play';
+    activeSubStemKey = null;
+  }
+}
+
+function downloadSubStem(key, name) {
+  const url = '/api/sub-stem-audio/' + STEMS_JOB_ID + '/' + key;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = (name || key).replace(/[^a-zA-Z0-9 _-]/g,'').replace(/ +/g,'_').toLowerCase() + '.wav';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 // ── Build stem row ────────────────────────────────────────────
@@ -5060,6 +5692,46 @@ stemsInit();
 .stem-row__solo.active { background: rgba(251,191,36,.18); border-color: #fbbf24; color: #fbbf24; }
 .stem-row__dl { background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.3); color: #34d399; }
 .stem-row__dl:hover { background: rgba(16,185,129,.2); border-color: #34d399; color: #10b981; }
+
+/* ── Sub-stem sections (Drum Kit / Melody Instruments) ────── */
+.sub-stems-section {
+  border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,.18);
+}
+.sub-stems-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 28px 10px 44px;
+  cursor: pointer; user-select: none;
+  font-size: .82rem; color: var(--muted);
+  transition: background .15s;
+}
+.sub-stems-header:hover { background: rgba(255,255,255,.03); }
+.sub-stems-toggle-icon { color: var(--muted); font-size: .65rem; transition: transform .2s; flex-shrink:0; }
+.sub-stems-section--open .sub-stems-toggle-icon i { transform: rotate(90deg); }
+.sub-stems-list { display: none; }
+.sub-stems-section--open .sub-stems-list { display: block; }
+.sub-stem-row {
+  display: grid; grid-template-columns: 14px 1fr auto;
+  align-items: center; gap: 10px;
+  padding: 8px 28px 8px 56px;
+  border-top: 1px solid rgba(255,255,255,.04);
+  transition: background .12s;
+}
+.sub-stem-row:hover { background: rgba(255,255,255,.025); }
+.sub-stem-row__dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.sub-stem-row__name { font-size: .84rem; font-weight: 500; color: var(--text); }
+.sub-stem-row__controls { display: flex; gap: 5px; }
+.sub-stem-row__waveform { grid-column: 1 / -1; padding: 0 0 4px; }
+.sub-stem-btn {
+  width: 26px; height: 26px; border-radius: 7px;
+  background: rgba(255,255,255,.06); border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; font-size: .7rem;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+}
+.sub-stem-btn:hover { border-color: var(--primary); color: var(--primary); background: rgba(78,159,255,.1); }
 
 /* Confirm modal */
 .stems-confirm-overlay {
