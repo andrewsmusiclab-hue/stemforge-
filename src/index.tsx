@@ -6436,7 +6436,7 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix. Stem extraction (bass, melody, vocals, other) costs 2 extra credits for Creator, 10 for Pro Artist.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix. Stem extraction (bass, melody, vocals, other) costs 2 extra credits and is available on the Pro Artist plan only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of downloads? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase download credit packs from the Subscription page starting from $4.99. Packs never expire and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What stems do I get? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Stem extraction gives you separated audio layers: Bass, Melody, Vocals, and Other. Note: drums are delivered as part of the full stereo mix and stem bundle — individual isolated drum tracks (kick, snare, hi-hats separately) are not available as the AI engine outputs a combined drum mix.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
@@ -6687,7 +6687,7 @@ function pricingPage() {
       ? 'Your subscription will be cancelled. You will move to the Free plan (5 credits/month) after your billing cycle ends.'
       : plan === 'creator'
         ? 'You will be downgraded to the Creator plan ($19/mo, 50 credits/month) at the end of your current billing cycle.'
-        : 'You will be switched to Pro Artist ($39/mo, 150 credits/month) at end of your billing cycle.';
+        : 'You will be switched to Pro Artist ($39/mo, 200 credits/month) at end of your billing cycle.';
     document.getElementById('pricing-downgrade-msg').textContent = msg;
     document.getElementById('pricing-downgrade-modal').style.display = 'flex';
   }

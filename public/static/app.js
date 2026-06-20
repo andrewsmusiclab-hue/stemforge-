@@ -193,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
       creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 downloads/month', 'Mastered stereo mix download', 'Commercial use rights'] },
-      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['150 downloads/month', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
+      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['200 downloads/month', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -318,7 +318,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // All tiers show downloads used / limit directly (1 generation = 1 download)
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
-      const limitMap = { free: 3, creator: 50, pro: 150 };
+      const limitMap = { free: 5, creator: 50, pro: 200 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
       if (creditsLabel) creditsLabel.textContent = 'Downloads';
       if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
@@ -886,7 +886,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
           <div style="display:flex;flex-direction:column;gap:10px">
             <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $19/mo · 50 beats</a>
-            <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $39/mo · 150 beats</a>
+            <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $39/mo · 200 beats</a>
           </div>
           <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
         </div>`;
@@ -1588,7 +1588,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <i class="fas fa-crown"></i> Creator — $19/mo · 50 beats
                       </a>
                       <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
-                        <i class="fas fa-star"></i> Pro Artist — $39/mo · 150 beats
+                        <i class="fas fa-star"></i> Pro Artist — $39/mo · 200 beats
                       </a>
                     </div>
                     <p style="color:var(--muted);font-size:.78rem;margin-top:16px">You keep your generated beat — just upgrade anytime to download it.</p>
