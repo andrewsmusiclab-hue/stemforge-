@@ -3294,3 +3294,100 @@ body {
 #stereo-download { display: none !important; }
 
 /* ── Feedback nav label ────────────────────────────────────── */
+
+
+/* ── Creator tabs row (3 buttons above lyrics card) ────────── */
+.creator-tabs-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.creator-tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px 10px;
+  background: var(--card-bg, #1a1a2e);
+  border: 1px solid var(--border, #2a2a3e);
+  border-radius: 10px;
+  color: var(--muted, #888);
+  font-size: .78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s ease;
+  white-space: nowrap;
+}
+.creator-tab-btn:hover,
+.creator-tab-btn.active {
+  background: rgba(78,159,255,.12);
+  border-color: rgba(78,159,255,.4);
+  color: var(--primary, #4e9fff);
+}
+
+/* ── Draggable creator popup ────────────────────────────────── */
+.creator-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: 80vh;
+  background: var(--card-bg, #1a1a2e);
+  border: 1px solid var(--border, #2a2a3e);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.05);
+  z-index: 8000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.creator-popup__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  background: rgba(255,255,255,.03);
+  border-bottom: 1px solid var(--border, #2a2a3e);
+  cursor: grab;
+  user-select: none;
+}
+.creator-popup__header:active { cursor: grabbing; }
+.creator-popup__title {
+  font-size: .92rem;
+  font-weight: 700;
+  color: var(--text, #e2e8f0);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.creator-popup__close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted, #888);
+  font-size: 1rem;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: color .15s, background .15s;
+}
+.creator-popup__close:hover {
+  color: var(--text, #e2e8f0);
+  background: rgba(255,255,255,.06);
+}
+.creator-popup__body {
+  padding: 18px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* popup backdrop */
+.creator-popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.5);
+  z-index: 7999;
+  backdrop-filter: blur(2px);
+}

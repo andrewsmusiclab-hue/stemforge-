@@ -2154,6 +2154,30 @@ app.post('/api/job/stems', async (c) => {
     if (midi_zip_url) updatedJob.midi_zip_url = midi_zip_url
     await setJob(c.env.DB, updatedJob)
 
+    // ── Pre-populate R2 stem cache (async, non-blocking) ──────
+    // Extract each detected stem's WAV from the Mureka ZIP and store in R2
+    // so that GET /api/stem-audio ALWAYS gets a cache hit (no ZIP decompression needed).
+    // This is the root cause fix for the stems player spinner timeout.
+    if (c.env.IMAGES) {
+      const cachePromise = (async () => {
+        for (const s of detectedStems) {
+          try {
+            const stemBytes = await extractStemBytesFromZip(zip_url, s.stem)
+            if (stemBytes && stemBytes.byteLength > 0) {
+              const r2CacheKey = `stem-cache/${job.id}/${s.stem}.wav`
+              await c.env.IMAGES!.put(r2CacheKey, stemBytes, {
+                httpMetadata: { contentType: 'audio/wav' }
+              })
+              console.log(`[StemCache] Cached ${s.stem} for job ${job.id}: ${stemBytes.byteLength} bytes`)
+            }
+          } catch (e) {
+            console.error(`[StemCache] Failed to cache ${s.stem}:`, e)
+          }
+        }
+      })()
+      try { (c.executionCtx as any).waitUntil(cachePromise) } catch { /* no executionCtx */ }
+    }
+
     // ── Demucs sub-stem splitting (async, non-blocking) ───────
     // Fires in background so the client gets their stems response immediately.
     // Splits: drums.wav → drum kit sub-stems, other/fx.wav → instrument sub-stems.
@@ -5273,7 +5297,15 @@ async function loadStemsAudio(jobId, tracks) {
       const stemUrl = '/api/stem-audio/' + jobId + '/' + t.stem;
       console.log('[StemForge] Fetching stem:', t.stem, stemUrl);
 
-      const resp = await fetch(stemUrl);
+      // 25-second timeout per stem — if ZIP decompression hangs, show random waveform
+      const controller = new AbortController();
+      const stemTimeout = setTimeout(() => controller.abort(), 25000);
+      let resp;
+      try {
+        resp = await fetch(stemUrl, { signal: controller.signal });
+      } finally {
+        clearTimeout(stemTimeout);
+      }
       if (!resp.ok) {
         console.warn('[StemForge] stem fetch failed:', t.stem, resp.status, await resp.text().catch(()=>''));
         drawRandomWaveform(t.stem, t.color);
@@ -5330,8 +5362,12 @@ async function loadStemsAudio(jobId, tracks) {
         drawRandomWaveform(t.stem, t.color);
       }
 
-    } catch(err) {
-      console.warn('[StemForge] error loading stem', t.stem, err);
+    } catch(err: any) {
+      if (err && err.name === 'AbortError') {
+        console.warn('[StemForge] stem timed out (25s):', t.stem, '— showing placeholder waveform');
+      } else {
+        console.warn('[StemForge] error loading stem', t.stem, err);
+      }
       drawRandomWaveform(t.stem, t.color);
     }
   }
@@ -5995,6 +6031,19 @@ function generatorPage() {
   <!-- ── LEFT COLUMN: Input Controls ─────────────────────────── -->
   <div class="suno-left" id="suno-left">
 
+    <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
+    <div class="creator-tabs-row" id="creator-tabs-row">
+      <button class="creator-tab-btn" id="ctab-reference" onclick="openCreatorPopup('reference')">
+        <i class="fas fa-music"></i> Reference Track
+      </button>
+      <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')">
+        <i class="fas fa-expand-arrows-alt"></i> Song Extend
+      </button>
+      <button class="creator-tab-btn" id="ctab-blank" onclick="openCreatorPopup('blank')">
+        <i class="fas fa-plus"></i> Coming Soon
+      </button>
+    </div>
+
     <!-- SECTION 1: Lyrics / Prompt / Instrumental -->
     <div class="suno-card" id="card-lyrics">
       <div class="suno-card__header">
@@ -6072,138 +6121,6 @@ function generatorPage() {
           </button>
           <button class="vocal-toggle-btn" data-vocal="female" id="vt-female" onclick="setVocalToggle('female')" data-tooltip="Female vocal feel">
             <i class="fas fa-venus"></i> Female
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- SECTION 1b: Reference Track (Pro Artist only) -->
-    <div class="suno-card suno-card--pro" id="card-reference">
-      <div class="suno-card__header" id="ref-header" style="cursor:pointer" onclick="toggleRefCard()">
-        <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
-          <i class="fas fa-chevron-right" id="ref-collapse-icon"></i>
-        </button>
-        <span class="suno-card__title" style="display:flex;align-items:center;gap:8px">
-          Reference Track
-          <span class="pro-badge"><i class="fas fa-crown"></i> Pro</span>
-        </span>
-      </div>
-      <div class="suno-card__body" id="ref-body" style="display:none">
-
-        <!-- Upload zone -->
-        <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
-          <input type="file" id="ref-audio-file" accept="audio/mp3,audio/mpeg,audio/m4a,audio/wav,audio/x-wav,audio/*" style="display:none"/>
-          <div id="ref-upload-idle">
-            <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--primary);margin-bottom:8px"></i>
-            <p style="margin:0;font-weight:600;font-size:.9rem">Upload Reference Audio</p>
-            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3, WAV or M4A · Pick your 30-second clip below</p>
-          </div>
-          <div id="ref-upload-loading" style="display:none">
-            <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:var(--primary);margin-bottom:8px"></i>
-            <p style="margin:0;font-size:.88rem;color:var(--muted)">Uploading to Mureka…</p>
-          </div>
-          <div id="ref-upload-done" style="display:none">
-            <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:6px"></i>
-            <p style="margin:0;font-weight:600;font-size:.88rem" id="ref-upload-name">reference.mp3</p>
-            <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem" id="ref-clip-info">30s clip selected</p>
-          </div>
-        </div>
-
-        <!-- 30-sec clip picker — shown after file chosen, before upload -->
-        <div id="ref-clip-picker" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-            <label class="suno-option-label" style="margin:0">Choose 30-second clip</label>
-            <span id="ref-clip-timestamp" style="font-size:.78rem;color:var(--primary);font-weight:600">0:00 – 0:30</span>
-          </div>
-          <audio id="ref-preview-audio" style="width:100%;margin-bottom:10px;border-radius:8px" controls preload="metadata"></audio>
-          <div style="position:relative;margin-bottom:6px">
-            <input type="range" id="ref-clip-start" min="0" max="100" value="0" step="0.1"
-              style="width:100%;accent-color:var(--primary);cursor:pointer"
-              oninput="updateClipPicker(this.value)"/>
-            <!-- Clip window highlight overlay -->
-            <div id="ref-clip-window" style="position:absolute;top:0;height:100%;background:rgba(78,159,255,0.2);border:1px solid rgba(78,159,255,0.5);border-radius:4px;pointer-events:none;left:0;width:30%"></div>
-          </div>
-          <p style="color:var(--muted);font-size:.75rem;margin:0"><i class="fas fa-info-circle"></i> Drag the slider to select which 30 seconds to use as reference</p>
-          <button class="btn btn--primary btn--sm" style="margin-top:10px;width:100%" onclick="uploadRefWithClip()">
-            <i class="fas fa-cloud-upload-alt"></i> Upload this clip
-          </button>
-        </div>
-
-        <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:8px;width:100%;padding:7px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82rem">
-          <i class="fas fa-times"></i> Remove reference track
-        </button>
-
-        <!-- Mode selector — only shown after successful upload -->
-        <div id="ref-mode-panel" style="display:none;margin-top:16px">
-          <label class="suno-option-label" style="margin-bottom:10px">What do you want to do?</label>
-          <div class="ref-mode-group">
-            <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
-              <i class="fas fa-wand-magic-sparkles"></i>
-              <span class="ref-mode-btn__title">Match Style</span>
-              <span class="ref-mode-btn__sub">Generate a new beat inspired by this track's vibe</span>
-            </button>
-            <button class="ref-mode-btn" data-mode="extend" onclick="selectRefMode('extend')">
-              <i class="fas fa-expand-arrows-alt"></i>
-              <span class="ref-mode-btn__title">Extend Song</span>
-              <span class="ref-mode-btn__sub">Continue the track from where it ends</span>
-            </button>
-            <button class="ref-mode-btn" data-mode="loop" onclick="selectRefMode('loop')">
-              <i class="fas fa-sync-alt"></i>
-              <span class="ref-mode-btn__title">Create Loop</span>
-              <span class="ref-mode-btn__sub">Generate a seamless loop from the reference</span>
-            </button>
-          </div>
-
-          <!-- Loop bar selector — shown when mode=loop -->
-          <div id="ref-loop-opts" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-            <label class="suno-option-label" style="margin-bottom:8px">Loop length</label>
-            <div class="ref-bar-presets">
-              <button class="ref-bar-btn ref-bar-btn--active" data-bars="4" onclick="selectBarPreset(this,4)">4 bars</button>
-              <button class="ref-bar-btn" data-bars="8" onclick="selectBarPreset(this,8)">8 bars</button>
-              <button class="ref-bar-btn" data-bars="16" onclick="selectBarPreset(this,16)">16 bars</button>
-              <button class="ref-bar-btn" data-bars="32" onclick="selectBarPreset(this,32)">32 bars</button>
-              <button class="ref-bar-btn" data-bars="custom" onclick="selectBarPreset(this,'custom')">Custom</button>
-            </div>
-            <div id="ref-bar-custom" style="display:none;margin-top:10px;display:flex;align-items:center;gap:8px">
-              <input type="number" id="ref-bar-custom-val" min="1" max="256" value="16" style="width:80px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem"/>
-              <span style="color:var(--muted);font-size:.88rem">bars</span>
-            </div>
-            <p style="color:var(--muted);font-size:.75rem;margin:8px 0 0"><i class="fas fa-info-circle"></i> Loop will be generated at the BPM of your reference track</p>
-          </div>
-        </div>
-
-      </div>
-    </div>
-
-    <!-- SECTION 2: Duration Picker -->
-    <div class="suno-card suno-card--slim" id="card-duration">
-      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
-        <i class="fas fa-clock" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
-        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Duration</span>
-        <div class="beat-count-group" id="duration-btn-group" style="flex-wrap:wrap">
-          <button class="beat-count-btn" data-dur="0" id="dur-auto" onclick="setDuration(0)">
-            Auto
-          </button>
-          <button class="beat-count-btn" data-dur="60" id="dur-60" onclick="setDuration(60)">
-            1:00
-          </button>
-          <button class="beat-count-btn" data-dur="90" id="dur-90" onclick="setDuration(90)">
-            1:30
-          </button>
-          <button class="beat-count-btn" data-dur="120" id="dur-120" onclick="setDuration(120)">
-            2:00
-          </button>
-          <button class="beat-count-btn" data-dur="150" id="dur-150" onclick="setDuration(150)">
-            2:30
-          </button>
-          <button class="beat-count-btn" data-dur="180" id="dur-180" onclick="setDuration(180)">
-            3:00
-          </button>
-          <button class="beat-count-btn" data-dur="210" id="dur-210" onclick="setDuration(210)">
-            3:30
-          </button>
-          <button class="beat-count-btn" data-dur="240" id="dur-240" onclick="setDuration(240)">
-            4:00
           </button>
         </div>
       </div>
@@ -6371,6 +6288,123 @@ function generatorPage() {
   </div><!-- /suno-right -->
 
 </div><!-- /suno-gen-page -->
+
+<!-- ── Creator Tab Popups ──────────────────────────────────── -->
+<!-- Reference Track Popup -->
+<div id="creator-popup-reference" class="creator-popup" style="display:none">
+  <div class="creator-popup__header" id="creator-popup-reference-header">
+    <span class="creator-popup__title"><i class="fas fa-music"></i> Reference Track <span class="pro-badge" style="font-size:.72rem"><i class="fas fa-crown"></i> Pro</span></span>
+    <button class="creator-popup__close" onclick="closeCreatorPopup('reference')"><i class="fas fa-times"></i></button>
+  </div>
+  <div class="creator-popup__body">
+    <!-- Upload zone -->
+    <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
+      <input type="file" id="ref-audio-file" accept="audio/mp3,audio/mpeg,audio/m4a,audio/wav,audio/x-wav,audio/*" style="display:none"/>
+      <div id="ref-upload-idle">
+        <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--primary);margin-bottom:8px"></i>
+        <p style="margin:0;font-weight:600;font-size:.9rem">Upload Reference Audio</p>
+        <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3, WAV or M4A · Pick your 30-second clip below</p>
+      </div>
+      <div id="ref-upload-loading" style="display:none">
+        <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:var(--primary);margin-bottom:8px"></i>
+        <p style="margin:0;font-size:.88rem;color:var(--muted)">Uploading to Mureka…</p>
+      </div>
+      <div id="ref-upload-done" style="display:none">
+        <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:6px"></i>
+        <p style="margin:0;font-weight:600;font-size:.88rem" id="ref-upload-name">reference.mp3</p>
+        <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem" id="ref-clip-info">30s clip selected</p>
+      </div>
+    </div>
+    <!-- 30-sec clip picker -->
+    <div id="ref-clip-picker" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <label class="suno-option-label" style="margin:0">Choose 30-second clip</label>
+        <span id="ref-clip-timestamp" style="font-size:.78rem;color:var(--primary);font-weight:600">0:00 – 0:30</span>
+      </div>
+      <audio id="ref-preview-audio" style="width:100%;margin-bottom:10px;border-radius:8px" controls preload="metadata"></audio>
+      <div style="position:relative;margin-bottom:6px">
+        <input type="range" id="ref-clip-start" min="0" max="100" value="0" step="0.1"
+          style="width:100%;accent-color:var(--primary);cursor:pointer"
+          oninput="updateClipPicker(this.value)"/>
+        <div id="ref-clip-window" style="position:absolute;top:0;height:100%;background:rgba(78,159,255,0.2);border:1px solid rgba(78,159,255,0.5);border-radius:4px;pointer-events:none;left:0;width:30%"></div>
+      </div>
+      <p style="color:var(--muted);font-size:.75rem;margin:0"><i class="fas fa-info-circle"></i> Drag the slider to select which 30 seconds to use as reference</p>
+      <button class="btn btn--primary btn--sm" style="margin-top:10px;width:100%" onclick="uploadRefWithClip()">
+        <i class="fas fa-cloud-upload-alt"></i> Upload this clip
+      </button>
+    </div>
+    <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:8px;width:100%;padding:7px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82rem">
+      <i class="fas fa-times"></i> Remove reference track
+    </button>
+    <!-- Mode selector -->
+    <div id="ref-mode-panel" style="display:none;margin-top:16px">
+      <label class="suno-option-label" style="margin-bottom:10px">What do you want to do?</label>
+      <div class="ref-mode-group">
+        <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
+          <i class="fas fa-wand-magic-sparkles"></i>
+          <span class="ref-mode-btn__title">Match Style</span>
+          <span class="ref-mode-btn__sub">Generate a new beat inspired by this track's vibe</span>
+        </button>
+        <button class="ref-mode-btn" data-mode="extend" onclick="selectRefMode('extend')">
+          <i class="fas fa-expand-arrows-alt"></i>
+          <span class="ref-mode-btn__title">Extend Song</span>
+          <span class="ref-mode-btn__sub">Continue the track from where it ends</span>
+        </button>
+        <button class="ref-mode-btn" data-mode="loop" onclick="selectRefMode('loop')">
+          <i class="fas fa-sync-alt"></i>
+          <span class="ref-mode-btn__title">Create Loop</span>
+          <span class="ref-mode-btn__sub">Generate a seamless loop from the reference</span>
+        </button>
+      </div>
+      <div id="ref-loop-opts" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+        <label class="suno-option-label" style="margin-bottom:8px">Loop length</label>
+        <div class="ref-bar-presets">
+          <button class="ref-bar-btn ref-bar-btn--active" data-bars="4" onclick="selectBarPreset(this,4)">4 bars</button>
+          <button class="ref-bar-btn" data-bars="8" onclick="selectBarPreset(this,8)">8 bars</button>
+          <button class="ref-bar-btn" data-bars="16" onclick="selectBarPreset(this,16)">16 bars</button>
+          <button class="ref-bar-btn" data-bars="32" onclick="selectBarPreset(this,32)">32 bars</button>
+          <button class="ref-bar-btn" data-bars="custom" onclick="selectBarPreset(this,'custom')">Custom</button>
+        </div>
+        <div id="ref-bar-custom" style="display:none;margin-top:10px;display:flex;align-items:center;gap:8px">
+          <input type="number" id="ref-bar-custom-val" min="1" max="256" value="16" style="width:80px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem"/>
+          <span style="color:var(--muted);font-size:.88rem">bars</span>
+        </div>
+        <p style="color:var(--muted);font-size:.75rem;margin:8px 0 0"><i class="fas fa-info-circle"></i> Loop will be generated at the BPM of your reference track</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Song Extend Popup -->
+<div id="creator-popup-extend" class="creator-popup" style="display:none">
+  <div class="creator-popup__header" id="creator-popup-extend-header">
+    <span class="creator-popup__title"><i class="fas fa-expand-arrows-alt"></i> Song Extend</span>
+    <button class="creator-popup__close" onclick="closeCreatorPopup('extend')"><i class="fas fa-times"></i></button>
+  </div>
+  <div class="creator-popup__body">
+    <div style="text-align:center;padding:32px 16px">
+      <i class="fas fa-expand-arrows-alt" style="font-size:2.5rem;color:var(--primary);opacity:.5;margin-bottom:16px"></i>
+      <h3 style="margin:0 0 8px;color:var(--text)">Extend Your Song</h3>
+      <p style="color:var(--muted);font-size:.9rem;margin:0">Select one of your completed tracks from the library, then extend it with a continuation. This feature is coming soon — stay tuned!</p>
+    </div>
+  </div>
+</div>
+
+<!-- Blank (3rd) Popup -->
+<div id="creator-popup-blank" class="creator-popup" style="display:none">
+  <div class="creator-popup__header" id="creator-popup-blank-header">
+    <span class="creator-popup__title"><i class="fas fa-plus"></i> Coming Soon</span>
+    <button class="creator-popup__close" onclick="closeCreatorPopup('blank')"><i class="fas fa-times"></i></button>
+  </div>
+  <div class="creator-popup__body">
+    <div style="text-align:center;padding:32px 16px">
+      <i class="fas fa-magic" style="font-size:2.5rem;color:var(--primary);opacity:.5;margin-bottom:16px"></i>
+      <h3 style="margin:0 0 8px;color:var(--text)">Something New is Coming</h3>
+      <p style="color:var(--muted);font-size:.9rem;margin:0">This feature is being designed. Check back soon!</p>
+    </div>
+  </div>
+</div>
+
 </div><!-- /gs-content--gen -->
 
 `, `<style>.sf-nav,.sf-footer{display:none}</style>`)

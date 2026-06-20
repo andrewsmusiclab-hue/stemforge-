@@ -615,11 +615,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= p.blueprint ? p.blueprint.genre : '';
-    const durSecs = p.blueprint ? p.blueprint.duration_seconds : 0;
-    const dur  = durSecs ? Math.floor(durSecs/60) + ':' + String(durSecs%60).padStart(2,'0') : '';
     const label= p.prompt ? p.prompt.slice(0,32) + (p.prompt.length>32?'…':'') : 'Beat';
     const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : label);
-    const sub  = [bpm, dur].filter(Boolean).join(' · ');
+    const sub  = bpm || '';
     const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
     return `
       <div class="project-card"
@@ -628,11 +626,10 @@ document.addEventListener('DOMContentLoaded', () => {
            data-title="${rawTitle.replace(/"/g,'&quot;')}"
            data-hue="${hue}"
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
-           data-dur="${dur}"
            >
         <div class="project-card__art" style="background:hsl(${hue},50%,10%)">
           <div class="project-card__play" onclick="playDashProject(this)">
-            <i class="fas fa-play"></i>${dur ? `<span class="card-play-dur">${dur}</span>` : ''}
+            <i class="fas fa-play"></i>
           </div>
         </div>
         <div class="project-card__body">
@@ -1017,18 +1014,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // Create mini player
     const player = document.createElement('div');
     player.id = 'dash-mini-player';
-    // Get duration from card data attribute (populated from blueprint)
-    const cardDur = card.dataset.dur || '';
     player.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--card-bg,#1a1a2e);border:1px solid var(--border,#333);border-radius:16px;padding:14px 20px;display:flex;align-items:center;gap:14px;z-index:9999;box-shadow:0 8px 40px rgba(0,0,0,.6);min-width:340px;max-width:580px;backdrop-filter:blur(12px)';
     player.innerHTML = `
       <audio id="dash-audio" src="${stereoUrl}" preload="auto"></audio>
       <button id="dash-play-pause" style="width:42px;height:42px;border-radius:50%;background:var(--primary,#4e9fff);border:none;cursor:pointer;color:#fff;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center" onclick="dashTogglePlay()"><i class="fas fa-pause"></i></button>
+      <button id="dash-repeat-btn" title="Repeat" onclick="dashToggleRepeat()" style="width:34px;height:34px;border-radius:50%;background:none;border:1px solid var(--border,#333);cursor:pointer;color:var(--muted,#888);font-size:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s"><i class="fas fa-redo"></i></button>
       <div style="flex:1;min-width:0">
         <div style="font-size:13px;font-weight:600;margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${card.querySelector('h4')?.textContent || trackTitle}</div>
         <div style="display:flex;align-items:center;gap:8px">
           <span id="dash-time-cur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px">0:00</span>
           <input type="range" id="dash-seek" min="0" max="100" value="0" step="0.1" style="flex:1;accent-color:var(--primary,#4e9fff);cursor:pointer;height:3px"/>
-          <span id="dash-time-dur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px;text-align:right">${cardDur || '—'}</span>
+          <span id="dash-time-dur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px;text-align:right"></span>
         </div>
       </div>
       <button onclick="document.getElementById('dash-mini-player').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted,#888);font-size:18px;flex-shrink:0;line-height:1"><i class="fas fa-times"></i></button>
@@ -1045,25 +1041,31 @@ document.addEventListener('DOMContentLoaded', () => {
       return m + ':' + String(sec).padStart(2, '0');
     }
 
+    let _dashRepeat = false;
+
     audio.play().catch(()=>{});
     audio.addEventListener('loadedmetadata', () => {
-      if (timeDur && !cardDur) timeDur.textContent = fmtSecs(audio.duration);
-      else if (timeDur && cardDur) timeDur.textContent = cardDur; // use blueprint dur
+      if (timeDur) timeDur.textContent = fmtSecs(audio.duration);
     });
     audio.addEventListener('timeupdate', () => {
       if (audio.duration) {
         seekBar.value = (audio.currentTime / audio.duration) * 100;
         if (timeCur) timeCur.textContent = fmtSecs(audio.currentTime);
-        if (timeDur && audio.duration) timeDur.textContent = fmtSecs(audio.duration);
+        if (timeDur) timeDur.textContent = fmtSecs(audio.duration);
       }
     });
     seekBar.addEventListener('input', () => {
       if (audio.duration) audio.currentTime = (seekBar.value / 100) * audio.duration;
     });
     audio.addEventListener('ended', () => {
-      document.getElementById('dash-play-pause').innerHTML = '<i class="fas fa-play"></i>';
-      seekBar.value = 0;
-      if (timeCur) timeCur.textContent = '0:00';
+      if (_dashRepeat) {
+        audio.currentTime = 0;
+        audio.play().catch(()=>{});
+      } else {
+        document.getElementById('dash-play-pause').innerHTML = '<i class="fas fa-play"></i>';
+        seekBar.value = 0;
+        if (timeCur) timeCur.textContent = '0:00';
+      }
     });
   };
   window.dashTogglePlay = function() {
@@ -1076,6 +1078,26 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       audio.pause();
       if (btn) btn.innerHTML = '<i class="fas fa-play"></i>';
+    }
+  };
+  window.dashToggleRepeat = function() {
+    const player = document.getElementById('dash-mini-player');
+    if (!player) return;
+    // Find the _dashRepeat variable via closure — toggle via data attribute
+    const audio = document.getElementById('dash-audio');
+    const btn = document.getElementById('dash-repeat-btn');
+    if (!btn || !audio) return;
+    const isRepeat = btn.dataset.repeat === '1';
+    btn.dataset.repeat = isRepeat ? '0' : '1';
+    audio.loop = !isRepeat;
+    if (!isRepeat) {
+      btn.style.color = 'var(--primary,#4e9fff)';
+      btn.style.borderColor = 'var(--primary,#4e9fff)';
+      btn.style.background = 'rgba(78,159,255,.12)';
+    } else {
+      btn.style.color = 'var(--muted,#888)';
+      btn.style.borderColor = 'var(--border,#333)';
+      btn.style.background = 'none';
     }
   };
 
@@ -1288,7 +1310,6 @@ document.addEventListener('DOMContentLoaded', () => {
       { icon: 'fa-compact-disc',label: bp.genre },
       { icon: 'fa-heart',       label: bp.mood },
       { icon: 'fa-bolt',        label: bp.energy + ' energy' },
-      { icon: 'fa-clock',       label: Math.round(bp.duration_seconds/60) + ':' + String(bp.duration_seconds%60).padStart(2,'0') },
     ];
     pills.forEach(p => {
       const el = document.createElement('span');
@@ -2521,17 +2542,103 @@ let refBars = 8;
 let oneshotSelectedType = '808 bass hit';
 let oneshotPollInterval = null;
 
-// Toggle collapse of Reference Track card
-window.toggleRefCard = function() {
-  const body = document.getElementById('ref-body');
-  const icon = document.getElementById('ref-collapse-icon');
-  if (!body) return;
-  const isOpen = body.style.display !== 'none';
-  body.style.display = isOpen ? 'none' : 'block';
-  if (icon) {
-    icon.className = isOpen ? 'fas fa-chevron-right' : 'fas fa-chevron-down';
+// ── Creator Tab Popup system ─────────────────────────────────
+(function() {
+  let _activeOverlay = null;
+
+  window.openCreatorPopup = function(name) {
+    // Close any open popup first
+    document.querySelectorAll('.creator-popup').forEach(p => p.style.display = 'none');
+    if (_activeOverlay) { _activeOverlay.remove(); _activeOverlay = null; }
+
+    const popup = document.getElementById('creator-popup-' + name);
+    if (!popup) return;
+
+    // Create overlay
+    const overlay = document.createElement('div');
+    overlay.className = 'creator-popup-overlay';
+    overlay.addEventListener('click', () => closeCreatorPopup(name));
+    document.body.appendChild(overlay);
+    _activeOverlay = overlay;
+
+    // Center and show
+    popup.style.display = 'flex';
+    popup.style.top = '50%';
+    popup.style.left = '50%';
+    popup.style.transform = 'translate(-50%, -50%)';
+
+    // Mark active tab
+    document.querySelectorAll('.creator-tab-btn').forEach(b => b.classList.remove('active'));
+    const btn = document.getElementById('ctab-' + name);
+    if (btn) btn.classList.add('active');
+
+    // Make draggable
+    makeDraggable(popup, popup.querySelector('.creator-popup__header'));
+  };
+
+  window.closeCreatorPopup = function(name) {
+    const popup = document.getElementById('creator-popup-' + name);
+    if (popup) popup.style.display = 'none';
+    if (_activeOverlay) { _activeOverlay.remove(); _activeOverlay = null; }
+    document.querySelectorAll('.creator-tab-btn').forEach(b => b.classList.remove('active'));
+  };
+
+  function makeDraggable(el, handle) {
+    if (!handle) return;
+    let startX, startY, origX, origY;
+
+    handle.addEventListener('mousedown', onDown);
+    handle.addEventListener('touchstart', onTouchDown, { passive: true });
+
+    function onDown(e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      startX = e.clientX; startY = e.clientY;
+      const rect = el.getBoundingClientRect();
+      origX = rect.left; origY = rect.top;
+      // Switch from transform to fixed px positioning
+      el.style.transform = 'none';
+      el.style.left = origX + 'px';
+      el.style.top  = origY + 'px';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+    function onTouchDown(e) {
+      const t = e.touches[0];
+      startX = t.clientX; startY = t.clientY;
+      const rect = el.getBoundingClientRect();
+      origX = rect.left; origY = rect.top;
+      el.style.transform = 'none';
+      el.style.left = origX + 'px';
+      el.style.top  = origY + 'px';
+      document.addEventListener('touchmove', onTouchMove, { passive: false });
+      document.addEventListener('touchend', onTouchUp);
+    }
+    function onMove(e) {
+      const dx = e.clientX - startX, dy = e.clientY - startY;
+      el.style.left = Math.max(0, origX + dx) + 'px';
+      el.style.top  = Math.max(0, origY + dy) + 'px';
+    }
+    function onTouchMove(e) {
+      e.preventDefault();
+      const t = e.touches[0];
+      const dx = t.clientX - startX, dy = t.clientY - startY;
+      el.style.left = Math.max(0, origX + dx) + 'px';
+      el.style.top  = Math.max(0, origY + dy) + 'px';
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    function onTouchUp() {
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', onTouchUp);
+    }
   }
-};
+})();
+
+// Legacy stub — ref card is now in popup, no toggle needed
+window.toggleRefCard = function() {};
 
 // Toggle collapse of One Shot card
 window.toggleOneShotCard = function() {
