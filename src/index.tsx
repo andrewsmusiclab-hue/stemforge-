@@ -5215,15 +5215,16 @@ function fmtTime(s) {
 }
 
 // ── UI state switcher ─────────────────────────────────────────
+function ss(id, val) { var el = document.getElementById(id); if (el) el.style.display = val; }
 function showState(state) {
-  document.getElementById('stems-loading').style.display         = state==='loading'         ? 'block' : 'none';
-  document.getElementById('stems-no-stems').style.display        = state==='no-stems'        ? 'block' : 'none';
-  document.getElementById('stems-error').style.display           = state==='error'           ? 'block' : 'none';
-  document.getElementById('stems-transport').style.display       = state==='player'          ? 'flex'  : 'none';
-  document.getElementById('stems-list').style.display            = state==='player'          ? 'block' : 'none';
-  document.getElementById('stems-upgrade-nudge').style.display   = state==='upgrade'         ? 'block' : 'none';
-  document.getElementById('stems-free-locked').style.display     = state==='free-locked'     ? 'block' : 'none';
-  document.getElementById('stems-creator-blocked').style.display = state==='creator-blocked' ? 'block' : 'none';
+  ss('stems-loading',         state==='loading'         ? 'block' : 'none');
+  ss('stems-no-stems',        state==='no-stems'        ? 'block' : 'none');
+  ss('stems-error',           state==='error'           ? 'block' : 'none');
+  ss('stems-transport',       state==='player'          ? 'flex'  : 'none');
+  ss('stems-list',            state==='player'          ? 'block' : 'none');
+  ss('stems-upgrade-nudge',   state==='upgrade'         ? 'block' : 'none');
+  ss('stems-free-locked',     state==='free-locked'     ? 'block' : 'none');
+  ss('stems-creator-blocked', state==='creator-blocked' ? 'block' : 'none');
   // adv-split panel is controlled by setVIMode, not showState
   if (state !== 'player') {
     document.getElementById('stems-adv-split').style.display = 'none';
@@ -6400,6 +6401,18 @@ async function stemsExtract() {
     if (btn) { btn.disabled=false; btn.innerHTML='<i class="fas fa-layer-group"></i> Retry'; }
   }
 }
+
+// Catch any unhandled error and show the error state instead of spinning forever
+window.addEventListener('error', function(ev) {
+  var msg = document.getElementById('stems-error-msg');
+  if (msg) msg.textContent = (ev.message || 'Script error') + (ev.filename ? ' (' + ev.filename + ':' + ev.lineno + ')' : '');
+  showState('error');
+});
+window.addEventListener('unhandledrejection', function(ev) {
+  var msg = document.getElementById('stems-error-msg');
+  if (msg) msg.textContent = (ev.reason && ev.reason.message) ? ev.reason.message : String(ev.reason || 'Unknown error');
+  showState('error');
+});
 
 stemsInit();
 </script>
