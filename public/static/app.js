@@ -560,9 +560,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════
 
   // Track which tabs have been fetched so we only fetch once per session
-  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false };
+  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false };
   // Cached project arrays per tab (for client-side search)
-  const _libData    = { beats: [], oneshots: [], trash: [], extended: [] };
+  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [] };
   let   _libActive  = 'beats';
 
   // ── Canvas art generator (shared helper) ───────────────────
@@ -700,9 +700,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
-    const genre= p.blueprint ? p.blueprint.genre : '';
-    const label= p.prompt ? p.prompt.slice(0,32) + (p.prompt.length>32?'…':'') : 'Beat';
-    const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : label);
+    const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
+    const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : (p.blueprint ? p.blueprint.genre : 'Beat'));
     const sub  = bpm || '';
     const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
     return `
@@ -873,21 +872,25 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
     });
     // Show/hide panels
-    ['beats','extended','oneshots','trash'].forEach(t => {
+    ['beats','extended','oneshots','uploads','trash'].forEach(t => {
       const panel = document.getElementById('lib-panel-' + t);
       if (panel) panel.style.display = t === tab ? '' : 'none';
     });
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', trash: 'Search trash…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
       filterLibrary('');
     }
     // Load data if not yet loaded
-    fetchLibTab(tab);
+    if (tab === 'uploads') {
+      fetchUploadsTab();
+    } else {
+      fetchLibTab(tab);
+    }
   };
 
   // ── Client-side search filter ────────────────────────────────
@@ -898,6 +901,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const q = query.toLowerCase().trim();
     const gridEl = document.getElementById('project-grid-' + tab);
     if (!gridEl) return;
+    // Uploads tab uses its own renderer
+    if (tab === 'uploads') {
+      const filtered = !q ? _libData.uploads : _libData.uploads.filter(u => {
+        const fn = (u.filename || '').toLowerCase();
+        const g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
+        const m  = (u.analysis && u.analysis.mood ? u.analysis.mood : '').toLowerCase();
+        return fn.includes(q) || g.includes(q) || m.includes(q);
+      });
+      renderUploadsGrid(gridEl, filtered);
+      return;
+    }
     const filtered = !q ? _libData[tab] : _libData[tab].filter(p => {
       const t  = (p.title || '').toLowerCase();
       const pr = (p.prompt || '').toLowerCase();
@@ -905,6 +919,96 @@ document.addEventListener('DOMContentLoaded', () => {
       return t.includes(q) || pr.includes(q) || g.includes(q);
     });
     populateGrid(gridEl, tab, filtered);
+  };
+
+  // ── Fetch uploads tab ──────────────────────────────────────
+  async function fetchUploadsTab() {
+    const gridEl = document.getElementById('project-grid-uploads');
+    if (!gridEl) return;
+    if (_libLoaded.uploads) { renderUploadsGrid(gridEl, _libData.uploads); return; }
+    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+    try {
+      const res = await fetch('/api/reference-uploads');
+      if (!res.ok) {
+        if (res.status === 401) {
+          gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your uploads. <a href="/login">Log in</a></div>';
+          return;
+        }
+        throw new Error('HTTP ' + res.status);
+      }
+      const { uploads } = await res.json();
+      _libData.uploads = uploads || [];
+      _libLoaded.uploads = true;
+      updateTabCount('uploads', _libData.uploads.length);
+      renderUploadsGrid(gridEl, _libData.uploads);
+    } catch(e) {
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
+    }
+  }
+
+  // ── Render uploads grid ─────────────────────────────────────
+  function renderUploadsGrid(gridEl, uploads) {
+    if (!gridEl) return;
+    if (!uploads || uploads.length === 0) {
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-cloud-upload-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No uploads yet. Upload a reference track to get started.</p></div>';
+      return;
+    }
+    let html = '';
+    uploads.forEach((u) => {
+      const analysis = u.analysis || {};
+      const genre = analysis.genre || '';
+      const bpm = analysis.bpm ? (analysis.bpm + ' BPM') : '';
+      const dur = u.duration ? (Math.floor(u.duration/60) + ':' + String(Math.floor(u.duration%60)).padStart(2,'0')) : '';
+      const instruments = analysis.instruments ? analysis.instruments.slice(0,4).join(', ') : '';
+      const mood = analysis.mood || '';
+      const dateStr = u.created_at ? new Date(u.created_at).toLocaleDateString() : '';
+      const summary = analysis.summary || '';
+      html += `
+        <div class="upload-item" onclick="useExistingUpload('${u.file_id}','${(u.filename||'').replace(/'/g,'\\u0027')}',' ${ (summary||genre||'').replace(/'/g,'\\u0027').replace(/"/g,'&quot;').slice(0,120) }')">
+          <div class="upload-item__icon"><i class="fas fa-music"></i></div>
+          <div class="upload-item__body">
+            <div class="upload-item__name">${u.filename || 'Reference track'}</div>
+            <div class="upload-item__meta">${[genre, bpm, dur].filter(Boolean).join(' · ')}</div>
+            ${instruments ? `<div class="upload-item__instruments"><i class="fas fa-guitar" style="color:var(--primary);margin-right:4px;font-size:.7rem"></i>${instruments}</div>` : ''}
+            ${mood ? `<div class="upload-item__mood">${mood}</div>` : ''}
+            ${summary ? `<div class="upload-item__summary">${summary}</div>` : ''}
+            <div class="upload-item__date">${dateStr}</div>
+          </div>
+          <button class="upload-item__use-btn" onclick="event.stopPropagation();useExistingUpload('${u.file_id}','${(u.filename||'').replace(/'/g,'\\u0027')}','${(summary||genre||'').replace(/'/g,'\\u0027').replace(/"/g,'&quot;').slice(0,120)}')" title="Use as reference">
+            <i class="fas fa-arrow-right"></i>
+          </button>
+        </div>`;
+    });
+    gridEl.innerHTML = html;
+  }
+
+  // ── Use an existing upload as reference ─────────────────────
+  window.useExistingUpload = function(fileId, filename, description) {
+    // Navigate to generator and set the ref file
+    window._refFileId = fileId;
+    window.refFileId = fileId;
+    // If on dashboard, switch to generator
+    const genPage = document.getElementById('ref-upload-done');
+    if (genPage) {
+      const nameEl = document.getElementById('ref-upload-name');
+      if (nameEl) nameEl.textContent = filename;
+      const doneEl = document.getElementById('ref-upload-done');
+      const idleEl = document.getElementById('ref-upload-idle');
+      const loadEl = document.getElementById('ref-upload-loading');
+      if (idleEl) idleEl.style.display = 'none';
+      if (loadEl) loadEl.style.display = 'none';
+      if (doneEl) doneEl.style.display = 'flex';
+      const zone = document.getElementById('ref-upload-zone');
+      if (zone) { zone.classList.add('has-file'); }
+      const modePanel = document.getElementById('ref-mode-panel');
+      if (modePanel) modePanel.style.display = 'block';
+      const clearBtn = document.getElementById('ref-clear-btn');
+      if (clearBtn) clearBtn.style.display = 'block';
+      updateRefTabBadge && updateRefTabBadge();
+    } else {
+      // Redirect to generator with file_id param
+      window.location.href = '/generator?ref_file_id=' + encodeURIComponent(fileId) + '&ref_filename=' + encodeURIComponent(filename);
+    }
   };
 
   // ── Soft-delete a card ──────────────────────────────────────
@@ -3581,12 +3685,21 @@ window.updateClipPicker = function(val) {
   const endSec = Math.min(dur, startSec + 30);
   const fmt = s => Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0');
   if (tsEl) tsEl.textContent = fmt(startSec) + ' – ' + fmt(endSec);
+  // Position the blue rectangle to start exactly where the knob is
   if (windowEl) {
     const clipFrac = Math.min(1, 30 / dur);
     const startFrac = startSec / dur;
     windowEl.style.left = (startFrac * 100) + '%';
     windowEl.style.width = (clipFrac * 100) + '%';
   }
+  // Seek audio to the clip start position so playback starts from the knob
+  try {
+    if (!audio.paused) {
+      audio.currentTime = startSec;
+    } else {
+      audio.currentTime = startSec;
+    }
+  } catch(e) {}
   window._refClipStart = startSec;
 };
 
@@ -3595,6 +3708,52 @@ window.uploadRefWithClip = async function() {
   if (!fileInput || !fileInput.files[0]) return;
   const file = fileInput.files[0];
   const startTime = window._refClipStart || 0;
+
+  // ── Duplicate check ──────────────────────────────────────────
+  try {
+    const dupRes = await fetch('/api/check-duplicate-upload?filename=' + encodeURIComponent(file.name));
+    if (dupRes.ok) {
+      const dupData = await dupRes.json();
+      if (dupData.exists && dupData.upload) {
+        const choice = await showDuplicateUploadModal(file.name, dupData.upload);
+        if (choice === 'use_existing') {
+          const existingUpload = dupData.upload;
+          refFileId = existingUpload.file_id;
+          document.getElementById('ref-clip-picker').style.display = 'none';
+          const nameEl = document.getElementById('ref-upload-name');
+          if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
+          const idle2 = document.getElementById('ref-upload-idle');
+          const loading2 = document.getElementById('ref-upload-loading');
+          const done2 = document.getElementById('ref-upload-done');
+          if (idle2) idle2.style.display = 'none';
+          if (loading2) loading2.style.display = 'none';
+          if (done2) done2.style.display = 'flex';
+          const zone2 = document.getElementById('ref-upload-zone');
+          if (zone2) { zone2.classList.add('has-file'); zone2.onclick = null; }
+          const modePanel2 = document.getElementById('ref-mode-panel');
+          if (modePanel2) modePanel2.style.display = 'block';
+          const clearBtn2 = document.getElementById('ref-clear-btn');
+          if (clearBtn2) clearBtn2.style.display = 'block';
+          if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
+          // Fetch cached analysis and display
+          try {
+            const upRow = await fetch('/api/reference-uploads').then(r => r.json());
+            const found = (upRow.uploads || []).find(u => u.file_id === existingUpload.file_id);
+            if (found && found.analysis) {
+              renderAnalysisPanel(found.analysis);
+            } else {
+              startAnalysis(existingUpload.file_id, file.name, null);
+            }
+          } catch { startAnalysis(existingUpload.file_id, file.name, null); }
+          return;
+        }
+        if (choice === 'cancel') return;
+        // choice === 'overwrite' — continue with normal upload
+      }
+    }
+  } catch {}
+
+  // ── Normal upload flow ────────────────────────────────────────
   document.getElementById('ref-clip-picker').style.display = 'none';
   const idle = document.getElementById('ref-upload-idle');
   const loading = document.getElementById('ref-upload-loading');
@@ -3616,16 +3775,20 @@ window.uploadRefWithClip = async function() {
     refFileId = data.file_id;  // use shared var (window._refFileId getter reads this)
     if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
     const fmt = s => Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
-    if (clipInfo) clipInfo.textContent = 'Clip: ' + fmt(startTime) + ' – ' + fmt(startTime+30) + ' used';
+    if (clipInfo) clipInfo.textContent = 'Clip: ' + fmt(startTime) + ' \u2013 ' + fmt(startTime+30) + ' used';
     if (done) { loading.style.display = 'none'; done.style.display = 'flex'; }
     if (zone) { zone.classList.add('has-file'); zone.onclick = null; }
     if (modePanel) modePanel.style.display = 'block';
     if (clearBtn) clearBtn.style.display = 'block';
-    updateRefTabBadge();
-    // Populate info strip — get audio duration from the preview element
+    if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
+    // Populate info strip
     var audioEl = document.getElementById('ref-preview-audio');
     var audioDur = (audioEl && audioEl.duration && !isNaN(audioEl.duration)) ? audioEl.duration : null;
     _showRefInfoStrip({ serverDuration: data.duration, startTime: startTime, audioDuration: audioDur });
+    // Start track analysis
+    startAnalysis(data.file_id, file.name, data.duration);
+    // Save to uploads DB
+    saveReferenceUpload(data.file_id, file.name, data.duration, null);
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';
@@ -3637,7 +3800,7 @@ window.uploadRefWithClip = async function() {
       var z2 = document.getElementById('ref-upload-zone');
       if (z2 && z2.parentNode) z2.parentNode.insertBefore(errEl, z2.nextSibling);
     }
-    errEl.textContent = '\u26a0\ufe0f ' + (err.message || 'Upload failed — try again');
+    errEl.textContent = '\u26a0\ufe0f ' + (err.message || 'Upload failed \u2014 try again');
     setTimeout(function() { if (errEl) errEl.textContent = ''; }, 6000);
   }
 };
@@ -3665,3 +3828,151 @@ window.uploadRefWithClip = async function() {
     }
   }, true);
 })();
+
+// ══ Duplicate upload modal ══════════════════════════════════════════════════
+function showDuplicateUploadModal(filename, existing) {
+  return new Promise((resolve) => {
+    const existingModal = document.getElementById('dup-upload-modal');
+    if (existingModal) existingModal.remove();
+    const dateStr = existing.created_at ? new Date(existing.created_at).toLocaleDateString() : '';
+    const modal = document.createElement('div');
+    modal.id = 'dup-upload-modal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px)';
+    modal.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:32px 28px;max-width:400px;width:90%;text-align:center;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+        <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,rgba(245,158,11,.25),rgba(245,158,11,.1));display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.4rem;color:#f59e0b"><i class="fas fa-exclamation-triangle"></i></div>
+        <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:8px">File already uploaded</h3>
+        <p style="color:var(--muted);font-size:.85rem;margin-bottom:6px"><strong style="color:var(--text)">${filename.length > 36 ? filename.slice(0,33)+'...' : filename}</strong></p>
+        <p style="color:var(--muted);font-size:.8rem;margin-bottom:24px">You uploaded this file on <strong>${dateStr || 'a previous date'}</strong>. What would you like to do?</p>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <button id="dup-use-existing" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:.9rem">
+            <i class="fas fa-check-circle" style="margin-right:6px"></i>Use Existing Upload
+          </button>
+          <button id="dup-overwrite" style="width:100%;padding:12px;background:var(--surface-2,rgba(255,255,255,.06));color:var(--text);border:1px solid var(--border);border-radius:10px;font-weight:600;cursor:pointer;font-size:.9rem">
+            <i class="fas fa-upload" style="margin-right:6px"></i>Overwrite with New File
+          </button>
+          <button id="dup-cancel" style="width:100%;padding:8px;background:none;color:var(--muted);border:none;cursor:pointer;font-size:.82rem">
+            Cancel
+          </button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.querySelector('#dup-use-existing').onclick = () => { modal.remove(); resolve('use_existing'); };
+    modal.querySelector('#dup-overwrite').onclick = () => { modal.remove(); resolve('overwrite'); };
+    modal.querySelector('#dup-cancel').onclick = () => { modal.remove(); resolve('cancel'); };
+  });
+}
+
+// ══ Start async track analysis ══════════════════════════════════════════════
+async function startAnalysis(fileId, filename, duration) {
+  const panel = document.getElementById('ref-analysis-panel');
+  const loadingEl = document.getElementById('ref-analysis-loading');
+  const content = document.getElementById('ref-analysis-content');
+  if (!panel) return;
+  panel.style.display = 'block';
+  if (loadingEl) loadingEl.style.display = 'flex';
+  if (content) content.innerHTML = '';
+  try {
+    const res = await fetch('/api/analyze-reference', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: fileId, filename, duration })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Analysis failed');
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (data.analysis) {
+      renderAnalysisPanel(data.analysis);
+      // Update the saved upload entry with analysis data
+      saveReferenceUpload(fileId, filename, duration, data.analysis);
+    }
+  } catch (err) {
+    if (loadingEl) loadingEl.style.display = 'none';
+    if (content) content.innerHTML = `<p style="color:var(--muted);font-size:.78rem"><i class="fas fa-exclamation-circle" style="margin-right:4px"></i>Analysis unavailable &mdash; ${err.message || 'please try again'}</p>`;
+  }
+}
+
+// ══ Render analysis results panel ══════════════════════════════════════════
+function renderAnalysisPanel(analysis) {
+  const panel = document.getElementById('ref-analysis-panel');
+  const content = document.getElementById('ref-analysis-content');
+  if (!panel || !content || !analysis) return;
+  panel.style.display = 'block';
+
+  const chip = (v) => `<span style="display:inline-block;padding:2px 9px;margin:2px 2px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.25);border-radius:20px;font-size:.72rem;color:var(--primary)">${v}</span>`;
+
+  const row = (icon, label, value) => value
+    ? `<div style="display:flex;gap:8px;margin-bottom:9px;align-items:flex-start">
+         <span style="min-width:18px;color:var(--primary);font-size:.8rem;margin-top:2px"><i class="fas fa-${icon}"></i></span>
+         <div><div style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">${label}</div><div style="color:var(--text);font-size:.8rem;font-weight:500;line-height:1.5">${value}</div></div>
+       </div>` : '';
+
+  let html = '';
+
+  // Summary — Suno style description
+  if (analysis.summary) {
+    html += `<div style="padding:10px 12px;background:rgba(78,159,255,.07);border-left:3px solid var(--primary);border-radius:0 8px 8px 0;margin-bottom:14px;font-size:.82rem;line-height:1.65;color:var(--text);font-style:italic">&ldquo;${analysis.summary}&rdquo;</div>`;
+  }
+
+  // Core meta badges
+  const metaItems = [
+    analysis.genre ? `<span style="font-weight:700;color:var(--primary)">${analysis.genre}${analysis.subgenre ? ' &middot; ' + analysis.subgenre : ''}</span>` : '',
+    analysis.bpm ? `<b>${analysis.bpm} BPM</b>` : '',
+    analysis.key ? `${analysis.key}` : '',
+    analysis.energy ? `Energy: <b>${analysis.energy}</b>` : '',
+  ].filter(Boolean);
+  if (metaItems.length) {
+    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px;font-size:.8rem;color:var(--text)">${metaItems.join('<span style="color:var(--border);margin:0 2px">&bull;</span>')}</div>`;
+  }
+
+  // Mood
+  if (analysis.mood) html += row('heart', 'Mood &amp; Vibe', analysis.mood);
+
+  // Instruments
+  if (analysis.instruments && analysis.instruments.length) {
+    html += `<div style="margin-bottom:10px">
+      <div style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px"><i class="fas fa-guitar" style="color:var(--primary);margin-right:4px"></i>Instruments</div>
+      <div>${analysis.instruments.map(chip).join('')}</div>
+    </div>`;
+  }
+
+  // Vocals
+  if (analysis.vocals) {
+    const v = analysis.vocals;
+    if (v.present) {
+      let vStyle = v.style || 'Vocals detected';
+      if (v.effects && v.effects.length) {
+        vStyle += `<br><span style="color:var(--muted);font-size:.75rem">Effects: ${v.effects.map(chip).join('')}</span>`;
+      }
+      html += row('microphone', 'Vocals', vStyle);
+    } else {
+      html += row('microphone-slash', 'Vocals', '<span style="color:var(--muted)">Instrumental &mdash; no vocals</span>');
+    }
+  }
+
+  // Production & Texture
+  if (analysis.production_style) html += row('sliders-h', 'Production Style', analysis.production_style);
+  if (analysis.sonic_texture) html += row('wave-square', 'Sonic Texture', analysis.sonic_texture);
+  if (analysis.arrangement) html += row('list-music', 'Arrangement', analysis.arrangement);
+
+  // Similar artists
+  if (analysis.similar_artists && analysis.similar_artists.length) {
+    html += `<div style="margin-bottom:4px">
+      <div style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px"><i class="fas fa-users" style="color:var(--primary);margin-right:4px"></i>Similar Artists</div>
+      <div>${analysis.similar_artists.map(chip).join('')}</div>
+    </div>`;
+  }
+
+  content.innerHTML = html || '<p style="color:var(--muted);font-size:.8rem">No analysis data available.</p>';
+}
+
+// ══ Save reference upload metadata to DB ═══════════════════════════════════
+async function saveReferenceUpload(fileId, filename, duration, analysis) {
+  try {
+    await fetch('/api/save-reference-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_id: fileId, filename, duration, analysis_json: analysis })
+    });
+  } catch {}
+}

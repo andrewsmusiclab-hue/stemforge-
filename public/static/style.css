@@ -3433,3 +3433,106 @@ body {
   z-index: 7999;
   backdrop-filter: blur(2px);
 }
+
+/* ── Upload items (Uploads tab) ─────────────────────────────── */
+.upload-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface, #1a1a2e);
+  border: 1px solid var(--border, rgba(255,255,255,.1));
+  border-radius: 12px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+  position: relative;
+}
+.upload-item:hover {
+  border-color: var(--primary, #4e9fff);
+  background: rgba(78,159,255,.05);
+}
+.upload-item__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(78,159,255,.2), rgba(139,92,246,.2));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary, #4e9fff);
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+.upload-item__body {
+  flex: 1;
+  min-width: 0;
+}
+.upload-item__name {
+  font-weight: 600;
+  font-size: .86rem;
+  color: var(--text, #e2e8f0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+.upload-item__meta {
+  font-size: .76rem;
+  color: var(--primary, #4e9fff);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.upload-item__instruments {
+  font-size: .74rem;
+  color: var(--muted, #888);
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upload-item__mood {
+  font-size: .73rem;
+  color: var(--muted, #888);
+  margin-bottom: 3px;
+  font-style: italic;
+}
+.upload-item__summary {
+  font-size: .75rem;
+  color: var(--muted, #888);
+  line-height: 1.5;
+  margin-bottom: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.upload-item__date {
+  font-size: .7rem;
+  color: var(--muted, #888);
+  opacity: .7;
+}
+.upload-item__use-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(78,159,255,.15);
+  border: 1px solid rgba(78,159,255,.3);
+  color: var(--primary, #4e9fff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: .8rem;
+  margin-top: 4px;
+  transition: background .15s;
+}
+.upload-item__use-btn:hover {
+  background: rgba(78,159,255,.3);
+}
+.project-grid--uploads {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}

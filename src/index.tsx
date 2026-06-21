@@ -4286,6 +4286,169 @@ app.get('/api/download-wav-url', async (c) => {
   })
 })
 
+// POST /api/analyze-reference — analyze a reference audio file using OpenAI
+app.post('/api/analyze-reference', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (!c.env.OPENAI_API_KEY) return c.json({ error: 'OpenAI not configured' }, 500)
+
+  const { file_id, filename, duration } = await c.req.json() as any
+  if (!file_id) return c.json({ error: 'Missing file_id' }, 400)
+
+  const prompt = `You are a professional music producer and audio analyst. Analyze this audio track and provide a detailed breakdown in JSON format.
+
+Track info: filename="${filename || 'reference track'}", file_id="${file_id}", duration=${duration ? Math.round(duration) + ' seconds' : 'unknown'}.
+
+Return a JSON object with these exact fields:
+{
+  "genre": "primary genre",
+  "subgenre": "subgenre or style",
+  "bpm": estimated BPM as a number,
+  "key": "musical key (e.g. D Minor, G Major)",
+  "energy": "low/medium/high/very high",
+  "mood": "descriptive mood words",
+  "instruments": ["list", "of", "instruments", "detected"],
+  "production_style": "description of production techniques",
+  "vocals": {
+    "present": true or false,
+    "style": "vocal style description or null",
+    "effects": ["list", "of", "vocal", "effects", "if", "any"]
+  },
+  "sonic_texture": "description of the overall sound texture",
+  "arrangement": "description of song structure/arrangement",
+  "similar_artists": ["3-5", "similar", "artists"],
+  "summary": "2-3 sentence Suno-style description that captures the essence of the track for AI music generation"
+}
+
+Base your analysis on the filename, genre context, and general musical knowledge. Be specific and detailed.`
+
+  try {
+    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+        temperature: 0.3,
+        max_tokens: 800
+      })
+    })
+    if (!aiRes.ok) throw new Error(`OpenAI error ${aiRes.status}`)
+    const aiData = await aiRes.json() as any
+    const analysisText = aiData.choices?.[0]?.message?.content || '{}'
+    let analysis: any = {}
+    try { analysis = JSON.parse(analysisText) } catch {}
+    return c.json({ ok: true, analysis })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'Analysis failed' }, 500)
+  }
+})
+
+// POST /api/save-reference-upload — persist upload metadata to D1
+app.post('/api/save-reference-upload', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
+
+  const { file_id, filename, duration, analysis_json } = await c.req.json() as any
+  if (!file_id || !filename) return c.json({ error: 'Missing file_id or filename' }, 400)
+
+  // Ensure table exists
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS reference_uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    duration REAL,
+    analysis_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`).run()
+
+  await c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ref_uploads_user ON reference_uploads(user_id)`).run().catch(() => {})
+  await c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ref_uploads_filename ON reference_uploads(user_id, filename)`).run().catch(() => {})
+
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO reference_uploads (user_id, file_id, filename, duration, analysis_json) VALUES (?, ?, ?, ?, ?)`
+    ).bind(user.id, file_id, filename, duration || null, analysis_json ? JSON.stringify(analysis_json) : null).run()
+    return c.json({ ok: true })
+  } catch (err: any) {
+    return c.json({ error: err.message || 'DB insert failed' }, 500)
+  }
+})
+
+// GET /api/reference-uploads — list user's uploaded reference tracks
+app.get('/api/reference-uploads', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (!c.env.DB) return c.json({ uploads: [] })
+
+  // Ensure table exists
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS reference_uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    duration REAL,
+    analysis_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`).run().catch(() => {})
+
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT id, file_id, filename, duration, analysis_json, created_at FROM reference_uploads WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`
+    ).bind(user.id).all()
+    const uploads = (rows.results || []).map((r: any) => ({
+      ...r,
+      analysis: r.analysis_json ? (() => { try { return JSON.parse(r.analysis_json) } catch { return null } })() : null
+    }))
+    return c.json({ uploads })
+  } catch {
+    return c.json({ uploads: [] })
+  }
+})
+
+// GET /api/check-duplicate-upload?filename=X — check if filename already uploaded by user
+app.get('/api/check-duplicate-upload', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (!c.env.DB) return c.json({ exists: false })
+
+  const filename = c.req.query('filename')
+  if (!filename) return c.json({ exists: false })
+
+  // Ensure table exists
+  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS reference_uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    file_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    duration REAL,
+    analysis_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`).run().catch(() => {})
+
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT id, file_id, filename, duration, created_at FROM reference_uploads WHERE user_id = ? AND filename = ? ORDER BY created_at DESC LIMIT 1`
+    ).bind(user.id, filename).first()
+    if (row) {
+      return c.json({ exists: true, upload: row })
+    }
+    return c.json({ exists: false })
+  } catch {
+    return c.json({ exists: false })
+  }
+})
+
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6854,6 +7017,17 @@ function generatorPage() {
         <i class="fas fa-times"></i> Remove reference track
       </button>
 
+      <!-- Analysis panel — shown after upload & analysis -->
+      <div id="ref-analysis-panel" style="display:none;margin-top:12px;max-height:280px;overflow-y:auto;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <span style="font-size:.82rem;font-weight:700;color:var(--primary)"><i class="fas fa-microscope" style="margin-right:5px"></i>Track Analysis</span>
+          <div id="ref-analysis-loading" style="display:none"><i class="fas fa-spinner fa-spin" style="font-size:.8rem;color:var(--muted)"></i> <span style="font-size:.75rem;color:var(--muted)">Analyzing…</span></div>
+        </div>
+        <div id="ref-analysis-content" style="font-size:.8rem;line-height:1.65;color:var(--text)">
+          <!-- populated by JS -->
+        </div>
+      </div>
+
       <!-- Mode pills — shown after upload -->
       <div id="ref-mode-panel" style="display:none;margin-top:12px">
         <label class="suno-option-label" style="margin-bottom:8px;font-size:.8rem">How should AI use this track?</label>
@@ -7587,6 +7761,9 @@ function dashboardPage() {
     <button class="lib-tab" data-tab="oneshots" onclick="switchLibTab('oneshots')">
       <i class="fas fa-bolt"></i> One Shots
     </button>
+    <button class="lib-tab" data-tab="uploads" onclick="switchLibTab('uploads')">
+      <i class="fas fa-cloud-upload-alt"></i> Uploads
+    </button>
     <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
@@ -7617,6 +7794,14 @@ function dashboardPage() {
   </div>
   <div id="lib-panel-oneshots" style="display:none">
     <div class="project-grid" id="project-grid-oneshots">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-uploads" style="display:none">
+    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-cloud-upload-alt" style="color:var(--primary)"></i> Reference tracks you've uploaded. Click a track to use it as a reference.
+    </div>
+    <div class="project-grid project-grid--uploads" id="project-grid-uploads">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
