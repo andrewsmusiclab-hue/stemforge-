@@ -3,6 +3,90 @@
    Real pipeline: GPT-4o blueprint → Mureka generation → track extraction
 ═══════════════════════════════════════════════════════════════ */
 
+/* ── Global tooltip system ──────────────────────────────────────────────────
+   Single <div id="sf-tooltip"> appended to <body> — completely outside all
+   overflow/stacking-context containers. Triggered by any [data-tooltip] element.
+   Appears BELOW the element (or to the right if near the bottom of the viewport).
+   Style: light background + dark text matching the browser's native title tooltip.
+────────────────────────────────────────────────────────────────────────────── */
+(function sfTooltipSystem() {
+  var tip = null;       // the singleton bubble
+  var hideTimer = null; // delayed hide so rapid re-hover doesn't flicker
+
+  function getTip() {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'sf-tooltip';
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+
+  function show(el) {
+    var text = el.getAttribute('data-tooltip');
+    if (!text) return;
+    clearTimeout(hideTimer);
+
+    var bubble = getTip();
+    bubble.textContent = text;
+    bubble.style.opacity = '0';
+    bubble.style.display = 'block';
+
+    // Position: prefer below-center, clamp to viewport edges
+    var rect = el.getBoundingClientRect();
+    var GAP  = 7;                              // px gap between element and bubble
+    var vw   = window.innerWidth;
+    var vh   = window.innerHeight;
+
+    // Measure bubble after setting text (it's display:block now)
+    var bw = bubble.offsetWidth;
+    var bh = bubble.offsetHeight;
+
+    // Try below first
+    var top  = rect.bottom + GAP;
+    var left = rect.left + (rect.width - bw) / 2;   // horizontally centered on element
+
+    // If bubble would go off the bottom, flip to above
+    if (top + bh > vh - 8) {
+      top = rect.top - bh - GAP;
+    }
+    // Clamp left so it never goes off either side
+    if (left < 8) left = 8;
+    if (left + bw > vw - 8) left = vw - bw - 8;
+    // If still somehow above the screen, pin to below regardless
+    if (top < 4) top = rect.bottom + GAP;
+
+    bubble.style.left = Math.round(left) + 'px';
+    bubble.style.top  = Math.round(top)  + 'px';
+    bubble.style.opacity = '1';
+  }
+
+  function hide() {
+    hideTimer = setTimeout(function() {
+      if (tip) tip.style.opacity = '0';
+    }, 80);
+  }
+
+  // Single delegated listeners on document — catches all current and future elements
+  document.addEventListener('mouseover', function(e) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-tooltip]') : null;
+    if (el) show(el);
+  }, true);
+
+  document.addEventListener('mouseout', function(e) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-tooltip]') : null;
+    if (el) {
+      // Only hide if we're actually leaving the element (not entering a child)
+      var to = e.relatedTarget;
+      if (!el.contains(to)) hide();
+    }
+  }, true);
+
+  // Also hide on scroll/resize so stale tooltips don't hang around
+  window.addEventListener('scroll', hide, true);
+  window.addEventListener('resize', hide, true);
+})();
+
 document.addEventListener('DOMContentLoaded', () => {
 
   // ── Nav scroll ─────────────────────────────────────────────────
