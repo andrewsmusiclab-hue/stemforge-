@@ -691,6 +691,21 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<s
   return null // still processing
 }
 
+async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<string | null> {
+  const res = await fetch(`${MUREKA_BASE}/song/query/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  })
+  if (!res.ok) return null
+  const data = await res.json() as any
+  if (data.status === 'succeeded') {
+    // song/query returns choices array with audio_url or url
+    const choice = data.choices?.[0]
+    if (choice) return (choice.audio_url || choice.url || null) as string | null
+  }
+  if (data.status === 'failed') throw new Error('Mureka song extend failed')
+  return null
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  STEP 3 — MUREKA STEM SEPARATION via /v1/song/stem
 //  V2 (audio-separation-2): up to 12 stems + MIDI — both Creator & Pro
@@ -1193,7 +1208,11 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   if (job.status !== 'generating' || !job.stereo_task_id) return job
 
   try {
-    const stereoUrl = await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+    // Route polling based on task type
+    const isSongExtend = (job as any).extend_task_type === 'song_extend'
+    const stereoUrl = isSongExtend
+      ? await pollSongExtendStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+      : await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
 
     if (!stereoUrl) {
       // Not ready yet — check timeout (10 min max)
@@ -3125,6 +3144,96 @@ app.post('/api/job/purge', async (c) => {
     `DELETE FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL`
   ).bind(job_id, user.id).run()
   return c.json({ ok: true })
+})
+
+// POST /api/job/extend — extend a completed track using Mureka song/extend API
+// Body: { source_job_id: string, extend_at?: number (ms), lyrics?: string }
+app.post('/api/job/extend', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const { source_job_id, extend_at, lyrics } = await c.req.json<{
+    source_job_id: string; extend_at?: number; lyrics?: string
+  }>()
+  if (!source_job_id) return c.json({ error: 'source_job_id required' }, 400)
+
+  await ensureTable(c.env.DB)
+
+  // Load the source job and verify ownership
+  const row = await c.env.DB.prepare(
+    `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+  ).bind(source_job_id, user.id).first<{ data: string }>()
+  if (!row) return c.json({ error: 'Source track not found' }, 404)
+
+  const sourceJob = JSON.parse(row.data) as any
+  if (!sourceJob.stereo_url) return c.json({ error: 'Source track has no audio URL' }, 400)
+
+  try {
+    // Step 1: Upload the source audio to Mureka files API (purpose: audio)
+    const uploadForm = new FormData()
+    uploadForm.append('purpose', 'audio')
+    uploadForm.append('url', sourceJob.stereo_url)
+    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+      body: uploadForm
+    })
+    if (!uploadRes.ok) {
+      const err = await uploadRes.json() as any
+      return c.json({ error: `Mureka upload error: ${err?.error?.message || uploadRes.status}` }, 502)
+    }
+    const uploadData = await uploadRes.json() as any
+    const uploadAudioId = uploadData.id as string
+
+    // Step 2: Call Mureka song/extend
+    const extendBody: Record<string, any> = {
+      upload_audio_id: uploadAudioId,
+    }
+    if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
+    if (lyrics && lyrics.trim()) extendBody.lyrics = lyrics.trim()
+
+    const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(extendBody)
+    })
+    if (!extRes.ok) {
+      const err = await extRes.json() as any
+      return c.json({ error: `Mureka extend error: ${err?.error?.message || extRes.status}` }, 502)
+    }
+    const extData = await extRes.json() as any
+    const extTaskId = extData.id as string
+
+    // Step 3: Create a new job record in D1 to track the extend result
+    const newJobId = crypto.randomUUID()
+    const now = Date.now()
+    const newJob = {
+      id: newJobId,
+      user_id: user.id,
+      status: 'generating',
+      prompt: `[Extended from: ${sourceJob.title || source_job_id}] ${sourceJob.prompt || ''}`.trim(),
+      title: `${sourceJob.title || 'Track'} (Extended)`,
+      blueprint: sourceJob.blueprint || {},
+      stereo_task_id: extTaskId,
+      stereo_url: null,
+      created_at: now,
+      source_job_id: source_job_id,
+      extend_task_type: 'song_extend'
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
+    ).bind(newJobId, user.id, JSON.stringify(newJob), now).run()
+
+    return c.json({ ok: true, job_id: newJobId, task_id: extTaskId })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Extend failed' }, 500)
+  }
 })
 
 // GET /api/stripe/portal — redirect to Stripe billing portal
@@ -6844,7 +6953,7 @@ function generatorPage() {
 <!-- Reference Track Popup -->
 <div id="creator-popup-reference" class="creator-popup" style="display:none">
   <div class="creator-popup__header" id="creator-popup-reference-header">
-    <span class="creator-popup__title"><i class="fas fa-music"></i> Reference Track <span class="pro-badge" style="font-size:.72rem"><i class="fas fa-crown"></i> Pro</span></span>
+    <span class="creator-popup__title"><i class="fas fa-music"></i> Reference Track</span>
     <button class="creator-popup__close" onclick="closeCreatorPopup('reference')"><i class="fas fa-times"></i></button>
   </div>
   <div class="creator-popup__body">
@@ -6896,31 +7005,6 @@ function generatorPage() {
           <span class="ref-mode-btn__title">Match Style</span>
           <span class="ref-mode-btn__sub">Generate a new beat inspired by this track's vibe</span>
         </button>
-        <button class="ref-mode-btn" data-mode="extend" onclick="selectRefMode('extend')">
-          <i class="fas fa-expand-arrows-alt"></i>
-          <span class="ref-mode-btn__title">Extend Song</span>
-          <span class="ref-mode-btn__sub">Continue the track from where it ends</span>
-        </button>
-        <button class="ref-mode-btn" data-mode="loop" onclick="selectRefMode('loop')">
-          <i class="fas fa-sync-alt"></i>
-          <span class="ref-mode-btn__title">Create Loop</span>
-          <span class="ref-mode-btn__sub">Generate a seamless loop from the reference</span>
-        </button>
-      </div>
-      <div id="ref-loop-opts" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-        <label class="suno-option-label" style="margin-bottom:8px">Loop length</label>
-        <div class="ref-bar-presets">
-          <button class="ref-bar-btn ref-bar-btn--active" data-bars="4" onclick="selectBarPreset(this,4)">4 bars</button>
-          <button class="ref-bar-btn" data-bars="8" onclick="selectBarPreset(this,8)">8 bars</button>
-          <button class="ref-bar-btn" data-bars="16" onclick="selectBarPreset(this,16)">16 bars</button>
-          <button class="ref-bar-btn" data-bars="32" onclick="selectBarPreset(this,32)">32 bars</button>
-          <button class="ref-bar-btn" data-bars="custom" onclick="selectBarPreset(this,'custom')">Custom</button>
-        </div>
-        <div id="ref-bar-custom" style="display:none;margin-top:10px;display:flex;align-items:center;gap:8px">
-          <input type="number" id="ref-bar-custom-val" min="1" max="256" value="16" style="width:80px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem"/>
-          <span style="color:var(--muted);font-size:.88rem">bars</span>
-        </div>
-        <p style="color:var(--muted);font-size:.75rem;margin:8px 0 0"><i class="fas fa-info-circle"></i> Loop will be generated at the BPM of your reference track</p>
       </div>
     </div>
   </div>
@@ -6933,10 +7017,46 @@ function generatorPage() {
     <button class="creator-popup__close" onclick="closeCreatorPopup('extend')"><i class="fas fa-times"></i></button>
   </div>
   <div class="creator-popup__body">
-    <div style="text-align:center;padding:32px 16px">
-      <i class="fas fa-expand-arrows-alt" style="font-size:2.5rem;color:var(--primary);opacity:.5;margin-bottom:16px"></i>
-      <h3 style="margin:0 0 8px;color:var(--text)">Extend Your Song</h3>
-      <p style="color:var(--muted);font-size:.9rem;margin:0">Select one of your completed tracks from the library, then extend it with a continuation. This feature is coming soon — stay tuned!</p>
+    <!-- Step 1: Pick a track -->
+    <div id="ext-step-pick" style="display:block">
+      <label class="suno-option-label" style="margin-bottom:10px">Pick a track to extend</label>
+      <div id="ext-track-list" style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
+        <div style="text-align:center;padding:24px;color:var(--muted);font-size:.85rem">
+          <i class="fas fa-spinner fa-spin" style="margin-bottom:8px;display:block;font-size:1.4rem"></i>
+          Loading your library…
+        </div>
+      </div>
+    </div>
+    <!-- Step 2: Extend options (shown after picking a track) -->
+    <div id="ext-step-options" style="display:none;margin-top:14px">
+      <div id="ext-selected-track" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(78,159,255,.35);border-radius:10px;margin-bottom:14px">
+        <div id="ext-sel-cover" style="width:40px;height:40px;border-radius:8px;background:var(--surface-2);flex-shrink:0;overflow:hidden">
+          <img id="ext-sel-cover-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none"/>
+          <div id="ext-sel-cover-icon" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:1rem"><i class="fas fa-music"></i></div>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div id="ext-sel-title" style="font-size:.88rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
+          <div id="ext-sel-meta" style="font-size:.75rem;color:var(--muted)">—</div>
+        </div>
+        <button onclick="extResetPick()" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 6px;border-radius:6px;font-size:.78rem"><i class="fas fa-times"></i> Change</button>
+      </div>
+      <label class="suno-option-label" style="margin-bottom:6px">Extend at</label>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button class="ref-bar-btn ref-bar-btn--active" data-ext="end" onclick="selectExtPoint(this,'end')">End of track</button>
+        <button class="ref-bar-btn" data-ext="half" onclick="selectExtPoint(this,'half')">Midpoint</button>
+        <button class="ref-bar-btn" data-ext="custom" onclick="selectExtPoint(this,'custom')">Custom (ms)</button>
+      </div>
+      <div id="ext-custom-ms" style="display:none;margin-bottom:14px">
+        <input type="number" id="ext-custom-ms-val" min="0" value="0" placeholder="e.g. 60000"
+          style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.9rem"/>
+        <p style="color:var(--muted);font-size:.75rem;margin:4px 0 0">Enter time in milliseconds (e.g. 60000 = 1 min)</p>
+      </div>
+      <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Add continuation lyrics here, or leave blank for instrumental extension…" style="margin-bottom:12px"></textarea>
+      <button id="ext-submit-btn" onclick="submitSongExtend()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
+        <i class="fas fa-expand-arrows-alt"></i> Extend Track
+      </button>
+      <div id="ext-submit-status" style="display:none;margin-top:10px;text-align:center;font-size:.82rem;color:var(--muted)"></div>
     </div>
   </div>
 </div>

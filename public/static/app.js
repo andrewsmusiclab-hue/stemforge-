@@ -2740,8 +2740,6 @@ window.selectRefMode = function(mode) {
   document.querySelectorAll('.ref-mode-btn').forEach(b => {
     b.classList.toggle('ref-mode-btn--active', b.dataset.mode === mode);
   });
-  const loopOpts = document.getElementById('ref-loop-opts');
-  if (loopOpts) loopOpts.style.display = mode === 'loop' ? 'block' : 'none';
 };
 
 window.selectBarPreset = function(btn, bars) {
@@ -2751,6 +2749,138 @@ window.selectBarPreset = function(btn, bars) {
   const customInput = document.getElementById('ref-bar-custom');
   if (customInput) customInput.style.display = bars === 'custom' ? 'flex' : 'none';
 };
+
+// ── Song Extend popup ─────────────────────────────────────────────────────────
+(function initSongExtend() {
+  let extSelectedJob = null; // { id, title, meta, coverUrl, audioDuration }
+  let extPoint = 'end'; // 'end' | 'half' | 'custom'
+
+  // Load library tracks into the extend picker
+  window._loadExtendLibrary = async function() {
+    const list = document.getElementById('ext-track-list');
+    if (!list) return;
+    list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin" style="margin-bottom:8px;display:block;font-size:1.4rem"></i>Loading your library…</div>';
+    try {
+      const res = await fetch('/api/projects?tab=beats');
+      const data = await res.json();
+      const projects = data.projects || [];
+      if (!projects.length) {
+        list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:.85rem"><i class="fas fa-music" style="display:block;font-size:1.8rem;margin-bottom:8px;opacity:.4"></i>No completed tracks yet</div>';
+        return;
+      }
+      list.innerHTML = '';
+      projects.slice(0, 20).forEach(p => {
+        const coverUrl = p.cover_url || '';
+        const title = p.title || p.prompt || 'Untitled';
+        const meta = [p.genre, p.bpm ? p.bpm + ' BPM' : null].filter(Boolean).join(' · ') || '';
+        const card = document.createElement('div');
+        card.className = 'ext-track-card';
+        card.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .15s ease';
+        card.innerHTML = '<div style="width:38px;height:38px;border-radius:7px;background:var(--card-bg);flex-shrink:0;overflow:hidden">' +
+          (coverUrl ? '<img src="'+coverUrl+'" style="width:100%;height:100%;object-fit:cover"/>' : '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:.9rem"><i class="fas fa-music"></i></div>') +
+          '</div>' +
+          '<div style="flex:1;min-width:0"><div style="font-size:.85rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+title+'</div>' +
+          '<div style="font-size:.74rem;color:var(--muted)">'+meta+'</div></div>' +
+          '<i class="fas fa-chevron-right" style="color:var(--muted);font-size:.75rem"></i>';
+        card.onmouseenter = function() { this.style.borderColor = 'rgba(78,159,255,.5)'; this.style.background = 'rgba(78,159,255,.08)'; };
+        card.onmouseleave = function() { this.style.borderColor = 'var(--border)'; this.style.background = 'var(--surface-2,rgba(255,255,255,.04))'; };
+        card.onclick = function() {
+          extSelectedJob = { id: p.id, title: title, meta: meta, coverUrl: coverUrl, audioDuration: p.duration_ms || 0 };
+          extSelectTrack(extSelectedJob);
+        };
+        list.appendChild(card);
+      });
+    } catch(e) {
+      list.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted);font-size:.85rem">Failed to load library</div>';
+    }
+  };
+
+  function extSelectTrack(job) {
+    const stepPick = document.getElementById('ext-step-pick');
+    const stepOpts = document.getElementById('ext-step-options');
+    const selTitle = document.getElementById('ext-sel-title');
+    const selMeta = document.getElementById('ext-sel-meta');
+    const selImg = document.getElementById('ext-sel-cover-img');
+    const selIcon = document.getElementById('ext-sel-cover-icon');
+    if (stepPick) stepPick.style.display = 'none';
+    if (stepOpts) stepOpts.style.display = 'block';
+    if (selTitle) selTitle.textContent = job.title;
+    if (selMeta) selMeta.textContent = job.meta || 'No metadata';
+    if (selImg && job.coverUrl) { selImg.src = job.coverUrl; selImg.style.display = 'block'; if(selIcon) selIcon.style.display = 'none'; }
+    else { if(selImg) selImg.style.display = 'none'; if(selIcon) selIcon.style.display = 'flex'; }
+    extPoint = 'end';
+    document.querySelectorAll('[data-ext]').forEach(b => b.classList.toggle('ref-bar-btn--active', b.dataset.ext === 'end'));
+    const customMs = document.getElementById('ext-custom-ms');
+    if (customMs) customMs.style.display = 'none';
+  }
+
+  window.extResetPick = function() {
+    extSelectedJob = null;
+    const stepPick = document.getElementById('ext-step-pick');
+    const stepOpts = document.getElementById('ext-step-options');
+    if (stepPick) stepPick.style.display = 'block';
+    if (stepOpts) stepOpts.style.display = 'none';
+  };
+
+  window.selectExtPoint = function(btn, point) {
+    extPoint = point;
+    document.querySelectorAll('[data-ext]').forEach(b => b.classList.toggle('ref-bar-btn--active', b.dataset.ext === point));
+    const customMs = document.getElementById('ext-custom-ms');
+    if (customMs) customMs.style.display = point === 'custom' ? 'block' : 'none';
+  };
+
+  window.submitSongExtend = async function() {
+    if (!extSelectedJob) return;
+    const status = document.getElementById('ext-submit-status');
+    const btn = document.getElementById('ext-submit-btn');
+    const lyrics = (document.getElementById('ext-lyrics') || {}).value || '';
+
+    let extendAt = 0;
+    if (extPoint === 'end') {
+      extendAt = extSelectedJob.audioDuration || 0;
+    } else if (extPoint === 'half') {
+      extendAt = Math.floor((extSelectedJob.audioDuration || 0) / 2);
+    } else {
+      extendAt = parseInt((document.getElementById('ext-custom-ms-val') || {}).value || '0', 10);
+    }
+
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+    if (status) { status.style.display = 'block'; status.textContent = 'Submitting extend job…'; }
+
+    try {
+      const res = await fetch('/api/job/extend', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics })
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (status) status.textContent = 'Extend job started! Check your library for the result.';
+      // Close popup after short delay
+      setTimeout(() => {
+        closeCreatorPopup('extend');
+        window.extResetPick();
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+        if (status) { status.style.display = 'none'; }
+        // Navigate to library to see result
+        if (window.navigate) window.navigate('library');
+      }, 1800);
+    } catch(e) {
+      if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+    }
+  };
+
+  // Hook into openCreatorPopup to load library when extend popup is opened
+  const _origOpenCreatorPopup = window.openCreatorPopup;
+  window.openCreatorPopup = function(type) {
+    if (_origOpenCreatorPopup) _origOpenCreatorPopup(type);
+    if (type === 'extend') {
+      window.extResetPick && window.extResetPick();
+      window._loadExtendLibrary && window._loadExtendLibrary();
+    }
+  };
+})();
 
 // Override getInputs to inject reference_file_id into the generate payload
 // We patch the startGeneration fetch call via a global variable
@@ -3186,20 +3316,17 @@ window.uploadRefWithClip = async function() {
     const file = this.files?.[0];
     if (!file) return;
     // Show clip picker for WAV or files > 500KB (likely full track)
-    if (file.size > 500 * 1024 || file.type.includes('wav')) {
-      const preview = document.getElementById('ref-preview-audio');
-      if (preview) {
-        preview.src = URL.createObjectURL(file);
-        preview.load();
-        preview.onloadedmetadata = function() {
-          const clipPicker = document.getElementById('ref-clip-picker');
-          if (clipPicker) clipPicker.style.display = 'block';
-          window._refClipStart = 0;
-          updateClipPicker(0);
-        };
-      }
-    } else {
-      uploadRefTrack(file, file.name);
+    // Always show clip picker so user can choose which 30 seconds to use
+    const preview = document.getElementById('ref-preview-audio');
+    if (preview) {
+      preview.src = URL.createObjectURL(file);
+      preview.load();
+      preview.onloadedmetadata = function() {
+        const clipPicker = document.getElementById('ref-clip-picker');
+        if (clipPicker) clipPicker.style.display = 'block';
+        window._refClipStart = 0;
+        updateClipPicker(0);
+      };
     }
   }, true);
 })();
