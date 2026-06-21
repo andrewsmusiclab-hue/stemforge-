@@ -2850,6 +2850,21 @@ window.selectRefMode = function(mode) {
   });
 };
 
+// ── Reference popup "Create Beat" button ─────────────────────────────────────
+// Closes the reference popup and fires the main generator button so the user
+// doesn't have to dismiss the popup and click Create separately.
+window.submitRefAndGenerate = function() {
+  // Close the popup (keeps refFileId / refMode / refPrompt in memory)
+  closeCreatorPopup('reference');
+  // Small delay so the popup animation finishes, then click the main gen button
+  setTimeout(function() {
+    var genBtn = document.getElementById('gen-full-btn');
+    if (genBtn && !genBtn.disabled) {
+      genBtn.click();
+    }
+  }, 120);
+};
+
 window.selectBarPreset = function(btn, bars) {
   refBars = bars;
   document.querySelectorAll('.ref-bar-btn').forEach(b => b.classList.remove('ref-bar-btn--active'));

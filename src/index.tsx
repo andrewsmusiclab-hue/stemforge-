@@ -7098,6 +7098,13 @@ function generatorPage() {
           style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2,rgba(255,255,255,.04));color:var(--text);font-size:.85rem;resize:vertical;line-height:1.5;box-sizing:border-box"
           placeholder="e.g. keep the same BPM and dark mood but change the key, add more bass…"></textarea>
       </div>
+
+      <!-- Create button -->
+      <button id="ref-create-btn" onclick="submitRefAndGenerate()"
+        class="btn btn--primary"
+        style="width:100%;margin-top:14px;padding:13px;font-size:.95rem;font-weight:700;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:8px">
+        <i class="fas fa-wand-magic-sparkles"></i> Create Beat
+      </button>
     </div>
   </div>
 </div>
