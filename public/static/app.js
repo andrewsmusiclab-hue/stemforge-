@@ -2840,7 +2840,6 @@ async function uploadRefTrack(file, name) {
 
     if (!res.ok) {
       if (data.upgrade) {
-        // Show upgrade prompt
         if (loading) loading.style.display = 'none';
         idle.style.display = 'flex';
         showUpgradeToast('Reference tracks require the Pro Artist plan.');
@@ -2859,7 +2858,16 @@ async function uploadRefTrack(file, name) {
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';
-    alert('Upload error: ' + err.message);
+    // Show error inline instead of alert
+    var errEl = document.getElementById('ref-upload-error');
+    if (!errEl) {
+      errEl = document.createElement('p');
+      errEl.id = 'ref-upload-error';
+      errEl.style.cssText = 'margin:8px 0 0;color:#ef4444;font-size:.78rem;text-align:center';
+      if (zone && zone.parentNode) zone.parentNode.insertBefore(errEl, zone.nextSibling);
+    }
+    errEl.textContent = '\u26a0\ufe0f ' + (err.message || 'Upload failed — try again');
+    setTimeout(function() { if (errEl) errEl.textContent = ''; }, 6000);
   }
 }
 
@@ -3505,7 +3513,7 @@ window.uploadRefWithClip = async function() {
   try {
     const res = await fetch('/api/upload-reference', { method: 'POST', body: formData });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Upload failed');
+    if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
     refFileId = data.file_id;  // use shared var (window._refFileId getter reads this)
     if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
     const fmt = s => Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
@@ -3518,7 +3526,16 @@ window.uploadRefWithClip = async function() {
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';
-    alert('Upload error: ' + err.message);
+    var errEl = document.getElementById('ref-upload-error');
+    if (!errEl) {
+      errEl = document.createElement('p');
+      errEl.id = 'ref-upload-error';
+      errEl.style.cssText = 'margin:8px 0 0;color:#ef4444;font-size:.78rem;text-align:center';
+      var z2 = document.getElementById('ref-upload-zone');
+      if (z2 && z2.parentNode) z2.parentNode.insertBefore(errEl, z2.nextSibling);
+    }
+    errEl.textContent = '\u26a0\ufe0f ' + (err.message || 'Upload failed — try again');
+    setTimeout(function() { if (errEl) errEl.textContent = ''; }, 6000);
   }
 };
 

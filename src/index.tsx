@@ -4084,14 +4084,22 @@ app.post('/api/upload-reference', async (c) => {
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
 
-  // Parse multipart form — file field = 'file', optional url field = 'url'
+  // Parse multipart form
   const formData = await c.req.formData()
-  const file = formData.get('file') as File | null
-  const url  = formData.get('url') as string | null
+  const file       = formData.get('file') as File | null
+  const url        = formData.get('url') as string | null
+  const startTimeRaw = formData.get('start_time') as string | null
+  const startTimeSec = startTimeRaw ? Math.max(0, parseInt(startTimeRaw, 10) || 0) : 0
 
   if (!file && !url) return c.json({ error: 'Provide a file or url' }, 400)
 
-  // Forward to Mureka /v1/files/upload as multipart
+  // Cloudflare Workers has no ffmpeg — we cannot slice audio server-side.
+  // Mureka's /files/upload trims from the beginning, so we pass start_time
+  // as a query param so Mureka can seek to the right position before trimming.
+  const uploadUrl = new URL(`${MUREKA_BASE}/files/upload`)
+  if (startTimeSec > 0) uploadUrl.searchParams.set('start_time', String(startTimeSec))
+
+  // Forward to Mureka as multipart
   const mForm = new FormData()
   mForm.append('purpose', 'reference')
   if (file) {
@@ -4100,19 +4108,23 @@ app.post('/api/upload-reference', async (c) => {
     mForm.append('url', url)
   }
 
-  const res = await fetch(`${MUREKA_BASE}/files/upload`, {
+  const res = await fetch(uploadUrl.toString(), {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
     body: mForm
   })
 
   if (!res.ok) {
-    const err = await res.json() as any
-    return c.json({ error: err?.error?.message || `Mureka upload error ${res.status}` }, 502)
+    let errMsg = `Mureka upload error ${res.status}`
+    try {
+      const err = await res.json() as any
+      errMsg = err?.error?.message || err?.message || JSON.stringify(err) || errMsg
+    } catch {}
+    console.error('[upload-reference] Mureka error:', res.status, errMsg)
+    return c.json({ error: errMsg }, 502)
   }
 
   const data = await res.json() as any
-  // data.id = the Mureka file ID to pass to instrumental/generate as reference_audio
   return c.json({ ok: true, file_id: data.id, filename: file?.name || url || 'reference' })
 })
 
