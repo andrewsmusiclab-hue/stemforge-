@@ -2639,6 +2639,28 @@ let refBars = 8;
 let oneshotSelectedType = '808 bass hit';
 let oneshotPollInterval = null;
 
+// ── Reference Track inline dropdown toggle ───────────────────
+window.toggleRefDropdown = function() {
+  var panel = document.getElementById('ref-inline-panel');
+  var btn   = document.getElementById('ctab-reference');
+  var chev  = document.getElementById('ctab-ref-chevron');
+  if (!panel) return;
+  var isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'block';
+  if (btn)  btn.classList.toggle('active', !isOpen);
+  if (chev) chev.style.transform = isOpen ? '' : 'rotate(180deg)';
+};
+
+// Helper: update the ON badge on the reference tab button
+function updateRefTabBadge() {
+  var badge = document.getElementById('ctab-ref-badge');
+  var btn   = document.getElementById('ctab-reference');
+  var hasFid = !!refFileId;
+  if (badge) badge.style.display = hasFid ? 'inline-block' : 'none';
+  // Keep button visually active when a track is loaded, even if panel is closed
+  if (btn && hasFid) btn.classList.add('active');
+}
+
 // ── Creator Tab Popup system ─────────────────────────────────
 (function() {
   let _activeOverlay = null;
@@ -2653,6 +2675,9 @@ let oneshotPollInterval = null;
   }
 
   window.openCreatorPopup = function(name) {
+    // Reference track is now an inline dropdown — skip popup for it
+    if (name === 'reference') { window.toggleRefDropdown(); return; }
+
     // Ensure popups are at body level (escapes any stacking context from parent containers)
     ensurePopupsAtBodyLevel();
 
@@ -2677,7 +2702,7 @@ let oneshotPollInterval = null;
     popup.style.transform = 'translate(-50%, -50%)';
 
     // Mark active tab
-    document.querySelectorAll('.creator-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.creator-tab-btn').forEach(b => { if (b.id !== 'ctab-reference') b.classList.remove('active'); });
     const btn = document.getElementById('ctab-' + name);
     if (btn) btn.classList.add('active');
 
@@ -2686,10 +2711,19 @@ let oneshotPollInterval = null;
   };
 
   window.closeCreatorPopup = function(name) {
+    if (name === 'reference') {
+      var panel = document.getElementById('ref-inline-panel');
+      if (panel) panel.style.display = 'none';
+      var btn = document.getElementById('ctab-reference');
+      var chev = document.getElementById('ctab-ref-chevron');
+      if (btn && !refFileId) btn.classList.remove('active');
+      if (chev) chev.style.transform = '';
+      return;
+    }
     const popup = document.getElementById('creator-popup-' + name);
     if (popup) popup.style.display = 'none';
     if (_activeOverlay) { _activeOverlay.remove(); _activeOverlay = null; }
-    document.querySelectorAll('.creator-tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.creator-tab-btn').forEach(b => { if (b.id !== 'ctab-reference') b.classList.remove('active'); });
   };
 
   function makeDraggable(el, handle) {
@@ -2821,6 +2855,7 @@ async function uploadRefTrack(file, name) {
     if (zone) zone.classList.add('has-file');
     if (modePanel) modePanel.style.display = 'block';
     if (clearBtn) clearBtn.style.display = 'block';
+    updateRefTabBadge();
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';
@@ -2842,6 +2877,14 @@ window.clearRefTrack = function() {
   if (modePanel) modePanel.style.display = 'none';
   if (clearBtn) clearBtn.style.display = 'none';
   if (fileInput) fileInput.value = '';
+  updateRefTabBadge();
+  // Close the dropdown if nothing is loaded
+  var panel = document.getElementById('ref-inline-panel');
+  var btn   = document.getElementById('ctab-reference');
+  var chev  = document.getElementById('ctab-ref-chevron');
+  if (panel) panel.style.display = 'none';
+  if (btn)   btn.classList.remove('active');
+  if (chev)  chev.style.transform = '';
 };
 
 window.selectRefMode = function(mode) {
@@ -2852,23 +2895,7 @@ window.selectRefMode = function(mode) {
   });
 };
 
-// ── Reference popup "Create Beat" button ─────────────────────────────────────
-// Closes the reference popup and fires the main generator button so the user
-// doesn't have to dismiss the popup and click Create separately.
-window.submitRefAndGenerate = function() {
-  // Close the popup (keeps refFileId / refMode / refPrompt in memory)
-  closeCreatorPopup('reference');
-  // Small delay so the popup animation finishes, then call startGeneration directly
-  setTimeout(function() {
-    if (typeof window.startGeneration === 'function') {
-      window.startGeneration();
-    } else {
-      // Fallback: click the button if startGeneration not yet exposed
-      var genBtn = document.getElementById('gen-full-btn');
-      if (genBtn && !genBtn.disabled) genBtn.click();
-    }
-  }, 150);
-};
+// submitRefAndGenerate no longer needed — panel stays open, user hits main Create button
 
 window.selectBarPreset = function(btn, bars) {
   refBars = bars;
@@ -3479,7 +3506,7 @@ window.uploadRefWithClip = async function() {
     const res = await fetch('/api/upload-reference', { method: 'POST', body: formData });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Upload failed');
-    window._refFileId = data.file_id;
+    refFileId = data.file_id;  // use shared var (window._refFileId getter reads this)
     if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
     const fmt = s => Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
     if (clipInfo) clipInfo.textContent = 'Clip: ' + fmt(startTime) + ' – ' + fmt(startTime+30) + ' used';
@@ -3487,6 +3514,7 @@ window.uploadRefWithClip = async function() {
     if (zone) { zone.classList.add('has-file'); zone.onclick = null; }
     if (modePanel) modePanel.style.display = 'block';
     if (clearBtn) clearBtn.style.display = 'block';
+    updateRefTabBadge();
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';

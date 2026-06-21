@@ -6750,9 +6750,11 @@ function generatorPage() {
 
     <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
     <div class="creator-tabs-row" id="creator-tabs-row">
-      <button class="creator-tab-btn" id="ctab-reference" onclick="openCreatorPopup('reference')"
+      <button class="creator-tab-btn" id="ctab-reference" onclick="toggleRefDropdown()"
         data-tooltip="Upload a reference track to guide the style and vibe of your beat.">
         <i class="fas fa-music"></i> Reference Track
+        <span id="ctab-ref-badge" style="display:none;margin-left:4px;background:var(--primary);color:#fff;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:700">ON</span>
+        <i class="fas fa-chevron-down" id="ctab-ref-chevron" style="margin-left:4px;font-size:.6rem;transition:transform .2s"></i>
       </button>
       <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
         data-tooltip="Continue any track from your library from where it ends.\n2 credits per extend.">
@@ -6762,6 +6764,75 @@ function generatorPage() {
         data-tooltip="More creative tools coming soon — stay tuned!">
         <i class="fas fa-plus"></i> Coming Soon
       </button>
+    </div>
+
+    <!-- ── Reference Track inline dropdown (toggles open/closed) ── -->
+    <div id="ref-inline-panel" style="display:none;margin-bottom:10px">
+      <!-- Upload zone -->
+      <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
+        <input type="file" id="ref-audio-file" accept="audio/mpeg,audio/mp3" style="display:none"/>
+        <div id="ref-upload-idle" style="display:flex;flex-direction:column;align-items:center">
+          <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
+          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Reference MP3</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — we'll let you pick a 30s clip</p>
+        </div>
+        <div id="ref-upload-loading" style="display:none;flex-direction:column;align-items:center">
+          <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
+          <p style="margin:0;font-size:.85rem;color:var(--muted)">Uploading…</p>
+        </div>
+        <div id="ref-upload-done" style="display:none;flex-direction:column;align-items:center">
+          <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
+          <p style="margin:0;font-weight:600;font-size:.85rem" id="ref-upload-name">reference.mp3</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem" id="ref-clip-info">30s clip selected</p>
+        </div>
+      </div>
+
+      <!-- 30-sec clip picker -->
+      <div id="ref-clip-picker" style="display:none;margin-top:10px;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <label class="suno-option-label" style="margin:0;font-size:.8rem">Choose 30-second clip</label>
+          <span id="ref-clip-timestamp" style="font-size:.76rem;color:var(--primary);font-weight:600">0:00 – 0:30</span>
+        </div>
+        <audio id="ref-preview-audio" style="width:100%;margin-bottom:8px;border-radius:8px" controls preload="metadata"></audio>
+        <div style="position:relative;margin-bottom:6px">
+          <input type="range" id="ref-clip-start" min="0" max="100" value="0" step="0.1"
+            style="width:100%;accent-color:var(--primary);cursor:pointer"
+            oninput="updateClipPicker(this.value)"/>
+          <div id="ref-clip-window" style="position:absolute;top:0;height:100%;background:rgba(78,159,255,0.2);border:1px solid rgba(78,159,255,0.5);border-radius:4px;pointer-events:none;left:0;width:30%"></div>
+        </div>
+        <p style="color:var(--muted);font-size:.73rem;margin:0 0 8px"><i class="fas fa-info-circle"></i> Drag to select which 30 seconds to use</p>
+        <button class="btn btn--primary btn--sm" style="width:100%" onclick="uploadRefWithClip()">
+          <i class="fas fa-cloud-upload-alt"></i> Upload this clip
+        </button>
+      </div>
+
+      <!-- Remove track link -->
+      <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:6px;width:100%;padding:6px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.8rem">
+        <i class="fas fa-times"></i> Remove reference track
+      </button>
+
+      <!-- Mode pills — shown after upload -->
+      <div id="ref-mode-panel" style="display:none;margin-top:12px">
+        <label class="suno-option-label" style="margin-bottom:8px;font-size:.8rem">How should AI use this track?</label>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
+            <i class="fas fa-fingerprint ref-mode-btn__icon" style="color:var(--primary)"></i>
+            <span class="ref-mode-btn__title">Match Style</span>
+            <span class="ref-mode-btn__sep">·</span>
+            <span class="ref-mode-btn__sub">stays true to energy, timing, sonic feel &amp; vibe</span>
+          </button>
+          <button class="ref-mode-btn" data-mode="inspire" onclick="selectRefMode('inspire')">
+            <i class="fas fa-meteor ref-mode-btn__icon" style="color:#a78bfa"></i>
+            <span class="ref-mode-btn__title">Fresh Start</span>
+            <span class="ref-mode-btn__sep">·</span>
+            <span class="ref-mode-btn__sub">inspired by reference, not a copy of it</span>
+          </button>
+        </div>
+        <!-- Subtle hint pointing to main Create button -->
+        <p style="margin:10px 0 0;font-size:.75rem;color:var(--muted);text-align:center">
+          <i class="fas fa-arrow-down" style="margin-right:4px"></i>Now hit <strong style="color:var(--primary)">Create</strong> below to generate with this reference
+        </p>
+      </div>
     </div>
 
     <!-- SECTION 1: Lyrics / Prompt / Instrumental -->
@@ -7010,94 +7081,6 @@ function generatorPage() {
 </div><!-- /suno-gen-page -->
 
 <!-- ── Creator Tab Popups ──────────────────────────────────── -->
-<!-- Reference Track Popup -->
-<div id="creator-popup-reference" class="creator-popup" style="display:none">
-  <div class="creator-popup__header" id="creator-popup-reference-header">
-    <span class="creator-popup__title"><i class="fas fa-music"></i> Reference Track</span>
-    <button class="creator-popup__close" onclick="closeCreatorPopup('reference')"><i class="fas fa-times"></i></button>
-  </div>
-  <div class="creator-popup__body">
-    <!-- Upload zone -->
-    <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
-      <input type="file" id="ref-audio-file" accept="audio/mpeg,audio/mp3" style="display:none"/>
-      <div id="ref-upload-idle">
-        <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--primary);margin-bottom:8px"></i>
-        <p style="margin:0;font-weight:600;font-size:.9rem">Upload Reference Audio</p>
-        <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3 · Pick your 30-second clip below</p>
-      </div>
-      <div id="ref-upload-loading" style="display:none">
-        <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:var(--primary);margin-bottom:8px"></i>
-        <p style="margin:0;font-size:.88rem;color:var(--muted)">Uploading…</p>
-      </div>
-      <div id="ref-upload-done" style="display:none">
-        <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:6px"></i>
-        <p style="margin:0;font-weight:600;font-size:.88rem" id="ref-upload-name">reference.mp3</p>
-        <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem" id="ref-clip-info">30s clip selected</p>
-      </div>
-    </div>
-    <!-- 30-sec clip picker -->
-    <div id="ref-clip-picker" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <label class="suno-option-label" style="margin:0">Choose 30-second clip</label>
-        <span id="ref-clip-timestamp" style="font-size:.78rem;color:var(--primary);font-weight:600">0:00 – 0:30</span>
-      </div>
-      <audio id="ref-preview-audio" style="width:100%;margin-bottom:10px;border-radius:8px" controls preload="metadata"></audio>
-      <div style="position:relative;margin-bottom:6px">
-        <input type="range" id="ref-clip-start" min="0" max="100" value="0" step="0.1"
-          style="width:100%;accent-color:var(--primary);cursor:pointer"
-          oninput="updateClipPicker(this.value)"/>
-        <div id="ref-clip-window" style="position:absolute;top:0;height:100%;background:rgba(78,159,255,0.2);border:1px solid rgba(78,159,255,0.5);border-radius:4px;pointer-events:none;left:0;width:30%"></div>
-      </div>
-      <p style="color:var(--muted);font-size:.75rem;margin:0"><i class="fas fa-info-circle"></i> Drag the slider to select which 30 seconds to use as reference</p>
-      <button class="btn btn--primary btn--sm" style="margin-top:10px;width:100%" onclick="uploadRefWithClip()">
-        <i class="fas fa-cloud-upload-alt"></i> Upload this clip
-      </button>
-    </div>
-    <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:8px;width:100%;padding:7px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82rem">
-      <i class="fas fa-times"></i> Remove reference track
-    </button>
-    <!-- Mode selector — shown after upload -->
-    <div id="ref-mode-panel" style="display:none;margin-top:16px">
-      <label class="suno-option-label" style="margin-bottom:10px">How should AI use this track?</label>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
-
-        <!-- Category 1: Match Style -->
-        <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
-          <i class="fas fa-fingerprint ref-mode-btn__icon" style="color:var(--primary)"></i>
-          <span class="ref-mode-btn__title">Match Style</span>
-          <span class="ref-mode-btn__sep">·</span>
-          <span class="ref-mode-btn__sub">stays true to energy, timing, sonic feel &amp; vibe</span>
-        </button>
-
-        <!-- Category 2: Fresh Start -->
-        <button class="ref-mode-btn" data-mode="inspire" onclick="selectRefMode('inspire')">
-          <i class="fas fa-meteor ref-mode-btn__icon" style="color:#a78bfa"></i>
-          <span class="ref-mode-btn__title">Fresh Start</span>
-          <span class="ref-mode-btn__sep">·</span>
-          <span class="ref-mode-btn__sub">inspired by reference, not a copy of it</span>
-        </button>
-      </div>
-
-      <!-- Prompt field — always visible once a mode is selected -->
-      <div style="margin-top:4px">
-        <label class="suno-option-label" style="margin-bottom:6px">
-          Describe what you want
-          <span style="color:var(--muted);font-weight:400;font-size:.75rem;margin-left:6px">optional</span>
-        </label>
-        <textarea id="ref-prompt-text" rows="3"
-          style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2,rgba(255,255,255,.04));color:var(--text);font-size:.85rem;resize:vertical;line-height:1.5;box-sizing:border-box"
-          placeholder="e.g. keep the same BPM and dark mood but change the key, add more bass…"></textarea>
-      </div>
-
-      <!-- Create button -->
-      <button id="ref-create-btn" onclick="submitRefAndGenerate()"
-        class="btn btn--primary"
-        style="width:100%;margin-top:14px;padding:13px;font-size:.95rem;font-weight:700;border-radius:12px;display:flex;align-items:center;justify-content:center;gap:8px">
-        <i class="fas fa-wand-magic-sparkles"></i> Create Beat
-      </button>
-    </div>
-  </div>
-</div>
 
 <!-- Song Extend Popup -->
 <div id="creator-popup-extend" class="creator-popup" style="display:none">

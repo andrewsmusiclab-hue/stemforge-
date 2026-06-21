@@ -3351,6 +3351,23 @@ body {
   box-shadow: 0 0 0 2px rgba(78,159,255,.12);
 }
 
+/* ── Reference Track inline dropdown panel ──────────────────── */
+#ref-inline-panel {
+  border: 1px solid rgba(78,159,255,.25);
+  border-radius: 12px;
+  padding: 14px;
+  background: var(--surface-2, rgba(255,255,255,.03));
+  animation: refPanelIn .18s ease;
+}
+@keyframes refPanelIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#ctab-reference.active {
+  border-color: rgba(78,159,255,.6);
+  background: rgba(78,159,255,.12);
+}
+
 /* ── Draggable creator popup ────────────────────────────────── */
 .creator-popup {
   position: fixed;
