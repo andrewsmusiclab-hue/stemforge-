@@ -618,20 +618,22 @@ Instrument rules:
 // ═══════════════════════════════════════════════════════════════
 
 async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number, refMode?: string, refPrompt?: string): Promise<string> {
-  // Build the mureka prompt — enforce no vocals/vocal chops on instrumental mode
+  // Build the mureka prompt
   let murekaPrompt = blueprint.mureka_prompt
-  // Always strip any vocal references and explicitly state instrumental only
-  murekaPrompt = murekaPrompt
-    .replace(/\bwith vocals?\b/gi, '')
-    .replace(/\bvocal chops?\b/gi, '')
-    .replace(/\bchops?\b/gi, '')
-    .replace(/\bsinging\b/gi, '')
-    .replace(/\blyrics\b/gi, '')
-    .trim()
-  // Append strong instrumental-only constraint to every beat
-  if (!murekaPrompt.includes('no vocals')) {
-    murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental, no vocal chops'
+  if (!refFileId) {
+    // Non-reference beats: strip vocals and enforce instrumental-only
+    murekaPrompt = murekaPrompt
+      .replace(/\bwith vocals?\b/gi, '')
+      .replace(/\bvocal chops?\b/gi, '')
+      .replace(/\bchops?\b/gi, '')
+      .replace(/\bsinging\b/gi, '')
+      .replace(/\blyrics\b/gi, '')
+      .trim()
+    if (!murekaPrompt.includes('no vocals')) {
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental, no vocal chops'
+    }
   }
+  // For reference tracks: vocals and vocal chops are allowed — no stripping
   // Trim to 200 chars max
   if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
 
@@ -681,9 +683,9 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
     }
 
     // Assemble: mode first, context second, user extra guidance last
+    // NOTE: vocals are allowed on reference tracks — no vocal ban here
     const parts: string[] = [modeDirective]
     if (context) parts.push(context)
-    parts.push('no vocals, purely instrumental')
     if (refPrompt && refPrompt.trim()) parts.push(refPrompt.trim())
 
     murekaPrompt = parts.join(', ')
@@ -4135,7 +4137,14 @@ app.post('/api/upload-reference', async (c) => {
   }
 
   const data = await res.json() as any
-  return c.json({ ok: true, file_id: data.id, filename: file?.name || url || 'reference' })
+  // Pass back any metadata Mureka returns (duration, etc.)
+  return c.json({
+    ok: true,
+    file_id: data.id,
+    filename: file?.name || url || 'reference',
+    duration: data.duration || null,
+    start_time: startTimeSec
+  })
 })
 
 // POST /api/generate-oneshot — generate a one-shot percussive sound (Pro Artist only)
@@ -4459,6 +4468,13 @@ function globalSidebar() {
         <label>Description</label>
         <textarea id="edit-description" class="suno-textarea" rows="2" placeholder="Notes about this beat..."></textarea>
       </div>
+
+      <!-- ── Instruments ──────────────────────────────────────────── -->
+      <div class="form-group" id="edit-instruments-group" style="display:none">
+        <label><i class="fas fa-layer-group" style="color:var(--primary);margin-right:5px"></i>Instruments</label>
+        <div class="blueprint-pills" id="edit-blueprint-pills" style="flex-wrap:wrap;gap:6px;margin-top:4px"></div>
+      </div>
+
       <div class="song-edit-modal__info" id="edit-info-block" style="display:none">
         <div class="song-edit-modal__info-row"><span>Key</span><strong id="edit-info-key">—</strong></div>
         <div class="song-edit-modal__info-row"><span>Scale</span><strong id="edit-info-scale">—</strong></div>
@@ -6806,6 +6822,11 @@ function generatorPage() {
           <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
           <p style="margin:0;font-weight:600;font-size:.85rem" id="ref-upload-name">reference.mp3</p>
           <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem" id="ref-clip-info">30s clip selected</p>
+          <!-- Track info strip — shown after upload -->
+          <div id="ref-track-info" style="display:none;margin-top:8px;padding:6px 12px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.25);border-radius:8px;font-size:.75rem;color:var(--text);display:flex;gap:14px;flex-wrap:wrap;justify-content:center">
+            <span id="ref-info-duration" style="display:none"><i class="fas fa-clock" style="color:var(--primary);margin-right:4px"></i><span id="ref-info-duration-val">—</span></span>
+            <span id="ref-info-clip" style="display:none"><i class="fas fa-cut" style="color:var(--primary);margin-right:4px"></i><span id="ref-info-clip-val">—</span></span>
+          </div>
         </div>
       </div>
 

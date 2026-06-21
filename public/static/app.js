@@ -1395,12 +1395,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!bp || !bpPills) return;
     bpPills.innerHTML = '';
     const pills = [
-      { icon: 'fa-drum',        label: bp.bpm + ' BPM' },
-      { icon: 'fa-music',       label: bp.key + ' ' + bp.scale },
-      { icon: 'fa-compact-disc',label: bp.genre },
-      { icon: 'fa-heart',       label: bp.mood },
-      { icon: 'fa-bolt',        label: bp.energy + ' energy' },
-    ];
+      { icon: 'fa-drum',        label: bp.bpm ? bp.bpm + ' BPM' : null },
+      { icon: 'fa-music',       label: (bp.key || bp.scale) ? (bp.key + ' ' + bp.scale).trim() : null },
+      { icon: 'fa-compact-disc',label: bp.genre || null },
+      { icon: 'fa-heart',       label: bp.mood || null },
+      { icon: 'fa-bolt',        label: bp.energy ? bp.energy + ' energy' : null },
+    ].filter(p => p.label);
     pills.forEach(p => {
       const el = document.createElement('span');
       el.className = 'blueprint-pill';
@@ -2084,6 +2084,54 @@ window.selectEditStemTier = function(tier) {
   if (btn)        btn.style.background     = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
 };
 
+// ── Render instrument pills into the edit modal ─────────────────────────────
+function renderEditInstrumentPills(bp) {
+  var group = document.getElementById('edit-instruments-group');
+  var container = document.getElementById('edit-blueprint-pills');
+  if (!group || !container) return;
+
+  // Hide if no instruments data
+  var instruments = bp && bp.instruments_include;
+  if (!instruments || instruments.length === 0) {
+    group.style.display = 'none';
+    return;
+  }
+
+  // Icon map matching the create-page logic
+  var familyIconMap = {
+    drums: 'fa-drum', bass: 'fa-guitar', keys: 'fa-keyboard',
+    guitar: 'fa-guitar', strings: 'fa-music', brass: 'fa-music',
+    woodwind: 'fa-music', synth: 'fa-wave-square', fx: 'fa-wand-magic-sparkles',
+    vocals: 'fa-microphone', default: 'fa-music'
+  };
+
+  container.innerHTML = '';
+  instruments.forEach(function(ins) {
+    // ins is a string like "Kick Drum" from instruments_include array
+    // Try to map family from name if available
+    var name = typeof ins === 'object' ? ins.name : ins;
+    var family = typeof ins === 'object' ? ins.family : null;
+    if (!family) {
+      var lower = (name || '').toLowerCase();
+      if (lower.includes('kick') || lower.includes('snare') || lower.includes('drum') || lower.includes('hi-hat') || lower.includes('hat')) family = 'drums';
+      else if (lower.includes('bass')) family = 'bass';
+      else if (lower.includes('synth') || lower.includes('pad')) family = 'synth';
+      else if (lower.includes('guitar')) family = 'guitar';
+      else if (lower.includes('piano') || lower.includes('key') || lower.includes('Rhodes')) family = 'keys';
+      else if (lower.includes('vocal') || lower.includes('chop')) family = 'vocals';
+      else if (lower.includes('fx') || lower.includes('magic') || lower.includes('effect')) family = 'fx';
+      else family = 'default';
+    }
+    var icon = familyIconMap[family] || familyIconMap.default;
+    var el = document.createElement('span');
+    el.className = 'blueprint-pill blueprint-pill--instr';
+    el.innerHTML = '<i class="fas ' + icon + '"></i> ' + (name || ins);
+    container.appendChild(el);
+  });
+
+  group.style.display = '';
+}
+
 window.openSongEditModal = function(jobData, jobId) {
   const modal = document.getElementById('song-edit-modal');
   if (!modal) return;
@@ -2098,6 +2146,11 @@ window.openSongEditModal = function(jobData, jobId) {
   resetStemsSection();
   const infoBlock = document.getElementById('edit-info-block');
   if (infoBlock) infoBlock.style.display = 'none';
+  // Reset instruments section
+  var instrGroup = document.getElementById('edit-instruments-group');
+  if (instrGroup) instrGroup.style.display = 'none';
+  var instrContainer = document.getElementById('edit-blueprint-pills');
+  if (instrContainer) instrContainer.innerHTML = '';
 
   // Reset cover art UI
   _setCoverThumb(null);
@@ -2149,6 +2202,8 @@ window.openSongEditModal = function(jobData, jobId) {
       const dur = jobData.blueprint.duration_seconds;
       document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
     }
+    // Render instrument pills
+    renderEditInstrumentPills(jobData.blueprint);
     // Show stems section if ready
     if (jobData.status === 'ready' && jobData.stereo_url) showStemsSection(jobData);
 
@@ -2171,6 +2226,8 @@ window.openSongEditModal = function(jobData, jobId) {
         const dur = job.blueprint.duration_seconds;
         document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
       }
+      // Render instrument pills
+      renderEditInstrumentPills(job.blueprint);
       window._sfProjects[jobId] = job;
       _loadCoverForJob(job);
       // Show stems section if ready
@@ -2855,6 +2912,8 @@ async function uploadRefTrack(file, name) {
     if (modePanel) modePanel.style.display = 'block';
     if (clearBtn) clearBtn.style.display = 'block';
     updateRefTabBadge();
+    // Populate info strip
+    _showRefInfoStrip({ serverDuration: data.duration, startTime: 0, audioDuration: null });
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';
@@ -2871,6 +2930,40 @@ async function uploadRefTrack(file, name) {
   }
 }
 
+// Show ref track info strip below the upload done state
+function _showRefInfoStrip(opts) {
+  var trackInfoEl = document.getElementById('ref-track-info');
+  var durEl       = document.getElementById('ref-info-duration');
+  var durValEl    = document.getElementById('ref-info-duration-val');
+  var clipEl      = document.getElementById('ref-info-clip');
+  var clipValEl   = document.getElementById('ref-info-clip-val');
+  if (!trackInfoEl) return;
+
+  var fmtTime = function(s) { return Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0'); };
+  var shown = false;
+
+  // Full file duration (from audio element or server)
+  var totalDur = opts.audioDuration || opts.serverDuration;
+  if (totalDur && totalDur > 0 && durEl && durValEl) {
+    durValEl.textContent = fmtTime(totalDur) + ' total';
+    durEl.style.display = '';
+    shown = true;
+  } else if (durEl) {
+    durEl.style.display = 'none';
+  }
+
+  // Clip window used
+  var startTime = opts.startTime || 0;
+  if (clipEl && clipValEl) {
+    var clipEnd = Math.min(startTime + 30, totalDur || startTime + 30);
+    clipValEl.textContent = fmtTime(startTime) + ' – ' + fmtTime(clipEnd) + ' used';
+    clipEl.style.display = '';
+    shown = true;
+  }
+
+  trackInfoEl.style.display = shown ? 'flex' : 'none';
+}
+
 window.clearRefTrack = function() {
   refFileId = null;
   const zone = document.getElementById('ref-upload-zone');
@@ -2881,6 +2974,8 @@ window.clearRefTrack = function() {
   const fileInput = document.getElementById('ref-audio-file');
   if (idle) idle.style.display = 'flex';
   if (done) done.style.display = 'none';
+  var trackInfo = document.getElementById('ref-track-info');
+  if (trackInfo) trackInfo.style.display = 'none';
   if (zone) zone.classList.remove('has-file');
   if (modePanel) modePanel.style.display = 'none';
   if (clearBtn) clearBtn.style.display = 'none';
@@ -3527,6 +3622,10 @@ window.uploadRefWithClip = async function() {
     if (modePanel) modePanel.style.display = 'block';
     if (clearBtn) clearBtn.style.display = 'block';
     updateRefTabBadge();
+    // Populate info strip — get audio duration from the preview element
+    var audioEl = document.getElementById('ref-preview-audio');
+    var audioDur = (audioEl && audioEl.duration && !isNaN(audioEl.duration)) ? audioEl.duration : null;
+    _showRefInfoStrip({ serverDuration: data.duration, startTime: startTime, audioDuration: audioDur });
   } catch(err) {
     if (loading) loading.style.display = 'none';
     if (idle) idle.style.display = 'flex';
