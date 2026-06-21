@@ -476,9 +476,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════
 
   // Track which tabs have been fetched so we only fetch once per session
-  const _libLoaded  = { beats: false, oneshots: false, trash: false };
+  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false };
   // Cached project arrays per tab (for client-side search)
-  const _libData    = { beats: [], oneshots: [], trash: [] };
+  const _libData    = { beats: [], oneshots: [], trash: [], extended: [] };
   let   _libActive  = 'beats';
 
   // ── Canvas art generator (shared helper) ───────────────────
@@ -787,14 +787,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
     });
     // Show/hide panels
-    ['beats','oneshots','trash'].forEach(t => {
+    ['beats','extended','oneshots','trash'].forEach(t => {
       const panel = document.getElementById('lib-panel-' + t);
       if (panel) panel.style.display = t === tab ? '' : 'none';
     });
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', oneshots: 'Search one shots…', trash: 'Search trash…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', trash: 'Search trash…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -831,8 +831,8 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({ job_id: jobId })
       });
       if (!r.ok) throw new Error('Delete failed');
-      // Refresh both beats/oneshots and trash tabs
-      _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false;
+      // Refresh beats/extended/oneshots and trash tabs
+      _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false; _libLoaded.extended = false;
       fetchLibTab(_libActive);
       if (_libActive !== 'trash') fetchLibTab('trash'); // pre-load trash count
     } catch(e) { alert('Could not delete item. Please try again.'); }
@@ -2546,7 +2546,19 @@ let oneshotPollInterval = null;
 (function() {
   let _activeOverlay = null;
 
+  // Move all creator popups to <body> on first open to avoid stacking context issues
+  function ensurePopupsAtBodyLevel() {
+    document.querySelectorAll('.creator-popup').forEach(function(popup) {
+      if (popup.parentNode !== document.body) {
+        document.body.appendChild(popup);
+      }
+    });
+  }
+
   window.openCreatorPopup = function(name) {
+    // Ensure popups are at body level (escapes any stacking context from parent containers)
+    ensurePopupsAtBodyLevel();
+
     // Close any open popup first
     document.querySelectorAll('.creator-popup').forEach(p => p.style.display = 'none');
     if (_activeOverlay) { _activeOverlay.remove(); _activeOverlay = null; }

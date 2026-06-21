@@ -3025,13 +3025,13 @@ app.delete('/api/job/cover/:jobId', async (c) => {
   return c.json({ ok: true })
 })
 
-// GET /api/projects?tab=beats|oneshots|trash — return logged-in user's jobs by tab
+// GET /api/projects?tab=beats|oneshots|trash|extended — return logged-in user's jobs by tab
 app.get('/api/projects', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ projects: [] })
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const tab = c.req.query('tab') || 'beats' // beats | oneshots | trash
+  const tab = c.req.query('tab') || 'beats' // beats | oneshots | trash | extended
 
   try {
     await ensureTable(c.env.DB)
@@ -3057,12 +3057,23 @@ app.get('/api/projects', async (c) => {
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
+    } else if (tab === 'extended') {
+      // Extended tracks: jobs with extend_task_type = 'song_extend', ready, not deleted
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
+         AND json_extract(data,'$.extend_task_type') = 'song_extend'
+         AND json_extract(data,'$.status') = 'ready'
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
     } else {
-      // beats tab: regular beats (not one-shots), not deleted
+      // beats tab: regular beats (not one-shots, not extended), not deleted
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
          AND json_extract(data,'$.status') = 'ready'
+         AND json_extract(data,'$.extend_task_type') IS NULL
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
@@ -4017,15 +4028,12 @@ app.post('/api/generate-lyrics', async (c) => {
 })
 
 // POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
-// Pro Artist only
+// Available to all authenticated users
 app.post('/api/upload-reference', async (c) => {
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Reference tracks require the Pro Artist plan.', upgrade: true }, 403)
-  }
 
   // Parse multipart form — file field = 'file', optional url field = 'url'
   const formData = await c.req.formData()
@@ -7466,6 +7474,9 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--active" data-tab="beats" onclick="switchLibTab('beats')">
       <i class="fas fa-music"></i> Beats / Songs
     </button>
+    <button class="lib-tab" data-tab="extended" onclick="switchLibTab('extended')">
+      <i class="fas fa-expand-arrows-alt"></i> Extended
+    </button>
     <button class="lib-tab" data-tab="oneshots" onclick="switchLibTab('oneshots')">
       <i class="fas fa-bolt"></i> One Shots
     </button>
@@ -7486,6 +7497,14 @@ function dashboardPage() {
   <!-- Grid per tab -->
   <div id="lib-panel-beats">
     <div class="project-grid" id="project-grid-beats">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-extended" style="display:none">
+    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-expand-arrows-alt" style="color:var(--primary)"></i> Tracks you've extended using the Song Extend feature.
+    </div>
+    <div class="project-grid" id="project-grid-extended">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
