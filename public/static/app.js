@@ -917,17 +917,8 @@ document.addEventListener('DOMContentLoaded', () => {
         openStemsPopup(jobId, zipUrl);
       }});
       items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song — 2 Credits', action: () => {
-        // Navigate to the create page and open the Song Extend popup for this job
-        window._extendFromJobId = jobId;
-        if (window.navigate) {
-          window.navigate('/create');
-        } else {
-          window.location.hash = '#/create';
-        }
-        // Open the popup after a short delay to let the page render
-        setTimeout(() => {
-          if (window.openCreatorPopup) window.openCreatorPopup('extend');
-        }, 350);
+        // Navigate to the generator page with ?extend=jobId — the page will auto-open the popup
+        window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
       }});
     }
 
@@ -2033,25 +2024,19 @@ window.openSongEditModal = function(jobData, jobId) {
   // Helper to populate cover from a job object
   function _loadCoverForJob(job) {
     var thumb = document.getElementById('edit-cover-thumb');
-    var imageUrl = job.image_url || null;
-    if (imageUrl && imageUrl.startsWith('http')) {
-      _setCoverThumb(imageUrl);
-      if (thumb) thumb.dataset.prevUrl = imageUrl;
-    } else {
-      // No custom image — draw canvas art matching the library card
-      if (thumb && window.drawCanvasArt) {
-        var hue   = job.thumbnail_seed != null ? job.thumbnail_seed : 180;
-        var title = job.title || (job.blueprint ? job.blueprint.genre : '') || 'Untitled';
-        var genre = (job.blueprint && job.blueprint.genre) ? job.blueprint.genre : 'music';
-        // Hide the fallback icon
-        var icon = thumb.querySelector('.edit-cover-thumb__icon');
-        if (icon) icon.style.display = 'none';
-        window.drawCanvasArt(thumb, hue, title, genre);
-      } else {
-        _setCoverThumb(null);
-      }
-      if (thumb) thumb.dataset.prevUrl = '';
+    if (!thumb) return;
+    // Always draw canvas art — same as library cards (library never shows image_url, only canvas)
+    var hue   = (job.thumbnail_seed != null && job.thumbnail_seed !== undefined) ? job.thumbnail_seed : 180;
+    var title = job.title || (job.blueprint ? job.blueprint.genre : '') || 'Untitled';
+    var genre = (job.blueprint && job.blueprint.genre) ? job.blueprint.genre : 'music';
+    // Clear any previously set backgroundImage first
+    thumb.style.backgroundImage = '';
+    var icon = thumb.querySelector('.edit-cover-thumb__icon');
+    if (icon) icon.style.display = 'none';
+    if (window.drawCanvasArt) {
+      window.drawCanvasArt(thumb, hue, title, genre);
     }
+    thumb.dataset.prevUrl = job.image_url || '';
     if (job.image_url_custom) {
       var rb = document.getElementById('edit-cover-remove');
       if (rb) rb.style.display = '';
@@ -3128,6 +3113,38 @@ window.addEventListener('DOMContentLoaded', () => {
   const autoBtn = document.getElementById('dur-auto');
   if (autoBtn) autoBtn.classList.add('beat-count-btn--active');
 });
+
+// ── Auto-open Song Extend popup when arriving at /generator?extend=JOBID ──────
+(function handleExtendQueryParam() {
+  const params = new URLSearchParams(window.location.search);
+  const extJobId = params.get('extend');
+  if (!extJobId) return;
+
+  // Only run on the generator page
+  if (!window.location.pathname.includes('/generator')) return;
+
+  // Clean the URL so a reload doesn't re-trigger
+  const cleanUrl = window.location.pathname;
+  window.history.replaceState({}, '', cleanUrl);
+
+  // Store the job ID so the extend popup can pick it up
+  window._extendFromJobId = extJobId;
+
+  // Wait for the page (including IIFEs) to be fully ready, then open the popup
+  function tryOpen(attemptsLeft) {
+    if (window.openCreatorPopup && document.getElementById('creator-popup-extend')) {
+      window.openCreatorPopup('extend');
+    } else if (attemptsLeft > 0) {
+      setTimeout(() => tryOpen(attemptsLeft - 1), 200);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(() => tryOpen(15), 300));
+  } else {
+    setTimeout(() => tryOpen(15), 300);
+  }
+})();
 
 window.setBeatCount = function(n) {
   // 2-beat option requires Pro Artist plan
