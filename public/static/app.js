@@ -1825,7 +1825,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (subEl && job.blueprint) {
               const stemCount = job.tracks.length;
               const dur = Math.floor((job.blueprint.duration_seconds||120)/60) + ':' + String((job.blueprint.duration_seconds||120)%60).padStart(2,'0');
-              subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale + ' · ' + dur;
+              subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
             }
 
             // Show thumbnail on result card — granite gradient + StemForge logo + title
@@ -3083,8 +3083,12 @@ window.selectBarPreset = function(btn, bars) {
 Object.defineProperty(window, '_refFileId', { get: () => refFileId });
 Object.defineProperty(window, '_refMode', { get: () => refMode });
 Object.defineProperty(window, '_refPrompt', { get: () => {
-  const el = document.getElementById('ref-prompt-text');
-  return el ? el.value.trim() : '';
+  // Use the main prompt/lyrics field — whatever the user typed there
+  const prompt = document.getElementById('gen-prompt');
+  if (prompt && prompt.value.trim()) return prompt.value.trim();
+  const lyrics = document.getElementById('gen-lyrics');
+  if (lyrics && lyrics.value.trim()) return lyrics.value.trim();
+  return '';
 }});
 Object.defineProperty(window, '_refBars', { get: () => {
   if (refBars === 'custom') {

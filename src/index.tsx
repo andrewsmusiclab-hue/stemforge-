@@ -654,31 +654,41 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
       body.prompt = murekaPrompt
     }
   }
-  // If a reference audio file ID was supplied, pass it with mode-specific prompt shaping
+  // If a reference audio file ID was supplied, rebuild prompt from scratch
+  // so reference instructions are never truncated by the 200-char limit
   if (refFileId) {
     body.reference_audio = refFileId
 
-    // Always preserve the original timing (BPM / groove) when a reference is used
-    const timingNote = ', maintain same tempo and rhythmic timing as reference'
+    // Build a short, focused prompt so reference instructions dominate.
+    // We keep genre + BPM from the blueprint but drop the verbose prose.
+    const genre  = blueprint.genre  || ''
+    const bpm    = blueprint.bpm    || ''
+    const energy = blueprint.energy || ''
 
+    // Core context: brief genre/BPM anchor
+    const contextParts: string[] = []
+    if (genre)  contextParts.push(genre)
+    if (bpm)    contextParts.push(`${bpm} BPM`)
+    if (energy) contextParts.push(`${energy} energy`)
+    const context = contextParts.join(', ')
+
+    // Mode directive — this is the primary instruction to Mureka
+    let modeDirective: string
     if (refMode === 'inspire') {
-      // Category 2 — "Fresh Start": reference is inspiration only, not a direct copy
-      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') +
-        ', inspired by reference but take creative liberties, different arrangement and sound design' +
-        timingNote
+      modeDirective = 'inspired by the reference track — take creative liberties with arrangement and sound design, but match its tempo and rhythmic feel'
     } else {
-      // Category 1 — "Match Style" (default): stay close to the reference's sonic character
-      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') +
-        ', closely match the style, energy, sonic texture, and vibe of the reference' +
-        timingNote
+      modeDirective = 'closely match the style, energy, sonic texture, BPM, groove, and overall vibe of the reference track'
     }
 
-    // Append user's freeform prompt guidance if provided
-    if (refPrompt && refPrompt.trim()) {
-      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', ' + refPrompt.trim()
-    }
+    // Assemble: mode first, context second, user extra guidance last
+    const parts: string[] = [modeDirective]
+    if (context) parts.push(context)
+    parts.push('no vocals, purely instrumental')
+    if (refPrompt && refPrompt.trim()) parts.push(refPrompt.trim())
 
-    // Re-trim to 200 chars after additions
+    murekaPrompt = parts.join(', ')
+
+    // Trim to 200 chars — the ref directives are short so they'll survive
     if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
     body.prompt = murekaPrompt
   }
