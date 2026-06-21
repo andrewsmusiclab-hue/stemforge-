@@ -5172,7 +5172,7 @@ function stemsPage(jobId: string) {
 //  STEMS PLAYER — Web Audio API, real waveform, VI toggle
 // ═══════════════════════════════════════════════════════════════
 
-const STEMS_JOB_ID = '${jobId}';
+const STEMS_JOB_ID = document.getElementById('stems-page').dataset.jobId;
 // ── State ─────────────────────────────────────────────────────
 let stemsJob       = null;
 let stemAudios     = {};   // { stem: HTMLAudioElement }
