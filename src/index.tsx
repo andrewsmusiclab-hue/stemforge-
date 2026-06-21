@@ -3182,6 +3182,23 @@ app.post('/api/job/extend', async (c) => {
   const sourceJob = JSON.parse(row.data) as any
   if (!sourceJob.stereo_url) return c.json({ error: 'Source track has no audio URL' }, 400)
 
+  // ── 2-credit deduction ──────────────────────────────────────────────────
+  const EXTEND_COST = 2
+  const freshUser = await c.env.DB.prepare(
+    `SELECT gens_used, gens_limit FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
+  if (!freshUser) return c.json({ error: 'User not found' }, 401)
+  if (freshUser.gens_used + EXTEND_COST > freshUser.gens_limit) {
+    return c.json({
+      error: `Not enough credits. Extend costs ${EXTEND_COST} credits and you only have ${freshUser.gens_limit - freshUser.gens_used} remaining.`,
+      code: 'insufficient_credits'
+    }, 402)
+  }
+  // Deduct up-front so concurrent requests can't race
+  await c.env.DB.prepare(
+    `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
+  ).bind(EXTEND_COST, user.id).run()
+
   try {
     // Step 1: Upload the source audio to Mureka files API (purpose: audio)
     const uploadForm = new FormData()
@@ -3243,6 +3260,12 @@ app.post('/api/job/extend', async (c) => {
 
     return c.json({ ok: true, job_id: newJobId, task_id: extTaskId })
   } catch (e: any) {
+    // Refund the 2 credits if Mureka call failed
+    try {
+      await c.env.DB.prepare(
+        `UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`
+      ).bind(EXTEND_COST, user.id).run()
+    } catch (_) { /* ignore refund failure */ }
     return c.json({ error: e.message || 'Extend failed' }, 500)
   }
 })
@@ -6701,13 +6724,16 @@ function generatorPage() {
 
     <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
     <div class="creator-tabs-row" id="creator-tabs-row">
-      <button class="creator-tab-btn" id="ctab-reference" onclick="openCreatorPopup('reference')">
+      <button class="creator-tab-btn" id="ctab-reference" onclick="openCreatorPopup('reference')"
+        data-tooltip="Upload a reference track to guide the style and vibe of your beat.">
         <i class="fas fa-music"></i> Reference Track
       </button>
-      <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')">
+      <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
+        data-tooltip="Continue any track from your library from where it ends.\n2 credits per extend.">
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
-      <button class="creator-tab-btn" id="ctab-blank" onclick="openCreatorPopup('blank')">
+      <button class="creator-tab-btn" id="ctab-blank" onclick="openCreatorPopup('blank')"
+        data-tooltip="More creative tools coming soon — stay tuned!">
         <i class="fas fa-plus"></i> Coming Soon
       </button>
     </div>

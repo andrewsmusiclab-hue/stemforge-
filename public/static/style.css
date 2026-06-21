@@ -3106,7 +3106,54 @@ body {
   text-transform: uppercase;
 }
 
-/* ── Tooltip system removed — using native browser title tooltips instead ── */
+/* ── Tooltip system ([data-tooltip] attribute) ───────────────────────────── */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 15, 30, 0.97);
+  color: #e2e8f0;
+  font-size: .75rem;
+  font-weight: 500;
+  line-height: 1.45;
+  padding: 7px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(78,159,255,.25);
+  box-shadow: 0 4px 18px rgba(0,0,0,.5);
+  white-space: pre-wrap;
+  width: max-content;
+  max-width: 230px;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .18s ease, visibility .18s ease;
+  z-index: 99999;
+}
+[data-tooltip]::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgba(15,15,30,0.97);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .18s ease, visibility .18s ease;
+  z-index: 99999;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:hover::before {
+  opacity: 1;
+  visibility: visible;
+}
 
 /* ── Vocal toggle ────────────────────────────────────────── */
 .vocal-toggle-group {
@@ -3309,10 +3356,10 @@ body {
   justify-content: center;
   gap: 4px;
   padding: 8px 6px;
-  background: var(--card-bg, #1a1a2e);
-  border: 1px solid var(--border, #2a2a3e);
+  background: var(--surface-2, rgba(255,255,255,.04));
+  border: 1px solid rgba(78,159,255,.28);
   border-radius: 10px;
-  color: var(--muted, #888);
+  color: var(--primary, #4e9fff);
   font-size: .72rem;
   font-weight: 600;
   cursor: pointer;
@@ -3324,9 +3371,10 @@ body {
 }
 .creator-tab-btn:hover,
 .creator-tab-btn.active {
-  background: rgba(78,159,255,.12);
-  border-color: rgba(78,159,255,.4);
+  background: rgba(78,159,255,.14);
+  border-color: rgba(78,159,255,.55);
   color: var(--primary, #4e9fff);
+  box-shadow: 0 0 0 2px rgba(78,159,255,.12);
 }
 
 /* ── Draggable creator popup ────────────────────────────────── */
