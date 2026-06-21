@@ -2845,7 +2845,8 @@ window.clearRefTrack = function() {
 window.selectRefMode = function(mode) {
   refMode = mode;
   document.querySelectorAll('.ref-mode-btn').forEach(b => {
-    b.classList.toggle('ref-mode-btn--active', b.dataset.mode === mode);
+    const isActive = b.dataset.mode === mode;
+    b.classList.toggle('ref-mode-btn--active', isActive);
   });
 };
 
@@ -3026,6 +3027,10 @@ window.selectBarPreset = function(btn, bars) {
 // Expose ref info so startGeneration can read it
 Object.defineProperty(window, '_refFileId', { get: () => refFileId });
 Object.defineProperty(window, '_refMode', { get: () => refMode });
+Object.defineProperty(window, '_refPrompt', { get: () => {
+  const el = document.getElementById('ref-prompt-text');
+  return el ? el.value.trim() : '';
+}});
 Object.defineProperty(window, '_refBars', { get: () => {
   if (refBars === 'custom') {
     return parseInt(document.getElementById('ref-bar-custom-val')?.value || '16') || 16;
@@ -3156,9 +3161,8 @@ window.generateOneShot = async function() {
         const body = JSON.parse(init.body);
         if (window._refFileId) {
           body.reference_file_id = window._refFileId;
-          body.ref_mode = window._refMode;
-          if (window._refMode === 'loop') body.ref_bars = window._refBars;
-          if (window._refMode === 'extend') body.ref_extend = true;
+          body.ref_mode = window._refMode || 'style';
+          if (window._refPrompt) body.ref_prompt = window._refPrompt;
           init = { ...init, body: JSON.stringify(body) };
         }
       } catch {}

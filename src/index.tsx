@@ -617,7 +617,7 @@ Instrument rules:
 //  STEP 2 — MUREKA INSTRUMENTAL GENERATION
 // ═══════════════════════════════════════════════════════════════
 
-async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number): Promise<string> {
+async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number, refMode?: string, refPrompt?: string): Promise<string> {
   // Build the mureka prompt — enforce no vocals/vocal chops on instrumental mode
   let murekaPrompt = blueprint.mureka_prompt
   // Always strip any vocal references and explicitly state instrumental only
@@ -654,9 +654,33 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
       body.prompt = murekaPrompt
     }
   }
-  // If a reference audio file ID was supplied, pass it for style matching
+  // If a reference audio file ID was supplied, pass it with mode-specific prompt shaping
   if (refFileId) {
     body.reference_audio = refFileId
+
+    // Always preserve the original timing (BPM / groove) when a reference is used
+    const timingNote = ', maintain same tempo and rhythmic timing as reference'
+
+    if (refMode === 'inspire') {
+      // Category 2 — "Fresh Start": reference is inspiration only, not a direct copy
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') +
+        ', inspired by reference but take creative liberties, different arrangement and sound design' +
+        timingNote
+    } else {
+      // Category 1 — "Match Style" (default): stay close to the reference's sonic character
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') +
+        ', closely match the style, energy, sonic texture, and vibe of the reference' +
+        timingNote
+    }
+
+    // Append user's freeform prompt guidance if provided
+    if (refPrompt && refPrompt.trim()) {
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', ' + refPrompt.trim()
+    }
+
+    // Re-trim to 200 chars after additions
+    if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
+    body.prompt = murekaPrompt
   }
   const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
     method: 'POST',
@@ -1157,7 +1181,7 @@ function buildCoverImageUrl(job: Job): string {
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
-async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number) {
+async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number, refMode?: string, refPrompt?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -1185,7 +1209,7 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
     job.status = 'generating'
     await setJob(db, { ...job })
 
-    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender, userDurationSec)
+    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender, userDurationSec, refMode, refPrompt)
     job.stereo_task_id = stereoTaskId
     await setJob(db, { ...job })
 
@@ -1254,7 +1278,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, vocal_gender, beat_count } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, ref_mode, ref_prompt, vocal_gender, beat_count } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -1329,7 +1353,7 @@ app.post('/api/generate', async (c) => {
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
   // Parse user_duration: expect seconds as number (60, 90, 120, etc.)
   const userDurationSec = user_duration ? Math.max(30, Math.min(300, parseInt(String(user_duration), 10) || 0)) || undefined : undefined
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec))
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -3216,9 +3240,11 @@ app.post('/api/job/extend', async (c) => {
     const uploadData = await uploadRes.json() as any
     const uploadAudioId = uploadData.id as string
 
-    // Step 2: Call Mureka song/extend
+    // Step 2: Call Mureka song/extend — always preserve the original timing/BPM
     const extendBody: Record<string, any> = {
       upload_audio_id: uploadAudioId,
+      // Keep same tempo and rhythmic feel as the source track
+      prompt: 'maintain same tempo, timing, and rhythmic groove as the original track, seamless continuation'
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
     if (lyrics && lyrics.trim()) extendBody.lyrics = lyrics.trim()
@@ -6993,15 +7019,15 @@ function generatorPage() {
   <div class="creator-popup__body">
     <!-- Upload zone -->
     <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
-      <input type="file" id="ref-audio-file" accept="audio/mp3,audio/mpeg,audio/m4a,audio/wav,audio/x-wav,audio/*" style="display:none"/>
+      <input type="file" id="ref-audio-file" accept="audio/mpeg,audio/mp3" style="display:none"/>
       <div id="ref-upload-idle">
         <i class="fas fa-cloud-upload-alt" style="font-size:1.8rem;color:var(--primary);margin-bottom:8px"></i>
         <p style="margin:0;font-weight:600;font-size:.9rem">Upload Reference Audio</p>
-        <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3, WAV or M4A · Pick your 30-second clip below</p>
+        <p style="margin:4px 0 0;color:var(--muted);font-size:.78rem">MP3 · Pick your 30-second clip below</p>
       </div>
       <div id="ref-upload-loading" style="display:none">
         <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:var(--primary);margin-bottom:8px"></i>
-        <p style="margin:0;font-size:.88rem;color:var(--muted)">Uploading to Mureka…</p>
+        <p style="margin:0;font-size:.88rem;color:var(--muted)">Uploading…</p>
       </div>
       <div id="ref-upload-done" style="display:none">
         <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:6px"></i>
@@ -7030,15 +7056,47 @@ function generatorPage() {
     <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:8px;width:100%;padding:7px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.82rem">
       <i class="fas fa-times"></i> Remove reference track
     </button>
-    <!-- Mode selector -->
+    <!-- Mode selector — shown after upload -->
     <div id="ref-mode-panel" style="display:none;margin-top:16px">
-      <label class="suno-option-label" style="margin-bottom:10px">What do you want to do?</label>
-      <div class="ref-mode-group">
+      <label class="suno-option-label" style="margin-bottom:10px">How should AI use this track?</label>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+
+        <!-- Category 1: Match Style -->
         <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
-          <i class="fas fa-wand-magic-sparkles"></i>
-          <span class="ref-mode-btn__title">Match Style</span>
-          <span class="ref-mode-btn__sub">Generate a new beat inspired by this track's vibe</span>
+          <div style="display:flex;align-items:flex-start;gap:10px;width:100%;text-align:left">
+            <div style="width:32px;height:32px;border-radius:8px;background:rgba(78,159,255,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px">
+              <i class="fas fa-fingerprint" style="color:var(--primary);font-size:.9rem"></i>
+            </div>
+            <div>
+              <div class="ref-mode-btn__title">Match Style</div>
+              <div class="ref-mode-btn__sub">AI stays true to the reference's energy, timing, sonic feel, vibe, and musical character</div>
+            </div>
+          </div>
         </button>
+
+        <!-- Category 2: Fresh Start -->
+        <button class="ref-mode-btn" data-mode="inspire" onclick="selectRefMode('inspire')">
+          <div style="display:flex;align-items:flex-start;gap:10px;width:100%;text-align:left">
+            <div style="width:32px;height:32px;border-radius:8px;background:rgba(139,92,246,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px">
+              <i class="fas fa-meteor" style="color:#a78bfa;font-size:.9rem"></i>
+            </div>
+            <div>
+              <div class="ref-mode-btn__title" style="color:var(--text)">Fresh Start</div>
+              <div class="ref-mode-btn__sub">Create something totally new — inspired by the reference, not a copy of it</div>
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <!-- Prompt field — always visible once a mode is selected -->
+      <div style="margin-top:4px">
+        <label class="suno-option-label" style="margin-bottom:6px">
+          Describe what you want
+          <span style="color:var(--muted);font-weight:400;font-size:.75rem;margin-left:6px">optional</span>
+        </label>
+        <textarea id="ref-prompt-text" rows="3"
+          style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2,rgba(255,255,255,.04));color:var(--text);font-size:.85rem;resize:vertical;line-height:1.5;box-sizing:border-box"
+          placeholder="e.g. keep the same BPM and dark mood but change the key, add more bass…"></textarea>
       </div>
     </div>
   </div>
