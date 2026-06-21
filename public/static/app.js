@@ -1947,6 +1947,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
     genBtn.addEventListener('click', startGeneration);
+    window.startGeneration = startGeneration;
 
   if (genRetryBtn) genRetryBtn.addEventListener('click', () => {
     if (genError) genError.style.display = 'none';
@@ -2856,13 +2857,16 @@ window.selectRefMode = function(mode) {
 window.submitRefAndGenerate = function() {
   // Close the popup (keeps refFileId / refMode / refPrompt in memory)
   closeCreatorPopup('reference');
-  // Small delay so the popup animation finishes, then click the main gen button
+  // Small delay so the popup animation finishes, then call startGeneration directly
   setTimeout(function() {
-    var genBtn = document.getElementById('gen-full-btn');
-    if (genBtn && !genBtn.disabled) {
-      genBtn.click();
+    if (typeof window.startGeneration === 'function') {
+      window.startGeneration();
+    } else {
+      // Fallback: click the button if startGeneration not yet exposed
+      var genBtn = document.getElementById('gen-full-btn');
+      if (genBtn && !genBtn.disabled) genBtn.click();
     }
-  }, 120);
+  }, 150);
 };
 
 window.selectBarPreset = function(btn, bars) {

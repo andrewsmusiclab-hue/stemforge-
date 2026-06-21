@@ -7063,28 +7063,18 @@ function generatorPage() {
 
         <!-- Category 1: Match Style -->
         <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
-          <div style="display:flex;align-items:flex-start;gap:10px;width:100%;text-align:left">
-            <div style="width:32px;height:32px;border-radius:8px;background:rgba(78,159,255,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px">
-              <i class="fas fa-fingerprint" style="color:var(--primary);font-size:.9rem"></i>
-            </div>
-            <div>
-              <div class="ref-mode-btn__title">Match Style</div>
-              <div class="ref-mode-btn__sub">AI stays true to the reference's energy, timing, sonic feel, vibe, and musical character</div>
-            </div>
-          </div>
+          <i class="fas fa-fingerprint ref-mode-btn__icon" style="color:var(--primary)"></i>
+          <span class="ref-mode-btn__title">Match Style</span>
+          <span class="ref-mode-btn__sep">·</span>
+          <span class="ref-mode-btn__sub">stays true to energy, timing, sonic feel &amp; vibe</span>
         </button>
 
         <!-- Category 2: Fresh Start -->
         <button class="ref-mode-btn" data-mode="inspire" onclick="selectRefMode('inspire')">
-          <div style="display:flex;align-items:flex-start;gap:10px;width:100%;text-align:left">
-            <div style="width:32px;height:32px;border-radius:8px;background:rgba(139,92,246,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px">
-              <i class="fas fa-meteor" style="color:#a78bfa;font-size:.9rem"></i>
-            </div>
-            <div>
-              <div class="ref-mode-btn__title" style="color:var(--text)">Fresh Start</div>
-              <div class="ref-mode-btn__sub">Create something totally new — inspired by the reference, not a copy of it</div>
-            </div>
-          </div>
+          <i class="fas fa-meteor ref-mode-btn__icon" style="color:#a78bfa"></i>
+          <span class="ref-mode-btn__title">Fresh Start</span>
+          <span class="ref-mode-btn__sep">·</span>
+          <span class="ref-mode-btn__sub">inspired by reference, not a copy of it</span>
         </button>
       </div>
 
