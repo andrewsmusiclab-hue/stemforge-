@@ -1509,11 +1509,12 @@ document.addEventListener('DOMContentLoaded', () => {
   async function startGeneration() {
     const inputs = getInputs();
 
-    // Validate: need either lyrics (write tab), prompt, style, or instrumental selected
+    // Validate: need either lyrics (write tab), prompt, style, instrumental, OR a reference track
     const hasContent = document.getElementById('gen-lyrics')?.value?.trim() ||
                        document.getElementById('gen-prompt')?.value?.trim() ||
                        document.getElementById('gen-style')?.value?.trim() ||
-                       document.getElementById('gen-instrumental')?.checked;
+                       document.getElementById('gen-instrumental')?.checked ||
+                       window._refFileId;  // reference track counts as content
     if (!hasContent) {
       const left = document.getElementById('suno-left');
       if (left) { left.style.animation = 'shake .3s ease'; setTimeout(() => left.style.animation = '', 400); }
