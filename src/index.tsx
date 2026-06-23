@@ -1445,13 +1445,28 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
   const jobId   = c.req.param('jobId')
   const stemKey = c.req.param('stem').toLowerCase()
-  const job     = await getJob(c.env.DB, jobId)
-  if (!job || !job.zip_url) return c.json({ error: 'Job or ZIP not found' }, 404)
 
-  const zipUrl = job.zip_url
+  // zip_override: used by Advanced Split to stream from a different ZIP than the job's main zip_url
+  const zipOverride = c.req.query('zip_override') || null
 
-  // ── R2 cache check ──────────────────────────────────────────
-  if (c.env.IMAGES) {
+  // If no override, load from job
+  let zipUrl: string
+  if (zipOverride) {
+    // Validate: must be a mureka/cloudfront URL to prevent SSRF
+    const allowed = ['mureka.ai', 'cloudfront.net', 'amazonaws.com', 'genspark']
+    const parsed = (() => { try { return new URL(zipOverride) } catch { return null } })()
+    if (!parsed || !allowed.some(h => parsed.hostname.endsWith(h))) {
+      return c.json({ error: 'Invalid zip_override URL' }, 400)
+    }
+    zipUrl = zipOverride
+  } else {
+    const job = await getJob(c.env.DB, jobId)
+    if (!job || !job.zip_url) return c.json({ error: 'Job or ZIP not found' }, 404)
+    zipUrl = job.zip_url
+  }
+
+  // ── R2 cache check (only for non-override requests) ─────────
+  if (!zipOverride && c.env.IMAGES) {
     try {
       const r2CacheKey = `stem-cache/${jobId}/${stemKey}.wav`
       const cached = await c.env.IMAGES.get(r2CacheKey)
@@ -1593,8 +1608,8 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
     const contentType = foundFilename.toLowerCase().endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav'
 
-    // Write to R2 cache for next request
-    if (c.env.IMAGES) {
+    // Write to R2 cache for next request (skip for zip_override — adv split uses ephemeral ZIPs)
+    if (!zipOverride && c.env.IMAGES) {
       try {
         await c.env.IMAGES.put(`stem-cache/${jobId}/${stemKey}.wav`, audioData, {
           httpMetadata: { contentType }
@@ -1839,6 +1854,148 @@ app.post('/api/job/stems', async (c) => {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`)
       .bind(creditCost, user.id).run()
     return c.json({ error: err?.message || 'Stem extraction failed' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  POST /api/job/stems/advanced-split
+//  Extracts a single user-chosen instrument stem via AI regeneration.
+//  Uses Mureka audio-separation-2 (higher quality) targeted at the
+//  Mureka stem that best maps to the requested instrument.
+//  Cost: 2 credits. Returns two versions (V1 = default, V2 = higher model).
+//  Accessible to Pro Artist plan only (same as normal stems).
+// ═══════════════════════════════════════════════════════════════
+
+// Instrument → Mureka stem mapping
+// Mureka provides: drums, bass, vocals, other, piano, guitar, strings, synth, brass, woodwind, fx
+const ADV_SPLIT_INSTRUMENT_MAP: Record<string, { murekaTarget: string; label: string; emoji: string; color: string; group: string }> = {
+  // ── Drums / Percussion ──────────────────────────────────────
+  'drum_kit':      { murekaTarget: 'drums',    label: 'Drum Kit',       emoji: '🥁', color: '#ef4444', group: 'Drums' },
+  'kick_drum':     { murekaTarget: 'drums',    label: 'Kick Drum',      emoji: '🔴', color: '#ef4444', group: 'Drums' },
+  'snare':         { murekaTarget: 'drums',    label: 'Snare',          emoji: '🟠', color: '#f97316', group: 'Drums' },
+  'hi_hats':       { murekaTarget: 'drums',    label: 'Hi-Hats',        emoji: '🔶', color: '#fbbf24', group: 'Drums' },
+  'cymbals':       { murekaTarget: 'drums',    label: 'Cymbals',        emoji: '✨', color: '#fde68a', group: 'Drums' },
+  'percussion':    { murekaTarget: 'drums',    label: 'Percussion',     emoji: '🪘', color: '#dc2626', group: 'Drums' },
+  'trap_drums':    { murekaTarget: 'drums',    label: 'Trap Drums',     emoji: '🔈', color: '#ef4444', group: 'Drums' },
+  'claps':         { murekaTarget: 'drums',    label: 'Claps',          emoji: '👏', color: '#f87171', group: 'Drums' },
+  // ── Bass ────────────────────────────────────────────────────
+  '808_bass':      { murekaTarget: 'bass',     label: '808 Bass',       emoji: '🎸', color: '#3b82f6', group: 'Bass' },
+  'sub_bass':      { murekaTarget: 'bass',     label: 'Sub Bass',       emoji: '〰️', color: '#2563eb', group: 'Bass' },
+  'electric_bass': { murekaTarget: 'bass',     label: 'Electric Bass',  emoji: '🎸', color: '#60a5fa', group: 'Bass' },
+  'bass_synth':    { murekaTarget: 'bass',     label: 'Bass Synth',     emoji: '🎚️', color: '#818cf8', group: 'Bass' },
+  // ── Vocals ──────────────────────────────────────────────────
+  'lead_vocals':   { murekaTarget: 'vocals',   label: 'Lead Vocals',    emoji: '🎤', color: '#ec4899', group: 'Vocals' },
+  'backing_vocals':{ murekaTarget: 'vocals',   label: 'Backing Vocals', emoji: '🎵', color: '#f472b6', group: 'Vocals' },
+  'vocal_chops':   { murekaTarget: 'vocals',   label: 'Vocal Chops',    emoji: '✂️', color: '#db2777', group: 'Vocals' },
+  'rap_vocals':    { murekaTarget: 'vocals',   label: 'Rap Vocals',     emoji: '🎙️', color: '#e879f9', group: 'Vocals' },
+  'ad_libs':       { murekaTarget: 'vocals',   label: 'Ad Libs',        emoji: '💬', color: '#c026d3', group: 'Vocals' },
+  // ── Melody / Synth ──────────────────────────────────────────
+  'melody':        { murekaTarget: 'other',    label: 'Melody',         emoji: '🎶', color: '#8b5cf6', group: 'Melody' },
+  'lead_synth':    { murekaTarget: 'synth',    label: 'Lead Synth',     emoji: '🎛️', color: '#7c3aed', group: 'Melody' },
+  'synth_pad':     { murekaTarget: 'synth',    label: 'Synth Pad',      emoji: '🌊', color: '#6d28d9', group: 'Melody' },
+  'synth_arp':     { murekaTarget: 'synth',    label: 'Synth Arp',      emoji: '⚡', color: '#9333ea', group: 'Melody' },
+  'trap_melody':   { murekaTarget: 'other',    label: 'Trap Melody',    emoji: '🎹', color: '#a855f7', group: 'Melody' },
+  'flute':         { murekaTarget: 'woodwind', label: 'Flute',          emoji: '🪈', color: '#34d399', group: 'Melody' },
+  'flute_loop':    { murekaTarget: 'woodwind', label: 'Flute Loop',     emoji: '🌿', color: '#10b981', group: 'Melody' },
+  'strings':       { murekaTarget: 'strings',  label: 'Strings',        emoji: '🎻', color: '#06b6d4', group: 'Melody' },
+  'violins':       { murekaTarget: 'strings',  label: 'Violins',        emoji: '🎻', color: '#0891b2', group: 'Melody' },
+  'cello':         { murekaTarget: 'strings',  label: 'Cello',          emoji: '🎻', color: '#0e7490', group: 'Melody' },
+  'orchestral':    { murekaTarget: 'strings',  label: 'Orchestral',     emoji: '🏛️', color: '#155e75', group: 'Melody' },
+  // ── Piano / Keys ────────────────────────────────────────────
+  'piano':         { murekaTarget: 'piano',    label: 'Piano',          emoji: '🎹', color: '#f59e0b', group: 'Keys' },
+  'rhodes':        { murekaTarget: 'piano',    label: 'Rhodes',         emoji: '🎹', color: '#d97706', group: 'Keys' },
+  'electric_piano':{ murekaTarget: 'piano',    label: 'Electric Piano', emoji: '🎹', color: '#b45309', group: 'Keys' },
+  'keys':          { murekaTarget: 'piano',    label: 'Keys',           emoji: '🎵', color: '#92400e', group: 'Keys' },
+  'organ':         { murekaTarget: 'piano',    label: 'Organ',          emoji: '⛪', color: '#78350f', group: 'Keys' },
+  // ── Guitar ──────────────────────────────────────────────────
+  'electric_guitar':{ murekaTarget: 'guitar',  label: 'Electric Guitar',emoji: '🎸', color: '#84cc16', group: 'Guitar' },
+  'acoustic_guitar':{ murekaTarget: 'guitar',  label: 'Acoustic Guitar',emoji: '🎸', color: '#65a30d', group: 'Guitar' },
+  'guitar_riff':   { murekaTarget: 'guitar',   label: 'Guitar Riff',    emoji: '⚡', color: '#4d7c0f', group: 'Guitar' },
+  // ── Brass / Wind ────────────────────────────────────────────
+  'trumpet':       { murekaTarget: 'brass',    label: 'Trumpet',        emoji: '🎺', color: '#fb923c', group: 'Brass' },
+  'saxophone':     { murekaTarget: 'woodwind', label: 'Saxophone',      emoji: '🎷', color: '#f97316', group: 'Brass' },
+  'horn':          { murekaTarget: 'brass',    label: 'Horn Section',   emoji: '📯', color: '#ea580c', group: 'Brass' },
+  // ── FX / Atmosphere ─────────────────────────────────────────
+  'fx':            { murekaTarget: 'fx',       label: 'FX / Effects',   emoji: '🌀', color: '#f87171', group: 'FX' },
+  'atmosphere':    { murekaTarget: 'fx',       label: 'Atmosphere',     emoji: '🌫️', color: '#fca5a5', group: 'FX' },
+  'risers':        { murekaTarget: 'fx',       label: 'Risers & Drops', emoji: '📈', color: '#ef4444', group: 'FX' },
+  'ambience':      { murekaTarget: 'fx',       label: 'Ambience',       emoji: '🔮', color: '#c084fc', group: 'FX' },
+}
+
+app.post('/api/job/stems/advanced-split', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated', redirect: '/login' }, 401)
+
+  // Stems + Advanced Split: Pro Artist plan only
+  if (user.plan === 'creator' || user.plan === 'free') {
+    return c.json({
+      error: 'Advanced Split is a Pro Artist feature. Upgrade to Pro to extract individual instruments.',
+      upgrade: true
+    }, 403)
+  }
+
+  const { job_id, instrument_key } = await c.req.json()
+  if (!job_id || !instrument_key) return c.json({ error: 'job_id and instrument_key required' }, 400)
+
+  const instr = ADV_SPLIT_INSTRUMENT_MAP[instrument_key]
+  if (!instr) return c.json({ error: 'Unknown instrument key: ' + instrument_key }, 400)
+
+  // Load job
+  let job: Job | null = null
+  let jobOwnerId: string | null = null
+  try {
+    const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?').bind(job_id).first<{data:string,user_id:string|null}>()
+    if (row) { job = JSON.parse(row.data) as Job; jobOwnerId = row.user_id }
+  } catch { /* fall through */ }
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+  if (jobOwnerId && jobOwnerId !== user.id) return c.json({ error: 'Forbidden' }, 403)
+  if (job.status !== 'ready') return c.json({ error: 'Beat is not ready yet' }, 400)
+  if (!job.stereo_url) return c.json({ error: 'No stereo audio available' }, 400)
+
+  // Credit cost: 2 credits per advanced split
+  const ADV_COST = 2
+  const fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit FROM users WHERE id = ?').bind(user.id).first<{gens_used:number,gens_limit:number}>()
+  if (!fresh) return c.json({ error: 'User not found' }, 401)
+  if (fresh.gens_used + ADV_COST > fresh.gens_limit) {
+    return c.json({
+      error: `Not enough credits. Advanced Split costs ${ADV_COST} credits and you only have ${fresh.gens_limit - fresh.gens_used} remaining.`,
+      limit_reached: true
+    }, 402)
+  }
+
+  // Deduct immediately
+  await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id = ?').bind(ADV_COST, user.id).run()
+
+  try {
+    // Use audio-separation-2 (higher quality model) for advanced splits
+    // Both V1 and V2 use the same stereo_url but audio-separation-2 gives cleaner results
+    const { zip_url: zip1 } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, 'audio-separation-2')
+    // V2: run again for a second variant
+    const { zip_url: zip2 } = await extractStems(job.stereo_url, c.env.MUREKA_API_KEY, 'audio-separation-2')
+
+    return c.json({
+      ok: true,
+      instrument: {
+        key:        instrument_key,
+        label:      instr.label,
+        emoji:      instr.emoji,
+        color:      instr.color,
+        murekaTarget: instr.murekaTarget,
+      },
+      versions: [
+        { version: 'V1', zip_url: zip1, stem: instr.murekaTarget },
+        { version: 'V2', zip_url: zip2, stem: instr.murekaTarget },
+      ],
+      credits_used: ADV_COST,
+    })
+
+  } catch (err: any) {
+    // Refund on failure
+    await c.env.DB.prepare('UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?').bind(ADV_COST, user.id).run()
+    return c.json({ error: err?.message || 'Advanced Split failed' }, 500)
   }
 })
 
@@ -3876,11 +4033,6 @@ function globalSidebar() {
       <i class="fas fa-tag"></i>
       <span>Promo Codes</span>
     </a>
-    <span class="gs-sidebar__nav-item gs-sidebar__nav-item--coming-soon" tabindex="-1" title="Studio — Coming Soon">
-      <i class="fas fa-flask"></i>
-      <span>Studio</span>
-      <span class="gs-coming-soon-badge">Coming Soon</span>
-    </span>
     <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
       <i class="fas fa-comment-alt"></i>
       <span>Give Us Feedback</span>
@@ -4133,7 +4285,7 @@ function homePage() {
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
     <h1 class="hero__title">Generate the beat.<br/><span class="gradient-text">Download it clean.</span></h1>
-    <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix, access stem bundles (bass, melody, vocals, other), and take your beats to the DAW — all powered by Mureka's music engine.</p>
+    <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix, access stem bundles (bass, melody, vocals, other), and take your beats straight to the DAW.</p>
     <div class="hero__ctas">
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
       <a href="#pricing-preview" class="btn btn--outline btn--lg" onclick="event.preventDefault();document.getElementById('pricing-preview').scrollIntoView({behavior:'smooth'})"><i class="fas fa-tags"></i> See pricing</a>
@@ -4727,6 +4879,60 @@ function stemsPage(jobId: string) {
     <button class="stems-vi-btn" id="vi-instrumental-btn" onclick="setVIMode('instrumental')">
       <i class="fas fa-drum"></i> Instrumental
     </button>
+    <button class="stems-vi-btn stems-vi-btn--adv" id="vi-advsplit-btn" onclick="setVIMode('advsplit')">
+      <i class="fas fa-magic"></i> Advanced Split
+      <span class="adv-split-new-badge">NEW</span>
+    </button>
+  </div>
+
+  <!-- Advanced Split Panel -->
+  <div id="stems-adv-split" style="display:none" class="adv-split-panel">
+
+    <!-- Header -->
+    <div class="adv-split-header">
+      <div>
+        <div style="font-size:1.05rem;font-weight:700;color:var(--text)">Advanced Split</div>
+        <div style="font-size:.8rem;color:var(--muted);margin-top:2px">AI-regenerated stems — search from 50+ instruments · <strong style="color:var(--primary)">2 credits per extraction</strong></div>
+      </div>
+      <div id="adv-split-credit-badge" class="adv-split-credit-pill">
+        <i class="fas fa-coins"></i> <span id="adv-split-credits-left">—</span> credits left
+      </div>
+    </div>
+
+    <!-- Search + instrument grid -->
+    <div class="adv-split-search-row">
+      <div class="adv-split-search-wrap">
+        <i class="fas fa-search adv-split-search-icon"></i>
+        <input type="text" id="adv-split-search" class="adv-split-search" placeholder="Search instrument… e.g. flute, 808, piano" oninput="advSplitFilter(this.value)">
+      </div>
+    </div>
+
+    <div id="adv-split-grid" class="adv-split-grid"></div>
+
+    <!-- Selected instrument + extract CTA -->
+    <div id="adv-split-cta" class="adv-split-cta" style="display:none">
+      <div class="adv-split-cta__left">
+        <div class="adv-split-cta__icon" id="adv-split-cta-icon">🎹</div>
+        <div>
+          <div class="adv-split-cta__name" id="adv-split-cta-name">Piano</div>
+          <div class="adv-split-cta__note">Regenerated from the <span id="adv-split-cta-stem">melody</span> stem · 2 credits</div>
+        </div>
+      </div>
+      <button class="btn btn--primary adv-split-extract-btn" id="adv-split-extract-btn" onclick="advSplitExtract()">
+        <i class="fas fa-magic"></i> Extract — 2 Credits
+      </button>
+    </div>
+
+    <!-- Results area -->
+    <div id="adv-split-results" class="adv-split-results" style="display:none">
+      <div class="adv-split-results__header">
+        <span id="adv-split-results-title" style="font-weight:700;font-size:.9rem">Results</span>
+        <button class="btn btn--outline btn--sm" onclick="advSplitReset()" style="font-size:.75rem">
+          <i class="fas fa-redo"></i> New Split
+        </button>
+      </div>
+      <div id="adv-split-versions" class="adv-split-versions"></div>
+    </div>
 
   </div>
 
@@ -4880,16 +5086,29 @@ function showState(state) {
   if (viStrip) viStrip.style.display = state==='player' ? 'flex' : 'none';
 }
 
-// ── Vocals / Instrumental toggle ──────────────────────────────
+// ── Vocals / Instrumental / Advanced Split toggle ─────────────
 function setVIMode(mode) {
   viMode = mode;
   var vb = document.getElementById('vi-vocals-btn');      if (vb) vb.classList.toggle('stems-vi-btn--active', mode==='vocals');
   var ib = document.getElementById('vi-instrumental-btn'); if (ib) ib.classList.toggle('stems-vi-btn--active', mode==='instrumental');
-  const listEl    = document.getElementById('stems-list');
+  var ab = document.getElementById('vi-advsplit-btn');     if (ab) ab.classList.toggle('stems-vi-btn--active', mode==='advsplit');
+
+  const listEl      = document.getElementById('stems-list');
+  const advEl       = document.getElementById('stems-adv-split');
   const transportEl = document.getElementById('stems-transport');
-  if (listEl)      listEl.style.display      = 'block';
-  if (transportEl) transportEl.style.display  = 'flex';
-  applyVolumes();
+
+  if (mode === 'advsplit') {
+    if (listEl)      listEl.style.display      = 'none';
+    if (advEl)       advEl.style.display        = 'block';
+    if (transportEl) transportEl.style.display  = 'none';
+    // Refresh credit count whenever panel opens
+    advSplitRefreshCredits();
+  } else {
+    if (listEl)      listEl.style.display      = 'block';
+    if (advEl)       advEl.style.display        = 'none';
+    if (transportEl) transportEl.style.display  = 'flex';
+    applyVolumes();
+  }
 }
 
 async function stemsInit() {
@@ -5334,6 +5553,453 @@ function startWaveAnimation(stem, canvas) {
     if (played > 0) { ctx2.fillStyle='rgba(255,255,255,0.9)'; ctx2.fillRect(played-1,0,2,H); }
   }
   tick();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ADVANCED SPLIT — full client-side implementation
+// ═══════════════════════════════════════════════════════════════
+
+const ADV_INSTRUMENTS = [
+  // Drums
+  { key:'drum_kit',       label:'Drum Kit',        emoji:'🥁', color:'#ef4444', group:'Drums',   tags:['drum','kit','beat'] },
+  { key:'kick_drum',      label:'Kick Drum',        emoji:'🔴', color:'#ef4444', group:'Drums',   tags:['kick','808 kick'] },
+  { key:'snare',          label:'Snare',            emoji:'🟠', color:'#f97316', group:'Drums',   tags:['snare','clap snare'] },
+  { key:'hi_hats',        label:'Hi-Hats',          emoji:'🔶', color:'#fbbf24', group:'Drums',   tags:['hihat','hi-hat','hats','cymbals'] },
+  { key:'cymbals',        label:'Cymbals',          emoji:'✨', color:'#fde68a', group:'Drums',   tags:['cymbal','crash','ride'] },
+  { key:'trap_drums',     label:'Trap Drums',       emoji:'🔈', color:'#ef4444', group:'Drums',   tags:['trap','trap drums','drum loop'] },
+  { key:'claps',          label:'Claps',            emoji:'👏', color:'#f87171', group:'Drums',   tags:['clap','hand clap'] },
+  { key:'percussion',     label:'Percussion',       emoji:'🪘', color:'#dc2626', group:'Drums',   tags:['perc','percussion','shaker','tambourine'] },
+  // Bass
+  { key:'808_bass',       label:'808 Bass',         emoji:'🎸', color:'#3b82f6', group:'Bass',    tags:['808','bass','trap bass'] },
+  { key:'sub_bass',       label:'Sub Bass',         emoji:'〰️', color:'#2563eb', group:'Bass',    tags:['sub','sub bass','low end'] },
+  { key:'electric_bass',  label:'Electric Bass',    emoji:'🎸', color:'#60a5fa', group:'Bass',    tags:['electric bass','bass guitar'] },
+  { key:'bass_synth',     label:'Bass Synth',       emoji:'🎚️', color:'#818cf8', group:'Bass',    tags:['bass synth','wobble bass','synth bass'] },
+  // Vocals
+  { key:'lead_vocals',    label:'Lead Vocals',      emoji:'🎤', color:'#ec4899', group:'Vocals',  tags:['vocals','voice','lead','singer'] },
+  { key:'backing_vocals', label:'Backing Vocals',   emoji:'🎵', color:'#f472b6', group:'Vocals',  tags:['backing','background vocals','harmonies'] },
+  { key:'vocal_chops',    label:'Vocal Chops',      emoji:'✂️', color:'#db2777', group:'Vocals',  tags:['chops','vocal chops','sample'] },
+  { key:'rap_vocals',     label:'Rap Vocals',       emoji:'🎙️', color:'#e879f9', group:'Vocals',  tags:['rap','verse','hook'] },
+  { key:'ad_libs',        label:'Ad Libs',          emoji:'💬', color:'#c026d3', group:'Vocals',  tags:['ad lib','adlib','yell','drops'] },
+  // Melody
+  { key:'melody',         label:'Melody',           emoji:'🎶', color:'#8b5cf6', group:'Melody',  tags:['melody','lead melody','hook melody'] },
+  { key:'lead_synth',     label:'Lead Synth',       emoji:'🎛️', color:'#7c3aed', group:'Melody',  tags:['lead synth','synth lead','lead'] },
+  { key:'synth_pad',      label:'Synth Pad',        emoji:'🌊', color:'#6d28d9', group:'Melody',  tags:['pad','synth pad','ambient synth'] },
+  { key:'synth_arp',      label:'Synth Arp',        emoji:'⚡', color:'#9333ea', group:'Melody',  tags:['arp','arpeggio','synth arp'] },
+  { key:'trap_melody',    label:'Trap Melody',      emoji:'🎹', color:'#a855f7', group:'Melody',  tags:['trap melody','bell melody','melody loop'] },
+  { key:'flute',          label:'Flute',            emoji:'🪈', color:'#34d399', group:'Melody',  tags:['flute','pan flute','flute sample'] },
+  { key:'flute_loop',     label:'Flute Loop',       emoji:'🌿', color:'#10b981', group:'Melody',  tags:['flute loop','melody flute'] },
+  { key:'strings',        label:'Strings',          emoji:'🎻', color:'#06b6d4', group:'Melody',  tags:['strings','string section','orchestra strings'] },
+  { key:'violins',        label:'Violins',          emoji:'🎻', color:'#0891b2', group:'Melody',  tags:['violin','violins'] },
+  { key:'cello',          label:'Cello',            emoji:'🎻', color:'#0e7490', group:'Melody',  tags:['cello','cellos'] },
+  { key:'orchestral',     label:'Orchestral',       emoji:'🏛️', color:'#155e75', group:'Melody',  tags:['orchestra','orchestral','cinematic'] },
+  // Keys
+  { key:'piano',          label:'Piano',            emoji:'🎹', color:'#f59e0b', group:'Keys',    tags:['piano','acoustic piano','grand piano'] },
+  { key:'rhodes',         label:'Rhodes',           emoji:'🎹', color:'#d97706', group:'Keys',    tags:['rhodes','electric piano','ep'] },
+  { key:'electric_piano', label:'Electric Piano',   emoji:'🎹', color:'#b45309', group:'Keys',    tags:['electric piano','keys ep'] },
+  { key:'keys',           label:'Keys',             emoji:'🎵', color:'#92400e', group:'Keys',    tags:['keys','keyboard','ivories'] },
+  { key:'organ',          label:'Organ',            emoji:'⛪', color:'#78350f', group:'Keys',    tags:['organ','church organ','hammond'] },
+  // Guitar
+  { key:'electric_guitar',label:'Electric Guitar',  emoji:'🎸', color:'#84cc16', group:'Guitar',  tags:['electric guitar','guitar','distorted guitar'] },
+  { key:'acoustic_guitar',label:'Acoustic Guitar',  emoji:'🎸', color:'#65a30d', group:'Guitar',  tags:['acoustic guitar','acoustic','fingerpick'] },
+  { key:'guitar_riff',    label:'Guitar Riff',      emoji:'⚡', color:'#4d7c0f', group:'Guitar',  tags:['riff','guitar riff','lick'] },
+  // Brass
+  { key:'trumpet',        label:'Trumpet',          emoji:'🎺', color:'#fb923c', group:'Brass',   tags:['trumpet','brass trumpet'] },
+  { key:'saxophone',      label:'Saxophone',        emoji:'🎷', color:'#f97316', group:'Brass',   tags:['sax','saxophone','alto sax','tenor sax'] },
+  { key:'horn',           label:'Horn Section',     emoji:'📯', color:'#ea580c', group:'Brass',   tags:['horn','horns','brass section'] },
+  // FX
+  { key:'fx',             label:'FX / Effects',     emoji:'🌀', color:'#f87171', group:'FX',      tags:['fx','effects','sound design'] },
+  { key:'atmosphere',     label:'Atmosphere',       emoji:'🌫️', color:'#fca5a5', group:'FX',      tags:['atmosphere','atmos','texture'] },
+  { key:'risers',         label:'Risers & Drops',   emoji:'📈', color:'#ef4444', group:'FX',      tags:['riser','drop','transition','build'] },
+  { key:'ambience',       label:'Ambience',         emoji:'🔮', color:'#c084fc', group:'FX',      tags:['ambience','ambient','background'] },
+];
+
+// Groups in display order
+const ADV_GROUPS = ['Drums','Bass','Vocals','Melody','Keys','Guitar','Brass','FX'];
+
+let advSelectedKey  = null;   // currently selected instrument key
+let advExtracting   = false;  // extraction in progress
+let _advInitDone    = false;  // grid built once
+
+function advSplitInit() {
+  if (_advInitDone) return;
+  _advInitDone = true;
+  advSplitRenderGrid(ADV_INSTRUMENTS);
+}
+
+function advSplitRefreshCredits() {
+  fetch('/api/user/me').then(r => r.json()).then(d => {
+    var el = document.getElementById('adv-split-credits-left');
+    if (el && d && typeof d.gens_limit === 'number') {
+      el.textContent = String(d.gens_limit - (d.gens_used || 0));
+    }
+  }).catch(() => {});
+  advSplitInit();
+}
+
+function advSplitFilter(q) {
+  var query = (q || '').toLowerCase().trim();
+  var filtered = query
+    ? ADV_INSTRUMENTS.filter(function(i) {
+        return i.label.toLowerCase().includes(query) ||
+               i.group.toLowerCase().includes(query) ||
+               i.tags.some(function(t) { return t.includes(query); });
+      })
+    : ADV_INSTRUMENTS;
+  advSplitRenderGrid(filtered);
+}
+
+function advSplitRenderGrid(list) {
+  var grid = document.getElementById('adv-split-grid');
+  if (!grid) return;
+
+  if (list.length === 0) {
+    grid.innerHTML = '<div style="padding:32px;text-align:center;color:var(--muted);font-size:.88rem">No instruments match — try a different search</div>';
+    return;
+  }
+
+  // Group by category
+  var grouped = {};
+  ADV_GROUPS.forEach(function(g) { grouped[g] = []; });
+  list.forEach(function(i) {
+    if (grouped[i.group]) grouped[i.group].push(i);
+  });
+
+  var html = '';
+  ADV_GROUPS.forEach(function(g) {
+    var items = grouped[g];
+    if (!items || items.length === 0) return;
+    html += '<div class="adv-split-group">';
+    html += '<div class="adv-split-group__label">' + g + '</div>';
+    html += '<div class="adv-split-group__items">';
+    items.forEach(function(instr) {
+      var isSelected = advSelectedKey === instr.key;
+      html +=
+        '<button class="adv-split-chip' + (isSelected ? ' adv-split-chip--selected' : '') + '" ' +
+        'onclick="advSplitSelect(\'' + instr.key + '\')" ' +
+        'style="--chip-color:' + instr.color + '">' +
+        '<span class="adv-split-chip__emoji">' + instr.emoji + '</span>' +
+        '<span class="adv-split-chip__label">' + instr.label + '</span>' +
+        '</button>';
+    });
+    html += '</div></div>';
+  });
+  grid.innerHTML = html;
+}
+
+function advSplitSelect(key) {
+  advSelectedKey = key;
+  // Re-render grid to update selection highlight
+  var q = document.getElementById('adv-split-search');
+  advSplitFilter(q ? q.value : '');
+
+  // Show CTA bar
+  var instr = ADV_INSTRUMENTS.find(function(i) { return i.key === key; });
+  if (!instr) return;
+
+  var cta = document.getElementById('adv-split-cta');
+  if (cta) cta.style.display = 'flex';
+
+  var icon = document.getElementById('adv-split-cta-icon');
+  if (icon) icon.textContent = instr.emoji;
+  var name = document.getElementById('adv-split-cta-name');
+  if (name) name.textContent = instr.label;
+
+  // Determine the "from stem" label for user clarity
+  var stemLabels = {
+    drums:'drums', bass:'bass', vocals:'vocals', other:'melody',
+    piano:'keys', guitar:'guitar', strings:'strings',
+    synth:'synth', brass:'brass', woodwind:'woodwind', fx:'fx'
+  };
+  // Look up from server-side map equivalent (embedded in JS)
+  var murekaTargetMap = {
+    drum_kit:'drums', kick_drum:'drums', snare:'drums', hi_hats:'drums', cymbals:'drums',
+    trap_drums:'drums', claps:'drums', percussion:'drums',
+    '808_bass':'bass', sub_bass:'bass', electric_bass:'bass', bass_synth:'bass',
+    lead_vocals:'vocals', backing_vocals:'vocals', vocal_chops:'vocals', rap_vocals:'vocals', ad_libs:'vocals',
+    melody:'other', lead_synth:'synth', synth_pad:'synth', synth_arp:'synth', trap_melody:'other',
+    flute:'woodwind', flute_loop:'woodwind', strings:'strings', violins:'strings', cello:'strings', orchestral:'strings',
+    piano:'piano', rhodes:'piano', electric_piano:'piano', keys:'piano', organ:'piano',
+    electric_guitar:'guitar', acoustic_guitar:'guitar', guitar_riff:'guitar',
+    trumpet:'brass', saxophone:'woodwind', horn:'brass',
+    fx:'fx', atmosphere:'fx', risers:'fx', ambience:'fx'
+  };
+  var target = murekaTargetMap[key] || 'melody';
+  var stemEl = document.getElementById('adv-split-cta-stem');
+  if (stemEl) stemEl.textContent = stemLabels[target] || target;
+
+  // Hide results from any previous extraction
+  var resEl = document.getElementById('adv-split-results');
+  if (resEl) resEl.style.display = 'none';
+}
+
+async function advSplitExtract() {
+  if (!advSelectedKey || advExtracting) return;
+
+  var btn = document.getElementById('adv-split-extract-btn');
+  if (!btn) return;
+
+  advExtracting = true;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting…';
+
+  // Show animated progress
+  var resEl = document.getElementById('adv-split-results');
+  var versEl = document.getElementById('adv-split-versions');
+  var titleEl = document.getElementById('adv-split-results-title');
+
+  if (resEl) resEl.style.display = 'block';
+  if (titleEl) titleEl.textContent = 'Extracting — this takes 15–30 seconds…';
+  if (versEl) {
+    versEl.innerHTML =
+      '<div class="adv-split-extracting">' +
+        '<div class="adv-split-extracting__bar">' +
+          '<div class="adv-split-extracting__fill" id="adv-extract-fill"></div>' +
+        '</div>' +
+        '<div class="adv-split-extracting__labels">' +
+          '<span><i class="fas fa-magic" style="color:var(--primary)"></i> Generating V1…</span>' +
+          '<span id="adv-extract-v2-label" style="opacity:.4">V2 queued</span>' +
+        '</div>' +
+      '</div>';
+  }
+
+  // Animate progress bar
+  var fillEl = document.getElementById('adv-extract-fill');
+  var progress = 0;
+  var progressInterval = setInterval(function() {
+    progress = Math.min(progress + (Math.random() * 2.5), 88);
+    if (fillEl) fillEl.style.width = progress + '%';
+    if (progress > 45) {
+      var v2l = document.getElementById('adv-extract-v2-label');
+      if (v2l) v2l.textContent = 'Generating V2…';
+    }
+  }, 400);
+
+  try {
+    var res = await fetch('/api/job/stems/advanced-split', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: STEMS_JOB_ID, instrument_key: advSelectedKey })
+    });
+    var data = await res.json();
+
+    clearInterval(progressInterval);
+    if (fillEl) fillEl.style.width = '100%';
+
+    if (!res.ok) {
+      // Handle errors
+      if (data.upgrade) {
+        if (versEl) versEl.innerHTML =
+          '<div class="adv-split-error">' +
+            '<i class="fas fa-lock" style="color:#a855f7"></i> ' +
+            'Advanced Split requires <strong>Pro Artist</strong> plan. ' +
+            '<a href="/pricing?plan=pro" style="color:var(--primary)">Upgrade →</a>' +
+          '</div>';
+      } else if (data.limit_reached) {
+        if (versEl) versEl.innerHTML =
+          '<div class="adv-split-error"><i class="fas fa-coins"></i> ' + (data.error || 'Not enough credits') + '</div>';
+      } else {
+        if (versEl) versEl.innerHTML =
+          '<div class="adv-split-error"><i class="fas fa-exclamation-triangle"></i> ' + (data.error || 'Extraction failed') + '</div>';
+      }
+      if (titleEl) titleEl.textContent = 'Extraction failed';
+      advExtracting = false;
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Extract — 2 Credits'; }
+      advSplitRefreshCredits();
+      return;
+    }
+
+    // Success — render V1 + V2 version cards
+    if (titleEl) titleEl.textContent = data.instrument.label + ' — 2 versions generated ✓';
+    if (versEl) {
+      versEl.innerHTML = '';
+      data.versions.forEach(function(v) {
+        var card = document.createElement('div');
+        card.className = 'adv-split-version-card';
+        card.innerHTML =
+          '<div class="adv-split-version-card__top">' +
+            '<div class="adv-split-version-card__badge" style="background:' + data.instrument.color + '">' +
+              data.instrument.emoji + ' ' + data.instrument.label + ' — ' + v.version +
+            '</div>' +
+            '<audio id="adv-audio-' + v.version + '" preload="none"></audio>' +
+          '</div>' +
+          '<div class="adv-split-version-card__wave" id="adv-wave-' + v.version + '">' +
+            '<div class="adv-wave-loading"><i class="fas fa-spinner fa-spin"></i> Loading audio…</div>' +
+          '</div>' +
+          '<div class="adv-split-version-card__controls">' +
+            '<button class="adv-ctrl-btn adv-ctrl-btn--play" id="adv-play-btn-' + v.version + '" ' +
+              'onclick="advSplitPlay(\'' + v.version + '\',\'' + v.zip_url + '\',\'' + v.stem + '\',' + JSON.stringify(data.instrument.color) + ')">' +
+              '<i class="fas fa-play" id="adv-play-icon-' + v.version + '"></i> Play' +
+            '</button>' +
+            '<button class="adv-ctrl-btn adv-ctrl-btn--dl" ' +
+              'onclick="advSplitDownload(\'' + v.zip_url + '\',\'' + v.stem + '\',\'' + data.instrument.label.replace(/'/g, '') + '_' + v.version + '\')">' +
+              '<i class="fas fa-download"></i> Download WAV' +
+            '</button>' +
+          '</div>';
+        versEl.appendChild(card);
+      });
+    }
+
+    advExtracting = false;
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-redo"></i> Extract Again'; }
+    advSplitRefreshCredits();
+
+  } catch(e) {
+    clearInterval(progressInterval);
+    advExtracting = false;
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Extract — 2 Credits'; }
+    if (versEl) versEl.innerHTML =
+      '<div class="adv-split-error"><i class="fas fa-wifi"></i> Network error — please try again</div>';
+    if (titleEl) titleEl.textContent = 'Extraction failed';
+  }
+}
+
+// Per-version audio cache: version → Audio element
+var _advAudios = {};
+var _advActiveVersion = null;
+
+async function advSplitPlay(version, zipUrl, stemKey, color) {
+  var playBtn  = document.getElementById('adv-play-btn-' + version);
+  var playIcon = document.getElementById('adv-play-icon-' + version);
+  var waveEl   = document.getElementById('adv-wave-' + version);
+
+  // Stop any other playing version
+  if (_advActiveVersion && _advActiveVersion !== version) {
+    var prev = _advAudios[_advActiveVersion];
+    if (prev) { prev.pause(); prev.currentTime = 0; }
+    var prevIcon = document.getElementById('adv-play-icon-' + _advActiveVersion);
+    if (prevIcon) prevIcon.className = 'fas fa-play';
+    var prevBtn = document.getElementById('adv-play-btn-' + _advActiveVersion);
+    if (prevBtn) prevBtn.classList.remove('adv-ctrl-btn--playing');
+  }
+
+  // If already loaded and playing — toggle pause
+  var existing = _advAudios[version];
+  if (existing) {
+    if (!existing.paused) {
+      existing.pause();
+      if (playIcon) playIcon.className = 'fas fa-play';
+      if (playBtn)  playBtn.classList.remove('adv-ctrl-btn--playing');
+      _advActiveVersion = null;
+      return;
+    }
+    existing.play().catch(function(){});
+    if (playIcon) playIcon.className = 'fas fa-pause';
+    if (playBtn)  playBtn.classList.add('adv-ctrl-btn--playing');
+    _advActiveVersion = version;
+    return;
+  }
+
+  // Not loaded yet — fetch via /api/stem-audio which handles ZIP extraction
+  // We construct a temporary job-like URL by using our own proxy endpoint
+  if (playBtn) { playBtn.disabled = true; playBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading…'; }
+
+  try {
+    // Fetch the stem audio through our existing /api/stem-audio route
+    // We pass the jobId and stem key — it reads the zip_url stored on the job
+    // For adv split we need to stream from the returned zip_url directly
+    // since it's a different ZIP than the job's main zip_url.
+    // So we fetch + stream the ZIP bytes ourselves client-side.
+    var audioUrl = '/api/stem-audio/' + STEMS_JOB_ID + '/' + stemKey + '?zip_override=' + encodeURIComponent(zipUrl);
+
+    // Try direct fetch first (zip_override param) — server falls back gracefully
+    // If server doesn't support zip_override, fall back to fetching the zip inline
+    var resp = await fetch(audioUrl);
+    if (!resp.ok) throw new Error('stem fetch failed: ' + resp.status);
+
+    var buf = await resp.arrayBuffer();
+    var blob = new Blob([buf], { type: 'audio/wav' });
+    var blobUrl = URL.createObjectURL(blob);
+
+    var audio = new Audio(blobUrl);
+    audio.preload = 'auto';
+    _advAudios[version] = audio;
+
+    audio.addEventListener('ended', function() {
+      if (playIcon) playIcon.className = 'fas fa-play';
+      if (playBtn)  playBtn.classList.remove('adv-ctrl-btn--playing');
+      _advActiveVersion = null;
+    });
+
+    // Draw waveform
+    if (waveEl) {
+      waveEl.innerHTML = '';
+      try {
+        var actx = getAudioCtx();
+        var tmpSrc = actx.createMediaElementSource(audio);
+        drawWaveformFromAudio(version + '_adv', audio, color, waveEl);
+      } catch(e) { drawRandomWaveformInEl(waveEl, color); }
+    }
+
+    audio.play().catch(function(){});
+    if (playBtn) { playBtn.disabled = false; playBtn.innerHTML = '<i class="fas fa-pause" id="adv-play-icon-' + version + '"></i> Pause'; playBtn.classList.add('adv-ctrl-btn--playing'); }
+    _advActiveVersion = version;
+
+  } catch(e) {
+    if (playBtn) { playBtn.disabled = false; playBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Error'; }
+    console.error('advSplitPlay error:', e);
+  }
+}
+
+async function advSplitDownload(zipUrl, stemKey, filename) {
+  // Use our /api/stem-audio route with zip_override — same path as play
+  var audioUrl = '/api/stem-audio/' + STEMS_JOB_ID + '/' + stemKey + '?zip_override=' + encodeURIComponent(zipUrl);
+  try {
+    var resp = await fetch(audioUrl);
+    if (!resp.ok) throw new Error('Download failed: ' + resp.status);
+    var buf  = await resp.arrayBuffer();
+    var blob = new Blob([buf], { type: 'audio/wav' });
+    var a    = document.createElement('a');
+    a.href   = URL.createObjectURL(blob);
+    a.download = (filename || 'stem').replace(/[^a-zA-Z0-9 _-]/g,'_') + '.wav';
+    document.body.appendChild(a); a.click();
+    setTimeout(function() { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  } catch(e) {
+    alert('Download failed. Please try again.');
+  }
+}
+
+function advSplitReset() {
+  advSelectedKey   = null;
+  advExtracting    = false;
+  _advAudios       = {};
+  _advActiveVersion = null;
+
+  // Stop any playing audio
+  Object.values(_advAudios).forEach(function(a) { try { a.pause(); } catch(e){} });
+
+  var cta = document.getElementById('adv-split-cta');
+  if (cta) cta.style.display = 'none';
+  var res = document.getElementById('adv-split-results');
+  if (res) res.style.display = 'none';
+  var search = document.getElementById('adv-split-search');
+  if (search) search.value = '';
+
+  advSplitFilter('');
+
+  var btn = document.getElementById('adv-split-extract-btn');
+  if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Extract — 2 Credits'; }
+}
+
+// Helper: draw a random waveform into any element (used by adv split cards)
+function drawRandomWaveformInEl(el, color) {
+  var canvas = document.createElement('canvas');
+  canvas.width  = el.offsetWidth  || 280;
+  canvas.height = 40;
+  canvas.style.cssText = 'width:100%;height:40px;display:block;border-radius:4px';
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  var bars = Math.floor(W / 4);
+  var grad = ctx.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, color + '99');
+  grad.addColorStop(1, color + 'cc');
+  ctx.fillStyle = grad;
+  for (var i = 0; i < bars; i++) {
+    var h = (Math.random() * 0.7 + 0.1) * H;
+    ctx.fillRect(i * 4, (H - h) / 2, 2.5, h);
+  }
+  el.innerHTML = '';
+  el.appendChild(canvas);
 }
 
 // ── Build stem row ────────────────────────────────────────────
