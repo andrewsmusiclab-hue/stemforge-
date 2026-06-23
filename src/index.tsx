@@ -819,6 +819,8 @@ app.post('/api/job/stems', async (c) => {
     model: 'audio-separation-2'
   }
 
+  console.log(`[stems] Sending to Mureka: ${JSON.stringify(murekaBody)}`)
+
   let taskId: string
   try {
     const res = await fetch(`${MUREKA_BASE}/song/stem`, {
@@ -830,8 +832,14 @@ app.post('/api/job/stems', async (c) => {
       body: JSON.stringify(murekaBody)
     })
     if (!res.ok) {
-      const err = await res.json() as any
-      return c.json({ error: err?.error?.message || err?.message || `Mureka stem error ${res.status}` }, 502)
+      const errText = await res.text()
+      let errMsg = `Mureka stem error ${res.status}`
+      try {
+        const errJson = JSON.parse(errText) as any
+        errMsg = errJson?.error?.message || errJson?.message || errJson?.detail || errText || errMsg
+      } catch {}
+      console.error(`[stems] Mureka error ${res.status} | url=${job.stereo_url} | body=${errText}`)
+      return c.json({ error: errMsg, debug_url: job.stereo_url }, 502)
     }
     const data = await res.json() as any
     taskId = data.id || data.task_id
