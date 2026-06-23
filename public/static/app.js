@@ -3654,7 +3654,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Auto split</button>',
           '<button class="sp-tab" data-tab="split_from_mix"',
             ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
-            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Split from mix</button>',
+            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Vocals &amp; Instrumental</button>',
           '<button class="sp-tab" data-tab="advanced"',
             ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
             'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">',
@@ -3753,30 +3753,27 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   function _showSplitTab() {
-    var chips = SPLIT_INSTRUMENTS.map(function (inst) {
-      var sel = inst === _selectedInst;
-      return '<button class="sp-chip" data-inst="' + inst + '" onclick="window._spSelectInst(this,\'' + inst + '\')" ' +
-        'style="padding:5px 12px;border-radius:20px;border:1px solid ' +
-        (sel ? '#4e9fff' : 'rgba(255,255,255,0.12)') + ';' +
-        'background:' + (sel ? 'rgba(78,159,255,0.15)' : 'rgba(255,255,255,0.04)') + ';' +
-        'color:' + (sel ? '#4e9fff' : 'rgba(255,255,255,0.65)') + ';' +
-        'font-size:.75rem;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap">' +
-        _capFirst(inst) + '</button>';
-    }).join('');
-
     _setTabBody(
-      '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">' + chips + '</div>' +
-      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:.8rem;color:rgba(255,255,255,0.5)">' +
-        '<span id="sp-target-label" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);' +
-          'border-radius:20px;padding:4px 12px;color:#f8fafc;font-weight:600">' + _capFirst(_selectedInst) + '</span>' +
-        '<span>+</span>' +
-        '<span style="background:rgba(255,255,255,0.06);border-radius:20px;padding:4px 12px">Everything else</span>' +
+      '<div style="display:flex;gap:10px;margin-bottom:14px">' +
+        '<div style="flex:1;background:rgba(78,159,255,0.08);border:1px solid rgba(78,159,255,0.2);' +
+          'border-radius:10px;padding:10px 12px;text-align:center">' +
+          '<div style="font-size:.85rem;margin-bottom:4px">🎤</div>' +
+          '<div style="font-size:.78rem;font-weight:600;color:#4e9fff">Vocals</div>' +
+          '<div style="font-size:.68rem;color:rgba(255,255,255,0.4);margin-top:2px">Lead + backing</div>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;color:rgba(255,255,255,0.25);font-size:.8rem">+</div>' +
+        '<div style="flex:1;background:rgba(100,116,139,0.1);border:1px solid rgba(100,116,139,0.25);' +
+          'border-radius:10px;padding:10px 12px;text-align:center">' +
+          '<div style="font-size:.85rem;margin-bottom:4px">🎸</div>' +
+          '<div style="font-size:.78rem;font-weight:600;color:#94a3b8">Instrumental</div>' +
+          '<div style="font-size:.68rem;color:rgba(255,255,255,0.4);margin-top:2px">Everything else</div>' +
+        '</div>' +
       '</div>' +
       '<button onclick="window._spExtract(\'split_from_mix\')" ' +
         'style="width:100%;padding:11px;border-radius:10px;border:none;' +
         'background:#fff;color:#000;font-weight:700;font-size:.88rem;cursor:pointer;transition:opacity .15s"' +
         ' onmouseover="this.style.opacity=\'.88\'" onmouseout="this.style.opacity=\'1\'">' +
-        'Extract — Split from Mix' +
+        '<i class="fas fa-microphone" style="margin-right:7px"></i>Extract — Vocals &amp; Instrumental' +
       '</button>'
     );
   }

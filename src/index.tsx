@@ -808,22 +808,15 @@ app.post('/api/job/stems', async (c) => {
 
   // Build Mureka stem request
   // Mureka POST /v1/song/stem
-  // Body: { audio_url, model: 'audio-separation-2', stems?: string[] }
-  // audio-separation-2: up to 5 stems (vocals, drums, bass, other, instrumental)
-  // For split_from_mix / advanced: request only [target, 'other'] — Mureka returns target + complement
-  let stemsToRequest: string[]
-  if (mode === 'auto') {
-    stemsToRequest = ['vocals', 'drums', 'bass', 'other', 'instrumental']
-  } else {
-    // split_from_mix and advanced: extract target + complement (everything_else)
-    const target = target_instrument || 'vocals'
-    stemsToRequest = [target]
-  }
+  // Body: { audio_url, model: 'audio-separation-2' }
+  // audio-separation-2 always returns: vocals + instrumental (+ drums, bass, other when available)
+  // Do NOT send a 'stems' array — Mureka rejects it with "File format not supported"
+  // For split_from_mix: we just want vocals vs instrumental, so no stems field needed
+  // For auto: same — let Mureka return all available stems naturally
 
   const murekaBody: any = {
     audio_url: job.stereo_url,
-    model: 'audio-separation-2',
-    stems: stemsToRequest
+    model: 'audio-separation-2'
   }
 
   let taskId: string
@@ -915,20 +908,26 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
     if (data.status === 'succeeded' || data.status === 'completed') {
       // Parse stem URLs from response
-      // Mureka returns: { choices: [{ stems: { vocals: url, drums: url, ... } }] }
+      // Mureka returns: { choices: [{ stems: { vocals: url, drums: url, instrumental: url, ... } }] }
       // or: { stems: { vocals: url, ... } }
       const stemData = data.choices?.[0]?.stems || data.stems || {}
-      const stemTracks: StemTrack[] = Object.entries(stemData).map(([name, url]) => ({
+      let stemTracks: StemTrack[] = Object.entries(stemData).map(([name, url]) => ({
         name,
         url: url as string
       }))
 
-      // For split_from_mix / advanced: create complement label
-      if (stemJob.mode !== 'auto' && stemTracks.length === 1) {
-        const target = stemJob.target_instrument || 'vocals'
-        const complement = `everything_but_${target}`
-        // Mureka may return 2 items already — if only 1, duplicate as complement placeholder
-        stemTracks.push({ name: complement, url: stemTracks[0].url })
+      // For split_from_mix: only show vocals + instrumental (filter out drums/bass/other)
+      if (stemJob.mode === 'split_from_mix') {
+        const vocals = stemTracks.find(s => s.name === 'vocals')
+        const instrumental = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other')
+        stemTracks = []
+        if (vocals) stemTracks.push(vocals)
+        if (instrumental) stemTracks.push({ name: 'instrumental', url: instrumental.url })
+        // Fallback: if Mureka only returned one track, duplicate with complementary label
+        if (stemTracks.length === 1) {
+          const existing = stemTracks[0]
+          stemTracks.push({ name: existing.name === 'vocals' ? 'instrumental' : 'vocals', url: existing.url })
+        }
       }
 
       stemJob.status = 'ready'
