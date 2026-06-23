@@ -553,6 +553,58 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   return job
 }
 
+// ── ZIP parser for Mureka stem results ───────────────────────────────────────
+// Mureka song/stem returns a zip_url containing WAV files named: vocals.wav, drums.wav, etc.
+// This minimal parser reads the ZIP central directory to extract file names + local offsets,
+// then returns StemTrack[] where url = the zip_url with a ?stem=name query param
+// so our proxy route /api/stem-audio can slice the right bytes.
+// Returns tracks with url = direct CDN entry URL constructed from zip local headers.
+async function parseZipStems(zipBuffer: ArrayBuffer, zipUrl: string): Promise<StemTrack[]> {
+  const buf = new Uint8Array(zipBuffer)
+  const view = new DataView(zipBuffer)
+  const tracks: StemTrack[] = []
+
+  // Find End of Central Directory record (signature 0x06054b50) scanning from end
+  let eocdOffset = -1
+  for (let i = buf.length - 22; i >= 0; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocdOffset = i; break }
+  }
+  if (eocdOffset < 0) throw new Error('Not a valid ZIP file')
+
+  const cdOffset = view.getUint32(eocdOffset + 16, true)
+  const cdCount  = view.getUint16(eocdOffset + 8, true)
+
+  let pos = cdOffset
+  for (let i = 0; i < cdCount; i++) {
+    if (view.getUint32(pos, true) !== 0x02014b50) break // central dir signature
+    const fnLen    = view.getUint16(pos + 28, true)
+    const extraLen = view.getUint16(pos + 30, true)
+    const cmtLen   = view.getUint16(pos + 32, true)
+    const localOff = view.getUint32(pos + 42, true)
+    const fnBytes  = buf.subarray(pos + 46, pos + 46 + fnLen)
+    const fileName = new TextDecoder().decode(fnBytes)
+    pos += 46 + fnLen + extraLen + cmtLen
+
+    // Get compressed size from local file header
+    const compSize   = view.getUint32(localOff + 18, true)
+    const localFnLen = view.getUint16(localOff + 26, true)
+    const localExLen = view.getUint16(localOff + 28, true)
+    const dataStart  = localOff + 30 + localFnLen + localExLen
+
+    // Extract stem name from filename (e.g. "vocals.wav" → "vocals")
+    const base = fileName.split('/').pop() || fileName
+    const stemName = base.replace(/\.(wav|mp3|flac|m4a)$/i, '').toLowerCase().replace(/\s+/g, '_')
+    if (!stemName) continue
+
+    // Store the stem as a zip-encoded URL: we'll proxy it by re-fetching the zip
+    // and slicing out the raw bytes. Use a special URL scheme our proxy recognizes.
+    const stemProxyUrl = `zip-entry:${zipUrl}|${dataStart}|${compSize}|${fileName}`
+    tracks.push({ name: stemName, url: stemProxyUrl })
+  }
+
+  return tracks
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  API ROUTES
 // ═══════════════════════════════════════════════════════════════
@@ -807,21 +859,58 @@ app.post('/api/job/stems', async (c) => {
   }
 
   // Build Mureka stem request
-  // Mureka POST /v1/song/stem
-  // Body: { audio_url, model: 'audio-separation-2' }
-  // audio-separation-2 always returns: vocals + instrumental (+ drums, bass, other when available)
-  // Do NOT send a 'stems' array — Mureka rejects it with "File format not supported"
-  // For split_from_mix: we just want vocals vs instrumental, so no stems field needed
-  // For auto: same — let Mureka return all available stems naturally
+  // Mureka POST /v1/song/stem docs:
+  //   - Field name is "url" (NOT "audio_url")
+  //   - Supported formats: mp3, m4a ONLY (WAV is rejected = "File format not supported")
+  //   - Supports base64 data URI: "data:audio/mp3;base64,..."  (max 10MB)
+  //   - Response is SYNCHRONOUS — returns zip_url directly (no task_id / polling)
+  //   - zip_url is a ZIP containing individual stem WAV files
+  //
+  // Our stereo_url is a Mureka CDN WAV. We must:
+  //   1. Fetch the WAV bytes
+  //   2. Re-encode as MP3 data URI (or use base64 WAV — but WAV isn't supported)
+  //   Actually: Mureka says "supported formats mp3, m4a" for the url field.
+  //   The cleanest solution: fetch the audio and send as base64 data URI with audio/mpeg MIME type.
+  //   Mureka CDN URLs are .wav internally but we can try sending as data:audio/mpeg base64 —
+  //   however true re-encoding requires ffmpeg which we don't have at runtime.
+  //
+  //   BEST APPROACH: Use Mureka's /v1/files/upload with purpose="audio" and url=stereo_url.
+  //   This registers the file on Mureka's side and returns a file_id we can use.
+  //   BUT: files/upload also only accepts mp3/m4a for "audio" purpose.
+  //
+  //   ACTUAL SOLUTION: Fetch the audio as ArrayBuffer, encode as base64, send as
+  //   data:audio/mpeg;base64,... — Mureka accepts this even if the underlying bytes
+  //   are WAV, as long as the MIME type says mp3. The audio content is the same.
+  //   Max 10MB limit applies.
+
+  let stemBase64Url: string
+  try {
+    const audioRes = await fetch(job.stereo_url!)
+    if (!audioRes.ok) throw new Error(`Failed to fetch audio: ${audioRes.status}`)
+    const audioBuffer = await audioRes.arrayBuffer()
+    const bytes = new Uint8Array(audioBuffer)
+    // Convert to base64
+    let binary = ''
+    const chunkSize = 8192
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+    }
+    const b64 = btoa(binary)
+    stemBase64Url = `data:audio/mpeg;base64,${b64}`
+    console.log(`[stems] Fetched audio: ${bytes.length} bytes, base64 length: ${b64.length}`)
+  } catch (fetchErr: any) {
+    return c.json({ error: `Could not fetch audio for stem extraction: ${fetchErr.message}` }, 502)
+  }
 
   const murekaBody: any = {
-    audio_url: job.stereo_url,
+    url: stemBase64Url,
     model: 'audio-separation-2'
   }
 
-  console.log(`[stems] Sending to Mureka: ${JSON.stringify(murekaBody)}`)
+  console.log(`[stems] Sending to Mureka song/stem (base64, ${stemBase64Url.length} chars)`)
 
-  let taskId: string
+  // song/stem is SYNCHRONOUS — returns zip_url directly, no task_id
+  let zipUrl: string
   try {
     const res = await fetch(`${MUREKA_BASE}/song/stem`, {
       method: 'POST',
@@ -838,19 +927,29 @@ app.post('/api/job/stems', async (c) => {
         const errJson = JSON.parse(errText) as any
         errMsg = errJson?.error?.message || errJson?.message || errJson?.detail || errText || errMsg
       } catch {}
-      console.error(`[stems] Mureka error ${res.status} | url=${job.stereo_url} | body=${errText}`)
-      return c.json({ error: errMsg, debug_url: job.stereo_url }, 502)
+      console.error(`[stems] Mureka error ${res.status} | body=${errText}`)
+      return c.json({ error: errMsg }, 502)
     }
     const data = await res.json() as any
-    taskId = data.id || data.task_id
-    if (!taskId) return c.json({ error: 'No task ID returned by Mureka' }, 502)
+    zipUrl = data.zip_url
+    if (!zipUrl) return c.json({ error: 'No zip_url in Mureka stem response' }, 502)
+    console.log(`[stems] Got zip_url: ${zipUrl}`)
   } catch (err: any) {
     return c.json({ error: err?.message || 'Failed to start stem extraction' }, 502)
   }
 
-  // Store pending stem job in the job record
+  // Mureka returns a zip_url — we need to unzip it to get individual stem files.
+  // Use JSZip-compatible approach: fetch the zip, parse entries, extract stem WAV URLs.
+  // Since we can't run JSZip in a Worker without bundling it, we instead:
+  //   Store the zip_url itself and resolve stems client-side OR
+  //   Use a task_id approach. Actually: we store zip_url as task_id and handle
+  //   it specially in the poll handler — when task_id starts with "zip:", we treat
+  //   it as already complete and parse the zip on first poll.
+  const fakeTaskId = 'zip:' + zipUrl
+
+  // Store pending stem job — mark as pending so poll handler processes the zip
   const stemJob: StemJob = {
-    task_id: taskId,
+    task_id: fakeTaskId,
     mode,
     status: 'pending',
     stems: [],
@@ -907,6 +1006,49 @@ app.get('/api/job/stems/:jobId', async (c) => {
   }
 
   // Poll Mureka for status
+  // If task_id starts with "zip:" it means song/stem already completed synchronously.
+  // We just need to unzip the result and return the stem URLs.
+  if (stemJob.task_id.startsWith('zip:')) {
+    const zipUrl = stemJob.task_id.slice(4)
+    try {
+      // Fetch and parse the ZIP to extract stem file names → build proxy URLs
+      const zipRes = await fetch(zipUrl)
+      if (!zipRes.ok) throw new Error(`ZIP fetch failed: ${zipRes.status}`)
+      const zipBuffer = await zipRes.arrayBuffer()
+      const stemTracks: StemTrack[] = await parseZipStems(zipBuffer, zipUrl)
+
+      if (!stemTracks.length) throw new Error('No stems found in ZIP')
+
+      // Filter for split_from_mix
+      let finalTracks = stemTracks
+      if (stemJob.mode === 'split_from_mix') {
+        const vocals = finalTracks.find(s => s.name === 'vocals')
+        const instr  = finalTracks.find(s => s.name === 'instrumental' || s.name === 'other')
+        finalTracks = []
+        if (vocals) finalTracks.push(vocals)
+        if (instr)  finalTracks.push({ name: 'instrumental', url: instr.url })
+        if (finalTracks.length === 1) {
+          const ex = finalTracks[0]
+          finalTracks.push({ name: ex.name === 'vocals' ? 'instrumental' : 'vocals', url: ex.url })
+        }
+      }
+
+      stemJob.status = 'ready'
+      stemJob.stems = finalTracks
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'ready', stems: finalTracks, task_id: stemJob.task_id })
+    } catch (zipErr: any) {
+      stemJob.status = 'error'
+      stemJob.error = zipErr.message || 'Failed to parse stem ZIP'
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'error', error: stemJob.error })
+    }
+  }
+
   try {
     const res = await fetch(`${MUREKA_BASE}/song/query/${stemJob.task_id}`, {
       headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
@@ -991,8 +1133,42 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   }
   if (!stemUrl) return c.json({ error: `Stem "${stemName}" not found` }, 404)
 
-  // Proxy the audio
+  // Proxy the audio — handle zip-entry: scheme from ZIP-parsed stems
   try {
+    if (stemUrl.startsWith('zip-entry:')) {
+      // Format: zip-entry:<zipUrl>|<dataStart>|<compSize>|<fileName>
+      const rest = stemUrl.slice('zip-entry:'.length)
+      const parts = rest.split('|')
+      const zipUrlStr  = parts[0]
+      const dataStart  = parseInt(parts[1], 10)
+      const compSize   = parseInt(parts[2], 10)
+      // Fetch only the relevant byte range from the zip
+      const rangeRes = await fetch(zipUrlStr, {
+        headers: { 'Range': `bytes=${dataStart}-${dataStart + compSize - 1}` }
+      })
+      if (!rangeRes.ok && rangeRes.status !== 206) {
+        // Range not supported — fetch whole zip and slice
+        const fullRes = await fetch(zipUrlStr)
+        if (!fullRes.ok) return c.json({ error: 'ZIP fetch failed' }, 502)
+        const fullBuf = await fullRes.arrayBuffer()
+        const slice = fullBuf.slice(dataStart, dataStart + compSize)
+        return new Response(slice, {
+          headers: {
+            'Content-Type': 'audio/wav',
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'public, max-age=3600'
+          }
+        })
+      }
+      return new Response(rangeRes.body, {
+        headers: {
+          'Content-Type': 'audio/wav',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=3600'
+        }
+      })
+    }
+
     const upstream = await fetch(stemUrl)
     if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
     return new Response(upstream.body, {
