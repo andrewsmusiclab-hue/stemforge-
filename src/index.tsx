@@ -5028,7 +5028,9 @@ function stemsPage(jobId: string) {
 //  STEMS PLAYER — Web Audio API, real waveform, VI toggle
 // ═══════════════════════════════════════════════════════════════
 
-const STEMS_JOB_ID = document.getElementById('stems-page').dataset.jobId;
+// Safe read — never crash if element is missing (a top-level throw kills ALL
+// function definitions below it, so stemsInit becomes undefined on Retry).
+var STEMS_JOB_ID = (document.getElementById('stems-page') || {dataset:{}}).dataset.jobId || '';
 // ── State ─────────────────────────────────────────────────────
 let stemsJob       = null;
 let stemAudios     = {};   // { stem: HTMLAudioElement }
@@ -5122,64 +5124,24 @@ async function stemsInit() {
     stemsJob = job;
     populateHero(job);
 
-    // Check sessionStorage cache first — if stems were already extracted this session,
-    // skip the credit prompt entirely and go straight to the player
-    const cacheKey = 'stems_extracted_' + STEMS_JOB_ID;
-    const cached = sessionStorage.getItem(cacheKey);
-    if (cached && !job.zip_url) {
-      try {
-        const parsed = JSON.parse(cached);
-        if (parsed.zip_url && parsed.tracks && parsed.tracks.length > 0) {
-          stemsJob.zip_url = parsed.zip_url;
-          stemsJob.tracks  = parsed.tracks;
-          if (parsed.midi_zip_url) stemsJob.midi_zip_url = parsed.midi_zip_url;
-          job.zip_url = parsed.zip_url;
-          job.tracks  = parsed.tracks;
-        }
-      } catch(e) { sessionStorage.removeItem(cacheKey); }
-    }
-
     if (!job.zip_url) {
-      // No stems yet — auth/plan gate: only check when stems haven't been extracted
+      // No stems yet — check plan before showing extraction prompt
       const meRes  = await fetch('/api/auth/me');
       const meData = await meRes.json();
       const user   = meData.user;
       if (!user || user.plan === 'free') { showState('upgrade'); return; }
-
-      // If user navigated back AFTER extraction (sessionStorage key exists but zip_url
-      // not yet in job record, e.g. async write lag), treat as already extracted
-      // and go straight back to library rather than showing the credit prompt again.
-      const extractedKey = 'stems_extracted_' + STEMS_JOB_ID;
-      if (sessionStorage.getItem(extractedKey)) {
-        history.back();
-        return;
-      }
-
-      // Check if user already confirmed for this track this session — auto-extract
-      const savedKey = 'stems_confirmed_' + STEMS_JOB_ID;
-      if (sessionStorage.getItem(savedKey)) {
-        showState('loading');
-        await stemsExtract();
-        return;
-      }
+      if (user.plan === 'creator')       { showState('creator-blocked'); return; }
 
       // Show extraction prompt (2 credits)
       showState('no-stems');
       return;
     }
 
-    // Save to sessionStorage so back-navigation skips the prompt
-    try {
-      sessionStorage.setItem(cacheKey, JSON.stringify({
-        zip_url: job.zip_url,
-        tracks:  job.tracks  || [],
-        midi_zip_url: job.midi_zip_url || null
-      }));
-    } catch(e) { /* storage full — ignore */ }
-
+    // Mureka pre-signed S3 URLs expire — never cache zip_url in sessionStorage.
+    // Always fetch fresh from DB on every page load.
     await buildStemsPlayer(job);
   } catch(e) {
-    document.getElementById('stems-error-msg').textContent = e.message || 'Could not load stems.';
+    var errMsgEl = document.getElementById('stems-error-msg'); if (errMsgEl) errMsgEl.textContent = e.message || 'Could not load stems.';
     showState('error');
   }
 }
@@ -6181,7 +6143,6 @@ async function stemsExtract() {
     }
     // Free plan: stems saved but locked — show upgrade screen
     if (data.locked && data.stems_saved) {
-      sessionStorage.setItem('stems_confirmed_' + STEMS_JOB_ID, '1');
       showState('free-locked');
       return;
     }
@@ -6190,15 +6151,7 @@ async function stemsExtract() {
     stemsJob.zip_url = data.zip_url;
     stemsJob.tracks  = data.tracks || stemsJob.tracks;
     if (data.midi_zip_url) stemsJob.midi_zip_url = data.midi_zip_url;
-    // Cache in sessionStorage so back-navigation skips the credit prompt
-    try {
-      sessionStorage.setItem('stems_extracted_' + STEMS_JOB_ID, JSON.stringify({
-        zip_url: data.zip_url,
-        tracks:  data.tracks || [],
-        midi_zip_url: data.midi_zip_url || null
-      }));
-      sessionStorage.setItem('stems_confirmed_' + STEMS_JOB_ID, '1');
-    } catch(e) { /* storage full — ignore */ }
+    // No sessionStorage caching — Mureka pre-signed URLs expire, always load fresh.
     populateHero(stemsJob);
     await buildStemsPlayer(stemsJob);
   } catch(e) {
