@@ -1096,14 +1096,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const items = [];
 
-    // Edit & Stems only for full beats
+    // Edit only for full beats
     if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
-      items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
-        // Always use the unified popup — handles all plan states (free, creator, pro, not-logged-in)
-        const zipUrl = null; // not available from card context — popup will check plan
-        openStemsPopup(jobId, zipUrl);
-      }});
       items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song — 2 Credits', action: () => {
         // Navigate to the generator page with ?extend=jobId — the page will auto-open the popup
         window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
@@ -1535,55 +1530,6 @@ document.addEventListener('DOMContentLoaded', () => {
     bpBlueprint.style.display = 'block';
   }
 
-  function buildTrackRow(track) {
-    const row = document.createElement('div');
-    row.className = 'track-row';
-    row.id = 'track-' + track.stem;
-
-    const iconMap = {
-      drums: 'fa-drum', bass: 'fa-guitar', vocals: 'fa-microphone',
-      other: 'fa-wave-square', instrumental: 'fa-music', mix: 'fa-compact-disc',
-      synth: 'fa-wave-square', fx: 'fa-magic', default: 'fa-music'
-    };
-    const icon = iconMap[track.family] || iconMap[track.stem] || iconMap.default;
-
-    row.innerHTML = `
-      <div class="track-row__info">
-        <span class="track-row__icon" style="background:${track.color}">
-          <i class="fas ${icon}"></i>
-        </span>
-        <div>
-          <strong>${track.name}</strong>
-          <span>${track.stem}.wav</span>
-        </div>
-      </div>
-      <div class="track-row__wave" id="wave-${track.stem}"></div>
-      <div class="track-row__actions" id="actions-${track.stem}">
-        ${renderTrackActions(track)}
-      </div>`;
-
-    // fill waveform bars
-    const wave = row.querySelector('.track-row__wave');
-    fillWave(wave, track.color);
-
-    return row;
-  }
-
-  function renderTrackActions(track) {
-    if (track.status === 'pending') {
-      return `<span style="font-size:.78rem;color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Extracting...</span>`;
-    }
-    if (track.status === 'ready' && track.zip_url) {
-      // Download individual WAV stem from ZIP — available to Creator+ plans
-      return `
-        <span class="stem-file-badge">${track.stem}.wav</span>
-        <span class="track-row__dl locked-pro" title="Creator+ — download individual track"><i class="fas fa-lock"></i> Creator+</span>`;
-    }
-    if (track.status === 'error') {
-      return `<span style="font-size:.78rem;color:var(--danger)"><i class="fas fa-times"></i> Error</span>`;
-    }
-    return `<span class="track-row__dl locked-pro"><i class="fas fa-lock"></i></span>`;
-  }
 
   function fillWave(container, color) {
     for (let i = 0; i < 120; i++) {
@@ -1594,10 +1540,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function updateTrackRow(track) {
-    const actionsEl = document.getElementById('actions-' + track.stem);
-    if (actionsEl) actionsEl.innerHTML = renderTrackActions(track);
-  }
 
   function showError(msg) {
     genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
@@ -1721,7 +1663,6 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('blueprint', 'done');
             setStep('generating', 'done');
             setStep('extracting', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Extracting stems...';
             if (job.blueprint) showBlueprint(job.blueprint);
 
             // Show stereo player immediately (audio player always shown; download gated by plan)
@@ -1758,14 +1699,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Sanitize for filename: replace special chars with underscores, ensure non-empty
             const safeFilename = (finalTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g, '_').toLowerCase().replace(/^_+|_+$/g, '')) || 'stemforge_beat';
 
-            // Final update of all tracks (or build if not yet rendered)
-            if (trackList) {
-              if (trackList.children.length === 0) {
-                job.tracks.forEach(t => trackList.appendChild(buildTrackRow(t)));
-              } else {
-                job.tracks.forEach(t => updateTrackRow(t));
-              }
-            }
+
 
             // ── Determine user plan for download gating ─────────
             const currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
@@ -1871,7 +1805,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 lockBtn.onclick = () => showUpgradePrompt();
                 exportOptionsRow.appendChild(lockBtn);
               } else if (userPlan === 'pro' || userPlan === 'developer') {
-                // ── Pro Artist: Unmastered Mix (WAV/MP3) + Mastered Mix (WAV/MP3) + Stems (→ player) ──
+                // ── Pro Artist: Unmastered Mix (WAV/MP3) + Mastered Mix (WAV/MP3) ──
 
                 // (a) Unmastered mix — WAV or MP3
                 const unmastBtn = document.createElement('button');
@@ -1887,19 +1821,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV / MP3</small>';
                 mastBtn.onclick = () => showFormatPicker(mastBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
 
-                // (c) Stems — opens stem player page
-                const stemsBtn = document.createElement('button');
-                stemsBtn.className = 'export-btn export-btn--pro export-btn--stems';
-                stemsBtn.title = 'Open interactive stem player — play and solo individual tracks';
-                stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Stem Player</span><small>Interactive</small>';
-                stemsBtn.onclick = () => {
-                  const jobIdNav = job.id || currentJobId;
-                  openStemsPopup(jobIdNav, job.zip_url || null);
-                };
-
                 exportOptionsRow.appendChild(unmastBtn);
                 exportOptionsRow.appendChild(mastBtn);
-                exportOptionsRow.appendChild(stemsBtn);
               } else {
                 // ── Creator: Mastered Mix only (WAV or MP3) ──
                 const dlBtn = document.createElement('button');
@@ -1927,7 +1850,6 @@ document.addEventListener('DOMContentLoaded', () => {
             const subEl   = document.getElementById('gen-result-sub');
             if (titleEl) titleEl.textContent = finalTitle;
             if (subEl && job.blueprint) {
-              const stemCount = job.tracks.length;
               const dur = Math.floor((job.blueprint.duration_seconds||120)/60) + ':' + String((job.blueprint.duration_seconds||120)%60).padStart(2,'0');
               subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
             }
@@ -2063,13 +1985,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 });
 
-// ── Global: download ZIP stems ─────────────────────────────────
-// Stems are in a ZIP file — individual download requires Pro plan
-// The ZIP contains: drums.wav, bass.wav, vocals.wav, other.wav,
-//                   instrumental.wav, song.wav, song.mp3
-window.downloadStem = function(zipUrl, stemName) {
-  if (zipUrl) window.open(zipUrl, '_blank');
-};
 
 // ═══════════════════════════════════════════════════════════════
 //  SONG EDIT MODAL
@@ -2078,115 +1993,6 @@ window.downloadStem = function(zipUrl, stemName) {
 // Cache of loaded projects for the modal
 window._sfProjects = {};
 
-let _editStemTier = 'basic'; // 'basic' | 'pro'
-
-function resetStemsSection() {
-  const sec    = document.getElementById('edit-stems-section');
-  const status = document.getElementById('edit-stems-status');
-  const result = document.getElementById('edit-stems-result');
-  const picker = document.getElementById('edit-stems-picker');
-  if (sec)    sec.style.display = 'none';
-  if (status) { status.style.display = 'none'; status.textContent = ''; }
-  if (result) { result.style.display = 'none'; }
-  if (picker) { picker.style.display = 'none'; }
-  _editStemTier = 'basic';
-}
-
-function _renderStemsSection(job, user) {
-  const sec    = document.getElementById('edit-stems-section');
-  const picker = document.getElementById('edit-stems-picker');
-  const result = document.getElementById('edit-stems-result');
-  if (!sec) return;
-
-  sec.style.display = 'block';
-
-  // Already extracted — show Open Stems Player link
-  if (job && job.zip_url) {
-    if (picker) picker.style.display = 'none';
-    if (result) {
-      result.style.display = 'flex';
-      const zipLink = document.getElementById('edit-stems-zip-link');
-      if (zipLink) {
-        zipLink.href = '/stems/' + job.id;
-        zipLink.removeAttribute('download');
-        zipLink.textContent = '';
-        zipLink.innerHTML = '<i class="fas fa-layer-group"></i> Open Stems Player';
-      }
-      if (job.midi_zip_url) {
-        const midiLink = document.getElementById('edit-stems-midi-link');
-        if (midiLink) { midiLink.href = job.midi_zip_url; midiLink.style.display = 'inline-flex'; }
-      }
-    }
-    return;
-  }
-
-  // Not yet extracted — show tier picker
-  if (result) result.style.display = 'none';
-  if (picker) picker.style.display = 'block';
-
-  const isPro = user.plan === 'pro' || user.plan === 'developer';
-  const proLock  = document.getElementById('edit-pro-lock');
-  const proBadge = document.getElementById('edit-pro-badge');
-  const proNote  = document.getElementById('edit-pro-upgrade-note');
-  const proCard  = document.getElementById('edit-tier-pro');
-  if (!isPro) {
-    if (proCard)  { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
-    if (proLock)  proLock.style.display = 'flex';
-    if (proBadge) proBadge.style.display = 'none';
-    if (proNote)  proNote.style.display = 'block';
-  } else {
-    if (proCard)  { proCard.style.opacity = '1'; proCard.style.cursor = 'pointer'; }
-    if (proLock)  proLock.style.display = 'none';
-    if (proBadge) proBadge.style.display = 'block';
-    if (proNote)  proNote.style.display = 'none';
-  }
-  // Start on basic
-  _editStemTier = 'basic';
-  selectEditStemTier('basic');
-}
-
-function showStemsSection(job) {
-  // If user data is already available, render immediately
-  if (window._sfUser) {
-    // Creator plan: stems blocked — don't show the stems section in the edit modal
-    if (window._sfUser.plan === 'creator') return;
-    _renderStemsSection(job, window._sfUser);
-    return;
-  }
-  // User not yet loaded (race condition) — fetch it now
-  fetch('/api/auth/me').then(r => r.json()).then(data => {
-    const user = data && data.user;
-    if (!user) return;
-    if (user.plan === 'creator') return; // Creator: stems blocked
-    window._sfUser = window._sfUser || user; // cache if not already set
-    _renderStemsSection(job, user);
-  }).catch(() => {});
-}
-
-window.selectEditStemTier = function(tier) {
-  const proLock = document.getElementById('edit-pro-lock');
-  if (tier === 'pro' && proLock && proLock.style.display !== 'none') return;
-
-  _editStemTier = tier;
-  const isPro = tier === 'pro';
-
-  const basicCard  = document.getElementById('edit-tier-basic');
-  const proCard    = document.getElementById('edit-tier-pro');
-  const basicCheck = document.getElementById('edit-check-basic');
-  const proCheck   = document.getElementById('edit-check-pro');
-  const proBadge   = document.getElementById('edit-pro-badge');
-  const btnLabel   = document.getElementById('edit-stems-btn-label');
-  const btn        = document.getElementById('edit-get-stems-btn');
-
-  if (basicCard) basicCard.style.borderColor = isPro ? 'var(--border)' : 'var(--primary)';
-  if (proCard && !(proLock && proLock.style.display !== 'none'))
-    proCard.style.borderColor = isPro ? '#a855f7' : 'var(--border)';
-  if (basicCheck) basicCheck.style.display = isPro ? 'none' : 'flex';
-  if (proCheck)   proCheck.style.display   = isPro ? 'flex' : 'none';
-  if (proBadge)   proBadge.style.display   = isPro ? 'none' : 'block';
-  if (btnLabel)   btnLabel.textContent     = isPro ? 'Get Up to 12 Stems — 10 Credits' : 'Get 5 Stems — 2 Credits';
-  if (btn)        btn.style.background     = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
-};
 
 // ── Render instrument pills into the edit modal ─────────────────────────────
 function renderEditInstrumentPills(bp) {
@@ -2247,7 +2053,6 @@ window.openSongEditModal = function(jobData, jobId) {
   document.getElementById('edit-bpm').value = '';
   document.getElementById('edit-genre').value = '';
   document.getElementById('edit-description').value = '';
-  resetStemsSection();
   const infoBlock = document.getElementById('edit-info-block');
   if (infoBlock) infoBlock.style.display = 'none';
   // Reset instruments section
@@ -2308,9 +2113,6 @@ window.openSongEditModal = function(jobData, jobId) {
     }
     // Render instrument pills
     renderEditInstrumentPills(jobData.blueprint);
-    // Show stems section if ready
-    if (jobData.status === 'ready' && jobData.stereo_url) showStemsSection(jobData);
-
   } else if (jobId) {
     // Opened from project card — need to fetch job data
     document.getElementById('edit-job-id').value = jobId;
@@ -2334,8 +2136,6 @@ window.openSongEditModal = function(jobData, jobId) {
       renderEditInstrumentPills(job.blueprint);
       window._sfProjects[jobId] = job;
       _loadCoverForJob(job);
-      // Show stems section if ready
-      if (job.status === 'ready' && job.stereo_url) showStemsSection(job);
     }).catch(() => {});
   }
 
@@ -2464,363 +2264,6 @@ window.removeCoverImage = function() {
     .catch(function() { _setEditCoverStatus('Network error. Try again.', true); });
 };
 
-// ── Stems popup modal — shown when user clicks "Get Stems" on a library card ──
-window.openStemsPopup = async function(jobId, existingZipUrl) {
-  // ── Fast-path: stems already extracted — skip credit prompt entirely ──
-  // Check 1: sessionStorage (set after a successful extraction this session)
-  const cacheKey = 'stems_extracted_' + jobId;
-  if (sessionStorage.getItem(cacheKey)) {
-    window.location.href = '/stems/' + jobId;
-    return;
-  }
-  // Check 2: zip_url already exists in D1 (passed from the card render)
-  if (existingZipUrl && existingZipUrl.startsWith('http')) {
-    window.location.href = '/stems/' + jobId;
-    return;
-  }
-
-  // Remove stale modal if exists
-  const old = document.getElementById('sf-stems-popup');
-  if (old) old.remove();
-
-  // Build modal
-  const modal = document.createElement('div');
-  modal.id = 'sf-stems-popup';
-  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);backdrop-filter:blur(6px)';
-
-  // Placeholder while we fetch plan
-  modal.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
-      <button onclick="document.getElementById('sf-stems-popup').remove()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
-      <div id="sf-stems-popup-body" style="min-height:120px;display:flex;align-items:center;justify-content:center">
-        <i class="fas fa-spinner fa-spin" style="font-size:1.6rem;color:var(--primary)"></i>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-  // Close on backdrop click
-  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-
-  // Fetch user plan
-  let plan = 'creator';
-  try {
-    const me = await fetch('/api/auth/me');
-    const md = await me.json();
-    plan = md.user?.plan || 'creator';
-
-    // Not logged in
-    if (!md.user) {
-      document.getElementById('sf-stems-popup-body').innerHTML = `
-        <div>
-          <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-lock"></i></div>
-          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Sign in to extract stems</h3>
-          <p style="color:var(--muted);font-size:.9rem;margin-bottom:20px;line-height:1.5">Create a free account to get started.</p>
-          <a href="/login" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem;text-align:center"><i class="fas fa-sign-in-alt"></i> Sign In</a>
-        </div>`;
-      return;
-    }
-
-    // Creator plan: stems blocked
-    if (plan === 'creator') {
-      document.getElementById('sf-stems-popup-body').innerHTML = `
-        <div>
-          <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-lock"></i></div>
-          <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Stems are a Pro Artist feature</h3>
-          <p style="color:var(--muted);font-size:.9rem;margin-bottom:6px;line-height:1.5">Your Creator plan includes mastered WAV &amp; MP3 downloads.</p>
-          <p style="color:var(--muted);font-size:.85rem;margin-bottom:20px;line-height:1.5">Upgrade to <strong>Pro Artist</strong> to split beats into individual stems.</p>
-          <a href="/pricing?plan=pro" style="display:block;padding:11px 20px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.92rem;text-align:center;margin-bottom:8px"><i class="fas fa-star"></i> Upgrade to Pro Artist — $39/mo</a>
-          <button onclick="document.getElementById('sf-stems-popup').remove()" style="width:100%;padding:10px;background:none;border:1px solid var(--border);border-radius:10px;color:var(--muted);cursor:pointer;font-size:.88rem">Cancel</button>
-        </div>`;
-      return;
-    }
-  } catch(e) { /* ignore — show default creator copy */ }
-
-  const isPro = plan === 'pro';
-  const isFree = plan === 'free';
-  const creditCost = 2; // V1 only — all plans that can extract use 2 credits
-  const planLabel  = isPro ? 'Pro Artist' : isFree ? 'Free' : 'Creator';
-  const freeNote   = isFree
-    ? `<div style="margin-bottom:16px;padding:10px 14px;background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.25);border-radius:8px;font-size:.8rem;color:#c084fc;text-align:left">
-        <i class="fas fa-info-circle" style="margin-right:4px"></i>
-        <strong>Free plan:</strong> Stems are extracted &amp; saved. Upgrade to <a href="/pricing?plan=pro" style="color:#a855f7">Pro Artist</a> to listen &amp; download.
-      </div>`
-    : '';
-
-  document.getElementById('sf-stems-popup-body').innerHTML = `
-    <div style="width:100%">
-      <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.3rem;color:#fff"><i class="fas fa-layer-group"></i></div>
-      <h3 style="font-size:1.15rem;font-weight:700;margin-bottom:8px">Extract Stems</h3>
-      <p style="color:var(--muted);font-size:.85rem;margin-bottom:14px"><strong>${creditCost} credits</strong> will be used from your ${planLabel} plan.</p>
-      ${freeNote}
-      <div style="display:flex;gap:10px;justify-content:center">
-        <button id="sf-stems-popup-go" onclick="sfStemsGo('${jobId}')" style="flex:1;padding:11px 16px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:12px;font-weight:700;cursor:pointer;font-size:.92rem">
-          <i class="fas fa-layer-group"></i> ${isFree ? 'Extract &amp; Save — 2 Credits' : 'Extract Stems — 2 Credits'}
-        </button>
-        <button onclick="document.getElementById('sf-stems-popup').remove()" style="padding:11px 18px;background:var(--surface-2,#1e2130);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:600;cursor:pointer;font-size:.92rem">
-          <i class="fas fa-times"></i> Cancel
-        </button>
-      </div>
-      <div id="sf-stems-popup-status" style="margin-top:14px;font-size:.85rem;display:none;padding:10px 14px;border-radius:10px"></div>
-    </div>`;
-};
-
-window.sfStemsGo = async function(jobId) {
-  const btn    = document.getElementById('sf-stems-popup-go');
-  const status = document.getElementById('sf-stems-popup-status');
-  if (!btn) return;
-
-  // Just navigate to the stems page — stemsInit() will handle extraction if needed
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Opening stems player...';
-  window.location.href = '/stems/' + jobId;
-};
-
-// Request stems — called from "Get Stems" button in the Edit Track modal.
-// Instead of extracting inline, navigates to the stems player page with the
-// selected tier as a query param.  The stems player will handle extraction.
-window.requestStems = function() {
-  const jobId = document.getElementById('edit-job-id')?.value;
-  if (!jobId) return;
-  // Close edit modal first, then show unified stems popup
-  const editModal = document.getElementById('song-edit-modal');
-  if (editModal) editModal.style.display = 'none';
-  openStemsPopup(jobId, null);
-};
-
-// ── Stem Tier Picker Modal ─────────────────────────────────────────────────
-window.openStemPickerModal = function(jobId, user) {
-  let modal = document.getElementById('stem-picker-modal');
-  if (!modal) {
-    modal = document.createElement('div');
-    modal.id = 'stem-picker-modal';
-    modal.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;align-items:center;justify-content:center;padding:16px';
-    modal.innerHTML = `
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:480px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
-        <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:20px 24px 16px;display:flex;align-items:center;justify-content:space-between">
-          <div>
-            <h3 style="margin:0;font-size:1.05rem"><i class="fas fa-layer-group" style="color:var(--primary);margin-right:8px"></i>Choose Stem Pack</h3>
-            <p style="margin:4px 0 0;font-size:.8rem;color:var(--muted)">Select how many stems to extract</p>
-          </div>
-          <button onclick="closeStemPickerModal()" style="background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;padding:4px 8px;border-radius:6px">&times;</button>
-        </div>
-        <div style="padding:20px 24px">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-            <div id="spm-basic-card" onclick="selectSpmTier('basic')" style="cursor:pointer;border:2px solid var(--primary);border-radius:14px;padding:18px 14px;background:rgba(108,58,255,.08);position:relative;transition:all .2s">
-              <div style="font-size:1.6rem;font-weight:800;color:var(--primary);line-height:1">5</div>
-              <div style="font-size:.82rem;font-weight:600;margin:3px 0 2px">Stems</div>
-              <div style="font-size:.72rem;color:var(--muted);margin-bottom:10px;line-height:1.3">Drums · Bass · Melody<br>Vocals · Other</div>
-              <div style="font-size:.8rem;font-weight:700;color:var(--text)">2 credits</div>
-              <div id="spm-check-basic" style="position:absolute;top:9px;right:9px;width:16px;height:16px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center">
-                <i class="fas fa-check" style="color:white;font-size:.55rem"></i>
-              </div>
-            </div>
-            <div id="spm-pro-card" onclick="selectSpmTier('pro')" style="cursor:pointer;border:2px solid var(--border);border-radius:14px;padding:18px 14px;background:var(--surface-2,var(--surface));position:relative;transition:all .2s">
-              <div style="font-size:1.6rem;font-weight:800;color:#a855f7;line-height:1">12</div>
-              <div style="font-size:.82rem;font-weight:600;margin:3px 0 2px">Stems</div>
-              <div style="font-size:.72rem;color:var(--muted);margin-bottom:10px;line-height:1.3">+ Guitar · Strings · Synth<br>Brass · FX · MIDI</div>
-              <div style="font-size:.8rem;font-weight:700;color:var(--text)">10 credits</div>
-              <div id="spm-pro-badge" style="position:absolute;top:8px;right:8px;background:linear-gradient(135deg,#6c3aff,#a855f7);border-radius:5px;padding:2px 6px;font-size:.62rem;font-weight:700;color:white">
-                <i class="fas fa-crown" style="margin-right:2px"></i>Pro
-              </div>
-              <div id="spm-check-pro" style="display:none;position:absolute;top:9px;right:9px;width:16px;height:16px;border-radius:50%;background:#a855f7;align-items:center;justify-content:center">
-                <i class="fas fa-check" style="color:white;font-size:.55rem"></i>
-              </div>
-              <div id="spm-pro-lock" style="display:none;position:absolute;inset:0;border-radius:12px;background:rgba(0,0,0,.45);flex-direction:column;align-items:center;justify-content:center;gap:3px">
-                <i class="fas fa-lock" style="color:#a855f7;font-size:1rem"></i>
-                <span style="font-size:.68rem;color:rgba(255,255,255,.7);font-weight:600">Pro Artist only</span>
-              </div>
-            </div>
-          </div>
-          <p id="spm-pro-note" style="display:none;font-size:.78rem;color:var(--muted);text-align:center;margin:0 0 14px">
-            <i class="fas fa-crown" style="color:#a855f7;margin-right:4px"></i>Up to 12 stems is a <a href="/pricing" style="color:#a855f7;text-decoration:underline">Pro Artist</a> feature
-          </p>
-          <button id="spm-confirm-btn" class="btn btn--primary" style="width:100%" onclick="confirmStemPick()">
-            <i class="fas fa-layer-group"></i> <span id="spm-confirm-label">Go to Stems Player — 5 stems</span>
-          </button>
-        </div>
-      </div>`;
-    document.body.appendChild(modal);
-    modal.addEventListener('click', e => { if (e.target === modal) closeStemPickerModal(); });
-  }
-
-  // Store current job id
-  modal._jobId = jobId;
-  modal._tier  = 'basic';
-
-  // Set up Pro lock based on user plan
-  const isPro = user && (user.plan === 'pro' || user.plan === 'developer');
-  const proCard  = document.getElementById('spm-pro-card');
-  const proLock  = document.getElementById('spm-pro-lock');
-  const proBadge = document.getElementById('spm-pro-badge');
-  const proNote  = document.getElementById('spm-pro-note');
-  if (!isPro) {
-    if (proCard)  { proCard.style.opacity = '0.6'; proCard.style.cursor = 'not-allowed'; }
-    if (proLock)  { proLock.style.display = 'flex'; }
-    if (proBadge) { proBadge.style.display = 'none'; }
-    if (proNote)  { proNote.style.display = 'block'; }
-  } else {
-    if (proCard)  { proCard.style.opacity = '1'; proCard.style.cursor = 'pointer'; }
-    if (proLock)  { proLock.style.display = 'none'; }
-    if (proBadge) { proBadge.style.display = 'block'; }
-    if (proNote)  { proNote.style.display = 'none'; }
-  }
-
-  // Reset to basic selection
-  selectSpmTier('basic');
-  modal.style.display = 'flex';
-};
-
-window.closeStemPickerModal = function() {
-  const modal = document.getElementById('stem-picker-modal');
-  if (modal) modal.style.display = 'none';
-};
-
-window.selectSpmTier = function(tier) {
-  const modal = document.getElementById('stem-picker-modal');
-  if (!modal) return;
-  // Check Pro lock
-  const proLock = document.getElementById('spm-pro-lock');
-  if (tier === 'pro' && proLock && proLock.style.display !== 'none') return;
-
-  modal._tier = tier;
-  const isPro = tier === 'pro';
-
-  const basicCard  = document.getElementById('spm-basic-card');
-  const proCard    = document.getElementById('spm-pro-card');
-  const basicCheck = document.getElementById('spm-check-basic');
-  const proCheck   = document.getElementById('spm-check-pro');
-  const proBadge   = document.getElementById('spm-pro-badge');
-  const label      = document.getElementById('spm-confirm-label');
-  const btn        = document.getElementById('spm-confirm-btn');
-
-  if (basicCard) basicCard.style.borderColor = isPro ? 'var(--border)' : 'var(--primary)';
-  if (proCard && !(proLock && proLock.style.display !== 'none'))
-    proCard.style.borderColor = isPro ? '#a855f7' : 'var(--border)';
-  if (basicCheck) basicCheck.style.display = isPro ? 'none' : 'flex';
-  if (proCheck)   { proCheck.style.display = isPro ? 'flex' : 'none'; }
-  if (proBadge)   { proBadge.style.display = isPro ? 'none' : 'block'; }
-
-  if (label) label.textContent = isPro
-    ? 'Go to Stems Player — up to 12 stems'
-    : 'Go to Stems Player — 5 stems';
-  if (btn) btn.style.background = isPro ? 'linear-gradient(135deg,#6c3aff,#a855f7)' : '';
-};
-
-window.confirmStemPick = function() {
-  const modal = document.getElementById('stem-picker-modal');
-  if (!modal || !modal._jobId) return;
-  const tier = modal._tier || 'basic';
-  modal.style.display = 'none';
-  // Save tier choice to sessionStorage — stems player will use this to skip picker on revisit
-  try { sessionStorage.setItem('stem_tier_' + modal._jobId, tier); } catch(e) {}
-  // Navigate to stems page with tier as query param
-  window.location.href = '/stems/' + modal._jobId + '?tier=' + tier;
-};
-
-window.saveSongEdit = function() {
-  const jobId    = document.getElementById('edit-job-id').value;
-  const title    = document.getElementById('edit-title').value.trim();
-  const lyrics   = document.getElementById('edit-lyrics').value.trim();
-  const bpm      = document.getElementById('edit-bpm').value;
-  const genre    = document.getElementById('edit-genre').value.trim();
-  const desc     = document.getElementById('edit-description').value.trim();
-  const saveBtn  = document.getElementById('edit-save-btn');
-
-  if (!jobId) { closeSongEditModal(); return; }
-
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...'; }
-
-  fetch('/api/job/update', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: jobId, title, lyrics, bpm: bpm ? parseInt(bpm) : null, genre, description: desc })
-  })
-  .then(r => r.json())
-  .then(data => {
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> Save changes'; }
-    if (data.ok) {
-      // Update title in result header if on generator page
-      const titleEl = document.getElementById('gen-result-title');
-      if (titleEl && title) titleEl.textContent = title;
-
-      // Update card title in project grid if on dashboard
-      const card = document.querySelector(`.project-card[data-id="${jobId}"] h4`);
-      if (card && title) card.textContent = title;
-
-      closeSongEditModal();
-      // Show brief success toast
-      const toast = document.createElement('div');
-      toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#10b981;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4)';
-      toast.innerHTML = '<i class="fas fa-check"></i> Changes saved';
-      document.body.appendChild(toast);
-      setTimeout(() => toast.remove(), 2500);
-    } else {
-      if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> Save changes'; }
-      alert(data.error || 'Could not save changes.');
-    }
-  })
-  .catch(() => {
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> Save changes'; }
-    alert('Network error. Please try again.');
-  });
-};
-
-
-// ── Developer plan activation (gated by ADMIN_EMAIL secret) ──────
-// Called from the hidden developer plan card on the homepage/pricing page.
-// The card is only shown when the user manually runs: 
-//   document.getElementById('developer-plan-card').style.display='block'
-// in the browser console. This keeps it hidden from public users.
-window.activateDeveloperPlan = async function() {
-  const btn = document.getElementById('dev-activate-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Activating...'; }
-  try {
-    const res = await fetch('/api/admin/activate-developer', { method: 'POST' });
-    const data = await res.json();
-    if (data.ok) {
-      if (btn) { btn.textContent = '✅ Developer Plan Active!'; btn.style.background = '#10b981'; btn.style.color = '#fff'; }
-      setTimeout(() => window.location.href = '/dashboard', 1200);
-    } else {
-      alert('Error: ' + (data.error || 'Activation failed.\n\nMake sure ADMIN_EMAIL secret is set to your email in Cloudflare.'));
-      if (btn) { btn.disabled = false; btn.textContent = 'Activate Developer Plan'; }
-    }
-  } catch(e) {
-    alert('Network error. Please try again.');
-    if (btn) { btn.disabled = false; btn.textContent = 'Activate Developer Plan'; }
-  }
-};
-
-// ═══════════════════════════════════════════════════════════
-//  REFERENCE TRACK FEATURE (Pro Artist)
-// ═══════════════════════════════════════════════════════════
-
-// State
-let refFileId = null;
-let refMode = 'style'; // 'style' | 'extend' | 'loop'
-let refBars = 8;
-let oneshotSelectedType = '808 bass hit';
-let oneshotPollInterval = null;
-
-// ── Reference Track inline dropdown toggle ───────────────────
-window.toggleRefDropdown = function() {
-  var panel = document.getElementById('ref-inline-panel');
-  var btn   = document.getElementById('ctab-reference');
-  var chev  = document.getElementById('ctab-ref-chevron');
-  if (!panel) return;
-  var isOpen = panel.style.display !== 'none';
-  panel.style.display = isOpen ? 'none' : 'block';
-  if (btn)  btn.classList.toggle('active', !isOpen);
-  if (chev) chev.style.transform = isOpen ? '' : 'rotate(180deg)';
-};
-
-// Helper: update the ON badge on the reference tab button
-function updateRefTabBadge() {
-  var badge = document.getElementById('ctab-ref-badge');
-  var btn   = document.getElementById('ctab-reference');
-  var hasFid = !!refFileId;
-  if (badge) badge.style.display = hasFid ? 'inline-block' : 'none';
-  // Keep button visually active when a track is loaded, even if panel is closed
-  if (btn && hasFid) btn.classList.add('active');
-}
 
 // ── Creator Tab Popup system ─────────────────────────────────
 (function() {
