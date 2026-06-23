@@ -3681,10 +3681,19 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
       btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
     });
-    // Click backdrop (outside card) to close
+    // Click backdrop (outside card) to close.
+    // IMPORTANT: use composedPath() not contains() — when Extract is clicked,
+    // _setTabBody() replaces innerHTML mid-click, orphaning e.target from the DOM.
+    // contains() then returns false on the detached node and falsely fires closeStemsPanel().
+    // composedPath() captures the original path BEFORE any DOM mutation, so it still
+    // includes #sp-card even after the button is destroyed.
     _panel.addEventListener('click', function (e) {
       var card = document.getElementById('sp-card');
-      if (card && !card.contains(e.target)) closeStemsPanel();
+      if (!card) return;
+      // composedPath() is the authoritative pre-mutation path
+      var path = e.composedPath ? e.composedPath() : [];
+      var inCard = path.indexOf(card) !== -1 || card.contains(e.target);
+      if (!inCard) closeStemsPanel();
     });
     document.addEventListener('keydown', _onKey);
   }
