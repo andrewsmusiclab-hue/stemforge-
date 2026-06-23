@@ -467,7 +467,6 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
     job.thumbnail_seed = job.thumbnail_seed || (job.id.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % 360)
 
     job.blueprint = blueprint
-    job.tracks = []
 
     // Step 2 — kick off Mureka instrumental (instant — just submits the job)
     job.status = 'generating'
@@ -521,8 +520,6 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     // Storing a pollinations URL here would cause it to be re-generated on every refresh
     // because the cover-image route rejects non-/api/cover-art/ URLs.
 
-    job.zip_url = null
-    job.tracks = []
     job.status = 'ready'
     await setJob(db, { ...job })
 
@@ -596,7 +593,6 @@ app.post('/api/generate', async (c) => {
     status: 'pending',
     created_at: Date.now(),
     prompt: fullPrompt,
-    tracks: [],
     title: title || undefined,
     thumbnail_seed: Math.floor(Math.random() * 360)
   }
@@ -656,15 +652,6 @@ app.post('/api/poll/:id', async (c) => {
       mureka_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
-    zip_url: job.zip_url || null,
-    tracks: (job.tracks || []).map(t => ({
-      name: t.name,
-      stem: t.stem,
-      family: t.family,
-      status: t.status,
-      zip_url: t.zip_url || null,
-      color: t.color
-    })),
     error: job.error || null
   })
 })
@@ -702,15 +689,6 @@ app.get('/api/job/:id', async (c) => {
       mureka_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
-    zip_url: job.zip_url || null,
-    tracks: (job.tracks || []).map(t => ({
-      name: t.name,
-      stem: t.stem,
-      family: t.family,
-      status: t.status,
-      zip_url: t.zip_url || null,
-      color: t.color
-    })),
     error: job.error || null
   })
 })
@@ -718,12 +696,6 @@ app.get('/api/job/:id', async (c) => {
 // GET /api/zip-proxy?url=... — server-side proxy to fetch ZIP files from CDN
 // Needed to avoid CORS issues when browser fetches Mureka CDN ZIPs directly
 app.get('/api/zip-proxy', async (c) => {
-  // Gate for free plan users — stems ZIP download locked until upgrade
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (user && user.plan === 'free') {
-    return c.json({ error: 'ZIP download requires a Pro Artist plan. Your stems are saved — upgrade anytime to access them.', locked: true, upgrade: true }, 403)
-  }
   const url = c.req.query('url')
   if (!url) return c.json({ error: 'url param required' }, 400)
 
@@ -1697,7 +1669,6 @@ app.get('/api/projects', async (c) => {
         image_url: (() => { const u = d.image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
         created_at: d.created_at,
         stereo_url: d.stereo_url || d.audio_url || null,
-        zip_url: d.zip_url || null,
         blueprint: d.blueprint ? {
           bpm: d.blueprint.bpm, key: d.blueprint.key, scale: d.blueprint.scale,
           genre: d.blueprint.genre, mood: d.blueprint.mood,
@@ -2792,7 +2763,7 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
           id: oneshotId, status: 'ready', created_at: Date.now(),
           sound_type: sound_type || 'one-shot', audio_url: audioUrl,
           title: sound_type || 'One Shot', prompt: sound_type || 'one-shot',
-          tracks: [], thumbnail_seed: Math.floor(Math.random() * 360)
+          thumbnail_seed: Math.floor(Math.random() * 360)
         }
         await c.env.DB.prepare(
           `INSERT OR IGNORE INTO jobs (id, data, created_at, user_id, is_oneshot)
@@ -3262,7 +3233,7 @@ function footer() {
         <span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span>
         <span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
       </a>
-      <p>AI beat generation — professional stems, no studio needed.</p>
+      <p>AI beat generation — professional quality, no studio needed.</p>
     </div>
     <div class="sf-footer__cols">
       <div>
@@ -3304,7 +3275,7 @@ function homePage() {
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
     <h1 class="hero__title">Generate the beat.<br/><span class="gradient-text">Download it clean.</span></h1>
-    <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix, access stem bundles (bass, melody, vocals, other), and take your beats straight to the DAW.</p>
+    <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix and take your beats straight to the DAW.</p>
     <div class="hero__ctas">
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
       <a href="#pricing-preview" class="btn btn--outline btn--lg" onclick="event.preventDefault();document.getElementById('pricing-preview').scrollIntoView({behavior:'smooth'})"><i class="fas fa-tags"></i> See pricing</a>
@@ -3329,7 +3300,7 @@ function homePage() {
   <div class="container">
     <p class="logos-bar__label">Powered by industry-leading AI</p>
     <div class="logos-bar__items">
-      <span><i class="fas fa-layer-group"></i> Multitrack Engine</span>
+      <span><i class="fas fa-music"></i> Beat Engine</span>
       <span><i class="fas fa-bolt"></i> Edge Deployed</span>
       <span><i class="fas fa-shield-alt"></i> Commercial Use</span>
       <span><i class="fas fa-music"></i> Studio-Quality Output</span>
@@ -3347,15 +3318,15 @@ function homePage() {
     </div>
     <div class="features__grid">
       <div class="feature-card feature-card--hero">
-        <div class="feature-card__icon"><i class="fas fa-layer-group"></i></div>
-        <h3>Stem &amp; track export</h3>
-        <p>Download the full stereo mix and get a stem bundle with separated layers (bass, vocals, melody, other) — ready for your DAW.</p>
+        <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
+        <h3>Studio-quality downloads</h3>
+        <p>Download the full stereo mix in MP3 or lossless WAV — mastered and ready for release, streaming, or your DAW.</p>
         <div class="feature-card__tracks">
           <span class="track-pill track-pill--kick">Stereo Mix</span>
-          <span class="track-pill track-pill--bass">Bass.wav</span>
-          <span class="track-pill track-pill--keys">Melody.wav</span>
-          <span class="track-pill track-pill--pad">Other.wav</span>
-          <span class="track-pill track-pill--hats">Vocals.wav</span>
+          <span class="track-pill track-pill--bass">MP3</span>
+          <span class="track-pill track-pill--keys">WAV</span>
+          <span class="track-pill track-pill--pad">Mastered</span>
+          <span class="track-pill track-pill--hats">Commercial rights</span>
         </div>
       </div>
       <div class="feature-card">
@@ -3404,7 +3375,6 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 5 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-          <li><i class="fas fa-check"></i> Stem extraction (saved, not downloadable)</li>
           <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
         </ul>
@@ -3419,8 +3389,6 @@ function homePage() {
           <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> MP3 download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual stem download</li>
         </ul>
         <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
       </div>
@@ -3431,7 +3399,6 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 200 credits/downloads monthly</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
-          <li><i class="fas fa-check"></i> Stem extraction + download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
@@ -4266,10 +4233,8 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-          <li><i class="fas fa-check"></i> Stem extraction (saved for later)</li>
           <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
-          <li class="muted"><i class="fas fa-times"></i> Stem download / playback</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full">Start free</a>
       </div>
@@ -4283,9 +4248,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
           <li><i class="fas fa-check"></i> MP3 download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
           <li class="muted"><i class="fas fa-times"></i> Unmastered mix for DAW</li>
-          <li class="muted"><i class="fas fa-times"></i> Individual stem download</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $19/mo</button>
         <p class="pricing-downgrade-note" id="pricing-creator-downgrade" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
@@ -4297,8 +4260,6 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 200 credits/downloads monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
-          <li><i class="fas fa-check"></i> Stem extraction + download</li>
-          <li><i class="fas fa-check"></i> Drums, Bass, Melody, Vocals, Other</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
@@ -4317,8 +4278,7 @@ function pricingPage() {
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> Full AI beat generation</span><span class="credit-val">1 credit</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Stereo mix download (MP3 / WAV)</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem extraction (saved, no download)</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--free">Free</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-layer-group"></i> Stem extraction + download</span><span class="credit-val">2 credits</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        
 
         <div class="credit-table__row"><span><i class="fas fa-download"></i> Top-up download packs</span><span class="credit-val">from $0.30</span><span class="tier-badge tier-badge--creator">All Plans</span></div>
       </div>
@@ -4327,9 +4287,9 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix. Stem extraction (bass, melody, vocals, other) costs 2 extra credits and is available on the Pro Artist plan only.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of downloads? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase download credit packs from the Subscription page starting from $4.99. Packs never expire and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What stems do I get? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Stem extraction gives you separated audio layers: Bass, Melody, Vocals, and Other. Note: drums are delivered as part of the full stereo mix and stem bundle — individual isolated drum tracks (kick, snare, hi-hats separately) are not available as the AI engine outputs a combined drum mix.</div></div>
+        
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes. Cancel anytime from account settings. No cancellation fees. You keep access until the end of your billing period.</div></div>
@@ -4702,8 +4662,7 @@ function projectPage() {
   <div class="dash-header"><h2>Surf Noir Trap <span class="dash-header__sub">Export</span></h2></div>
   <div class="export-tier-grid">
     <div class="export-tier-card export-tier-card--available"><div class="export-tier-card__icon"><i class="fas fa-file-audio"></i></div><div class="export-tier-card__body"><h4>Stereo mix</h4><p>Full stereo bounce.</p><span class="credit-tag">Free</span></div><button class="btn btn--primary btn--sm"><i class="fas fa-download"></i> Download</button></div>
-    <div class="export-tier-card export-tier-card--available"><div class="export-tier-card__icon"><i class="fas fa-layer-group"></i></div><div class="export-tier-card__body"><h4>Stem ZIP</h4><p>5 files: Drums / Bass / Vocals / Melody / Instrumental.</p><span class="credit-tag">Free</span></div><button class="btn btn--primary btn--sm"><i class="fas fa-download"></i> Download</button></div>
-    <div class="export-tier-card export-tier-card--locked"><div class="export-tier-card__icon"><i class="fas fa-list"></i></div><div class="export-tier-card__body"><h4>Individual tracks <span class="lock-badge"><i class="fas fa-lock"></i> Pro Artist</span></h4><p>Download each stem file separately.</p><span class="credit-tag">Pro Artist+</span></div><a href="/pricing" class="btn btn--outline btn--sm">Upgrade</a></div>
+    
   </div>
 </div>
 </main>`, `<style>.sf-nav{display:none}</style>`)
@@ -4719,7 +4678,7 @@ function signupPage() {
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
         <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
-        <li><i class="fas fa-check-circle"></i> Stem bundle export (bass, melody, vocals, other)</li>
+        <li><i class="fas fa-check-circle"></i> Commercial use rights</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
     </div>
@@ -4752,7 +4711,7 @@ function registerPage() {
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
         <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
-        <li><i class="fas fa-check-circle"></i> Stem bundle export (bass, melody, vocals, other)</li>
+        <li><i class="fas fa-check-circle"></i> Commercial use rights</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
     </div>
@@ -4864,7 +4823,7 @@ function checkoutPage() {
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
           <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
-          <li><i class="fas fa-check"></i> Stereo mix + stem bundle download</li>
+          <li><i class="fas fa-check"></i> Stereo mix download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$19.00</strong></div>
@@ -5103,7 +5062,6 @@ function subscriptionPage(user: User, env: Bindings) {
           <ul>
             <li><i class="fas fa-check"></i> 5 credits/downloads monthly</li>
             <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-            <li><i class="fas fa-check"></i> Stem extraction (saved)</li>
           </ul>
           ${user.plan === 'free'
             ? '<span class="sub-current-badge">Current plan</span>'
@@ -5190,7 +5148,6 @@ function subscriptionPage(user: User, env: Bindings) {
           <ul>
             <li><i class="fas fa-check"></i> 200 credits/downloads monthly</li>
             <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
-            <li><i class="fas fa-check"></i> Stem extraction + download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
@@ -5853,8 +5810,8 @@ function termsPage() {
   <p>StemForge is an AI-powered music beat generation platform that allows users to create original instrumental beats and audio tracks using artificial intelligence. The Service includes:</p>
   <ul>
     <li>AI-powered beat generation using text prompts, style descriptors, and musical parameters</li>
-    <li>Stereo mix downloads and stem bundle exports (Bass, Melody, Vocals, Other)</li>
-    <li>Stem player with individual layer preview and download</li>
+    <li>Stereo mix downloads (MP3 and WAV)</li>
+    
     <li>Project storage, dashboard, and playback functionality</li>
     <li>Account management including profile, subscription, and billing tools</li>
   </ul>
@@ -5882,8 +5839,8 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 50 credits/downloads monthly, MP3 download, commercial use rights (no stem extraction)</li>
-    <li><strong>Pro Artist Plan ($26/month):</strong> 200 credits/downloads monthly, MP3 + WAV download, stem extraction + download, priority queue</li>
+    <li><strong>Creator Plan ($19/month):</strong> 50 credits/downloads monthly, MP3 download, commercial use rights</li>
+    <li><strong>Pro Artist Plan ($39/month):</strong> 200 credits/downloads monthly, MP3 + WAV download, commercial use rights, priority queue</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
