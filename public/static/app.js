@@ -1110,6 +1110,15 @@ document.addEventListener('DOMContentLoaded', () => {
         action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
     }
 
+    // Get Stems — for full beats (not oneshots)
+    if (!isOneshot && stereoUrl) {
+      items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
+        if (typeof window.openStemsPanel === 'function') {
+          window.openStemsPanel(jobId, stereoUrl, safeTitle);
+        }
+      }});
+    }
+
     // Delete — goes to trash
     items.push({ icon: 'fa-trash-alt', label: 'Move to Trash', danger: true,
       action: () => deleteLibItem(jobId) });
@@ -1831,6 +1840,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV / MP3</small>';
                 dlBtn.onclick = () => showFormatPicker(dlBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
                 exportOptionsRow.appendChild(dlBtn);
+              }
+
+              // ── Get Stems — available to Creator and Pro (not free) ──
+              if (!isFree && job.stereo_url) {
+                const stemsBtn = document.createElement('button');
+                stemsBtn.className = 'export-btn';
+                stemsBtn.title = 'Extract individual stems: vocals, drums, bass, and more';
+                stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Get Stems</span><small>Extract</small>';
+                stemsBtn.onclick = () => {
+                  if (typeof window.openStemsPanel === 'function') {
+                    window.openStemsPanel(job.id, job.stereo_url, finalTitle || safeFilename);
+                  }
+                };
+                exportOptionsRow.appendChild(stemsBtn);
               }
             }
 
@@ -3419,3 +3442,876 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     });
   } catch {}
 }
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  STEM PLAYER — openStemsPanel(jobId, stereoUrl, title)
+//  Suno-inspired: slide-up panel, 3 tabs (Auto / Split from mix / Advanced),
+//  lazy loading (stems only extracted on tab click + Extract button),
+//  per-stem S/M/waveform/vol/download, global playback bar.
+//  NO credit popup before opening.
+// ══════════════════════════════════════════════════════════════════════════════
+
+(function () {
+  'use strict';
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  CONSTANTS
+  // ─────────────────────────────────────────────────────────────────────────
+  var STEM_COLORS = {
+    vocals:       '#4e9fff',
+    'lead vocals':'#4e9fff',
+    'background vocals':'#38bdf8',
+    'rap vocals': '#7dd3fc',
+    drums:        '#f59e0b',
+    'kick drum':  '#fbbf24',
+    snare:        '#fcd34d',
+    'hi-hat':     '#fde68a',
+    cymbals:      '#fef3c7',
+    percussion:   '#f97316',
+    bass:         '#a855f6',
+    'bass guitar':'#c084fc',
+    'electric bass':'#d8b4fe',
+    'upright bass':'#e9d5ff',
+    guitar:       '#ef4444',
+    'electric guitar':'#f87171',
+    'acoustic guitar':'#fca5a5',
+    'rhythm guitar':'#fb923c',
+    'lead guitar':'#f43f5e',
+    piano:        '#06b6d4',
+    'electric piano':'#22d3ee',
+    'grand piano':'#67e8f9',
+    synth:        '#84cc16',
+    'synth lead': '#a3e635',
+    'synth pad':  '#bef264',
+    strings:      '#10b981',
+    violin:       '#34d399',
+    viola:        '#6ee7b7',
+    cello:        '#a7f3d0',
+    orchestra:    '#059669',
+    brass:        '#eab308',
+    trumpet:      '#facc15',
+    trombone:     '#fde047',
+    choir:        '#c084fc',
+    other:        '#64748b',
+    instrumental: '#475569',
+    default:      '#8b5cf6'
+  };
+
+  var SPLIT_INSTRUMENTS = [
+    'vocals','drums','bass','guitar','piano','synth','strings',
+    'trumpet','saxophone','violin','flute','organ','harmonica',
+    'mandolin','banjo','ukulele','harp','accordion'
+  ];
+
+  var ADVANCED_INSTRUMENTS = [
+    'vocals','background vocals','lead vocals','rap vocals',
+    'drums','kick drum','snare','hi-hat','cymbals','percussion',
+    'bass','bass guitar','electric bass','upright bass',
+    'guitar','electric guitar','acoustic guitar','rhythm guitar','lead guitar',
+    'piano','electric piano','grand piano',
+    'synth','synth lead','synth pad','synth bass',
+    'strings','violin','viola','cello','double bass','orchestra',
+    'brass','trumpet','trombone','french horn','tuba',
+    'woodwinds','flute','clarinet','oboe','saxophone','bassoon',
+    'organ','hammond organ','church organ',
+    'harp','mandolin','banjo','ukulele','accordion',
+    'marimba','xylophone','vibraphone','steel pan',
+    'choir','backing vocals'
+  ];
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  STATE
+  // ─────────────────────────────────────────────────────────────────────────
+  var _panel       = null;
+  var _jobId       = null;
+  var _stereoUrl   = null;
+  var _title       = null;
+  var _activeTab   = null;   // 'auto' | 'split_from_mix' | 'advanced'
+  var _stems       = [];     // [{name, url, audio, muted, solo, vol}]
+  var _audios      = [];     // HTMLAudioElement[] — one per stem, index-matched to _stems
+  var _playing     = false;
+  var _pollTimer   = null;
+  var _selectedInst= 'vocals';
+  var _curTaskId   = null;
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  OPEN / CLOSE
+  // ─────────────────────────────────────────────────────────────────────────
+  window.openStemsPanel = function (jobId, stereoUrl, title) {
+    _jobId     = jobId;
+    _stereoUrl = stereoUrl;
+    _title     = title || 'Beat';
+
+    // destroy any existing panel
+    var old = document.getElementById('sf-stems-panel');
+    if (old) old.remove();
+    _cleanup();
+
+    _panel = document.createElement('div');
+    _panel.id = 'sf-stems-panel';
+    _panel.setAttribute('role', 'dialog');
+    _panel.setAttribute('aria-modal', 'true');
+    _applyPanelStyles();
+    _panel.innerHTML = _buildShell();
+    document.body.appendChild(_panel);
+
+    // animate in
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        _panel.style.transform = 'translateY(0)';
+      });
+    });
+
+    _bindEvents();
+  };
+
+  window.closeStemsPanel = function () {
+    if (!_panel) return;
+    _panel.style.transform = 'translateY(100%)';
+    var p = _panel;
+    setTimeout(function () { if (p.parentNode) p.parentNode.removeChild(p); }, 360);
+    _panel = null;
+    _cleanup();
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  PANEL HTML SHELL
+  // ─────────────────────────────────────────────────────────────────────────
+  function _applyPanelStyles() {
+    _panel.style.cssText = [
+      'position:fixed;bottom:0;left:0;right:0;z-index:99990',
+      'background:#0d0d1a',
+      'border-top:1px solid rgba(255,255,255,0.08)',
+      'border-radius:18px 18px 0 0',
+      'box-shadow:0 -12px 60px rgba(0,0,0,0.75)',
+      'max-height:88vh',
+      'display:flex;flex-direction:column',
+      'transform:translateY(100%)',
+      'transition:transform 0.35s cubic-bezier(0.32,0.72,0,1)',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+      'color:#e2e8f0',
+      'user-select:none'
+    ].join(';');
+  }
+
+  function _buildShell() {
+    return [
+      /* drag handle */
+      '<div id="sp-handle" style="display:flex;justify-content:center;padding:10px 0 6px;cursor:grab;flex-shrink:0">',
+        '<div style="width:40px;height:4px;border-radius:2px;background:rgba(255,255,255,0.18)"></div>',
+      '</div>',
+
+      /* header row */
+      '<div style="display:flex;align-items:center;gap:12px;padding:0 20px 14px;flex-shrink:0">',
+        '<div style="width:42px;height:42px;border-radius:10px;background:linear-gradient(135deg,#4e9fff22,#6366f122);',
+          'display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0">',
+          '<i class="fas fa-layer-group" style="color:#4e9fff"></i>',
+        '</div>',
+        '<div style="flex:1;min-width:0">',
+          '<div style="font-weight:700;font-size:1rem;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" id="sp-title">' + _escHtml(_title) + '</div>',
+          '<div style="font-size:.75rem;color:rgba(255,255,255,0.4);margin-top:1px">Extract Stems</div>',
+        '</div>',
+        '<button onclick="closeStemsPanel()" aria-label="Close"',
+          ' style="background:rgba(255,255,255,0.07);border:none;color:rgba(255,255,255,0.5);',
+          'width:32px;height:32px;border-radius:50%;cursor:pointer;display:flex;align-items:center;',
+          'justify-content:center;font-size:.95rem;flex-shrink:0;transition:background .15s"',
+          ' onmouseover="this.style.background=\'rgba(255,255,255,.14)\'"',
+          ' onmouseout="this.style.background=\'rgba(255,255,255,.07)\'">&times;</button>',
+      '</div>',
+
+      /* track rows area — starts hidden, shown after extraction */
+      '<div id="sp-tracks" style="display:none;flex-direction:column;gap:0;overflow-y:auto;flex-shrink:1;max-height:320px"></div>',
+
+      /* global playback bar — hidden until stems loaded */
+      '<div id="sp-playbar" style="display:none;align-items:center;gap:10px;padding:12px 20px;',
+          'border-top:1px solid rgba(255,255,255,0.06);flex-shrink:0;background:#0d0d1a">',
+        '<button id="sp-play-btn" onclick="window._spPlay()" aria-label="Play / Pause"',
+          ' style="width:36px;height:36px;border-radius:50%;border:none;',
+          'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;cursor:pointer;',
+          'display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0;transition:transform .1s"',
+          ' onmouseover="this.style.transform=\'scale(1.1)\'" onmouseout="this.style.transform=\'scale(1)\'">',
+          '<i id="sp-play-icon" class="fas fa-play"></i>',
+        '</button>',
+        '<span id="sp-time-cur" style="font-size:.75rem;color:rgba(255,255,255,0.45);min-width:34px;flex-shrink:0">0:00</span>',
+        '<div id="sp-timeline-wrap" onclick="window._spSeek(event)" style="flex:1;height:4px;',
+            'background:rgba(255,255,255,0.1);border-radius:2px;cursor:pointer;position:relative">',
+          '<div id="sp-timeline-fill" style="position:absolute;left:0;top:0;bottom:0;width:0%;',
+              'background:linear-gradient(90deg,#4e9fff,#6366f1);border-radius:2px;pointer-events:none"></div>',
+          '<div id="sp-timeline-thumb" style="position:absolute;top:50%;width:12px;height:12px;',
+              'border-radius:50%;background:#fff;transform:translate(-50%,-50%);left:0%;',
+              'pointer-events:none;transition:left .1s linear"></div>',
+        '</div>',
+        '<span id="sp-time-tot" style="font-size:.75rem;color:rgba(255,255,255,0.45);min-width:34px;flex-shrink:0;text-align:right">0:00</span>',
+      '</div>',
+
+      /* tab bar + body — always visible */
+      '<div style="flex-shrink:0;border-top:1px solid rgba(255,255,255,0.06)">',
+        /* tab buttons */
+        '<div style="display:flex;gap:6px;padding:12px 20px 0">',
+          '<button class="sp-tab" data-tab="auto"',
+            ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
+            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Auto split</button>',
+          '<button class="sp-tab" data-tab="split_from_mix"',
+            ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
+            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Split from mix</button>',
+          '<button class="sp-tab" data-tab="advanced"',
+            ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
+            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">',
+            'Advanced <span style="font-size:.65rem;background:#ec4899;color:#fff;padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:3px">Pro</span>',
+          '</button>',
+        '</div>',
+        /* tab body */
+        '<div id="sp-tab-body" style="padding:14px 20px 16px;min-height:100px">',
+          '<p style="color:rgba(255,255,255,0.3);font-size:.85rem;text-align:center;margin:20px 0">',
+            'Select a tab above to extract stems',
+          '</p>',
+        '</div>',
+      '</div>'
+    ].join('');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  EVENTS — drag, tabs, keyboard
+  // ─────────────────────────────────────────────────────────────────────────
+  function _bindEvents() {
+    // Tab clicks
+    _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
+      btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
+    });
+
+    // Drag-to-dismiss on handle
+    var handle = _panel.querySelector('#sp-handle');
+    if (handle) {
+      var startY = 0, startTime = 0, dragging = false;
+      handle.addEventListener('pointerdown', function (e) {
+        startY = e.clientY; startTime = Date.now(); dragging = true;
+        handle.style.cursor = 'grabbing';
+        handle.setPointerCapture(e.pointerId);
+      });
+      handle.addEventListener('pointermove', function (e) {
+        if (!dragging) return;
+        var dy = e.clientY - startY;
+        if (dy > 0) _panel.style.transform = 'translateY(' + dy + 'px)';
+      });
+      handle.addEventListener('pointerup', function (e) {
+        if (!dragging) return;
+        dragging = false;
+        handle.style.cursor = 'grab';
+        var dy = e.clientY - startY;
+        var dt = Date.now() - startTime;
+        if (dy > 80 || (dy > 30 && dt < 300)) {
+          closeStemsPanel();
+        } else {
+          _panel.style.transform = 'translateY(0)';
+        }
+      });
+    }
+
+    // Escape key
+    document.addEventListener('keydown', _onKey);
+  }
+
+  function _onKey(e) {
+    if (e.key === 'Escape' && _panel) closeStemsPanel();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  TABS
+  // ─────────────────────────────────────────────────────────────────────────
+  function _onTabClick(tab) {
+    if (!_panel) return;
+    _activeTab = tab;
+
+    // Style tab buttons
+    _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
+      var isActive = btn.dataset.tab === tab;
+      btn.style.background = isActive ? '#fff' : 'rgba(255,255,255,0.04)';
+      btn.style.color       = isActive ? '#000' : 'rgba(255,255,255,0.5)';
+    });
+
+    // Render tab content
+    if (tab === 'auto')           _showAutoTab();
+    else if (tab === 'split_from_mix') _showSplitTab();
+    else if (tab === 'advanced')  _showAdvancedTab();
+  }
+
+  function _showAutoTab() {
+    _setTabBody(
+      '<p style="color:rgba(255,255,255,0.55);font-size:.82rem;line-height:1.5;margin:0 0 14px">' +
+        'Automatically splits your beat into up to 5 stems: ' +
+        '<strong style="color:#f8fafc">Vocals · Drums · Bass · Other · Instrumental</strong>' +
+      '</p>' +
+      '<button onclick="window._spExtract(\'auto\')" ' +
+        'style="width:100%;padding:11px;border-radius:10px;border:none;' +
+        'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;font-weight:700;' +
+        'font-size:.88rem;cursor:pointer;transition:opacity .15s;letter-spacing:.01em"' +
+        ' onmouseover="this.style.opacity=\'.85\'" onmouseout="this.style.opacity=\'1\'">' +
+        '<i class="fas fa-magic" style="margin-right:7px"></i>Auto Split — Extract All Stems' +
+      '</button>'
+    );
+  }
+
+  function _showSplitTab() {
+    var chips = SPLIT_INSTRUMENTS.map(function (inst) {
+      var sel = inst === _selectedInst;
+      return '<button class="sp-chip" data-inst="' + inst + '" onclick="window._spSelectInst(this,\'' + inst + '\')" ' +
+        'style="padding:5px 12px;border-radius:20px;border:1px solid ' +
+        (sel ? '#4e9fff' : 'rgba(255,255,255,0.12)') + ';' +
+        'background:' + (sel ? 'rgba(78,159,255,0.15)' : 'rgba(255,255,255,0.04)') + ';' +
+        'color:' + (sel ? '#4e9fff' : 'rgba(255,255,255,0.65)') + ';' +
+        'font-size:.75rem;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap">' +
+        _capFirst(inst) + '</button>';
+    }).join('');
+
+    _setTabBody(
+      '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">' + chips + '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:.8rem;color:rgba(255,255,255,0.5)">' +
+        '<span id="sp-target-label" style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.15);' +
+          'border-radius:20px;padding:4px 12px;color:#f8fafc;font-weight:600">' + _capFirst(_selectedInst) + '</span>' +
+        '<span>+</span>' +
+        '<span style="background:rgba(255,255,255,0.06);border-radius:20px;padding:4px 12px">Everything else</span>' +
+      '</div>' +
+      '<button onclick="window._spExtract(\'split_from_mix\')" ' +
+        'style="width:100%;padding:11px;border-radius:10px;border:none;' +
+        'background:#fff;color:#000;font-weight:700;font-size:.88rem;cursor:pointer;transition:opacity .15s"' +
+        ' onmouseover="this.style.opacity=\'.88\'" onmouseout="this.style.opacity=\'1\'">' +
+        'Extract — Split from Mix' +
+      '</button>'
+    );
+  }
+
+  function _showAdvancedTab() {
+    var chips = ADVANCED_INSTRUMENTS.map(function (inst) {
+      var sel = inst === _selectedInst;
+      return '<button class="sp-chip" data-inst="' + inst + '" onclick="window._spSelectInst(this,\'' + inst + '\')" ' +
+        'style="padding:4px 10px;border-radius:20px;border:1px solid ' +
+        (sel ? '#a855f6' : 'rgba(255,255,255,0.10)') + ';' +
+        'background:' + (sel ? 'rgba(168,85,247,0.15)' : 'rgba(255,255,255,0.03)') + ';' +
+        'color:' + (sel ? '#c084fc' : 'rgba(255,255,255,0.55)') + ';' +
+        'font-size:.72rem;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap">' +
+        _capFirst(inst) + '</button>';
+    }).join('');
+
+    _setTabBody(
+      '<input id="sp-adv-search" type="text" placeholder="Search instruments…" oninput="window._spFilterChips(this.value)" ' +
+        'style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);' +
+        'border-radius:8px;padding:7px 12px;color:#f8fafc;font-size:.8rem;margin-bottom:10px;outline:none" />' +
+      '<div id="sp-adv-chips" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px;max-height:100px;overflow-y:auto">' + chips + '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:.8rem;color:rgba(255,255,255,0.5)">' +
+        '<span id="sp-target-label" style="background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.35);' +
+          'border-radius:20px;padding:4px 12px;color:#c084fc;font-weight:600">' + _capFirst(_selectedInst) + '</span>' +
+        '<span>+</span>' +
+        '<span style="background:rgba(255,255,255,0.06);border-radius:20px;padding:4px 12px">Everything else</span>' +
+      '</div>' +
+      '<button onclick="window._spExtract(\'advanced\')" ' +
+        'style="width:100%;padding:11px;border-radius:10px;border:none;' +
+        'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;font-weight:700;' +
+        'font-size:.88rem;cursor:pointer;transition:opacity .15s"' +
+        ' onmouseover="this.style.opacity=\'.85\'" onmouseout="this.style.opacity=\'1\'">' +
+        '<i class="fas fa-wand-magic-sparkles" style="margin-right:7px"></i>Advanced Split — Pro' +
+      '</button>'
+    );
+  }
+
+  function _setTabBody(html) {
+    var el = _panel && _panel.querySelector('#sp-tab-body');
+    if (el) el.innerHTML = html;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  INSTRUMENT SELECTION
+  // ─────────────────────────────────────────────────────────────────────────
+  window._spSelectInst = function (btn, inst) {
+    _selectedInst = inst;
+    // Update all chip styles in same container
+    var container = btn.closest('#sp-tab-body');
+    if (container) {
+      var isAdv = _activeTab === 'advanced';
+      container.querySelectorAll('.sp-chip').forEach(function (c) {
+        var active = c.dataset.inst === inst;
+        c.style.border  = 'border:1px solid ' + (active ? (isAdv ? '#a855f6' : '#4e9fff') : 'rgba(255,255,255,0.10)');
+        c.style.background = active ? (isAdv ? 'rgba(168,85,247,0.15)' : 'rgba(78,159,255,0.15)') : 'rgba(255,255,255,0.03)';
+        c.style.color   = active ? (isAdv ? '#c084fc' : '#4e9fff') : 'rgba(255,255,255,0.55)';
+        c.style.borderColor = active ? (isAdv ? '#a855f6' : '#4e9fff') : 'rgba(255,255,255,0.10)';
+      });
+    }
+    // Update target label
+    var lbl = _panel && _panel.querySelector('#sp-target-label');
+    if (lbl) lbl.textContent = _capFirst(inst);
+  };
+
+  window._spFilterChips = function (q) {
+    var container = _panel && _panel.querySelector('#sp-adv-chips');
+    if (!container) return;
+    var lower = q.toLowerCase().trim();
+    container.querySelectorAll('.sp-chip').forEach(function (c) {
+      c.style.display = (!lower || c.dataset.inst.indexOf(lower) !== -1) ? '' : 'none';
+    });
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  EXTRACT
+  // ─────────────────────────────────────────────────────────────────────────
+  window._spExtract = async function (mode) {
+    if (!_jobId) return;
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _audios = [];
+    _curTaskId = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+
+    // Hide tracks & playbar
+    var tracksEl = _panel && _panel.querySelector('#sp-tracks');
+    var playbar  = _panel && _panel.querySelector('#sp-playbar');
+    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
+    if (playbar)  playbar.style.display = 'none';
+
+    _showProgress(mode, 'Starting extraction…');
+
+    var body = { job_id: _jobId, mode: mode };
+    if (mode !== 'auto') body.target_instrument = _selectedInst;
+
+    try {
+      var res = await fetch('/api/job/stems', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await res.json();
+
+      if (!res.ok) {
+        var msg = data.error || 'Extraction failed';
+        if (data.upgrade) {
+          _showError(msg + ' <a href="/pricing" style="color:#4e9fff;text-decoration:underline">Upgrade →</a>');
+        } else {
+          _showError(msg);
+        }
+        return;
+      }
+
+      // Cached / immediately ready
+      if (data.status === 'ready' && data.stems && data.stems.length) {
+        _renderStemTracks(data.stems, mode);
+        return;
+      }
+
+      _curTaskId = data.task_id;
+      _pollForStems(mode);
+
+    } catch (err) {
+      _showError('Network error: ' + (err.message || 'Unknown'));
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  POLLING
+  // ─────────────────────────────────────────────────────────────────────────
+  function _pollForStems(mode) {
+    var dots = 0;
+    _pollTimer = setInterval(async function () {
+      if (!_panel) { clearInterval(_pollTimer); return; }
+
+      dots = (dots + 1) % 4;
+      _showProgress(mode, 'Extracting stems' + '.'.repeat(dots + 1));
+
+      try {
+        var params = '?mode=' + encodeURIComponent(mode);
+        if (_curTaskId) params += '&task_id=' + encodeURIComponent(_curTaskId);
+        if (mode !== 'auto') params += '&target=' + encodeURIComponent(_selectedInst);
+
+        var res  = await fetch('/api/job/stems/' + _jobId + params);
+        var data = await res.json();
+
+        if (data.status === 'ready' && data.stems && data.stems.length) {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _renderStemTracks(data.stems, mode);
+        } else if (data.status === 'error') {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _showError(data.error || 'Extraction failed');
+        }
+        // else still processing — keep polling
+      } catch (e) {
+        // network glitch — keep polling
+      }
+    }, 2500);
+  }
+
+  function _showProgress(mode, text) {
+    _setTabBody(
+      '<div style="text-align:center;padding:16px 0">' +
+        '<div style="display:inline-block;width:36px;height:36px;border:3px solid rgba(255,255,255,0.1);' +
+          'border-top-color:#4e9fff;border-radius:50%;animation:sp-spin 0.7s linear infinite;margin-bottom:12px"></div>' +
+        '<p style="color:rgba(255,255,255,0.6);font-size:.83rem;margin:0">' + _escHtml(text || 'Processing…') + '</p>' +
+        '<style>@keyframes sp-spin{to{transform:rotate(360deg)}}</style>' +
+      '</div>'
+    );
+  }
+
+  function _showError(html) {
+    _setTabBody(
+      '<div style="text-align:center;padding:14px 0">' +
+        '<i class="fas fa-exclamation-triangle" style="color:#f59e0b;font-size:1.4rem;margin-bottom:8px;display:block"></i>' +
+        '<p style="color:rgba(255,255,255,0.6);font-size:.83rem;margin:0 0 12px">' + html + '</p>' +
+        '<button onclick="window._spReExtract(\'' + (_activeTab||'auto') + '\')" ' +
+          'style="padding:7px 18px;border-radius:8px;border:1px solid rgba(255,255,255,.15);' +
+          'background:rgba(255,255,255,.07);color:rgba(255,255,255,.6);font-size:.78rem;cursor:pointer">Try again</button>' +
+      '</div>'
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  RENDER STEM TRACKS
+  // ─────────────────────────────────────────────────────────────────────────
+  function _renderStemTracks(stems, mode) {
+    if (!_panel) return;
+
+    // Build state array
+    _stems = stems.map(function (s) {
+      return { name: s.name, url: s.url, muted: false, solo: false, vol: 1.0 };
+    });
+
+    // Show re-extract option in tab body
+    _setTabBody(
+      '<div style="display:flex;align-items:center;justify-content:space-between">' +
+        '<span style="color:rgba(255,255,255,0.4);font-size:.78rem">' +
+          '<i class="fas fa-check-circle" style="color:#10b981;margin-right:5px"></i>' +
+          stems.length + ' stem' + (stems.length !== 1 ? 's' : '') + ' extracted' +
+        '</span>' +
+        '<button onclick="window._spReExtract(\'' + mode + '\')" ' +
+          'style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,.12);' +
+          'background:rgba(255,255,255,.05);color:rgba(255,255,255,.45);font-size:.73rem;cursor:pointer">' +
+          'Re-extract</button>' +
+      '</div>'
+    );
+
+    // Build track rows HTML
+    var tracksEl = _panel.querySelector('#sp-tracks');
+    if (!tracksEl) return;
+
+    tracksEl.innerHTML = _stems.map(function (s, i) {
+      return _buildTrackRow(s, i, mode);
+    }).join('');
+
+    tracksEl.style.display = 'flex';
+
+    // Create Audio elements + wire up
+    _audios = [];
+    _stems.forEach(function (s, i) {
+      var audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'metadata';
+      // Use proxy route for CORS-safe playback
+      audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
+      _audios.push(audio);
+
+      // When first audio loads duration, update UI
+      if (i === 0) {
+        audio.addEventListener('loadedmetadata', function () {
+          _updateDuration(audio.duration);
+        });
+        audio.addEventListener('timeupdate', function () {
+          _updateTimeline(audio.currentTime, audio.duration);
+        });
+        audio.addEventListener('ended', function () {
+          _playing = false;
+          _updatePlayIcon();
+        });
+      }
+    });
+
+    // Draw waveforms after DOM is ready
+    requestAnimationFrame(function () {
+      _stems.forEach(function (s, i) {
+        var canvas = _panel && _panel.querySelector('#sp-wave-' + i);
+        if (canvas) _drawWaveform(canvas, STEM_COLORS[s.name] || STEM_COLORS.default);
+      });
+    });
+
+    // Show playbar
+    var playbar = _panel && _panel.querySelector('#sp-playbar');
+    if (playbar) playbar.style.display = 'flex';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  TRACK ROW HTML
+  // ─────────────────────────────────────────────────────────────────────────
+  function _buildTrackRow(s, i, mode) {
+    var color = STEM_COLORS[s.name] || STEM_COLORS.default;
+    var label = _capFirst(s.name);
+    // proxy download url
+    var dlUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
+
+    return [
+      '<div class="sp-track-row" style="display:flex;align-items:center;gap:8px;padding:10px 16px;',
+        'border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s"',
+        ' onmouseover="this.style.background=\'rgba(255,255,255,.025)\'"',
+        ' onmouseout="this.style.background=\'none\'">',
+
+        /* color accent */
+        '<div style="width:3px;height:32px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>',
+
+        /* stem name */
+        '<div style="width:90px;flex-shrink:0;min-width:0">',
+          '<div style="font-size:.78rem;font-weight:600;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(label) + '</div>',
+        '</div>',
+
+        /* S button */
+        '<button id="sp-solo-' + i + '" onclick="window._spSolo(' + i + ')"',
+          ' title="Solo"',
+          ' style="width:24px;height:24px;flex-shrink:0;border-radius:4px;border:1px solid rgba(255,255,255,0.15);',
+          'background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.55);font-size:.65rem;font-weight:700;cursor:pointer;',
+          'transition:all .15s">S</button>',
+
+        /* M button */
+        '<button id="sp-mute-' + i + '" onclick="window._spMute(' + i + ')"',
+          ' title="Mute"',
+          ' style="width:24px;height:24px;flex-shrink:0;border-radius:4px;border:1px solid rgba(255,255,255,0.15);',
+          'background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.55);font-size:.65rem;font-weight:700;cursor:pointer;',
+          'transition:all .15s">M</button>',
+
+        /* waveform */
+        '<div style="flex:1;position:relative;height:36px;border-radius:6px;overflow:hidden;',
+            'cursor:pointer;background:rgba(255,255,255,0.03)" onclick="window._spSeekWave(event,this)">',
+          '<canvas id="sp-wave-' + i + '" width="400" height="36" style="position:absolute;inset:0;width:100%;height:100%"></canvas>',
+          '<div id="sp-wave-prog-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;',
+              'background:rgba(255,255,255,0.08);pointer-events:none;border-radius:6px 0 0 6px"></div>',
+          '<div style="position:absolute;top:0;left:0;bottom:0;width:0%;border-right:1.5px solid rgba(255,255,255,0.45);',
+              'pointer-events:none" id="sp-wave-line-' + i + '"></div>',
+        '</div>',
+
+        /* volume slider */
+        '<input type="range" min="0" max="1" step="0.01" value="1"',
+          ' oninput="window._spVol(' + i + ',parseFloat(this.value))"',
+          ' title="Volume"',
+          ' style="width:64px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">',
+
+        /* download */
+        '<a href="' + dlUrl + '" download="' + _escHtml(label + '_stem') + '.mp3"',
+          ' title="Download ' + _escHtml(label) + '"',
+          ' style="color:rgba(255,255,255,0.35);font-size:.85rem;flex-shrink:0;text-decoration:none;',
+          'transition:color .15s;display:flex;align-items:center;justify-content:center;width:24px;height:24px"',
+          ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.35)\'">',
+          '<i class="fas fa-download"></i></a>',
+
+      '</div>'
+    ].join('');
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  WAVEFORM DRAWING
+  // ─────────────────────────────────────────────────────────────────────────
+  function _drawWaveform(canvas, color) {
+    var ctx = canvas.getContext('2d');
+    var W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+
+    var bars = 80;
+    var gap  = 2;
+    var bw   = (W - gap * (bars - 1)) / bars;
+
+    // Deterministic pseudo-random envelope (seeded by color string)
+    var seed = color.split('').reduce(function (a, c) { return a + c.charCodeAt(0); }, 0);
+    function rand() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }
+
+    // music-like envelope: high in middle, lower at edges
+    for (var i = 0; i < bars; i++) {
+      var t = i / (bars - 1);
+      var envelope = Math.sin(t * Math.PI) * 0.7 + 0.3;
+      var h = (rand() * 0.6 + 0.25) * envelope * H;
+      var x = i * (bw + gap);
+      var y = (H - h) / 2;
+
+      // gradient bar
+      var grad = ctx.createLinearGradient(0, y, 0, y + h);
+      grad.addColorStop(0, color + 'dd');
+      grad.addColorStop(0.5, color);
+      grad.addColorStop(1, color + '88');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.roundRect ? ctx.roundRect(x, y, bw, h, 1.5) : ctx.rect(x, y, bw, h);
+      ctx.fill();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  PLAYBACK CONTROLS
+  // ─────────────────────────────────────────────────────────────────────────
+  window._spPlay = function () {
+    if (!_audios.length) return;
+    if (_playing) {
+      _audios.forEach(function (a) { a.pause(); });
+      _playing = false;
+    } else {
+      var promises = _audios.map(function (a) { return a.play().catch(function(){}); });
+      Promise.all(promises).then(function () { _playing = true; _updatePlayIcon(); });
+      _playing = true;
+    }
+    _updatePlayIcon();
+  };
+
+  window._spSeek = function (e) {
+    var wrap = _panel && _panel.querySelector('#sp-timeline-wrap');
+    if (!wrap || !_audios.length) return;
+    var rect = wrap.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    var dur  = _audios[0].duration;
+    if (!dur || isNaN(dur)) return;
+    var t = pct * dur;
+    _audios.forEach(function (a) { a.currentTime = t; });
+    _updateTimeline(t, dur);
+  };
+
+  window._spSeekWave = function (e, el) {
+    var rect = el.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (!_audios.length) return;
+    var dur = _audios[0].duration;
+    if (!dur || isNaN(dur)) return;
+    var t = pct * dur;
+    _audios.forEach(function (a) { a.currentTime = t; });
+    _updateTimeline(t, dur);
+  };
+
+  window._spSolo = function (idx) {
+    var s = _stems[idx];
+    if (!s) return;
+    var wasSolo = s.solo;
+    // clear all
+    _stems.forEach(function (st) { st.solo = false; });
+    if (!wasSolo) s.solo = true;
+
+    _stems.forEach(function (st, i) {
+      var anySolo = _stems.some(function (x) { return x.solo; });
+      var active  = !anySolo || st.solo;
+      var eff     = st.muted ? 0 : (active ? st.vol : 0);
+      if (_audios[i]) _audios[i].volume = eff;
+
+      var btn = _panel && _panel.querySelector('#sp-solo-' + i);
+      if (btn) {
+        btn.style.background   = st.solo ? 'rgba(250,204,21,0.25)' : 'rgba(255,255,255,0.05)';
+        btn.style.borderColor  = st.solo ? '#facc15' : 'rgba(255,255,255,0.15)';
+        btn.style.color        = st.solo ? '#facc15' : 'rgba(255,255,255,0.55)';
+      }
+    });
+  };
+
+  window._spMute = function (idx) {
+    var s = _stems[idx];
+    if (!s) return;
+    s.muted = !s.muted;
+    if (_audios[idx]) {
+      var anySolo = _stems.some(function (x) { return x.solo; });
+      var active  = !anySolo || s.solo;
+      _audios[idx].volume = s.muted ? 0 : (active ? s.vol : 0);
+    }
+    var btn = _panel && _panel.querySelector('#sp-mute-' + idx);
+    if (btn) {
+      btn.style.background  = s.muted ? 'rgba(239,68,68,0.25)' : 'rgba(255,255,255,0.05)';
+      btn.style.borderColor = s.muted ? '#ef4444' : 'rgba(255,255,255,0.15)';
+      btn.style.color       = s.muted ? '#ef4444' : 'rgba(255,255,255,0.55)';
+    }
+  };
+
+  window._spVol = function (idx, vol) {
+    var s = _stems[idx];
+    if (!s) return;
+    s.vol = vol;
+    if (_audios[idx] && !s.muted) {
+      var anySolo = _stems.some(function (x) { return x.solo; });
+      var active  = !anySolo || s.solo;
+      _audios[idx].volume = active ? vol : 0;
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  RE-EXTRACT
+  // ─────────────────────────────────────────────────────────────────────────
+  window._spReExtract = function (mode) {
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _audios = [];
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+
+    var tracksEl = _panel && _panel.querySelector('#sp-tracks');
+    var playbar  = _panel && _panel.querySelector('#sp-playbar');
+    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
+    if (playbar)  playbar.style.display = 'none';
+
+    // Re-render the tab content
+    _onTabClick(mode || _activeTab || 'auto');
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  TIMELINE UI UPDATES
+  // ─────────────────────────────────────────────────────────────────────────
+  function _updateTimeline(cur, dur) {
+    if (!dur || isNaN(dur)) return;
+    var pct = (cur / dur * 100).toFixed(2);
+
+    var fill  = _panel && _panel.querySelector('#sp-timeline-fill');
+    var thumb = _panel && _panel.querySelector('#sp-timeline-thumb');
+    var curEl = _panel && _panel.querySelector('#sp-time-cur');
+    if (fill)  fill.style.width  = pct + '%';
+    if (thumb) thumb.style.left  = pct + '%';
+    if (curEl) curEl.textContent = _fmtTime(cur);
+
+    // Per-track waveform progress overlays
+    _stems.forEach(function (s, i) {
+      var prog = _panel && _panel.querySelector('#sp-wave-prog-' + i);
+      var line = _panel && _panel.querySelector('#sp-wave-line-' + i);
+      if (prog) prog.style.width = pct + '%';
+      if (line) line.style.width = pct + '%';
+    });
+  }
+
+  function _updateDuration(dur) {
+    var el = _panel && _panel.querySelector('#sp-time-tot');
+    if (el) el.textContent = _fmtTime(dur);
+  }
+
+  function _updatePlayIcon() {
+    var icon = _panel && _panel.querySelector('#sp-play-icon');
+    if (icon) icon.className = _playing ? 'fas fa-pause' : 'fas fa-play';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  CLEANUP
+  // ─────────────────────────────────────────────────────────────────────────
+  function _stopAllAudio() {
+    _audios.forEach(function (a) { try { a.pause(); a.src = ''; } catch (e) {} });
+    _audios = [];
+  }
+
+  function _cleanup() {
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _activeTab = null;
+    _curTaskId = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    document.removeEventListener('keydown', _onKey);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  UTILITIES
+  // ─────────────────────────────────────────────────────────────────────────
+  function _fmtTime(secs) {
+    if (!secs || isNaN(secs)) return '0:00';
+    var m = Math.floor(secs / 60);
+    var s = Math.floor(secs % 60);
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  function _capFirst(str) {
+    if (!str) return '';
+    return str.charAt(0).toUpperCase() + str.slice(1).replace(/_/g, ' ');
+  }
+
+  function _escHtml(str) {
+    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+}()); // end stem player IIFE

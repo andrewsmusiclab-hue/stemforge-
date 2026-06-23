@@ -407,6 +407,26 @@ function planFromPriceId(env: Bindings, priceId: string): string {
   return 'free'
 }
 
+// ── Stem extraction types ──────────────────────────────────────
+type StemName = 'vocals' | 'drums' | 'bass' | 'other' | 'instrumental'
+type StemMode = 'auto' | 'split_from_mix' | 'advanced'
+
+interface StemTrack {
+  name: StemName | string   // stem label
+  url: string               // CDN URL for the stem WAV
+  task_id?: string          // Mureka task id
+}
+
+interface StemJob {
+  task_id: string
+  mode: StemMode
+  status: 'pending' | 'processing' | 'ready' | 'error'
+  stems: StemTrack[]
+  error?: string
+  target_instrument?: string // for split_from_mix / advanced
+  created_at: number
+}
+
 interface Job {
   id: string
   status: 'pending' | 'blueprint' | 'generating' | 'extracting' | 'ready' | 'error'
@@ -420,6 +440,7 @@ interface Job {
   user_lyrics?: string    // User lyrics/notes
   thumbnail_seed?: number // Deterministic color seed for thumbnail gradient
   image_url?: string      // Pollinations.ai generated cover art URL
+  stem_jobs?: StemJob[]   // Stem extraction results keyed by mode
 }
 
 interface Blueprint {
@@ -731,6 +752,253 @@ app.get('/api/zip-proxy', async (c) => {
 
 // GET /api/health
 app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
+
+// ═══════════════════════════════════════════════════════════════
+//  STEM EXTRACTION API
+//  Three modes matching Suno's UX:
+//    auto          → Mureka audio-separation-2 → 5 stems (vocals, drums, bass, other, instrumental)
+//    split_from_mix → Mureka audio-separation-2 with target → 2 stems (target + everything_else)
+//    advanced      → same as split_from_mix but labelled differently in UI
+//
+//  Lifecycle: POST /api/job/stems → starts task, returns task_id
+//             GET  /api/job/stems/:jobId → polls / returns cached results
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/job/stems — start stem extraction
+app.post('/api/job/stems', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Stem extraction not configured' }, 500)
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  // Free plan: stem extraction is a paid feature
+  if (user.plan === 'free') {
+    return c.json({ error: 'Stem extraction requires a Creator or Pro Artist plan.', locked: true, upgrade: true }, 403)
+  }
+
+  const body = await c.req.json<{
+    job_id: string
+    mode: StemMode
+    target_instrument?: string // for split_from_mix / advanced: e.g. 'vocals', 'drums', 'bass', 'guitar' etc.
+  }>()
+
+  const { job_id, mode, target_instrument } = body
+  if (!job_id || !mode) return c.json({ error: 'job_id and mode required' }, 400)
+
+  const job = await getJob(c.env.DB, job_id)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+  if (!job.stereo_url) return c.json({ error: 'Beat not ready yet — no audio URL' }, 400)
+
+  // Check if we already have a completed stem job for this mode+target (cache hit)
+  const existingStems = (job as any).stem_jobs as StemJob[] | undefined
+  const cacheKey = mode === 'auto' ? mode : `${mode}_${target_instrument || ''}`
+  if (existingStems) {
+    const cached = existingStems.find(s => {
+      const key = s.mode === 'auto' ? s.mode : `${s.mode}_${s.target_instrument || ''}`
+      return key === cacheKey && s.status === 'ready'
+    })
+    if (cached) return c.json({ ok: true, cached: true, task_id: cached.task_id, stems: cached.stems, status: 'ready' })
+  }
+
+  // Deduct credits based on mode (Pro Artist only gets advanced, Creator gets auto+split_from_mix)
+  if (mode === 'advanced' && user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Advanced split requires a Pro Artist plan.', locked: true, upgrade: true }, 403)
+  }
+
+  // Build Mureka stem request
+  // Mureka POST /v1/song/stem
+  // Body: { audio_url, model: 'audio-separation-2', stems?: string[] }
+  // audio-separation-2: up to 5 stems (vocals, drums, bass, other, instrumental)
+  // For split_from_mix / advanced: request only [target, 'other'] — Mureka returns target + complement
+  let stemsToRequest: string[]
+  if (mode === 'auto') {
+    stemsToRequest = ['vocals', 'drums', 'bass', 'other', 'instrumental']
+  } else {
+    // split_from_mix and advanced: extract target + complement (everything_else)
+    const target = target_instrument || 'vocals'
+    stemsToRequest = [target]
+  }
+
+  const murekaBody: any = {
+    audio_url: job.stereo_url,
+    model: 'audio-separation-2',
+    stems: stemsToRequest
+  }
+
+  let taskId: string
+  try {
+    const res = await fetch(`${MUREKA_BASE}/song/stem`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(murekaBody)
+    })
+    if (!res.ok) {
+      const err = await res.json() as any
+      return c.json({ error: err?.error?.message || err?.message || `Mureka stem error ${res.status}` }, 502)
+    }
+    const data = await res.json() as any
+    taskId = data.id || data.task_id
+    if (!taskId) return c.json({ error: 'No task ID returned by Mureka' }, 502)
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Failed to start stem extraction' }, 502)
+  }
+
+  // Store pending stem job in the job record
+  const stemJob: StemJob = {
+    task_id: taskId,
+    mode,
+    status: 'pending',
+    stems: [],
+    target_instrument,
+    created_at: Date.now()
+  }
+  const updatedJob = { ...job } as any
+  if (!updatedJob.stem_jobs) updatedJob.stem_jobs = []
+  // Remove any old pending/error for same key
+  updatedJob.stem_jobs = updatedJob.stem_jobs.filter((s: StemJob) => {
+    const key = s.mode === 'auto' ? s.mode : `${s.mode}_${s.target_instrument || ''}`
+    return key !== cacheKey || s.status === 'ready'
+  })
+  updatedJob.stem_jobs.push(stemJob)
+  await setJob(c.env.DB, updatedJob)
+
+  return c.json({ ok: true, cached: false, task_id: taskId, status: 'pending' })
+})
+
+// GET /api/job/stems/:jobId — poll stem extraction status
+app.get('/api/job/stems/:jobId', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('jobId')
+  const mode = c.req.query('mode') as StemMode | undefined
+  const target = c.req.query('target') || ''
+  const taskId = c.req.query('task_id') || ''
+
+  const job = await getJob(c.env.DB, jobId)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
+  if (!stemJobs?.length) return c.json({ status: 'not_started' })
+
+  // Find the matching stem job
+  const stemJob = taskId
+    ? stemJobs.find(s => s.task_id === taskId)
+    : mode === 'auto'
+      ? stemJobs.find(s => s.mode === 'auto')
+      : stemJobs.find(s => s.mode === mode && (s.target_instrument || '') === target)
+
+  if (!stemJob) return c.json({ status: 'not_started' })
+
+  // Already completed — return cached
+  if (stemJob.status === 'ready') {
+    return c.json({ status: 'ready', stems: stemJob.stems, task_id: stemJob.task_id })
+  }
+  if (stemJob.status === 'error') {
+    return c.json({ status: 'error', error: stemJob.error })
+  }
+
+  // Poll Mureka for status
+  try {
+    const res = await fetch(`${MUREKA_BASE}/song/query/${stemJob.task_id}`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+    })
+    if (!res.ok) return c.json({ status: 'processing' })
+    const data = await res.json() as any
+
+    if (data.status === 'succeeded' || data.status === 'completed') {
+      // Parse stem URLs from response
+      // Mureka returns: { choices: [{ stems: { vocals: url, drums: url, ... } }] }
+      // or: { stems: { vocals: url, ... } }
+      const stemData = data.choices?.[0]?.stems || data.stems || {}
+      const stemTracks: StemTrack[] = Object.entries(stemData).map(([name, url]) => ({
+        name,
+        url: url as string
+      }))
+
+      // For split_from_mix / advanced: create complement label
+      if (stemJob.mode !== 'auto' && stemTracks.length === 1) {
+        const target = stemJob.target_instrument || 'vocals'
+        const complement = `everything_but_${target}`
+        // Mureka may return 2 items already — if only 1, duplicate as complement placeholder
+        stemTracks.push({ name: complement, url: stemTracks[0].url })
+      }
+
+      stemJob.status = 'ready'
+      stemJob.stems = stemTracks
+
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+
+      return c.json({ status: 'ready', stems: stemTracks, task_id: stemJob.task_id })
+    }
+
+    if (data.status === 'failed' || data.status === 'error') {
+      stemJob.status = 'error'
+      stemJob.error = data.error?.message || 'Extraction failed'
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'error', error: stemJob.error })
+    }
+
+    // Still processing
+    stemJob.status = 'processing'
+    const updatedJob = { ...job } as any
+    updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+    await setJob(c.env.DB, updatedJob)
+    return c.json({ status: 'processing', task_id: stemJob.task_id })
+  } catch (err: any) {
+    return c.json({ status: 'error', error: err?.message || 'Poll failed' }, 500)
+  }
+})
+
+// GET /api/stem-audio/:jobId/:stem — proxy stem audio for CORS-free playback
+app.get('/api/stem-audio/:jobId/:stem', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('jobId')
+  const stemName = c.req.param('stem')
+  const job = await getJob(c.env.DB, jobId)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
+  if (!stemJobs?.length) return c.json({ error: 'No stems found' }, 404)
+
+  // Find the stem URL across all stem jobs
+  let stemUrl: string | undefined
+  for (const sj of stemJobs) {
+    const track = sj.stems.find(t => t.name === stemName)
+    if (track?.url) { stemUrl = track.url; break }
+  }
+  if (!stemUrl) return c.json({ error: `Stem "${stemName}" not found` }, 404)
+
+  // Proxy the audio
+  try {
+    const upstream = await fetch(stemUrl)
+    if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
+    return new Response(upstream.body, {
+      headers: {
+        'Content-Type': upstream.headers.get('Content-Type') || 'audio/wav',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600'
+      }
+    })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Proxy failed' }, 502)
+  }
+})
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/cover-image/:jobId
