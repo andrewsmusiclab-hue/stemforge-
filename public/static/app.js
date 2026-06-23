@@ -3446,10 +3446,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  STEM PLAYER — openStemsPanel(jobId, stereoUrl, title)
-//  Suno-inspired: slide-up panel, 3 tabs (Auto / Split from mix / Advanced),
-//  lazy loading (stems only extracted on tab click + Extract button),
-//  per-stem S/M/waveform/vol/download, global playback bar.
-//  NO credit popup before opening.
+//  Centered modal (Suno-style), 3 tabs, lazy load, per-stem S/M/waveform/vol
 // ══════════════════════════════════════════════════════════════════════════════
 
 (function () {
@@ -3459,50 +3456,44 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  CONSTANTS
   // ─────────────────────────────────────────────────────────────────────────
   var STEM_COLORS = {
-    vocals:       '#4e9fff',
-    'lead vocals':'#4e9fff',
+    vocals:            '#4e9fff',
+    'lead vocals':     '#4e9fff',
     'background vocals':'#38bdf8',
-    'rap vocals': '#7dd3fc',
-    drums:        '#f59e0b',
-    'kick drum':  '#fbbf24',
-    snare:        '#fcd34d',
-    'hi-hat':     '#fde68a',
-    cymbals:      '#fef3c7',
-    percussion:   '#f97316',
-    bass:         '#a855f6',
-    'bass guitar':'#c084fc',
-    'electric bass':'#d8b4fe',
-    'upright bass':'#e9d5ff',
-    guitar:       '#ef4444',
-    'electric guitar':'#f87171',
-    'acoustic guitar':'#fca5a5',
-    'rhythm guitar':'#fb923c',
-    'lead guitar':'#f43f5e',
-    piano:        '#06b6d4',
-    'electric piano':'#22d3ee',
-    'grand piano':'#67e8f9',
-    synth:        '#84cc16',
-    'synth lead': '#a3e635',
-    'synth pad':  '#bef264',
-    strings:      '#10b981',
-    violin:       '#34d399',
-    viola:        '#6ee7b7',
-    cello:        '#a7f3d0',
-    orchestra:    '#059669',
-    brass:        '#eab308',
-    trumpet:      '#facc15',
-    trombone:     '#fde047',
-    choir:        '#c084fc',
-    other:        '#64748b',
-    instrumental: '#475569',
-    default:      '#8b5cf6'
+    'rap vocals':      '#7dd3fc',
+    drums:             '#f59e0b',
+    'kick drum':       '#fbbf24',
+    snare:             '#fcd34d',
+    'hi-hat':          '#fde68a',
+    cymbals:           '#fef3c7',
+    percussion:        '#f97316',
+    bass:              '#a855f6',
+    'bass guitar':     '#c084fc',
+    'electric bass':   '#d8b4fe',
+    'upright bass':    '#e9d5ff',
+    guitar:            '#ef4444',
+    'electric guitar': '#f87171',
+    'acoustic guitar': '#fca5a5',
+    'rhythm guitar':   '#fb923c',
+    'lead guitar':     '#f43f5e',
+    piano:             '#06b6d4',
+    'electric piano':  '#22d3ee',
+    'grand piano':     '#67e8f9',
+    synth:             '#84cc16',
+    'synth lead':      '#a3e635',
+    'synth pad':       '#bef264',
+    strings:           '#10b981',
+    violin:            '#34d399',
+    viola:             '#6ee7b7',
+    cello:             '#a7f3d0',
+    orchestra:         '#059669',
+    brass:             '#eab308',
+    trumpet:           '#facc15',
+    trombone:          '#fde047',
+    choir:             '#c084fc',
+    other:             '#64748b',
+    instrumental:      '#475569',
+    default:           '#8b5cf6'
   };
-
-  var SPLIT_INSTRUMENTS = [
-    'vocals','drums','bass','guitar','piano','synth','strings',
-    'trumpet','saxophone','violin','flute','organ','harmonica',
-    'mandolin','banjo','ukulele','harp','accordion'
-  ];
 
   var ADVANCED_INSTRUMENTS = [
     'vocals','background vocals','lead vocals','rap vocals',
@@ -3527,9 +3518,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   var _jobId       = null;
   var _stereoUrl   = null;
   var _title       = null;
-  var _activeTab   = null;   // 'auto' | 'split_from_mix' | 'advanced'
-  var _stems       = [];     // [{name, url, audio, muted, solo, vol}]
-  var _audios      = [];     // HTMLAudioElement[] — one per stem, index-matched to _stems
+  var _activeTab   = null;
+  var _stems       = [];
+  var _audios      = [];
   var _playing     = false;
   var _pollTimer   = null;
   var _selectedInst= 'vocals';
@@ -3543,23 +3534,36 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _stereoUrl = stereoUrl;
     _title     = title || 'Beat';
 
-    // destroy any existing panel
     var old = document.getElementById('sf-stems-panel');
     if (old) old.remove();
     _cleanup();
 
+    // Outer element = full-screen backdrop
     _panel = document.createElement('div');
     _panel.id = 'sf-stems-panel';
-    _panel.setAttribute('role', 'dialog');
-    _panel.setAttribute('aria-modal', 'true');
-    _applyPanelStyles();
+    _panel.style.cssText = [
+      'position:fixed;inset:0;z-index:99990',
+      'display:flex;align-items:center;justify-content:center',
+      'background:rgba(0,0,0,0.75)',
+      'backdrop-filter:blur(8px)',
+      '-webkit-backdrop-filter:blur(8px)',
+      'padding:16px',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
+      'color:#e2e8f0',
+      'user-select:none',
+      'opacity:0',
+      'transition:opacity 0.22s ease'
+    ].join(';');
+
     _panel.innerHTML = _buildShell();
     document.body.appendChild(_panel);
 
-    // animate in
+    // Animate in
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
-        _panel.style.transform = 'translateY(0)';
+        _panel.style.opacity = '1';
+        var card = document.getElementById('sp-card');
+        if (card) card.style.transform = 'translateY(0) scale(1)';
       });
     });
 
@@ -3568,147 +3572,120 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
   window.closeStemsPanel = function () {
     if (!_panel) return;
-    _panel.style.transform = 'translateY(100%)';
+    _panel.style.opacity = '0';
+    var card = document.getElementById('sp-card');
+    if (card) { card.style.transform = 'translateY(8px) scale(0.98)'; }
     var p = _panel;
-    setTimeout(function () { if (p.parentNode) p.parentNode.removeChild(p); }, 360);
+    setTimeout(function () { if (p && p.parentNode) p.parentNode.removeChild(p); }, 240);
     _panel = null;
     _cleanup();
   };
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  PANEL HTML SHELL
+  //  PANEL SHELL HTML
   // ─────────────────────────────────────────────────────────────────────────
-  function _applyPanelStyles() {
-    _panel.style.cssText = [
-      'position:fixed;bottom:0;left:0;right:0;z-index:99990',
-      'background:#0d0d1a',
-      'border-top:1px solid rgba(255,255,255,0.08)',
-      'border-radius:18px 18px 0 0',
-      'box-shadow:0 -12px 60px rgba(0,0,0,0.75)',
-      'max-height:88vh',
-      'display:flex;flex-direction:column',
-      'transform:translateY(100%)',
-      'transition:transform 0.35s cubic-bezier(0.32,0.72,0,1)',
-      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif',
-      'color:#e2e8f0',
-      'user-select:none'
-    ].join(';');
-  }
-
   function _buildShell() {
-    return [
-      /* drag handle */
-      '<div id="sp-handle" style="display:flex;justify-content:center;padding:10px 0 6px;cursor:grab;flex-shrink:0">',
-        '<div style="width:40px;height:4px;border-radius:2px;background:rgba(255,255,255,0.18)"></div>',
-      '</div>',
+    return '<div id="sp-card" style="' +
+        'background:#0d0d1a;' +
+        'border:1px solid rgba(255,255,255,0.09);' +
+        'border-radius:14px;' +
+        'box-shadow:0 32px 96px rgba(0,0,0,0.9);' +
+        'width:100%;max-width:540px;' +
+        'display:flex;flex-direction:column;' +
+        'overflow:hidden;' +
+        'transform:translateY(10px) scale(0.98);' +
+        'transition:transform 0.28s cubic-bezier(0.22,1,0.36,1)' +
+      '">' +
 
-      /* header row */
-      '<div style="display:flex;align-items:center;gap:12px;padding:0 20px 14px;flex-shrink:0">',
-        '<div style="width:42px;height:42px;border-radius:10px;background:linear-gradient(135deg,#4e9fff22,#6366f122);',
-          'display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0">',
-          '<i class="fas fa-layer-group" style="color:#4e9fff"></i>',
-        '</div>',
-        '<div style="flex:1;min-width:0">',
-          '<div style="font-weight:700;font-size:1rem;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" id="sp-title">' + _escHtml(_title) + '</div>',
-          '<div style="font-size:.75rem;color:rgba(255,255,255,0.4);margin-top:1px">Extract Stems</div>',
-        '</div>',
-        '<button onclick="closeStemsPanel()" aria-label="Close"',
-          ' style="background:rgba(255,255,255,0.07);border:none;color:rgba(255,255,255,0.5);',
-          'width:32px;height:32px;border-radius:50%;cursor:pointer;display:flex;align-items:center;',
-          'justify-content:center;font-size:.95rem;flex-shrink:0;transition:background .15s"',
-          ' onmouseover="this.style.background=\'rgba(255,255,255,.14)\'"',
-          ' onmouseout="this.style.background=\'rgba(255,255,255,.07)\'">&times;</button>',
-      '</div>',
+      // ── Header ──────────────────────────────────────────────
+      '<div style="display:flex;align-items:center;gap:11px;padding:14px 16px 12px;' +
+          'border-bottom:1px solid rgba(255,255,255,0.06);flex-shrink:0">' +
+        '<div style="width:34px;height:34px;border-radius:8px;flex-shrink:0;' +
+            'background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(99,102,241,.18));' +
+            'display:flex;align-items:center;justify-content:center">' +
+          '<i class="fas fa-layer-group" style="color:#4e9fff;font-size:.8rem"></i>' +
+        '</div>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div id="sp-title" style="font-weight:700;font-size:.9rem;color:#f8fafc;' +
+              'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(_title) + '</div>' +
+          '<div style="font-size:.68rem;color:rgba(255,255,255,0.32);margin-top:1px">Stem Extractor</div>' +
+        '</div>' +
+        '<button onclick="closeStemsPanel()" aria-label="Close" style="' +
+            'background:rgba(255,255,255,0.06);border:none;color:rgba(255,255,255,0.4);' +
+            'width:26px;height:26px;border-radius:50%;cursor:pointer;display:flex;' +
+            'align-items:center;justify-content:center;font-size:1rem;flex-shrink:0;transition:background .15s"' +
+          ' onmouseover="this.style.background=\'rgba(255,255,255,.12)\'"' +
+          ' onmouseout="this.style.background=\'rgba(255,255,255,.06)\'">&times;</button>' +
+      '</div>' +
 
-      /* track rows area — starts hidden, shown after extraction */
-      '<div id="sp-tracks" style="display:none;flex-direction:column;gap:0;overflow-y:auto;flex-shrink:1;max-height:320px"></div>',
+      // ── Track rows (hidden until extracted) ─────────────────
+      '<div id="sp-tracks" style="display:none;flex-direction:column;overflow-y:auto;max-height:240px"></div>' +
 
-      /* global playback bar — hidden until stems loaded */
-      '<div id="sp-playbar" style="display:none;align-items:center;gap:10px;padding:12px 20px;',
-          'border-top:1px solid rgba(255,255,255,0.06);flex-shrink:0;background:#0d0d1a">',
-        '<button id="sp-play-btn" onclick="window._spPlay()" aria-label="Play / Pause"',
-          ' style="width:36px;height:36px;border-radius:50%;border:none;',
-          'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;cursor:pointer;',
-          'display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0;transition:transform .1s"',
-          ' onmouseover="this.style.transform=\'scale(1.1)\'" onmouseout="this.style.transform=\'scale(1)\'">',
-          '<i id="sp-play-icon" class="fas fa-play"></i>',
-        '</button>',
-        '<span id="sp-time-cur" style="font-size:.75rem;color:rgba(255,255,255,0.45);min-width:34px;flex-shrink:0">0:00</span>',
-        '<div id="sp-timeline-wrap" onclick="window._spSeek(event)" style="flex:1;height:4px;',
-            'background:rgba(255,255,255,0.1);border-radius:2px;cursor:pointer;position:relative">',
-          '<div id="sp-timeline-fill" style="position:absolute;left:0;top:0;bottom:0;width:0%;',
-              'background:linear-gradient(90deg,#4e9fff,#6366f1);border-radius:2px;pointer-events:none"></div>',
-          '<div id="sp-timeline-thumb" style="position:absolute;top:50%;width:12px;height:12px;',
-              'border-radius:50%;background:#fff;transform:translate(-50%,-50%);left:0%;',
-              'pointer-events:none;transition:left .1s linear"></div>',
-        '</div>',
-        '<span id="sp-time-tot" style="font-size:.75rem;color:rgba(255,255,255,0.45);min-width:34px;flex-shrink:0;text-align:right">0:00</span>',
-      '</div>',
+      // ── Playback bar (hidden until stems ready) ──────────────
+      '<div id="sp-playbar" style="display:none;align-items:center;gap:9px;padding:9px 16px;' +
+          'border-top:1px solid rgba(255,255,255,0.06);flex-shrink:0;background:#0a0a14">' +
+        '<button id="sp-play-btn" onclick="window._spPlay()" aria-label="Play/Pause" style="' +
+            'width:30px;height:30px;border-radius:50%;border:none;' +
+            'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;cursor:pointer;' +
+            'display:flex;align-items:center;justify-content:center;font-size:.75rem;flex-shrink:0;transition:transform .1s"' +
+          ' onmouseover="this.style.transform=\'scale(1.1)\'" onmouseout="this.style.transform=\'scale(1)\'">' +
+          '<i id="sp-play-icon" class="fas fa-play"></i>' +
+        '</button>' +
+        '<span id="sp-time-cur" style="font-size:.7rem;color:rgba(255,255,255,0.38);min-width:28px;flex-shrink:0">0:00</span>' +
+        '<div id="sp-timeline-wrap" onclick="window._spSeek(event)" style="flex:1;height:3px;' +
+            'background:rgba(255,255,255,0.1);border-radius:2px;cursor:pointer;position:relative">' +
+          '<div id="sp-timeline-fill" style="position:absolute;left:0;top:0;bottom:0;width:0%;' +
+              'background:linear-gradient(90deg,#4e9fff,#6366f1);border-radius:2px;pointer-events:none"></div>' +
+          '<div id="sp-timeline-thumb" style="position:absolute;top:50%;width:9px;height:9px;' +
+              'border-radius:50%;background:#fff;transform:translate(-50%,-50%);left:0%;' +
+              'pointer-events:none;transition:left .1s linear"></div>' +
+        '</div>' +
+        '<span id="sp-time-tot" style="font-size:.7rem;color:rgba(255,255,255,0.38);min-width:28px;flex-shrink:0;text-align:right">0:00</span>' +
+      '</div>' +
 
-      /* tab bar + body — always visible */
-      '<div style="flex-shrink:0;border-top:1px solid rgba(255,255,255,0.06)">',
-        /* tab buttons */
-        '<div style="display:flex;gap:6px;padding:12px 20px 0">',
-          '<button class="sp-tab" data-tab="auto"',
-            ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
-            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Auto split</button>',
-          '<button class="sp-tab" data-tab="split_from_mix"',
-            ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
-            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">Vocals &amp; Instrumental</button>',
-          '<button class="sp-tab" data-tab="advanced"',
-            ' style="flex:1;height:32px;border-radius:8px;border:none;cursor:pointer;font-size:.78rem;font-weight:600;',
-            'background:rgba(255,255,255,0.04);color:rgba(255,255,255,0.5);transition:all .2s">',
-            'Advanced <span style="font-size:.65rem;background:#ec4899;color:#fff;padding:1px 5px;border-radius:4px;vertical-align:middle;margin-left:3px">Pro</span>',
-          '</button>',
-        '</div>',
-        /* tab body */
-        '<div id="sp-tab-body" style="padding:14px 20px 16px;min-height:100px">',
-          '<p style="color:rgba(255,255,255,0.3);font-size:.85rem;text-align:center;margin:20px 0">',
-            'Select a tab above to extract stems',
-          '</p>',
-        '</div>',
-      '</div>'
-    ].join('');
+      // ── Tab section ──────────────────────────────────────────
+      '<div style="flex-shrink:0">' +
+        // pill tab buttons
+        '<div style="display:flex;gap:4px;padding:10px 16px 0;background:#0d0d1a">' +
+          '<button class="sp-tab" data-tab="auto" style="' +
+              'flex:1;height:27px;border-radius:6px;border:none;cursor:pointer;' +
+              'font-size:.72rem;font-weight:600;background:rgba(255,255,255,0.04);' +
+              'color:rgba(255,255,255,0.42);transition:all .2s">Auto split</button>' +
+          '<button class="sp-tab" data-tab="split_from_mix" style="' +
+              'flex:1;height:27px;border-radius:6px;border:none;cursor:pointer;' +
+              'font-size:.72rem;font-weight:600;background:rgba(255,255,255,0.04);' +
+              'color:rgba(255,255,255,0.42);transition:all .2s">Vocals &amp; Inst.</button>' +
+          '<button class="sp-tab" data-tab="advanced" style="' +
+              'flex:1;height:27px;border-radius:6px;border:none;cursor:pointer;' +
+              'font-size:.72rem;font-weight:600;background:rgba(255,255,255,0.04);' +
+              'color:rgba(255,255,255,0.42);transition:all .2s">' +
+            'Advanced <span style="font-size:.58rem;background:#ec4899;color:#fff;' +
+                'padding:1px 4px;border-radius:3px;vertical-align:middle;margin-left:2px">Pro</span>' +
+          '</button>' +
+        '</div>' +
+        // tab body
+        '<div id="sp-tab-body" style="padding:12px 16px 14px">' +
+          '<p style="color:rgba(255,255,255,0.22);font-size:.78rem;text-align:center;margin:14px 0">' +
+            'Select a tab above to extract stems' +
+          '</p>' +
+        '</div>' +
+      '</div>' +
+
+    '</div>'; // end #sp-card
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  EVENTS — drag, tabs, keyboard
+  //  EVENTS
   // ─────────────────────────────────────────────────────────────────────────
   function _bindEvents() {
-    // Tab clicks
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
       btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
     });
-
-    // Drag-to-dismiss on handle
-    var handle = _panel.querySelector('#sp-handle');
-    if (handle) {
-      var startY = 0, startTime = 0, dragging = false;
-      handle.addEventListener('pointerdown', function (e) {
-        startY = e.clientY; startTime = Date.now(); dragging = true;
-        handle.style.cursor = 'grabbing';
-        handle.setPointerCapture(e.pointerId);
-      });
-      handle.addEventListener('pointermove', function (e) {
-        if (!dragging) return;
-        var dy = e.clientY - startY;
-        if (dy > 0) _panel.style.transform = 'translateY(' + dy + 'px)';
-      });
-      handle.addEventListener('pointerup', function (e) {
-        if (!dragging) return;
-        dragging = false;
-        handle.style.cursor = 'grab';
-        var dy = e.clientY - startY;
-        var dt = Date.now() - startTime;
-        if (dy > 80 || (dy > 30 && dt < 300)) {
-          closeStemsPanel();
-        } else {
-          _panel.style.transform = 'translateY(0)';
-        }
-      });
-    }
-
-    // Escape key
+    // Click backdrop (outside card) to close
+    _panel.addEventListener('click', function (e) {
+      var card = document.getElementById('sp-card');
+      if (card && !card.contains(e.target)) closeStemsPanel();
+    });
     document.addEventListener('keydown', _onKey);
   }
 
@@ -3722,92 +3699,102 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   function _onTabClick(tab) {
     if (!_panel) return;
     _activeTab = tab;
-
-    // Style tab buttons
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
-      var isActive = btn.dataset.tab === tab;
-      btn.style.background = isActive ? '#fff' : 'rgba(255,255,255,0.04)';
-      btn.style.color       = isActive ? '#000' : 'rgba(255,255,255,0.5)';
+      var on = btn.dataset.tab === tab;
+      btn.style.background = on ? '#fff' : 'rgba(255,255,255,0.04)';
+      btn.style.color       = on ? '#000' : 'rgba(255,255,255,0.42)';
     });
-
-    // Render tab content
-    if (tab === 'auto')           _showAutoTab();
+    if (tab === 'auto')            _showAutoTab();
     else if (tab === 'split_from_mix') _showSplitTab();
-    else if (tab === 'advanced')  _showAdvancedTab();
+    else if (tab === 'advanced')   _showAdvancedTab();
   }
 
+  // ── Auto split tab ────────────────────────────────────────────────────────
   function _showAutoTab() {
     _setTabBody(
-      '<p style="color:rgba(255,255,255,0.55);font-size:.82rem;line-height:1.5;margin:0 0 14px">' +
-        'Automatically splits your beat into up to 5 stems: ' +
-        '<strong style="color:#f8fafc">Vocals · Drums · Bass · Other · Instrumental</strong>' +
-      '</p>' +
-      '<button onclick="window._spExtract(\'auto\')" ' +
-        'style="width:100%;padding:11px;border-radius:10px;border:none;' +
-        'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;font-weight:700;' +
-        'font-size:.88rem;cursor:pointer;transition:opacity .15s;letter-spacing:.01em"' +
-        ' onmouseover="this.style.opacity=\'.85\'" onmouseout="this.style.opacity=\'1\'">' +
-        '<i class="fas fa-magic" style="margin-right:7px"></i>Auto Split — Extract All Stems' +
-      '</button>'
+      '<div style="display:flex;align-items:center;gap:12px">' +
+        '<p style="flex:1;color:rgba(255,255,255,0.48);font-size:.77rem;line-height:1.55;margin:0">' +
+          'Splits into up to 5 stems: ' +
+          '<span style="color:rgba(255,255,255,0.75)">Vocals · Drums · Bass · Other · Instrumental</span>' +
+        '</p>' +
+        '<button onclick="window._spExtract(\'auto\')" style="' +
+            'flex-shrink:0;padding:6px 14px;border-radius:7px;border:none;' +
+            'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;' +
+            'font-weight:600;font-size:.73rem;cursor:pointer;transition:opacity .15s;white-space:nowrap"' +
+          ' onmouseover="this.style.opacity=\'.78\'" onmouseout="this.style.opacity=\'1\'">' +
+          'Extract' +
+        '</button>' +
+      '</div>'
     );
   }
 
+  // ── Vocals & Instrumental tab ─────────────────────────────────────────────
   function _showSplitTab() {
     _setTabBody(
-      '<div style="display:flex;gap:10px;margin-bottom:14px">' +
-        '<div style="flex:1;background:rgba(78,159,255,0.08);border:1px solid rgba(78,159,255,0.2);' +
-          'border-radius:10px;padding:10px 12px;text-align:center">' +
-          '<div style="font-size:.85rem;margin-bottom:4px">🎤</div>' +
-          '<div style="font-size:.78rem;font-weight:600;color:#4e9fff">Vocals</div>' +
-          '<div style="font-size:.68rem;color:rgba(255,255,255,0.4);margin-top:2px">Lead + backing</div>' +
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0;flex-wrap:wrap">' +
+          '<span style="display:inline-flex;align-items:center;gap:4px;' +
+              'background:rgba(78,159,255,0.1);border:1px solid rgba(78,159,255,0.22);' +
+              'border-radius:6px;padding:4px 8px;font-size:.72rem;color:#4e9fff;font-weight:600">' +
+            '<i class="fas fa-microphone" style="font-size:.6rem"></i> Vocals' +
+          '</span>' +
+          '<span style="color:rgba(255,255,255,0.2);font-size:.72rem">+</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:4px;' +
+              'background:rgba(100,116,139,0.1);border:1px solid rgba(100,116,139,0.2);' +
+              'border-radius:6px;padding:4px 8px;font-size:.72rem;color:#94a3b8;font-weight:600">' +
+            '<i class="fas fa-music" style="font-size:.6rem"></i> Instrumental' +
+          '</span>' +
+          '<span style="font-size:.68rem;color:rgba(255,255,255,0.26)">lead &amp; backing split</span>' +
         '</div>' +
-        '<div style="display:flex;align-items:center;color:rgba(255,255,255,0.25);font-size:.8rem">+</div>' +
-        '<div style="flex:1;background:rgba(100,116,139,0.1);border:1px solid rgba(100,116,139,0.25);' +
-          'border-radius:10px;padding:10px 12px;text-align:center">' +
-          '<div style="font-size:.85rem;margin-bottom:4px">🎸</div>' +
-          '<div style="font-size:.78rem;font-weight:600;color:#94a3b8">Instrumental</div>' +
-          '<div style="font-size:.68rem;color:rgba(255,255,255,0.4);margin-top:2px">Everything else</div>' +
-        '</div>' +
-      '</div>' +
-      '<button onclick="window._spExtract(\'split_from_mix\')" ' +
-        'style="width:100%;padding:11px;border-radius:10px;border:none;' +
-        'background:#fff;color:#000;font-weight:700;font-size:.88rem;cursor:pointer;transition:opacity .15s"' +
-        ' onmouseover="this.style.opacity=\'.88\'" onmouseout="this.style.opacity=\'1\'">' +
-        '<i class="fas fa-microphone" style="margin-right:7px"></i>Extract — Vocals &amp; Instrumental' +
-      '</button>'
+        '<button onclick="window._spExtract(\'split_from_mix\')" style="' +
+            'flex-shrink:0;padding:6px 14px;border-radius:7px;border:none;' +
+            'background:#fff;color:#000;font-weight:600;font-size:.73rem;cursor:pointer;' +
+            'transition:opacity .15s;white-space:nowrap"' +
+          ' onmouseover="this.style.opacity=\'.8\'" onmouseout="this.style.opacity=\'1\'">' +
+          'Extract' +
+        '</button>' +
+      '</div>'
     );
   }
 
+  // ── Advanced tab — dropdown selector ─────────────────────────────────────
   function _showAdvancedTab() {
-    var chips = ADVANCED_INSTRUMENTS.map(function (inst) {
-      var sel = inst === _selectedInst;
-      return '<button class="sp-chip" data-inst="' + inst + '" onclick="window._spSelectInst(this,\'' + inst + '\')" ' +
-        'style="padding:4px 10px;border-radius:20px;border:1px solid ' +
-        (sel ? '#a855f6' : 'rgba(255,255,255,0.10)') + ';' +
-        'background:' + (sel ? 'rgba(168,85,247,0.15)' : 'rgba(255,255,255,0.03)') + ';' +
-        'color:' + (sel ? '#c084fc' : 'rgba(255,255,255,0.55)') + ';' +
-        'font-size:.72rem;font-weight:500;cursor:pointer;transition:all .15s;white-space:nowrap">' +
-        _capFirst(inst) + '</button>';
+    var opts = ADVANCED_INSTRUMENTS.map(function (inst) {
+      return '<option value="' + inst + '"' + (inst === _selectedInst ? ' selected' : '') + '>' +
+        _capFirst(inst) + '</option>';
     }).join('');
 
     _setTabBody(
-      '<input id="sp-adv-search" type="text" placeholder="Search instruments…" oninput="window._spFilterChips(this.value)" ' +
-        'style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);' +
-        'border-radius:8px;padding:7px 12px;color:#f8fafc;font-size:.8rem;margin-bottom:10px;outline:none" />' +
-      '<div id="sp-adv-chips" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:12px;max-height:100px;overflow-y:auto">' + chips + '</div>' +
-      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:.8rem;color:rgba(255,255,255,0.5)">' +
-        '<span id="sp-target-label" style="background:rgba(168,85,247,0.12);border:1px solid rgba(168,85,247,0.35);' +
-          'border-radius:20px;padding:4px 12px;color:#c084fc;font-weight:600">' + _capFirst(_selectedInst) + '</span>' +
-        '<span>+</span>' +
-        '<span style="background:rgba(255,255,255,0.06);border-radius:20px;padding:4px 12px">Everything else</span>' +
-      '</div>' +
-      '<button onclick="window._spExtract(\'advanced\')" ' +
-        'style="width:100%;padding:11px;border-radius:10px;border:none;' +
-        'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;font-weight:700;' +
-        'font-size:.88rem;cursor:pointer;transition:opacity .15s"' +
-        ' onmouseover="this.style.opacity=\'.85\'" onmouseout="this.style.opacity=\'1\'">' +
-        '<i class="fas fa-wand-magic-sparkles" style="margin-right:7px"></i>Advanced Split — Pro' +
-      '</button>'
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">' +
+          '<span style="font-size:.72rem;color:rgba(255,255,255,0.36);white-space:nowrap;flex-shrink:0">Isolate</span>' +
+          // custom dropdown wrapper
+          '<div style="position:relative;flex:1;min-width:0">' +
+            '<select id="sp-adv-select" onchange="window._spSelectInstDrop(this.value)" style="' +
+                'width:100%;box-sizing:border-box;' +
+                'appearance:none;-webkit-appearance:none;' +
+                'background:rgba(168,85,247,0.1);' +
+                'border:1px solid rgba(168,85,247,0.3);' +
+                'border-radius:7px;' +
+                'padding:6px 28px 6px 10px;' +
+                'color:#c084fc;font-size:.76rem;font-weight:600;' +
+                'cursor:pointer;outline:none">' +
+              opts +
+            '</select>' +
+            '<i class="fas fa-chevron-down" style="' +
+                'position:absolute;right:9px;top:50%;transform:translateY(-50%);' +
+                'pointer-events:none;color:rgba(168,85,247,0.55);font-size:.58rem"></i>' +
+          '</div>' +
+          '<span style="font-size:.68rem;color:rgba(255,255,255,0.25);white-space:nowrap;flex-shrink:0">+ everything else</span>' +
+        '</div>' +
+        '<button onclick="window._spExtract(\'advanced\')" style="' +
+            'flex-shrink:0;padding:6px 14px;border-radius:7px;border:none;' +
+            'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;' +
+            'font-weight:600;font-size:.73rem;cursor:pointer;transition:opacity .15s;white-space:nowrap"' +
+          ' onmouseover="this.style.opacity=\'.8\'" onmouseout="this.style.opacity=\'1\'">' +
+          'Extract' +
+        '</button>' +
+      '</div>'
     );
   }
 
@@ -3817,35 +3804,18 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  INSTRUMENT SELECTION
+  //  INSTRUMENT SELECTION (dropdown version)
   // ─────────────────────────────────────────────────────────────────────────
-  window._spSelectInst = function (btn, inst) {
+  window._spSelectInstDrop = function (inst) {
     _selectedInst = inst;
-    // Update all chip styles in same container
-    var container = btn.closest('#sp-tab-body');
-    if (container) {
-      var isAdv = _activeTab === 'advanced';
-      container.querySelectorAll('.sp-chip').forEach(function (c) {
-        var active = c.dataset.inst === inst;
-        c.style.border  = 'border:1px solid ' + (active ? (isAdv ? '#a855f6' : '#4e9fff') : 'rgba(255,255,255,0.10)');
-        c.style.background = active ? (isAdv ? 'rgba(168,85,247,0.15)' : 'rgba(78,159,255,0.15)') : 'rgba(255,255,255,0.03)';
-        c.style.color   = active ? (isAdv ? '#c084fc' : '#4e9fff') : 'rgba(255,255,255,0.55)';
-        c.style.borderColor = active ? (isAdv ? '#a855f6' : '#4e9fff') : 'rgba(255,255,255,0.10)';
-      });
-    }
-    // Update target label
-    var lbl = _panel && _panel.querySelector('#sp-target-label');
-    if (lbl) lbl.textContent = _capFirst(inst);
   };
 
-  window._spFilterChips = function (q) {
-    var container = _panel && _panel.querySelector('#sp-adv-chips');
-    if (!container) return;
-    var lower = q.toLowerCase().trim();
-    container.querySelectorAll('.sp-chip').forEach(function (c) {
-      c.style.display = (!lower || c.dataset.inst.indexOf(lower) !== -1) ? '' : 'none';
-    });
+  // kept for any legacy callers
+  window._spSelectInst = function (btn, inst) {
+    _selectedInst = inst;
   };
+
+  window._spFilterChips = function () {}; // no-op (chips removed)
 
   // ─────────────────────────────────────────────────────────────────────────
   //  EXTRACT
@@ -3859,13 +3829,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _curTaskId = null;
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 
-    // Hide tracks & playbar
     var tracksEl = _panel && _panel.querySelector('#sp-tracks');
     var playbar  = _panel && _panel.querySelector('#sp-playbar');
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
 
-    _showProgress(mode, 'Starting extraction…');
+    _showProgress('Starting extraction…');
 
     var body = { job_id: _jobId, mode: mode };
     if (mode !== 'auto') body.target_instrument = _selectedInst;
@@ -3888,7 +3857,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         return;
       }
 
-      // Cached / immediately ready
       if (data.status === 'ready' && data.stems && data.stems.length) {
         _renderStemTracks(data.stems, mode);
         return;
@@ -3909,18 +3877,14 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var dots = 0;
     _pollTimer = setInterval(async function () {
       if (!_panel) { clearInterval(_pollTimer); return; }
-
       dots = (dots + 1) % 4;
-      _showProgress(mode, 'Extracting stems' + '.'.repeat(dots + 1));
-
+      _showProgress('Extracting stems' + '.'.repeat(dots + 1));
       try {
         var params = '?mode=' + encodeURIComponent(mode);
         if (_curTaskId) params += '&task_id=' + encodeURIComponent(_curTaskId);
         if (mode !== 'auto') params += '&target=' + encodeURIComponent(_selectedInst);
-
         var res  = await fetch('/api/job/stems/' + _jobId + params);
         var data = await res.json();
-
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
           _renderStemTracks(data.stems, mode);
@@ -3928,19 +3892,16 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           clearInterval(_pollTimer); _pollTimer = null;
           _showError(data.error || 'Extraction failed');
         }
-        // else still processing — keep polling
-      } catch (e) {
-        // network glitch — keep polling
-      }
+      } catch (e) { /* network glitch — keep polling */ }
     }, 2500);
   }
 
-  function _showProgress(mode, text) {
+  function _showProgress(text) {
     _setTabBody(
-      '<div style="text-align:center;padding:16px 0">' +
-        '<div style="display:inline-block;width:36px;height:36px;border:3px solid rgba(255,255,255,0.1);' +
-          'border-top-color:#4e9fff;border-radius:50%;animation:sp-spin 0.7s linear infinite;margin-bottom:12px"></div>' +
-        '<p style="color:rgba(255,255,255,0.6);font-size:.83rem;margin:0">' + _escHtml(text || 'Processing…') + '</p>' +
+      '<div style="display:flex;align-items:center;gap:10px;padding:4px 0">' +
+        '<div style="width:16px;height:16px;border:2px solid rgba(255,255,255,0.1);' +
+            'border-top-color:#4e9fff;border-radius:50%;animation:sp-spin 0.7s linear infinite;flex-shrink:0"></div>' +
+        '<span style="color:rgba(255,255,255,0.5);font-size:.77rem">' + _escHtml(text || 'Processing…') + '</span>' +
         '<style>@keyframes sp-spin{to{transform:rotate(360deg)}}</style>' +
       '</div>'
     );
@@ -3948,12 +3909,14 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
   function _showError(html) {
     _setTabBody(
-      '<div style="text-align:center;padding:14px 0">' +
-        '<i class="fas fa-exclamation-triangle" style="color:#f59e0b;font-size:1.4rem;margin-bottom:8px;display:block"></i>' +
-        '<p style="color:rgba(255,255,255,0.6);font-size:.83rem;margin:0 0 12px">' + html + '</p>' +
-        '<button onclick="window._spReExtract(\'' + (_activeTab||'auto') + '\')" ' +
-          'style="padding:7px 18px;border-radius:8px;border:1px solid rgba(255,255,255,.15);' +
-          'background:rgba(255,255,255,.07);color:rgba(255,255,255,.6);font-size:.78rem;cursor:pointer">Try again</button>' +
+      '<div style="display:flex;align-items:center;gap:10px;padding:4px 0">' +
+        '<i class="fas fa-exclamation-triangle" style="color:#f59e0b;font-size:.9rem;flex-shrink:0"></i>' +
+        '<span style="color:rgba(255,255,255,0.55);font-size:.77rem;flex:1">' + html + '</span>' +
+        '<button onclick="window._spReExtract(\'' + (_activeTab||'auto') + '\')" style="' +
+            'flex-shrink:0;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.12);' +
+            'background:rgba(255,255,255,.06);color:rgba(255,255,255,.5);font-size:.7rem;cursor:pointer">' +
+          'Retry' +
+        '</button>' +
       '</div>'
     );
   }
@@ -3963,62 +3926,45 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   function _renderStemTracks(stems, mode) {
     if (!_panel) return;
-
-    // Build state array
     _stems = stems.map(function (s) {
       return { name: s.name, url: s.url, muted: false, solo: false, vol: 1.0 };
     });
 
-    // Show re-extract option in tab body
     _setTabBody(
       '<div style="display:flex;align-items:center;justify-content:space-between">' +
-        '<span style="color:rgba(255,255,255,0.4);font-size:.78rem">' +
-          '<i class="fas fa-check-circle" style="color:#10b981;margin-right:5px"></i>' +
-          stems.length + ' stem' + (stems.length !== 1 ? 's' : '') + ' extracted' +
+        '<span style="color:rgba(255,255,255,0.35);font-size:.72rem">' +
+          '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
+          _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted' +
         '</span>' +
-        '<button onclick="window._spReExtract(\'' + mode + '\')" ' +
-          'style="padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,.12);' +
-          'background:rgba(255,255,255,.05);color:rgba(255,255,255,.45);font-size:.73rem;cursor:pointer">' +
-          'Re-extract</button>' +
+        '<button onclick="window._spReExtract(\'' + mode + '\')" style="' +
+            'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
+            'background:rgba(255,255,255,.04);color:rgba(255,255,255,.38);font-size:.68rem;cursor:pointer">' +
+          'Re-extract' +
+        '</button>' +
       '</div>'
     );
 
-    // Build track rows HTML
     var tracksEl = _panel.querySelector('#sp-tracks');
     if (!tracksEl) return;
-
     tracksEl.innerHTML = _stems.map(function (s, i) {
-      return _buildTrackRow(s, i, mode);
+      return _buildTrackRow(s, i);
     }).join('');
-
     tracksEl.style.display = 'flex';
 
-    // Create Audio elements + wire up
     _audios = [];
     _stems.forEach(function (s, i) {
       var audio = new Audio();
       audio.crossOrigin = 'anonymous';
       audio.preload = 'metadata';
-      // Use proxy route for CORS-safe playback
       audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
       _audios.push(audio);
-
-      // When first audio loads duration, update UI
       if (i === 0) {
-        audio.addEventListener('loadedmetadata', function () {
-          _updateDuration(audio.duration);
-        });
-        audio.addEventListener('timeupdate', function () {
-          _updateTimeline(audio.currentTime, audio.duration);
-        });
-        audio.addEventListener('ended', function () {
-          _playing = false;
-          _updatePlayIcon();
-        });
+        audio.addEventListener('loadedmetadata', function () { _updateDuration(audio.duration); });
+        audio.addEventListener('timeupdate', function () { _updateTimeline(audio.currentTime, audio.duration); });
+        audio.addEventListener('ended', function () { _playing = false; _updatePlayIcon(); });
       }
     });
 
-    // Draw waveforms after DOM is ready
     requestAnimationFrame(function () {
       _stems.forEach(function (s, i) {
         var canvas = _panel && _panel.querySelector('#sp-wave-' + i);
@@ -4026,114 +3972,99 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       });
     });
 
-    // Show playbar
     var playbar = _panel && _panel.querySelector('#sp-playbar');
     if (playbar) playbar.style.display = 'flex';
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  TRACK ROW HTML
+  //  TRACK ROW
   // ─────────────────────────────────────────────────────────────────────────
-  function _buildTrackRow(s, i, mode) {
+  function _buildTrackRow(s, i) {
     var color = STEM_COLORS[s.name] || STEM_COLORS.default;
     var label = _capFirst(s.name);
-    // proxy download url
     var dlUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
 
-    return [
-      '<div class="sp-track-row" style="display:flex;align-items:center;gap:8px;padding:10px 16px;',
-        'border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s"',
-        ' onmouseover="this.style.background=\'rgba(255,255,255,.025)\'"',
-        ' onmouseout="this.style.background=\'none\'">',
+    return '<div style="display:flex;align-items:center;gap:7px;padding:8px 16px;' +
+        'border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s"' +
+        ' onmouseover="this.style.background=\'rgba(255,255,255,.02)\'"' +
+        ' onmouseout="this.style.background=\'none\'">' +
 
-        /* color accent */
-        '<div style="width:3px;height:32px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>',
+      // color bar
+      '<div style="width:2.5px;height:28px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>' +
 
-        /* stem name */
-        '<div style="width:90px;flex-shrink:0;min-width:0">',
-          '<div style="font-size:.78rem;font-weight:600;color:#f1f5f9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(label) + '</div>',
-        '</div>',
+      // name
+      '<div style="width:80px;flex-shrink:0;font-size:.74rem;font-weight:600;color:#f1f5f9;' +
+          'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(label) + '</div>' +
 
-        /* S button */
-        '<button id="sp-solo-' + i + '" onclick="window._spSolo(' + i + ')"',
-          ' title="Solo"',
-          ' style="width:24px;height:24px;flex-shrink:0;border-radius:4px;border:1px solid rgba(255,255,255,0.15);',
-          'background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.55);font-size:.65rem;font-weight:700;cursor:pointer;',
-          'transition:all .15s">S</button>',
+      // S button
+      '<button id="sp-solo-' + i + '" onclick="window._spSolo(' + i + ')" title="Solo" style="' +
+          'width:22px;height:22px;flex-shrink:0;border-radius:4px;' +
+          'border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);' +
+          'color:rgba(255,255,255,0.48);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s">S</button>' +
 
-        /* M button */
-        '<button id="sp-mute-' + i + '" onclick="window._spMute(' + i + ')"',
-          ' title="Mute"',
-          ' style="width:24px;height:24px;flex-shrink:0;border-radius:4px;border:1px solid rgba(255,255,255,0.15);',
-          'background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.55);font-size:.65rem;font-weight:700;cursor:pointer;',
-          'transition:all .15s">M</button>',
+      // M button
+      '<button id="sp-mute-' + i + '" onclick="window._spMute(' + i + ')" title="Mute" style="' +
+          'width:22px;height:22px;flex-shrink:0;border-radius:4px;' +
+          'border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);' +
+          'color:rgba(255,255,255,0.48);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s">M</button>' +
 
-        /* waveform */
-        '<div style="flex:1;position:relative;height:36px;border-radius:6px;overflow:hidden;',
-            'cursor:pointer;background:rgba(255,255,255,0.03)" onclick="window._spSeekWave(event,this)">',
-          '<canvas id="sp-wave-' + i + '" width="400" height="36" style="position:absolute;inset:0;width:100%;height:100%"></canvas>',
-          '<div id="sp-wave-prog-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;',
-              'background:rgba(255,255,255,0.08);pointer-events:none;border-radius:6px 0 0 6px"></div>',
-          '<div style="position:absolute;top:0;left:0;bottom:0;width:0%;border-right:1.5px solid rgba(255,255,255,0.45);',
-              'pointer-events:none" id="sp-wave-line-' + i + '"></div>',
-        '</div>',
+      // waveform
+      '<div style="flex:1;position:relative;height:32px;border-radius:5px;overflow:hidden;' +
+          'cursor:pointer;background:rgba(255,255,255,0.025)" onclick="window._spSeekWave(event,this)">' +
+        '<canvas id="sp-wave-' + i + '" width="400" height="32" style="position:absolute;inset:0;width:100%;height:100%"></canvas>' +
+        '<div id="sp-wave-prog-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;' +
+            'background:rgba(255,255,255,0.07);pointer-events:none"></div>' +
+        '<div id="sp-wave-line-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;' +
+            'border-right:1.5px solid rgba(255,255,255,0.4);pointer-events:none"></div>' +
+      '</div>' +
 
-        /* volume slider */
-        '<input type="range" min="0" max="1" step="0.01" value="1"',
-          ' oninput="window._spVol(' + i + ',parseFloat(this.value))"',
-          ' title="Volume"',
-          ' style="width:64px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">',
+      // volume slider
+      '<input type="range" min="0" max="1" step="0.01" value="1"' +
+        ' oninput="window._spVol(' + i + ',parseFloat(this.value))"' +
+        ' title="Volume"' +
+        ' style="width:56px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
 
-        /* download */
-        '<a href="' + dlUrl + '" download="' + _escHtml(label + '_stem') + '.mp3"',
-          ' title="Download ' + _escHtml(label) + '"',
-          ' style="color:rgba(255,255,255,0.35);font-size:.85rem;flex-shrink:0;text-decoration:none;',
-          'transition:color .15s;display:flex;align-items:center;justify-content:center;width:24px;height:24px"',
-          ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.35)\'">',
-          '<i class="fas fa-download"></i></a>',
+      // download
+      '<a href="' + dlUrl + '" download="' + _escHtml(label) + '_stem.mp3" title="Download ' + _escHtml(label) + '" style="' +
+          'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
+          'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
+        ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
+        '<i class="fas fa-download"></i>' +
+      '</a>' +
 
-      '</div>'
-    ].join('');
+    '</div>';
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  WAVEFORM DRAWING
+  //  WAVEFORM
   // ─────────────────────────────────────────────────────────────────────────
   function _drawWaveform(canvas, color) {
     var ctx = canvas.getContext('2d');
     var W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-
-    var bars = 80;
-    var gap  = 2;
-    var bw   = (W - gap * (bars - 1)) / bars;
-
-    // Deterministic pseudo-random envelope (seeded by color string)
+    var bars = 80, gap = 2;
+    var bw = (W - gap * (bars - 1)) / bars;
     var seed = color.split('').reduce(function (a, c) { return a + c.charCodeAt(0); }, 0);
     function rand() { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }
-
-    // music-like envelope: high in middle, lower at edges
     for (var i = 0; i < bars; i++) {
       var t = i / (bars - 1);
-      var envelope = Math.sin(t * Math.PI) * 0.7 + 0.3;
-      var h = (rand() * 0.6 + 0.25) * envelope * H;
+      var env = Math.sin(t * Math.PI) * 0.7 + 0.3;
+      var h = (rand() * 0.6 + 0.25) * env * H;
       var x = i * (bw + gap);
       var y = (H - h) / 2;
-
-      // gradient bar
       var grad = ctx.createLinearGradient(0, y, 0, y + h);
-      grad.addColorStop(0, color + 'dd');
+      grad.addColorStop(0, color + 'cc');
       grad.addColorStop(0.5, color);
-      grad.addColorStop(1, color + '88');
+      grad.addColorStop(1, color + '77');
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.roundRect ? ctx.roundRect(x, y, bw, h, 1.5) : ctx.rect(x, y, bw, h);
+      if (ctx.roundRect) { ctx.roundRect(x, y, bw, h, 1); } else { ctx.rect(x, y, bw, h); }
       ctx.fill();
     }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  PLAYBACK CONTROLS
+  //  PLAYBACK
   // ─────────────────────────────────────────────────────────────────────────
   window._spPlay = function () {
     if (!_audios.length) return;
@@ -4141,8 +4072,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       _audios.forEach(function (a) { a.pause(); });
       _playing = false;
     } else {
-      var promises = _audios.map(function (a) { return a.play().catch(function(){}); });
-      Promise.all(promises).then(function () { _playing = true; _updatePlayIcon(); });
+      var ps = _audios.map(function (a) { return a.play().catch(function(){}); });
+      Promise.all(ps).then(function () { _playing = true; _updatePlayIcon(); });
       _playing = true;
     }
     _updatePlayIcon();
@@ -4175,21 +4106,17 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var s = _stems[idx];
     if (!s) return;
     var wasSolo = s.solo;
-    // clear all
     _stems.forEach(function (st) { st.solo = false; });
     if (!wasSolo) s.solo = true;
-
     _stems.forEach(function (st, i) {
       var anySolo = _stems.some(function (x) { return x.solo; });
       var active  = !anySolo || st.solo;
-      var eff     = st.muted ? 0 : (active ? st.vol : 0);
-      if (_audios[i]) _audios[i].volume = eff;
-
+      if (_audios[i]) _audios[i].volume = st.muted ? 0 : (active ? st.vol : 0);
       var btn = _panel && _panel.querySelector('#sp-solo-' + i);
       if (btn) {
-        btn.style.background   = st.solo ? 'rgba(250,204,21,0.25)' : 'rgba(255,255,255,0.05)';
-        btn.style.borderColor  = st.solo ? '#facc15' : 'rgba(255,255,255,0.15)';
-        btn.style.color        = st.solo ? '#facc15' : 'rgba(255,255,255,0.55)';
+        btn.style.background  = st.solo ? 'rgba(250,204,21,0.22)' : 'rgba(255,255,255,0.04)';
+        btn.style.borderColor = st.solo ? '#facc15' : 'rgba(255,255,255,0.13)';
+        btn.style.color       = st.solo ? '#facc15' : 'rgba(255,255,255,0.48)';
       }
     });
   };
@@ -4205,9 +4132,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     }
     var btn = _panel && _panel.querySelector('#sp-mute-' + idx);
     if (btn) {
-      btn.style.background  = s.muted ? 'rgba(239,68,68,0.25)' : 'rgba(255,255,255,0.05)';
-      btn.style.borderColor = s.muted ? '#ef4444' : 'rgba(255,255,255,0.15)';
-      btn.style.color       = s.muted ? '#ef4444' : 'rgba(255,255,255,0.55)';
+      btn.style.background  = s.muted ? 'rgba(239,68,68,0.22)' : 'rgba(255,255,255,0.04)';
+      btn.style.borderColor = s.muted ? '#ef4444' : 'rgba(255,255,255,0.13)';
+      btn.style.color       = s.muted ? '#ef4444' : 'rgba(255,255,255,0.48)';
     }
   };
 
@@ -4217,8 +4144,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     s.vol = vol;
     if (_audios[idx] && !s.muted) {
       var anySolo = _stems.some(function (x) { return x.solo; });
-      var active  = !anySolo || s.solo;
-      _audios[idx].volume = active ? vol : 0;
+      _audios[idx].volume = (!anySolo || s.solo) ? vol : 0;
     }
   };
 
@@ -4231,31 +4157,25 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _stems = [];
     _audios = [];
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
-
     var tracksEl = _panel && _panel.querySelector('#sp-tracks');
     var playbar  = _panel && _panel.querySelector('#sp-playbar');
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
-
-    // Re-render the tab content
     _onTabClick(mode || _activeTab || 'auto');
   };
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  TIMELINE UI UPDATES
+  //  TIMELINE UI
   // ─────────────────────────────────────────────────────────────────────────
   function _updateTimeline(cur, dur) {
     if (!dur || isNaN(dur)) return;
     var pct = (cur / dur * 100).toFixed(2);
-
     var fill  = _panel && _panel.querySelector('#sp-timeline-fill');
     var thumb = _panel && _panel.querySelector('#sp-timeline-thumb');
     var curEl = _panel && _panel.querySelector('#sp-time-cur');
     if (fill)  fill.style.width  = pct + '%';
     if (thumb) thumb.style.left  = pct + '%';
     if (curEl) curEl.textContent = _fmtTime(cur);
-
-    // Per-track waveform progress overlays
     _stems.forEach(function (s, i) {
       var prog = _panel && _panel.querySelector('#sp-wave-prog-' + i);
       var line = _panel && _panel.querySelector('#sp-wave-line-' + i);
@@ -4293,7 +4213,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  UTILITIES
+  //  UTILS
   // ─────────────────────────────────────────────────────────────────────────
   function _fmtTime(secs) {
     if (!secs || isNaN(secs)) return '0:00';
@@ -4308,7 +4228,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   function _escHtml(str) {
-    return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
 }()); // end stem player IIFE
