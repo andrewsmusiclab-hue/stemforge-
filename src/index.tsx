@@ -4398,7 +4398,7 @@ function homePage() {
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
-          <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
+          <li><i class="fas fa-check"></i> MP3 download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
           <li class="muted"><i class="fas fa-times"></i> Individual stem download</li>
@@ -5920,14 +5920,16 @@ async function advSplitPlay(version, zipUrl, stemKey, color) {
       _advActiveVersion = null;
     });
 
-    // Draw waveform
+    // Draw waveform — use safe random waveform only.
+    // IMPORTANT: do NOT call getAudioCtx() / createMediaElementSource() here.
+    // The adv-split audio element must stay as a plain HTMLAudioElement with
+    // native playback — connecting it to the shared AudioContext would:
+    //   1) Silence the audio (MediaElementSource disconnects the default route)
+    //   2) Corrupt stemAnalysers / stemSources used by the main stem player
+    // drawWaveformFromAudio does not exist — it would throw a ReferenceError.
     if (waveEl) {
       waveEl.innerHTML = '';
-      try {
-        var actx = getAudioCtx();
-        var tmpSrc = actx.createMediaElementSource(audio);
-        drawWaveformFromAudio(version + '_adv', audio, color, waveEl);
-      } catch(e) { drawRandomWaveformInEl(waveEl, color); }
+      drawRandomWaveformInEl(waveEl, color);
     }
 
     audio.play().catch(function(){});
@@ -6845,7 +6847,7 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 50 credits/downloads monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation</li>
-          <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
+          <li><i class="fas fa-check"></i> MP3 download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li class="muted"><i class="fas fa-times"></i> Stem extraction</li>
           <li class="muted"><i class="fas fa-times"></i> Unmastered mix for DAW</li>
@@ -7697,7 +7699,7 @@ function subscriptionPage(user: User, env: Bindings) {
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 50 credits/downloads monthly</li>
-            <li><i class="fas fa-check"></i> Mastered WAV &amp; MP3 download</li>
+            <li><i class="fas fa-check"></i> MP3 download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
           ${user.plan === 'creator'
@@ -8446,8 +8448,8 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($19/month):</strong> 50 credits/downloads monthly, mastered WAV &amp; MP3 download, commercial use rights (no stem extraction)</li>
-    <li><strong>Pro Artist Plan ($39/month):</strong> 200 credits/downloads monthly, mastered &amp; unmastered WAV/MP3, stem extraction + download, priority queue</li>
+    <li><strong>Creator Plan ($10/month):</strong> 50 credits/downloads monthly, MP3 download, commercial use rights (no stem extraction)</li>
+    <li><strong>Pro Artist Plan ($26/month):</strong> 200 credits/downloads monthly, MP3 + WAV download, stem extraction + download, priority queue</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
