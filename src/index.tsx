@@ -1114,17 +1114,18 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
 
   const jobId = c.req.param('jobId')
-  const stemName = c.req.param('stem')
+  // decode in case frontend used encodeURIComponent on stem name (e.g. "lead%20vocals" → "lead vocals")
+  const stemName = decodeURIComponent(c.req.param('stem'))
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
   if (!stemJobs?.length) return c.json({ error: 'No stems found' }, 404)
 
-  // Find the stem URL across all stem jobs
+  // Find the stem URL across all stem jobs — case-insensitive match for safety
   let stemUrl: string | undefined
   for (const sj of stemJobs) {
-    const track = sj.stems.find(t => t.name === stemName)
+    const track = sj.stems.find((t: any) => t.name?.toLowerCase() === stemName.toLowerCase())
     if (track?.url) { stemUrl = track.url; break }
   }
   if (!stemUrl) return c.json({ error: `Stem "${stemName}" not found` }, 404)

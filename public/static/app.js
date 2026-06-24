@@ -4156,7 +4156,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _audios = [];
     _stems.forEach(function (s, i) {
       var audio = new Audio();
-      audio.crossOrigin = 'anonymous';
+      // NOTE: do NOT set crossOrigin — it prevents session cookies from being sent
+      // which causes 401 on the /api/stem-audio route
       audio.preload = 'auto';
       audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
       _audios.push(audio);
@@ -4185,6 +4186,11 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     if (playbar) playbar.style.display = 'flex';
   }
 
+  // Test hook: allows test pages to inject mock stems
+  window.__testInjectStems = function(stems) {
+    _renderStemTracks(stems, _activeTab || 'auto');
+  };
+
   // ─────────────────────────────────────────────────────────────────────────
   //  DOWNLOAD BUTTON (per-tab stereo mix)
   // ─────────────────────────────────────────────────────────────────────────
@@ -4203,29 +4209,29 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
 
     if (canWav) {
-      // Dropdown-style: two options
+      // Dropdown uses position:fixed so it escapes the card's overflow:hidden
       return '<div style="position:relative;display:inline-block" id="sp-dl-wrap">' +
-        '<button onclick="window._spToggleDlMenu()" style="' +
+        '<button onclick="window._spToggleDlMenu(event)" style="' +
             'padding:3px 10px;border-radius:5px;border:1px solid rgba(78,159,255,.25);' +
             'background:rgba(78,159,255,.07);color:#4e9fff;font-size:.68rem;cursor:pointer;' +
             'display:flex;align-items:center;gap:4px">' +
           '<i class="fas fa-download" style="font-size:.6rem"></i> Download' +
           '<i class="fas fa-chevron-down" style="font-size:.5rem;margin-left:2px"></i>' +
         '</button>' +
-        '<div id="sp-dl-menu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);' +
-            'background:#1a1a2e;border:1px solid rgba(255,255,255,.1);border-radius:7px;' +
-            'padding:4px;z-index:9999;min-width:110px;box-shadow:0 8px 24px rgba(0,0,0,.5)">' +
+        '<div id="sp-dl-menu" style="display:none;position:fixed;' +
+            'background:#1a1a2e;border:1px solid rgba(255,255,255,.15);border-radius:7px;' +
+            'padding:4px;z-index:999999;min-width:150px;box-shadow:0 12px 32px rgba(0,0,0,.8)">' +
           '<button onclick="window._spDownloadMix(\'mp3\')" style="' +
-              'width:100%;text-align:left;padding:5px 8px;border-radius:4px;border:none;' +
-              'background:none;color:rgba(255,255,255,.7);font-size:.72rem;cursor:pointer"' +
+              'width:100%;text-align:left;padding:6px 10px;border-radius:4px;border:none;' +
+              'background:none;color:rgba(255,255,255,.8);font-size:.73rem;cursor:pointer"' +
             ' onmouseover="this.style.background=\'rgba(255,255,255,.07)\'" onmouseout="this.style.background=\'none\'">' +
-            '<i class="fas fa-file-audio" style="margin-right:5px;color:#4e9fff"></i>MP3 (compressed)' +
+            '<i class="fas fa-file-audio" style="margin-right:6px;color:#4e9fff"></i>MP3 (compressed)' +
           '</button>' +
           '<button onclick="window._spDownloadMix(\'wav\')" style="' +
-              'width:100%;text-align:left;padding:5px 8px;border-radius:4px;border:none;' +
-              'background:none;color:rgba(255,255,255,.7);font-size:.72rem;cursor:pointer"' +
+              'width:100%;text-align:left;padding:6px 10px;border-radius:4px;border:none;' +
+              'background:none;color:rgba(255,255,255,.8);font-size:.73rem;cursor:pointer"' +
             ' onmouseover="this.style.background=\'rgba(255,255,255,.07)\'" onmouseout="this.style.background=\'none\'">' +
-            '<i class="fas fa-wave-square" style="margin-right:5px;color:#a855f6"></i>WAV (lossless)' +
+            '<i class="fas fa-wave-square" style="margin-right:6px;color:#a855f6"></i>WAV (lossless)' +
           '</button>' +
         '</div>' +
       '</div>';
@@ -4240,15 +4246,30 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     '</a>';
   }
 
-  window._spToggleDlMenu = function () {
+  window._spToggleDlMenu = function (e) {
     var menu = _panel && _panel.querySelector('#sp-dl-menu');
     if (!menu) return;
-    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    var isOpen = menu.style.display !== 'none';
+    if (isOpen) {
+      menu.style.display = 'none';
+      return;
+    }
+    // Position the menu using fixed coords from the button's bounding rect
+    // so it escapes the card's overflow:hidden
+    var btn = e && e.currentTarget ? e.currentTarget : (e && e.target ? e.target : null);
+    if (!btn) btn = _panel && _panel.querySelector('#sp-dl-wrap button');
+    if (btn) {
+      var rect = btn.getBoundingClientRect();
+      menu.style.top    = (rect.bottom + 4) + 'px';
+      menu.style.right  = 'auto';
+      menu.style.left   = Math.max(0, rect.right - 150) + 'px';
+    }
+    menu.style.display = 'block';
     // Close on outside click
     setTimeout(function () {
-      document.addEventListener('click', function closeDl(e) {
+      document.addEventListener('click', function closeDl(ev) {
         var wrap = _panel && _panel.querySelector('#sp-dl-wrap');
-        if (!wrap || !wrap.contains(e.target)) {
+        if (!wrap || !wrap.contains(ev.target)) {
           if (menu) menu.style.display = 'none';
           document.removeEventListener('click', closeDl);
         }
@@ -4413,48 +4434,53 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var s = _stems[idx];
     if (!s) return;
     var wasSolo = s.solo;
-    // FIX: clear solo on all tracks first
+    // Clear solo on ALL tracks
     _stems.forEach(function (st) { st.solo = false; });
-    if (!wasSolo) s.solo = true;  // toggle on; if was solo, stay off (deactivate solo)
+    // Toggle: if it wasn't solo, enable it; if it was solo, leave off (deactivate)
+    if (!wasSolo) s.solo = true;
     var anySolo = _stems.some(function (x) { return x.solo; });
+
     _stems.forEach(function (st, i) {
       var active = !anySolo || st.solo;
-      // FIX: when soloing, clear mute on the soloed track so it's never both
-      if (st.solo && st.muted) {
-        st.muted = false;
-        var mb = _panel && _panel.querySelector('#sp-mute-' + i);
-        if (mb) {
-          mb.style.background  = 'rgba(255,255,255,0.04)';
-          mb.style.borderColor = 'rgba(255,255,255,0.13)';
-          mb.style.color       = 'rgba(255,255,255,0.48)';
-        }
-      }
-      // Update audio volume
-      if (_audios[i]) _audios[i].volume = st.muted ? 0 : (active ? st.vol : 0);
-      // Update S button
+
+      // ── Update S button ──────────────────────────────────────────
       var sb = _panel && _panel.querySelector('#sp-solo-' + i);
       if (sb) {
         sb.style.background  = st.solo ? 'rgba(250,204,21,0.22)' : 'rgba(255,255,255,0.04)';
-        sb.style.borderColor = st.solo ? '#facc15' : 'rgba(255,255,255,0.13)';
-        sb.style.color       = st.solo ? '#facc15' : 'rgba(255,255,255,0.48)';
+        sb.style.borderColor = st.solo ? '#facc15'               : 'rgba(255,255,255,0.13)';
+        sb.style.color       = st.solo ? '#facc15'               : 'rgba(255,255,255,0.48)';
       }
-      // FIX: when solo is active, show M button lit on all NON-solo tracks
-      //      to visually indicate they are silenced (muted-by-solo)
+
+      // ── Update M button ──────────────────────────────────────────
       var mb = _panel && _panel.querySelector('#sp-mute-' + i);
-      if (mb && !st.solo) {
-        if (anySolo) {
-          // silenced by solo — show M dimly lit in orange to distinguish from real mute
-          mb.style.background  = 'rgba(251,146,60,0.18)';
-          mb.style.borderColor = 'rgba(251,146,60,0.4)';
-          mb.style.color       = 'rgba(251,146,60,0.7)';
-        } else if (!st.muted) {
-          // no solo active and not muted — reset M to default
+      if (mb) {
+        if (st.solo) {
+          // This track IS the solo track — always clear its mute (can't be both)
+          st.muted = false;
           mb.style.background  = 'rgba(255,255,255,0.04)';
           mb.style.borderColor = 'rgba(255,255,255,0.13)';
           mb.style.color       = 'rgba(255,255,255,0.48)';
+        } else if (anySolo) {
+          // Another track is soloed — show this M as silenced-by-solo (orange)
+          mb.style.background  = 'rgba(251,146,60,0.18)';
+          mb.style.borderColor = 'rgba(251,146,60,0.4)';
+          mb.style.color       = 'rgba(251,146,60,0.7)';
+        } else {
+          // No solo active — restore each M to its real muted/unmuted state
+          if (st.muted) {
+            mb.style.background  = 'rgba(239,68,68,0.22)';
+            mb.style.borderColor = '#ef4444';
+            mb.style.color       = '#ef4444';
+          } else {
+            mb.style.background  = 'rgba(255,255,255,0.04)';
+            mb.style.borderColor = 'rgba(255,255,255,0.13)';
+            mb.style.color       = 'rgba(255,255,255,0.48)';
+          }
         }
-        // if actually muted keep red styling — handled by _spMute
       }
+
+      // ── Update audio volume ──────────────────────────────────────
+      if (_audios[i]) _audios[i].volume = st.muted ? 0 : (active ? st.vol : 0);
     });
   };
 
