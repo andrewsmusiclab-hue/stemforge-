@@ -1114,7 +1114,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!isOneshot && stereoUrl) {
       items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
         if (typeof window.openStemsPanel === 'function') {
-          window.openStemsPanel(jobId, stereoUrl, safeTitle);
+          const _plan = (window._sfUser && window._sfUser.plan) || 'free';
+          window.openStemsPanel(jobId, stereoUrl, safeTitle, _plan);
         }
       }});
     }
@@ -1850,7 +1851,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 stemsBtn.innerHTML = '<i class="fas fa-layer-group"></i><span>Get Stems</span><small>Extract</small>';
                 stemsBtn.onclick = () => {
                   if (typeof window.openStemsPanel === 'function') {
-                    window.openStemsPanel(job.id, job.stereo_url, finalTitle || safeFilename);
+                    window.openStemsPanel(job.id, job.stereo_url, finalTitle || safeFilename, userPlan);
                   }
                 };
                 exportOptionsRow.appendChild(stemsBtn);
@@ -3445,8 +3446,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  STEM PLAYER — openStemsPanel(jobId, stereoUrl, title)
+//  STEM PLAYER — openStemsPanel(jobId, stereoUrl, title, userPlan)
 //  Centered modal (Suno-style), 3 tabs, lazy load, per-stem S/M/waveform/vol
+//  Advanced tab: first extracts stems via audio-separation-2, then lets user
+//  pick a stem to regenerate clean via Mureka /v1/track/generate (no bleed).
 // ══════════════════════════════════════════════════════════════════════════════
 
 (function () {
@@ -3495,50 +3498,43 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     default:           '#8b5cf6'
   };
 
-  var ADVANCED_INSTRUMENTS = [
-    'vocals','background vocals','lead vocals','rap vocals',
-    'drums','kick drum','snare','hi-hat','cymbals','percussion',
-    'bass','bass guitar','electric bass','upright bass',
-    'guitar','electric guitar','acoustic guitar','rhythm guitar','lead guitar',
-    'piano','electric piano','grand piano',
-    'synth','synth lead','synth pad','synth bass',
-    'strings','violin','viola','cello','double bass','orchestra',
-    'brass','trumpet','trombone','french horn','tuba',
-    'woodwinds','flute','clarinet','oboe','saxophone','bassoon',
-    'organ','hammond organ','church organ',
-    'harp','mandolin','banjo','ukulele','accordion',
-    'marimba','xylophone','vibraphone','steel pan',
-    'choir','backing vocals'
+  // Track types supported by Mureka /v1/track/generate for advanced regeneration
+  var REGEN_TYPES = [
+    'Vocals','Drums','Bass','Guitar','Piano',
+    'Strings','Brass','Synth','Keyboard','Flute','Woodwinds'
   ];
 
   // ─────────────────────────────────────────────────────────────────────────
   //  STATE
   // ─────────────────────────────────────────────────────────────────────────
-  var _panel       = null;
-  var _jobId       = null;
-  var _stereoUrl   = null;
-  var _title       = null;
-  var _activeTab   = null;
-  var _stems       = [];
-  var _audios      = [];
-  var _playing     = false;
-  var _pollTimer   = null;
-  var _selectedInst= 'vocals';
-  var _curTaskId   = null;
+  var _panel        = null;
+  var _jobId        = null;
+  var _stereoUrl    = null;
+  var _title        = null;
+  var _userPlan     = 'free';   // 'free' | 'creator' | 'pro' | 'developer'
+  var _activeTab    = null;
+  var _stems        = [];
+  var _audios       = [];
+  var _playing      = false;
+  var _pollTimer    = null;
+  var _curTaskId    = null;
+  // Advanced tab state
+  var _advStems     = [];       // stems extracted by audio-separation-2 for adv tab
+  var _selectedRegen= null;     // which stem the user wants regenerated
 
   // ─────────────────────────────────────────────────────────────────────────
   //  OPEN / CLOSE
   // ─────────────────────────────────────────────────────────────────────────
-  window.openStemsPanel = function (jobId, stereoUrl, title) {
+  window.openStemsPanel = function (jobId, stereoUrl, title, userPlan) {
     _jobId     = jobId;
     _stereoUrl = stereoUrl;
     _title     = title || 'Beat';
+    _userPlan  = userPlan || 'free';
 
     var old = document.getElementById('sf-stems-panel');
     if (old) old.remove();
     _cleanup();
 
-    // Outer element = full-screen backdrop
     _panel = document.createElement('div');
     _panel.id = 'sf-stems-panel';
     _panel.style.cssText = [
@@ -3558,7 +3554,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _panel.innerHTML = _buildShell();
     document.body.appendChild(_panel);
 
-    // Animate in
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         _panel.style.opacity = '1';
@@ -3590,7 +3585,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         'border:1px solid rgba(255,255,255,0.09);' +
         'border-radius:14px;' +
         'box-shadow:0 32px 96px rgba(0,0,0,0.9);' +
-        'width:100%;max-width:540px;' +
+        'width:100%;max-width:560px;' +
         'display:flex;flex-direction:column;' +
         'overflow:hidden;' +
         'transform:translateY(10px) scale(0.98);' +
@@ -3645,7 +3640,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
       // ── Tab section ──────────────────────────────────────────
       '<div style="flex-shrink:0">' +
-        // pill tab buttons
         '<div style="display:flex;gap:4px;padding:10px 16px 0;background:#0d0d1a">' +
           '<button class="sp-tab" data-tab="auto" style="' +
               'flex:1;height:27px;border-radius:6px;border:none;cursor:pointer;' +
@@ -3663,7 +3657,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
                 'padding:1px 4px;border-radius:3px;vertical-align:middle;margin-left:2px">Pro</span>' +
           '</button>' +
         '</div>' +
-        // tab body
         '<div id="sp-tab-body" style="padding:12px 16px 14px">' +
           '<p style="color:rgba(255,255,255,0.22);font-size:.78rem;text-align:center;margin:14px 0">' +
             'Select a tab above to extract stems' +
@@ -3671,7 +3664,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '</div>' +
       '</div>' +
 
-    '</div>'; // end #sp-card
+    '</div>';
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -3681,16 +3674,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
       btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
     });
-    // Click backdrop (outside card) to close.
-    // IMPORTANT: use composedPath() not contains() — when Extract is clicked,
-    // _setTabBody() replaces innerHTML mid-click, orphaning e.target from the DOM.
-    // contains() then returns false on the detached node and falsely fires closeStemsPanel().
-    // composedPath() captures the original path BEFORE any DOM mutation, so it still
-    // includes #sp-card even after the button is destroyed.
     _panel.addEventListener('click', function (e) {
       var card = document.getElementById('sp-card');
       if (!card) return;
-      // composedPath() is the authoritative pre-mutation path
       var path = e.composedPath ? e.composedPath() : [];
       var inCard = path.indexOf(card) !== -1 || card.contains(e.target);
       if (!inCard) closeStemsPanel();
@@ -3742,18 +3728,21 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _setTabBody(
       '<div style="display:flex;align-items:center;gap:10px">' +
         '<div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0;flex-wrap:wrap">' +
+          // Vocals chip
           '<span style="display:inline-flex;align-items:center;gap:4px;' +
               'background:rgba(78,159,255,0.1);border:1px solid rgba(78,159,255,0.22);' +
               'border-radius:6px;padding:4px 8px;font-size:.72rem;color:#4e9fff;font-weight:600">' +
             '<i class="fas fa-microphone" style="font-size:.6rem"></i> Vocals' +
           '</span>' +
+          // label moved right after Vocals chip
+          '<span style="font-size:.68rem;color:rgba(255,255,255,0.26)">lead &amp; backing</span>' +
           '<span style="color:rgba(255,255,255,0.2);font-size:.72rem">+</span>' +
+          // Instrumental chip
           '<span style="display:inline-flex;align-items:center;gap:4px;' +
               'background:rgba(100,116,139,0.1);border:1px solid rgba(100,116,139,0.2);' +
               'border-radius:6px;padding:4px 8px;font-size:.72rem;color:#94a3b8;font-weight:600">' +
             '<i class="fas fa-music" style="font-size:.6rem"></i> Instrumental' +
           '</span>' +
-          '<span style="font-size:.68rem;color:rgba(255,255,255,0.26)">lead &amp; backing split</span>' +
         '</div>' +
         '<button onclick="window._spExtract(\'split_from_mix\')" style="' +
             'flex-shrink:0;padding:6px 14px;border-radius:7px;border:none;' +
@@ -3766,43 +3755,82 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     );
   }
 
-  // ── Advanced tab — dropdown selector ─────────────────────────────────────
+  // ── Advanced tab ──────────────────────────────────────────────────────────
+  // Phase 1: Show Extract button only. After extraction, show stem picker
+  // for AI regeneration (no bleed — Mureka /v1/track/generate).
   function _showAdvancedTab() {
-    var opts = ADVANCED_INSTRUMENTS.map(function (inst) {
-      return '<option value="' + inst + '"' + (inst === _selectedInst ? ' selected' : '') + '>' +
-        _capFirst(inst) + '</option>';
+    if (_advStems.length > 0) {
+      // Phase 2: stems already extracted — show regeneration picker
+      _showAdvancedRegenPicker();
+    } else {
+      // Phase 1: just the extract button
+      _setTabBody(
+        '<div style="display:flex;align-items:flex-start;gap:12px">' +
+          '<div style="flex:1;min-width:0">' +
+            '<p style="color:rgba(255,255,255,0.48);font-size:.77rem;line-height:1.55;margin:0 0 4px 0">' +
+              '<span style="color:#c084fc;font-weight:600">AI Regeneration</span> — ' +
+              'Extracts your stems, then re-synthesizes any stem from scratch.' +
+            '</p>' +
+            '<p style="color:rgba(255,255,255,0.28);font-size:.7rem;margin:0">' +
+              'No bleed. No artefacts. Pure instrument isolation.' +
+            '</p>' +
+          '</div>' +
+          '<button onclick="window._spExtractAdvanced()" style="' +
+              'flex-shrink:0;padding:6px 14px;border-radius:7px;border:none;' +
+              'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;' +
+              'font-weight:600;font-size:.73rem;cursor:pointer;transition:opacity .15s;white-space:nowrap"' +
+            ' onmouseover="this.style.opacity=\'.8\'" onmouseout="this.style.opacity=\'1\'">' +
+            'Extract' +
+          '</button>' +
+        '</div>'
+      );
+    }
+  }
+
+  // Phase 2 UI: stem picker grid after extraction
+  function _showAdvancedRegenPicker() {
+    var chips = _advStems.map(function (s) {
+      var color = STEM_COLORS[s.name] || STEM_COLORS.default;
+      var isSelected = _selectedRegen === s.name;
+      var label = _capFirst(s.name);
+      return '<button onclick="window._spSelectRegen(\'' + _escHtml(s.name) + '\')" ' +
+        'id="sp-regen-chip-' + _escHtml(s.name) + '" ' +
+        'style="display:inline-flex;align-items:center;gap:5px;' +
+          'padding:5px 11px;border-radius:8px;border:1px solid ' + (isSelected ? color : 'rgba(255,255,255,0.1)') + ';' +
+          'background:' + (isSelected ? color + '22' : 'rgba(255,255,255,0.03)') + ';' +
+          'color:' + (isSelected ? color : 'rgba(255,255,255,0.5)') + ';' +
+          'font-size:.72rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap">' +
+        '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>' +
+        _escHtml(label) +
+      '</button>';
     }).join('');
 
-    _setTabBody(
-      '<div style="display:flex;align-items:center;gap:10px">' +
-        '<div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">' +
-          '<span style="font-size:.72rem;color:rgba(255,255,255,0.36);white-space:nowrap;flex-shrink:0">Isolate</span>' +
-          // custom dropdown wrapper
-          '<div style="position:relative;flex:1;min-width:0">' +
-            '<select id="sp-adv-select" onchange="window._spSelectInstDrop(this.value)" style="' +
-                'width:100%;box-sizing:border-box;' +
-                'appearance:none;-webkit-appearance:none;' +
-                'background:rgba(168,85,247,0.1);' +
-                'border:1px solid rgba(168,85,247,0.3);' +
-                'border-radius:7px;' +
-                'padding:6px 28px 6px 10px;' +
-                'color:#c084fc;font-size:.76rem;font-weight:600;' +
-                'cursor:pointer;outline:none">' +
-              opts +
-            '</select>' +
-            '<i class="fas fa-chevron-down" style="' +
-                'position:absolute;right:9px;top:50%;transform:translateY(-50%);' +
-                'pointer-events:none;color:rgba(168,85,247,0.55);font-size:.58rem"></i>' +
-          '</div>' +
-          '<span style="font-size:.68rem;color:rgba(255,255,255,0.25);white-space:nowrap;flex-shrink:0">+ everything else</span>' +
-        '</div>' +
-        '<button onclick="window._spExtract(\'advanced\')" style="' +
-            'flex-shrink:0;padding:6px 14px;border-radius:7px;border:none;' +
+    var regenBtn = _selectedRegen
+      ? '<button onclick="window._spRunRegen()" style="' +
+            'margin-top:12px;width:100%;padding:8px 0;border-radius:8px;border:none;' +
             'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;' +
-            'font-weight:600;font-size:.73rem;cursor:pointer;transition:opacity .15s;white-space:nowrap"' +
+            'font-weight:700;font-size:.8rem;cursor:pointer;transition:opacity .15s;letter-spacing:.01em"' +
           ' onmouseover="this.style.opacity=\'.8\'" onmouseout="this.style.opacity=\'1\'">' +
-          'Extract' +
-        '</button>' +
+          '<i class="fas fa-wand-magic-sparkles" style="margin-right:6px;font-size:.72rem"></i>' +
+          'Regenerate <span style="font-weight:400;opacity:.8">' + _capFirst(_selectedRegen) + '</span>' +
+        '</button>'
+      : '';
+
+    _setTabBody(
+      '<div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+          '<span style="font-size:.72rem;color:rgba(255,255,255,0.35)">' +
+            '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
+            _advStems.length + ' stems detected — pick one to regenerate clean' +
+          '</span>' +
+          '<button onclick="window._spResetAdvanced()" style="' +
+              'padding:3px 9px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
+              'background:rgba(255,255,255,.04);color:rgba(255,255,255,.35);font-size:.67rem;cursor:pointer">' +
+            'Reset' +
+          '</button>' +
+        '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>' +
+        regenBtn +
       '</div>'
     );
   }
@@ -3813,21 +3841,163 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  INSTRUMENT SELECTION (dropdown version)
+  //  ADVANCED TAB ACTIONS
   // ─────────────────────────────────────────────────────────────────────────
-  window._spSelectInstDrop = function (inst) {
-    _selectedInst = inst;
+
+  // Step 1: Extract stems for the advanced tab (uses audio-separation-2)
+  window._spExtractAdvanced = async function () {
+    if (!_jobId) return;
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _audios = [];
+    _advStems = [];
+    _selectedRegen = null;
+    _curTaskId = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+
+    var tracksEl = _panel && _panel.querySelector('#sp-tracks');
+    var playbar  = _panel && _panel.querySelector('#sp-playbar');
+    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
+    if (playbar)  playbar.style.display = 'none';
+
+    _showProgress('Detecting stems…');
+
+    try {
+      var res = await fetch('/api/job/stems', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: _jobId, mode: 'auto' })
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        _showError(data.error || 'Extraction failed');
+        return;
+      }
+      if (data.status === 'ready' && data.stems && data.stems.length) {
+        _advStems = data.stems;
+        _showAdvancedRegenPicker();
+        return;
+      }
+      _curTaskId = data.task_id;
+      _pollForAdvancedStems();
+    } catch (err) {
+      _showError('Network error: ' + (err.message || 'Unknown'));
+    }
   };
 
-  // kept for any legacy callers
-  window._spSelectInst = function (btn, inst) {
-    _selectedInst = inst;
+  function _pollForAdvancedStems() {
+    var dots = 0;
+    _pollTimer = setInterval(async function () {
+      if (!_panel) { clearInterval(_pollTimer); return; }
+      dots = (dots + 1) % 4;
+      _showProgress('Detecting stems' + '.'.repeat(dots + 1));
+      try {
+        var params = '?mode=auto';
+        if (_curTaskId) params += '&task_id=' + encodeURIComponent(_curTaskId);
+        var res  = await fetch('/api/job/stems/' + _jobId + params);
+        var data = await res.json();
+        if (data.status === 'ready' && data.stems && data.stems.length) {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _advStems = data.stems;
+          _showAdvancedRegenPicker();
+        } else if (data.status === 'error') {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _showError(data.error || 'Extraction failed');
+        }
+      } catch (e) { /* keep polling */ }
+    }, 2500);
+  }
+
+  // User picks which stem to regenerate
+  window._spSelectRegen = function (stemName) {
+    _selectedRegen = stemName;
+    _showAdvancedRegenPicker();
   };
 
-  window._spFilterChips = function () {}; // no-op (chips removed)
+  // Reset advanced tab back to phase 1
+  window._spResetAdvanced = function () {
+    _advStems = [];
+    _selectedRegen = null;
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _audios = [];
+    var tracksEl = _panel && _panel.querySelector('#sp-tracks');
+    var playbar  = _panel && _panel.querySelector('#sp-playbar');
+    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
+    if (playbar)  playbar.style.display = 'none';
+    _showAdvancedTab();
+  };
+
+  // Step 2: Regenerate the selected stem via Mureka /v1/track/generate
+  window._spRunRegen = async function () {
+    if (!_jobId || !_selectedRegen) return;
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _audios = [];
+    _curTaskId = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+
+    var tracksEl = _panel && _panel.querySelector('#sp-tracks');
+    var playbar  = _panel && _panel.querySelector('#sp-playbar');
+    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
+    if (playbar)  playbar.style.display = 'none';
+
+    _showProgress('AI is regenerating ' + _capFirst(_selectedRegen) + '…');
+
+    try {
+      var res = await fetch('/api/job/regen-stem', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: _jobId, stem_type: _selectedRegen })
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        var msg = data.error || 'Regeneration failed';
+        if (data.upgrade) {
+          _showError(msg + ' <a href="/pricing" style="color:#4e9fff;text-decoration:underline">Upgrade →</a>');
+        } else {
+          _showError(msg);
+        }
+        return;
+      }
+      if (data.status === 'ready' && data.stems && data.stems.length) {
+        _renderStemTracks(data.stems, 'advanced');
+        return;
+      }
+      _curTaskId = data.task_id;
+      _pollForRegen();
+    } catch (err) {
+      _showError('Network error: ' + (err.message || 'Unknown'));
+    }
+  };
+
+  function _pollForRegen() {
+    var dots = 0;
+    var stemLabel = _capFirst(_selectedRegen || 'stem');
+    _pollTimer = setInterval(async function () {
+      if (!_panel) { clearInterval(_pollTimer); return; }
+      dots = (dots + 1) % 4;
+      _showProgress('Regenerating ' + stemLabel + '.'.repeat(dots + 1));
+      try {
+        var params = '?task_id=' + encodeURIComponent(_curTaskId);
+        var res  = await fetch('/api/job/regen-stem/' + _jobId + params);
+        var data = await res.json();
+        if (data.status === 'ready' && data.stems && data.stems.length) {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _renderStemTracks(data.stems, 'advanced');
+        } else if (data.status === 'error') {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _showError(data.error || 'Regeneration failed');
+        }
+      } catch (e) { /* keep polling */ }
+    }, 3000);
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  EXTRACT
+  //  EXTRACT (Auto + Split tabs)
   // ─────────────────────────────────────────────────────────────────────────
   window._spExtract = async function (mode) {
     if (!_jobId) return;
@@ -3846,7 +4016,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _showProgress('Starting extraction…');
 
     var body = { job_id: _jobId, mode: mode };
-    if (mode !== 'auto') body.target_instrument = _selectedInst;
 
     try {
       var res = await fetch('/api/job/stems', {
@@ -3891,7 +4060,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       try {
         var params = '?mode=' + encodeURIComponent(mode);
         if (_curTaskId) params += '&task_id=' + encodeURIComponent(_curTaskId);
-        if (mode !== 'auto') params += '&target=' + encodeURIComponent(_selectedInst);
         var res  = await fetch('/api/job/stems/' + _jobId + params);
         var data = await res.json();
         if (data.status === 'ready' && data.stems && data.stems.length) {
@@ -3917,11 +4085,14 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   function _showError(html) {
+    var retryAction = _activeTab === 'advanced'
+      ? 'window._spResetAdvanced()'
+      : 'window._spReExtract(\'' + (_activeTab || 'auto') + '\')';
     _setTabBody(
       '<div style="display:flex;align-items:center;gap:10px;padding:4px 0">' +
         '<i class="fas fa-exclamation-triangle" style="color:#f59e0b;font-size:.9rem;flex-shrink:0"></i>' +
         '<span style="color:rgba(255,255,255,0.55);font-size:.77rem;flex:1">' + html + '</span>' +
-        '<button onclick="window._spReExtract(\'' + (_activeTab||'auto') + '\')" style="' +
+        '<button onclick="' + retryAction + '" style="' +
             'flex-shrink:0;padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,.12);' +
             'background:rgba(255,255,255,.06);color:rgba(255,255,255,.5);font-size:.7rem;cursor:pointer">' +
           'Retry' +
@@ -3939,17 +4110,26 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       return { name: s.name, url: s.url, muted: false, solo: false, vol: 1.0 };
     });
 
+    var isAdv = (mode === 'advanced');
+    var regenLabel = isAdv && _selectedRegen ? _capFirst(_selectedRegen) : null;
+
+    // Tab body: status + re-extract/re-regen button + stereo download button
     _setTabBody(
-      '<div style="display:flex;align-items:center;justify-content:space-between">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
         '<span style="color:rgba(255,255,255,0.35);font-size:.72rem">' +
           '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
-          _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted' +
+          (isAdv && regenLabel
+            ? regenLabel + ' regenerated clean'
+            : _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted') +
         '</span>' +
-        '<button onclick="window._spReExtract(\'' + mode + '\')" style="' +
-            'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
-            'background:rgba(255,255,255,.04);color:rgba(255,255,255,.38);font-size:.68rem;cursor:pointer">' +
-          'Re-extract' +
-        '</button>' +
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          _buildDownloadBtn(mode) +
+          '<button onclick="window._spReExtract(\'' + mode + '\')" style="' +
+              'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
+              'background:rgba(255,255,255,.04);color:rgba(255,255,255,.38);font-size:.68rem;cursor:pointer">' +
+            (isAdv ? 'Re-regen' : 'Re-extract') +
+          '</button>' +
+        '</div>' +
       '</div>'
     );
 
@@ -3960,17 +4140,25 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     }).join('');
     tracksEl.style.display = 'flex';
 
+    // Build Audio objects
     _audios = [];
     _stems.forEach(function (s, i) {
       var audio = new Audio();
       audio.crossOrigin = 'anonymous';
-      audio.preload = 'metadata';
+      audio.preload = 'auto';
       audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
       _audios.push(audio);
       if (i === 0) {
         audio.addEventListener('loadedmetadata', function () { _updateDuration(audio.duration); });
-        audio.addEventListener('timeupdate', function () { _updateTimeline(audio.currentTime, audio.duration); });
-        audio.addEventListener('ended', function () { _playing = false; _updatePlayIcon(); });
+        audio.addEventListener('timeupdate', function () {
+          if (_playing) _updateTimeline(audio.currentTime, audio.duration);
+        });
+        audio.addEventListener('ended', function () {
+          _playing = false;
+          _updatePlayIcon();
+          _updateTimeline(0, audio.duration);
+          _audios.forEach(function(a){ try { a.currentTime = 0; } catch(e){} });
+        });
       }
     });
 
@@ -3984,6 +4172,89 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var playbar = _panel && _panel.querySelector('#sp-playbar');
     if (playbar) playbar.style.display = 'flex';
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  DOWNLOAD BUTTON (per-tab stereo mix)
+  // ─────────────────────────────────────────────────────────────────────────
+  function _buildDownloadBtn(mode) {
+    // Free users: no download
+    if (_userPlan === 'free') {
+      return '<button title="Upgrade to download" onclick="window.location=\'/pricing\'" style="' +
+        'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,200,0,.2);' +
+        'background:rgba(255,200,0,.05);color:rgba(255,200,0,.5);font-size:.68rem;cursor:pointer;' +
+        'display:flex;align-items:center;gap:4px">' +
+        '<i class="fas fa-lock" style="font-size:.6rem"></i> Download' +
+      '</button>';
+    }
+
+    // Creator: mp3 only — Pro/developer: mp3 + wav option
+    var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
+
+    if (canWav) {
+      // Dropdown-style: two options
+      return '<div style="position:relative;display:inline-block" id="sp-dl-wrap">' +
+        '<button onclick="window._spToggleDlMenu()" style="' +
+            'padding:3px 10px;border-radius:5px;border:1px solid rgba(78,159,255,.25);' +
+            'background:rgba(78,159,255,.07);color:#4e9fff;font-size:.68rem;cursor:pointer;' +
+            'display:flex;align-items:center;gap:4px">' +
+          '<i class="fas fa-download" style="font-size:.6rem"></i> Download' +
+          '<i class="fas fa-chevron-down" style="font-size:.5rem;margin-left:2px"></i>' +
+        '</button>' +
+        '<div id="sp-dl-menu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);' +
+            'background:#1a1a2e;border:1px solid rgba(255,255,255,.1);border-radius:7px;' +
+            'padding:4px;z-index:9999;min-width:110px;box-shadow:0 8px 24px rgba(0,0,0,.5)">' +
+          '<button onclick="window._spDownloadMix(\'mp3\')" style="' +
+              'width:100%;text-align:left;padding:5px 8px;border-radius:4px;border:none;' +
+              'background:none;color:rgba(255,255,255,.7);font-size:.72rem;cursor:pointer"' +
+            ' onmouseover="this.style.background=\'rgba(255,255,255,.07)\'" onmouseout="this.style.background=\'none\'">' +
+            '<i class="fas fa-file-audio" style="margin-right:5px;color:#4e9fff"></i>MP3 (compressed)' +
+          '</button>' +
+          '<button onclick="window._spDownloadMix(\'wav\')" style="' +
+              'width:100%;text-align:left;padding:5px 8px;border-radius:4px;border:none;' +
+              'background:none;color:rgba(255,255,255,.7);font-size:.72rem;cursor:pointer"' +
+            ' onmouseover="this.style.background=\'rgba(255,255,255,.07)\'" onmouseout="this.style.background=\'none\'">' +
+            '<i class="fas fa-wave-square" style="margin-right:5px;color:#a855f6"></i>WAV (lossless)' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+    }
+
+    // Creator: mp3 only direct link
+    return '<a href="/api/stem-mix/' + _jobId + '?fmt=mp3" download="stems_mix.mp3" style="' +
+        'padding:3px 10px;border-radius:5px;border:1px solid rgba(78,159,255,.25);' +
+        'background:rgba(78,159,255,.07);color:#4e9fff;font-size:.68rem;cursor:pointer;' +
+        'text-decoration:none;display:inline-flex;align-items:center;gap:4px">' +
+      '<i class="fas fa-download" style="font-size:.6rem"></i> MP3' +
+    '</a>';
+  }
+
+  window._spToggleDlMenu = function () {
+    var menu = _panel && _panel.querySelector('#sp-dl-menu');
+    if (!menu) return;
+    menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    // Close on outside click
+    setTimeout(function () {
+      document.addEventListener('click', function closeDl(e) {
+        var wrap = _panel && _panel.querySelector('#sp-dl-wrap');
+        if (!wrap || !wrap.contains(e.target)) {
+          if (menu) menu.style.display = 'none';
+          document.removeEventListener('click', closeDl);
+        }
+      });
+    }, 10);
+  };
+
+  window._spDownloadMix = function (fmt) {
+    var menu = _panel && _panel.querySelector('#sp-dl-menu');
+    if (menu) menu.style.display = 'none';
+    // Trigger download via hidden anchor
+    var a = document.createElement('a');
+    a.href = '/api/stem-mix/' + _jobId + '?fmt=' + fmt;
+    a.download = 'stems_mix.' + fmt;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { document.body.removeChild(a); }, 500);
+  };
 
   // ─────────────────────────────────────────────────────────────────────────
   //  TRACK ROW
@@ -4031,10 +4302,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       '<input type="range" min="0" max="1" step="0.01" value="1"' +
         ' oninput="window._spVol(' + i + ',parseFloat(this.value))"' +
         ' title="Volume"' +
-        ' style="width:56px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
+        ' style="width:52px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
 
-      // download
-      '<a href="' + dlUrl + '" download="' + _escHtml(label) + '_stem.mp3" title="Download ' + _escHtml(label) + '" style="' +
+      // per-stem download
+      '<a href="' + dlUrl + '" download="' + _escHtml(label) + '_stem.wav" title="Download ' + _escHtml(label) + '" style="' +
           'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
           'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
         ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
@@ -4078,14 +4349,25 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   window._spPlay = function () {
     if (!_audios.length) return;
     if (_playing) {
-      _audios.forEach(function (a) { a.pause(); });
+      _audios.forEach(function (a) { try { a.pause(); } catch(e){} });
       _playing = false;
+      _updatePlayIcon();
     } else {
-      var ps = _audios.map(function (a) { return a.play().catch(function(){}); });
-      Promise.all(ps).then(function () { _playing = true; _updatePlayIcon(); });
-      _playing = true;
+      // Sync all to track 0 time before playing
+      var refTime = _audios[0] ? _audios[0].currentTime : 0;
+      var ps = _audios.map(function (a, i) {
+        if (i > 0) { try { a.currentTime = refTime; } catch(e){} }
+        return a.play().catch(function(e){ console.warn('Audio play failed:', e); });
+      });
+      Promise.all(ps).then(function () {
+        _playing = true;
+        _updatePlayIcon();
+      }).catch(function(e){
+        console.error('Playback error:', e);
+        _playing = false;
+        _updatePlayIcon();
+      });
     }
-    _updatePlayIcon();
   };
 
   window._spSeek = function (e) {
@@ -4093,10 +4375,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     if (!wrap || !_audios.length) return;
     var rect = wrap.getBoundingClientRect();
     var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    var dur  = _audios[0].duration;
+    var dur  = _audios[0] ? _audios[0].duration : 0;
     if (!dur || isNaN(dur)) return;
     var t = pct * dur;
-    _audios.forEach(function (a) { a.currentTime = t; });
+    _audios.forEach(function (a) { try { a.currentTime = t; } catch(e){} });
     _updateTimeline(t, dur);
   };
 
@@ -4104,10 +4386,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var rect = el.getBoundingClientRect();
     var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     if (!_audios.length) return;
-    var dur = _audios[0].duration;
+    var dur = _audios[0] ? _audios[0].duration : 0;
     if (!dur || isNaN(dur)) return;
     var t = pct * dur;
-    _audios.forEach(function (a) { a.currentTime = t; });
+    _audios.forEach(function (a) { try { a.currentTime = t; } catch(e){} });
     _updateTimeline(t, dur);
   };
 
@@ -4170,7 +4452,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var playbar  = _panel && _panel.querySelector('#sp-playbar');
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
-    _onTabClick(mode || _activeTab || 'auto');
+    if (mode === 'advanced') {
+      // Re-run regen with same stem selection
+      window._spRunRegen();
+    } else {
+      _onTabClick(mode || _activeTab || 'auto');
+    }
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -4215,6 +4502,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _stopAllAudio();
     _playing = false;
     _stems = [];
+    _advStems = [];
+    _selectedRegen = null;
     _activeTab = null;
     _curTaskId = null;
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
