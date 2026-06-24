@@ -3518,6 +3518,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   var _playing      = false;
   var _pollTimer    = null;
   var _curTaskId    = null;
+  var _rafId        = null;     // requestAnimationFrame id for timeline loop
   // Advanced tab state
   var _advStems     = [];       // stems extracted by audio-separation-2 for adv tab
   var _selectedRegen= null;     // which stem the user wants regenerated
@@ -4148,14 +4149,15 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
       if (i === 0) {
         audio.addEventListener('loadedmetadata', function () { _updateDuration(audio.duration); });
-        audio.addEventListener('timeupdate', function () {
-          if (_playing) _updateTimeline(audio.currentTime, audio.duration);
-        });
+        // NOTE: we do NOT use timeupdate — it fires irregularly and causes seek snap-back.
+        // Instead we use a requestAnimationFrame loop (_startRaf) which always reads the
+        // true currentTime after seeks settle, giving smooth scrubbing.
         audio.addEventListener('ended', function () {
           _playing = false;
           _updatePlayIcon();
           _updateTimeline(0, audio.duration);
           _audios.forEach(function(a){ try { a.currentTime = 0; } catch(e){} });
+          _stopRaf();
         });
       }
     });
@@ -4169,6 +4171,46 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
     var playbar = _panel && _panel.querySelector('#sp-playbar');
     if (playbar) playbar.style.display = 'flex';
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  RAF TIMELINE LOOP
+  //  Replaces timeupdate. Runs every animation frame while playing or for a
+  //  short burst after a seek, so the playhead + wave bars always reflect the
+  //  true audio.currentTime (including after seeks settle).
+  // ─────────────────────────────────────────────────────────────────────────
+  var _rafBurst = 0;  // frames remaining in a post-seek burst
+
+  function _startRaf() {
+    if (_rafId) return;  // already running
+    _rafId = requestAnimationFrame(_rafTick);
+  }
+
+  function _stopRaf() {
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+    _rafBurst = 0;
+  }
+
+  function _rafTick() {
+    _rafId = null;
+    if (!_panel || !_audios.length) return;
+    var a = _audios[0];
+    if (a && !isNaN(a.duration) && a.duration > 0) {
+      _updateTimeline(a.currentTime, a.duration);
+    }
+    // Keep looping while playing OR during a post-seek burst
+    if (_playing) {
+      _rafId = requestAnimationFrame(_rafTick);
+    } else if (_rafBurst > 0) {
+      _rafBurst--;
+      _rafId = requestAnimationFrame(_rafTick);
+    }
+  }
+
+  // Call after every seek: runs a short burst so the UI catches up immediately
+  function _rafSeekBurst() {
+    _rafBurst = 8;   // ~8 frames = ~130ms — enough for browser to commit the seek
+    _startRaf();
   }
 
   // Test hook: allows test pages to inject mock stems
@@ -4381,6 +4423,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       _audios.forEach(function (a) { try { a.pause(); } catch(e){} });
       _playing = false;
       _updatePlayIcon();
+      _stopRaf();
       return;
     }
     // Sync all tracks to track 0 time before playing
@@ -4405,6 +4448,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     // Optimistically update UI immediately — revert if all fail
     _playing = true;
     _updatePlayIcon();
+    _startRaf();  // start the rAF timeline loop
     // Track failures — if EVERY stem fails, revert playing state
     var failCount = 0;
     promises.forEach(function (p) {
@@ -4431,8 +4475,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var dur  = _audios[0] ? _audios[0].duration : 0;
     if (!dur || isNaN(dur)) return;
     var t = pct * dur;
-    _audios.forEach(function (a) { try { a.currentTime = t; } catch(e){} });
+    // Update UI immediately so it feels instant, then let rAF keep it in sync
     _updateTimeline(t, dur);
+    // Seek all audio elements — browser will settle to actual position asynchronously
+    _audios.forEach(function (a) { try { a.currentTime = t; } catch(ee){} });
+    // Run a short rAF burst so UI snaps to the real settled time
+    _rafSeekBurst();
   };
 
   window._spSeekWave = function (e, el) {
@@ -4442,8 +4490,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var dur = _audios[0] ? _audios[0].duration : 0;
     if (!dur || isNaN(dur)) return;
     var t = pct * dur;
-    _audios.forEach(function (a) { try { a.currentTime = t; } catch(e){} });
+    // Update UI immediately so it feels instant
     _updateTimeline(t, dur);
+    // Seek all audio elements
+    _audios.forEach(function (a) { try { a.currentTime = t; } catch(ee){} });
+    // Run a short rAF burst so UI snaps to the real settled time
+    _rafSeekBurst();
   };
 
   window._spSolo = function (idx) {
@@ -4604,6 +4656,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  CLEANUP
   // ─────────────────────────────────────────────────────────────────────────
   function _stopAllAudio() {
+    _stopRaf();
     _audios.forEach(function (a) { try { a.pause(); a.src = ''; } catch (e) {} });
     _audios = [];
   }
