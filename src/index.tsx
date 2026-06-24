@@ -555,50 +555,71 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
 
 // ── ZIP parser for Mureka stem results ───────────────────────────────────────
 // Mureka song/stem returns a zip_url containing WAV files named: vocals.wav, drums.wav, etc.
-// This minimal parser reads the ZIP central directory to extract file names + local offsets,
-// then returns StemTrack[] where url = the zip_url with a ?stem=name query param
-// so our proxy route /api/stem-audio can slice the right bytes.
-// Returns tracks with url = direct CDN entry URL constructed from zip local headers.
-async function parseZipStems(zipBuffer: ArrayBuffer, zipUrl: string): Promise<StemTrack[]> {
-  const buf = new Uint8Array(zipBuffer)
-  const view = new DataView(zipBuffer)
+// This minimal parser reads only the ZIP central directory (tail of the file via Range request)
+// to extract file names + offsets — NEVER downloads the full ZIP into memory.
+//
+// zip-entry: URL format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>
+// The proxy resolves dataStart lazily with a 30-byte range fetch at localOff.
+async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
+  // Step 1: fetch the last 65536 bytes — enough to contain EOCD + central directory
+  // for any typical stem ZIP (4-8 files × ~200 bytes each)
+  const tailSize = 65536
+  const headRes = await fetch(zipUrl, { method: 'HEAD' })
+  const contentLength = headRes.ok ? parseInt(headRes.headers.get('content-length') || '0', 10) : 0
+
+  let tailBuf: ArrayBuffer
+  if (contentLength > 0) {
+    const start = Math.max(0, contentLength - tailSize)
+    const rangeRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${start}-${contentLength - 1}` } })
+    if (!rangeRes.ok && rangeRes.status !== 206) throw new Error(`ZIP tail fetch failed: ${rangeRes.status}`)
+    tailBuf = await rangeRes.arrayBuffer()
+  } else {
+    // Server doesn't report content-length — fall back to full fetch
+    // This should only happen for very unusual CDN configurations
+    const fullRes = await fetch(zipUrl)
+    if (!fullRes.ok) throw new Error(`ZIP fetch failed: ${fullRes.status}`)
+    tailBuf = await fullRes.arrayBuffer()
+  }
+
+  const buf = new Uint8Array(tailBuf)
+  const view = new DataView(tailBuf)
+  const tailOffset = contentLength > tailSize ? contentLength - tailSize : 0
   const tracks: StemTrack[] = []
 
-  // Find End of Central Directory record (signature 0x06054b50) scanning from end
-  let eocdOffset = -1
+  // Find End of Central Directory record (signature 0x06054b50) scanning from end of tail
+  let eocdLocal = -1
   for (let i = buf.length - 22; i >= 0; i--) {
-    if (view.getUint32(i, true) === 0x06054b50) { eocdOffset = i; break }
+    if (view.getUint32(i, true) === 0x06054b50) { eocdLocal = i; break }
   }
-  if (eocdOffset < 0) throw new Error('Not a valid ZIP file')
+  if (eocdLocal < 0) throw new Error('Not a valid ZIP file (EOCD not found in tail)')
 
-  const cdOffset = view.getUint32(eocdOffset + 16, true)
-  const cdCount  = view.getUint16(eocdOffset + 8, true)
+  const cdAbsOffset = view.getUint32(eocdLocal + 16, true)   // absolute offset of central dir
+  const cdCount     = view.getUint16(eocdLocal + 8, true)
+  const cdLocalOff  = cdAbsOffset - tailOffset               // position within tailBuf
 
-  let pos = cdOffset
+  if (cdLocalOff < 0) throw new Error('Central directory not in tail — ZIP too large for 64KB window')
+
+  let pos = cdLocalOff
   for (let i = 0; i < cdCount; i++) {
-    if (view.getUint32(pos, true) !== 0x02014b50) break // central dir signature
+    if (pos + 46 > buf.length) break
+    if (view.getUint32(pos, true) !== 0x02014b50) break        // central dir signature
+    const compSize = view.getUint32(pos + 20, true)            // compressed size from CD entry
     const fnLen    = view.getUint16(pos + 28, true)
     const extraLen = view.getUint16(pos + 30, true)
     const cmtLen   = view.getUint16(pos + 32, true)
-    const localOff = view.getUint32(pos + 42, true)
+    const localOff = view.getUint32(pos + 42, true)            // absolute offset of local header
     const fnBytes  = buf.subarray(pos + 46, pos + 46 + fnLen)
     const fileName = new TextDecoder().decode(fnBytes)
     pos += 46 + fnLen + extraLen + cmtLen
-
-    // Get compressed size from local file header
-    const compSize   = view.getUint32(localOff + 18, true)
-    const localFnLen = view.getUint16(localOff + 26, true)
-    const localExLen = view.getUint16(localOff + 28, true)
-    const dataStart  = localOff + 30 + localFnLen + localExLen
 
     // Extract stem name from filename (e.g. "vocals.wav" → "vocals")
     const base = fileName.split('/').pop() || fileName
     const stemName = base.replace(/\.(wav|mp3|flac|m4a)$/i, '').toLowerCase().replace(/\s+/g, '_')
     if (!stemName) continue
 
-    // Store the stem as a zip-encoded URL: we'll proxy it by re-fetching the zip
-    // and slicing out the raw bytes. Use a special URL scheme our proxy recognizes.
-    const stemProxyUrl = `zip-entry:${zipUrl}|${dataStart}|${compSize}|${fileName}`
+    // Store localOff (not dataStart) — proxy will resolve exact data offset lazily
+    // with a 30-byte range read of the local file header at localOff
+    const stemProxyUrl = `zip-entry:${zipUrl}|${localOff}|${compSize}|${fileName}`
     tracks.push({ name: stemName, url: stemProxyUrl })
   }
 
@@ -944,7 +965,7 @@ app.post('/api/job/stems', async (c) => {
   updatedJob.stem_jobs.push(stemJob)
   await setJob(c.env.DB, updatedJob)
 
-  return c.json({ ok: true, cached: false, task_id: taskId, status: 'pending' })
+  return c.json({ ok: true, cached: false, task_id: fakeTaskId, status: 'pending' })
 })
 
 // GET /api/job/stems/:jobId — poll stem extraction status
@@ -989,11 +1010,8 @@ app.get('/api/job/stems/:jobId', async (c) => {
   if (stemJob.task_id.startsWith('zip:')) {
     const zipUrl = stemJob.task_id.slice(4)
     try {
-      // Fetch and parse the ZIP to extract stem file names → build proxy URLs
-      const zipRes = await fetch(zipUrl)
-      if (!zipRes.ok) throw new Error(`ZIP fetch failed: ${zipRes.status}`)
-      const zipBuffer = await zipRes.arrayBuffer()
-      const stemTracks: StemTrack[] = await parseZipStems(zipBuffer, zipUrl)
+      // Parse ZIP central directory via range request — never downloads full ZIP into memory
+      const stemTracks: StemTrack[] = await parseZipStems(zipUrl)
 
       if (!stemTracks.length) throw new Error('No stems found in ZIP')
 
@@ -1114,29 +1132,34 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   // Proxy the audio — handle zip-entry: scheme from ZIP-parsed stems
   try {
     if (stemUrl.startsWith('zip-entry:')) {
-      // Format: zip-entry:<zipUrl>|<dataStart>|<compSize>|<fileName>
+      // Format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>
+      // localOff = absolute byte offset of the local file header in the ZIP
+      // We need to resolve dataStart by reading the local file header (30 bytes)
       const rest = stemUrl.slice('zip-entry:'.length)
       const parts = rest.split('|')
-      const zipUrlStr  = parts[0]
-      const dataStart  = parseInt(parts[1], 10)
-      const compSize   = parseInt(parts[2], 10)
-      // Fetch only the relevant byte range from the zip
+      const zipUrlStr = parts[0]
+      const localOff  = parseInt(parts[1], 10)
+      const compSize  = parseInt(parts[2], 10)
+
+      // Read local file header (30 bytes) to get variable fnLen + extraLen
+      const hdrRes = await fetch(zipUrlStr, {
+        headers: { 'Range': `bytes=${localOff}-${localOff + 29}` }
+      })
+      let dataStart = localOff + 30  // fallback if range not supported
+      if (hdrRes.ok || hdrRes.status === 206) {
+        const hdrBuf = await hdrRes.arrayBuffer()
+        const hdrView = new DataView(hdrBuf)
+        const localFnLen = hdrView.getUint16(26, true)
+        const localExLen = hdrView.getUint16(28, true)
+        dataStart = localOff + 30 + localFnLen + localExLen
+      }
+
+      // Fetch only the compressed data bytes
       const rangeRes = await fetch(zipUrlStr, {
         headers: { 'Range': `bytes=${dataStart}-${dataStart + compSize - 1}` }
       })
       if (!rangeRes.ok && rangeRes.status !== 206) {
-        // Range not supported — fetch whole zip and slice
-        const fullRes = await fetch(zipUrlStr)
-        if (!fullRes.ok) return c.json({ error: 'ZIP fetch failed' }, 502)
-        const fullBuf = await fullRes.arrayBuffer()
-        const slice = fullBuf.slice(dataStart, dataStart + compSize)
-        return new Response(slice, {
-          headers: {
-            'Content-Type': 'audio/wav',
-            'Access-Control-Allow-Origin': '*',
-            'Cache-Control': 'public, max-age=3600'
-          }
-        })
+        return c.json({ error: 'ZIP range request not supported by CDN' }, 502)
       }
       return new Response(rangeRes.body, {
         headers: {
