@@ -603,13 +603,15 @@ async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
   for (let i = 0; i < cdCount; i++) {
     if (pos + 46 > buf.length) break
     if (view.getUint32(pos, true) !== 0x02014b50) break        // central dir signature
-    const compSize = view.getUint32(pos + 20, true)            // compressed size from CD entry
-    const fnLen    = view.getUint16(pos + 28, true)
-    const extraLen = view.getUint16(pos + 30, true)
-    const cmtLen   = view.getUint16(pos + 32, true)
-    const localOff = view.getUint32(pos + 42, true)            // absolute offset of local header
-    const fnBytes  = buf.subarray(pos + 46, pos + 46 + fnLen)
-    const fileName = new TextDecoder().decode(fnBytes)
+    const compMethod = view.getUint16(pos + 10, true)          // 0=store, 8=deflate
+    const compSize  = view.getUint32(pos + 20, true)           // compressed size from CD entry
+    const uncompSize= view.getUint32(pos + 24, true)           // uncompressed size
+    const fnLen     = view.getUint16(pos + 28, true)
+    const extraLen  = view.getUint16(pos + 30, true)
+    const cmtLen    = view.getUint16(pos + 32, true)
+    const localOff  = view.getUint32(pos + 42, true)           // absolute offset of local header
+    const fnBytes   = buf.subarray(pos + 46, pos + 46 + fnLen)
+    const fileName  = new TextDecoder().decode(fnBytes)
     pos += 46 + fnLen + extraLen + cmtLen
 
     // Extract stem name from filename (e.g. "vocals.wav" → "vocals")
@@ -617,9 +619,9 @@ async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
     const stemName = base.replace(/\.(wav|mp3|flac|m4a)$/i, '').toLowerCase().replace(/\s+/g, '_')
     if (!stemName) continue
 
-    // Store localOff (not dataStart) — proxy will resolve exact data offset lazily
-    // with a 30-byte range read of the local file header at localOff
-    const stemProxyUrl = `zip-entry:${zipUrl}|${localOff}|${compSize}|${fileName}`
+    // Store localOff + compression method — proxy resolves exact data offset lazily
+    // Format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>|<compMethod>|<uncompSize>
+    const stemProxyUrl = `zip-entry:${zipUrl}|${localOff}|${compSize}|${fileName}|${compMethod}|${uncompSize}`
     tracks.push({ name: stemName, url: stemProxyUrl })
   }
 
@@ -1140,36 +1142,54 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   // Proxy the audio — handle zip-entry: scheme from ZIP-parsed stems
   try {
     if (stemUrl.startsWith('zip-entry:')) {
-      // Format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>
-      // localOff = absolute byte offset of the local file header in the ZIP
-      // We need to resolve dataStart by reading the local file header (30 bytes)
+      // Format (new): zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>|<compMethod>|<uncompSize>
+      // Format (old): zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>   (no compMethod)
       const rest = stemUrl.slice('zip-entry:'.length)
       const parts = rest.split('|')
-      const zipUrlStr = parts[0]
-      const localOff  = parseInt(parts[1], 10)
-      const compSize  = parseInt(parts[2], 10)
+      const zipUrlStr  = parts[0]
+      const localOff   = parseInt(parts[1], 10)
+      const compSize   = parseInt(parts[2], 10)
+      // parts[3] = fileName, parts[4] = compMethod (0=store,8=deflate), parts[5] = uncompSize
+      const compMethod = parts[4] !== undefined ? parseInt(parts[4], 10) : -1  // -1 = unknown (legacy)
 
-      // Read local file header (30 bytes) to get variable fnLen + extraLen
+      // Read the local file header (30 bytes minimum) to find exact data offset
+      // Local header layout: sig(4) ver(2) gpflag(2) method(2) modtime(4) crc(4)
+      //   compSize(4) uncompSize(4) fnLen(2) extraLen(2) = 30 bytes, then fnLen+extraLen bytes
       const hdrRes = await fetch(zipUrlStr, {
         headers: { 'Range': `bytes=${localOff}-${localOff + 29}` }
       })
-      let dataStart = localOff + 30  // fallback if range not supported
+      let dataStart = localOff + 30  // fallback
+      let localCompMethod = compMethod
       if (hdrRes.ok || hdrRes.status === 206) {
         const hdrBuf = await hdrRes.arrayBuffer()
         const hdrView = new DataView(hdrBuf)
-        const localFnLen = hdrView.getUint16(26, true)
-        const localExLen = hdrView.getUint16(28, true)
-        dataStart = localOff + 30 + localFnLen + localExLen
+        if (hdrView.getUint32(0, true) === 0x04034b50) { // local file header sig
+          if (localCompMethod === -1) {
+            localCompMethod = hdrView.getUint16(6, true)  // read from header if not stored in URL
+          }
+          const localFnLen = hdrView.getUint16(26, true)
+          const localExLen = hdrView.getUint16(28, true)
+          dataStart = localOff + 30 + localFnLen + localExLen
+        }
       }
 
-      // Fetch only the compressed data bytes
+      // Fetch the raw (possibly compressed) data bytes
       const rangeRes = await fetch(zipUrlStr, {
         headers: { 'Range': `bytes=${dataStart}-${dataStart + compSize - 1}` }
       })
       if (!rangeRes.ok && rangeRes.status !== 206) {
         return c.json({ error: 'ZIP range request not supported by CDN' }, 502)
       }
-      return new Response(rangeRes.body, {
+
+      // Decompress if deflated (method=8) — Cloudflare Workers supports DecompressionStream natively
+      let responseBody: ReadableStream<Uint8Array> | null = rangeRes.body
+      if (localCompMethod === 8 && responseBody) {
+        // deflate-raw = raw DEFLATE without zlib wrapper (ZIP uses raw deflate)
+        const ds = new DecompressionStream('deflate-raw')
+        responseBody = responseBody.pipeThrough(ds)
+      }
+
+      return new Response(responseBody, {
         headers: {
           'Content-Type': 'audio/wav',
           'Access-Control-Allow-Origin': '*',
