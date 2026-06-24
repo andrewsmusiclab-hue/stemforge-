@@ -874,40 +874,18 @@ app.post('/api/job/stems', async (c) => {
   //   Mureka CDN URLs are .wav internally but we can try sending as data:audio/mpeg base64 —
   //   however true re-encoding requires ffmpeg which we don't have at runtime.
   //
-  //   BEST APPROACH: Use Mureka's /v1/files/upload with purpose="audio" and url=stereo_url.
-  //   This registers the file on Mureka's side and returns a file_id we can use.
-  //   BUT: files/upload also only accepts mp3/m4a for "audio" purpose.
-  //
-  //   ACTUAL SOLUTION: Fetch the audio as ArrayBuffer, encode as base64, send as
-  //   data:audio/mpeg;base64,... — Mureka accepts this even if the underlying bytes
-  //   are WAV, as long as the MIME type says mp3. The audio content is the same.
-  //   Max 10MB limit applies.
-
-  let stemBase64Url: string
-  try {
-    const audioRes = await fetch(job.stereo_url!)
-    if (!audioRes.ok) throw new Error(`Failed to fetch audio: ${audioRes.status}`)
-    const audioBuffer = await audioRes.arrayBuffer()
-    const bytes = new Uint8Array(audioBuffer)
-    // Convert to base64
-    let binary = ''
-    const chunkSize = 8192
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-    }
-    const b64 = btoa(binary)
-    stemBase64Url = `data:audio/mpeg;base64,${b64}`
-    console.log(`[stems] Fetched audio: ${bytes.length} bytes, base64 length: ${b64.length}`)
-  } catch (fetchErr: any) {
-    return c.json({ error: `Could not fetch audio for stem extraction: ${fetchErr.message}` }, 502)
-  }
+  // Mureka song/stem API:
+  //   - Field is "url" (not "audio_url") — this was the original bug causing "File format not supported"
+  //   - Docs say mp3/m4a but Mureka's own CDN WAV URLs work fine when passed directly
+  //   - DO NOT fetch+base64 encode — that crashes the Worker (128MB memory limit on large WAVs)
+  //   - Just pass the stereo_url directly as "url"
 
   const murekaBody: any = {
-    url: stemBase64Url,
+    url: job.stereo_url,
     model: 'audio-separation-2'
   }
 
-  console.log(`[stems] Sending to Mureka song/stem (base64, ${stemBase64Url.length} chars)`)
+  console.log(`[stems] Sending to Mureka song/stem: url=${job.stereo_url?.slice(0,80)}...`)
 
   // song/stem is SYNCHRONOUS — returns zip_url directly, no task_id
   let zipUrl: string
