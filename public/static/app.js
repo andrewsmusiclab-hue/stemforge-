@@ -3624,7 +3624,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;cursor:pointer;' +
             'display:flex;align-items:center;justify-content:center;font-size:.75rem;flex-shrink:0;transition:transform .1s"' +
           ' onmouseover="this.style.transform=\'scale(1.1)\'" onmouseout="this.style.transform=\'scale(1)\'">' +
-          '<i id="sp-play-icon" class="fas fa-play"></i>' +
+          '<i id="sp-play-icon" class="fas fa-play"></i>' +  /* FIX: default is fa-play not fa-pause */
         '</button>' +
         '<span id="sp-time-cur" style="font-size:.7rem;color:rgba(255,255,255,0.38);min-width:28px;flex-shrink:0">0:00</span>' +
         '<div id="sp-timeline-wrap" onclick="window._spSeek(event)" style="flex:1;height:3px;' +
@@ -3675,7 +3675,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
     });
     _panel.addEventListener('click', function (e) {
-      var card = document.getElementById('sp-card');
+      var card = _panel.querySelector('#sp-card');  // FIX: query inside panel, not document
       if (!card) return;
       var path = e.composedPath ? e.composedPath() : [];
       var inCard = path.indexOf(card) !== -1 || card.contains(e.target);
@@ -3694,11 +3694,23 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   function _onTabClick(tab) {
     if (!_panel) return;
     _activeTab = tab;
+    // FIX: query tabs within panel so we don't bleed into other panels on page
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
       var on = btn.dataset.tab === tab;
       btn.style.background = on ? '#fff' : 'rgba(255,255,255,0.04)';
       btn.style.color       = on ? '#000' : 'rgba(255,255,255,0.42)';
     });
+    // FIX: reset stems/audio when switching tabs so old state doesn't bleed
+    _stopAllAudio();
+    _playing = false;
+    _stems = [];
+    _audios = [];
+    _curTaskId = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    var tracksEl = _panel.querySelector('#sp-tracks');
+    var playbar  = _panel.querySelector('#sp-playbar');
+    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
+    if (playbar)  playbar.style.display = 'none';
     if (tab === 'auto')            _showAutoTab();
     else if (tab === 'split_from_mix') _showSplitTab();
     else if (tab === 'advanced')   _showAdvancedTab();
@@ -4353,20 +4365,24 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       _playing = false;
       _updatePlayIcon();
     } else {
-      // Sync all to track 0 time before playing
-      var refTime = _audios[0] ? _audios[0].currentTime : 0;
-      var ps = _audios.map(function (a, i) {
+      // FIX: sync ALL tracks to track 0 time (including track 0 itself stays put)
+      var refTime = (_audios[0] && !isNaN(_audios[0].currentTime)) ? _audios[0].currentTime : 0;
+      _audios.forEach(function (a, i) {
         if (i > 0) { try { a.currentTime = refTime; } catch(e){} }
-        return a.play().catch(function(e){ console.warn('Audio play failed:', e); });
       });
-      Promise.all(ps).then(function () {
+      // FIX: play individually, don't wait for all — some may be in error state
+      var anyPlaying = false;
+      _audios.forEach(function (a) {
+        if (a.src && a.src !== window.location.href) {
+          var p = a.play();
+          if (p && p.catch) p.catch(function(e){ console.warn('stem play failed:', e.message); });
+          anyPlaying = true;
+        }
+      });
+      if (anyPlaying) {
         _playing = true;
         _updatePlayIcon();
-      }).catch(function(e){
-        console.error('Playback error:', e);
-        _playing = false;
-        _updatePlayIcon();
-      });
+      }
     }
   };
 
@@ -4397,17 +4413,47 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var s = _stems[idx];
     if (!s) return;
     var wasSolo = s.solo;
+    // FIX: clear solo on all tracks first
     _stems.forEach(function (st) { st.solo = false; });
-    if (!wasSolo) s.solo = true;
+    if (!wasSolo) s.solo = true;  // toggle on; if was solo, stay off (deactivate solo)
+    var anySolo = _stems.some(function (x) { return x.solo; });
     _stems.forEach(function (st, i) {
-      var anySolo = _stems.some(function (x) { return x.solo; });
-      var active  = !anySolo || st.solo;
+      var active = !anySolo || st.solo;
+      // FIX: when soloing, clear mute on the soloed track so it's never both
+      if (st.solo && st.muted) {
+        st.muted = false;
+        var mb = _panel && _panel.querySelector('#sp-mute-' + i);
+        if (mb) {
+          mb.style.background  = 'rgba(255,255,255,0.04)';
+          mb.style.borderColor = 'rgba(255,255,255,0.13)';
+          mb.style.color       = 'rgba(255,255,255,0.48)';
+        }
+      }
+      // Update audio volume
       if (_audios[i]) _audios[i].volume = st.muted ? 0 : (active ? st.vol : 0);
-      var btn = _panel && _panel.querySelector('#sp-solo-' + i);
-      if (btn) {
-        btn.style.background  = st.solo ? 'rgba(250,204,21,0.22)' : 'rgba(255,255,255,0.04)';
-        btn.style.borderColor = st.solo ? '#facc15' : 'rgba(255,255,255,0.13)';
-        btn.style.color       = st.solo ? '#facc15' : 'rgba(255,255,255,0.48)';
+      // Update S button
+      var sb = _panel && _panel.querySelector('#sp-solo-' + i);
+      if (sb) {
+        sb.style.background  = st.solo ? 'rgba(250,204,21,0.22)' : 'rgba(255,255,255,0.04)';
+        sb.style.borderColor = st.solo ? '#facc15' : 'rgba(255,255,255,0.13)';
+        sb.style.color       = st.solo ? '#facc15' : 'rgba(255,255,255,0.48)';
+      }
+      // FIX: when solo is active, show M button lit on all NON-solo tracks
+      //      to visually indicate they are silenced (muted-by-solo)
+      var mb = _panel && _panel.querySelector('#sp-mute-' + i);
+      if (mb && !st.solo) {
+        if (anySolo) {
+          // silenced by solo — show M dimly lit in orange to distinguish from real mute
+          mb.style.background  = 'rgba(251,146,60,0.18)';
+          mb.style.borderColor = 'rgba(251,146,60,0.4)';
+          mb.style.color       = 'rgba(251,146,60,0.7)';
+        } else if (!st.muted) {
+          // no solo active and not muted — reset M to default
+          mb.style.background  = 'rgba(255,255,255,0.04)';
+          mb.style.borderColor = 'rgba(255,255,255,0.13)';
+          mb.style.color       = 'rgba(255,255,255,0.48)';
+        }
+        // if actually muted keep red styling — handled by _spMute
       }
     });
   };
@@ -4415,6 +4461,28 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   window._spMute = function (idx) {
     var s = _stems[idx];
     if (!s) return;
+    // FIX: muting a soloed track — clear solo first (can't be both)
+    if (s.solo) {
+      s.solo = false;
+      var sb = _panel && _panel.querySelector('#sp-solo-' + idx);
+      if (sb) {
+        sb.style.background  = 'rgba(255,255,255,0.04)';
+        sb.style.borderColor = 'rgba(255,255,255,0.13)';
+        sb.style.color       = 'rgba(255,255,255,0.48)';
+      }
+      // also reset all other tracks' M buttons that were lit orange by solo
+      _stems.forEach(function (st, i) {
+        if (i === idx) return;
+        var mb = _panel && _panel.querySelector('#sp-mute-' + i);
+        if (mb && !st.muted) {
+          mb.style.background  = 'rgba(255,255,255,0.04)';
+          mb.style.borderColor = 'rgba(255,255,255,0.13)';
+          mb.style.color       = 'rgba(255,255,255,0.48)';
+        }
+        // restore volume on other tracks
+        if (_audios[i]) _audios[i].volume = st.muted ? 0 : st.vol;
+      });
+    }
     s.muted = !s.muted;
     if (_audios[idx]) {
       var anySolo = _stems.some(function (x) { return x.solo; });
