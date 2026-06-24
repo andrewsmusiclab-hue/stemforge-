@@ -3768,23 +3768,23 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   // ── Advanced tab ──────────────────────────────────────────────────────────
-  // Phase 1: Show Extract button only. After extraction, show stem picker
-  // for AI regeneration (no bleed — Mureka /v1/track/generate).
+  // Layout: Identical to Auto Split waveform rows. The only difference is each
+  // row has a per-stem "Regen" button (AI regenerates that stem clean via Mureka).
   function _showAdvancedTab() {
     if (_advStems.length > 0) {
-      // Phase 2: stems already extracted — show regeneration picker
-      _showAdvancedRegenPicker();
+      // Already extracted — render waveform rows (same as Auto Split) with Regen buttons
+      _renderStemTracks(_advStems, 'advanced');
     } else {
-      // Phase 1: just the extract button
+      // Not yet extracted — show Extract button
       _setTabBody(
         '<div style="display:flex;align-items:flex-start;gap:12px">' +
           '<div style="flex:1;min-width:0">' +
             '<p style="color:rgba(255,255,255,0.48);font-size:.77rem;line-height:1.55;margin:0 0 4px 0">' +
               '<span style="color:#c084fc;font-weight:600">AI Regeneration</span> — ' +
-              'Extracts your stems, then re-synthesizes any stem from scratch.' +
+              'Extracts your stems, then re-synthesizes any one stem from scratch.' +
             '</p>' +
             '<p style="color:rgba(255,255,255,0.28);font-size:.7rem;margin:0">' +
-              'No bleed. No artefacts. Pure instrument isolation.' +
+              'No bleed. No artefacts. Click <b style="color:rgba(255,255,255,0.45)">Regen</b> on any stem row after extraction.' +
             '</p>' +
           '</div>' +
           '<button onclick="window._spExtractAdvanced()" style="' +
@@ -3799,52 +3799,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     }
   }
 
-  // Phase 2 UI: stem picker grid after extraction
+  // Legacy: no longer used but kept for safety
   function _showAdvancedRegenPicker() {
-    var chips = _advStems.map(function (s) {
-      var color = STEM_COLORS[s.name] || STEM_COLORS.default;
-      var isSelected = _selectedRegen === s.name;
-      var label = _capFirst(s.name);
-      return '<button onclick="window._spSelectRegen(\'' + _escHtml(s.name) + '\')" ' +
-        'id="sp-regen-chip-' + _escHtml(s.name) + '" ' +
-        'style="display:inline-flex;align-items:center;gap:5px;' +
-          'padding:5px 11px;border-radius:8px;border:1px solid ' + (isSelected ? color : 'rgba(255,255,255,0.1)') + ';' +
-          'background:' + (isSelected ? color + '22' : 'rgba(255,255,255,0.03)') + ';' +
-          'color:' + (isSelected ? color : 'rgba(255,255,255,0.5)') + ';' +
-          'font-size:.72rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap">' +
-        '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';flex-shrink:0"></span>' +
-        _escHtml(label) +
-      '</button>';
-    }).join('');
-
-    var regenBtn = _selectedRegen
-      ? '<button onclick="window._spRunRegen()" style="' +
-            'margin-top:12px;width:100%;padding:8px 0;border-radius:8px;border:none;' +
-            'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;' +
-            'font-weight:700;font-size:.8rem;cursor:pointer;transition:opacity .15s;letter-spacing:.01em"' +
-          ' onmouseover="this.style.opacity=\'.8\'" onmouseout="this.style.opacity=\'1\'">' +
-          '<i class="fas fa-wand-magic-sparkles" style="margin-right:6px;font-size:.72rem"></i>' +
-          'Regenerate <span style="font-weight:400;opacity:.8">' + _capFirst(_selectedRegen) + '</span>' +
-        '</button>'
-      : '';
-
-    _setTabBody(
-      '<div>' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-          '<span style="font-size:.72rem;color:rgba(255,255,255,0.35)">' +
-            '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
-            _advStems.length + ' stems detected — pick one to regenerate clean' +
-          '</span>' +
-          '<button onclick="window._spResetAdvanced()" style="' +
-              'padding:3px 9px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
-              'background:rgba(255,255,255,.04);color:rgba(255,255,255,.35);font-size:.67rem;cursor:pointer">' +
-            'Reset' +
-          '</button>' +
-        '</div>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:6px">' + chips + '</div>' +
-        regenBtn +
-      '</div>'
-    );
+    _showAdvancedTab();
   }
 
   function _setTabBody(html) {
@@ -3883,12 +3840,15 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       });
       var data = await res.json();
       if (!res.ok) {
-        _showError(data.error || 'Extraction failed');
+        var upgradeMsg = data.upgrade
+          ? (data.error || 'Advanced requires Pro') + ' <a href="/pricing" style="color:#4e9fff;text-decoration:underline">Upgrade →</a>'
+          : (data.error || 'Extraction failed');
+        _showError(upgradeMsg);
         return;
       }
       if (data.status === 'ready' && data.stems && data.stems.length) {
         _advStems = data.stems;
-        _showAdvancedRegenPicker();
+        _renderStemTracks(_advStems, 'advanced');
         return;
       }
       _curTaskId = data.task_id;
@@ -3912,7 +3872,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
           _advStems = data.stems;
-          _showAdvancedRegenPicker();
+          _renderStemTracks(_advStems, 'advanced');
         } else if (data.status === 'error') {
           clearInterval(_pollTimer); _pollTimer = null;
           _showError(data.error || 'Extraction failed');
@@ -3921,13 +3881,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     }, 2500);
   }
 
-  // User picks which stem to regenerate
+  // Legacy: kept for backwards compat
   window._spSelectRegen = function (stemName) {
     _selectedRegen = stemName;
-    _showAdvancedRegenPicker();
   };
 
-  // Reset advanced tab back to phase 1
+  // Reset advanced tab back to Extract button
   window._spResetAdvanced = function () {
     _advStems = [];
     _selectedRegen = null;
@@ -3935,6 +3894,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _playing = false;
     _stems = [];
     _audios = [];
+    _curTaskId = null;
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
     var tracksEl = _panel && _panel.querySelector('#sp-tracks');
     var playbar  = _panel && _panel.querySelector('#sp-playbar');
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
@@ -3942,9 +3903,15 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _showAdvancedTab();
   };
 
-  // Step 2: Regenerate the selected stem via Mureka /v1/track/generate
-  window._spRunRegen = async function () {
-    if (!_jobId || !_selectedRegen) return;
+  // Per-stem regen button: called with the stem name (e.g. 'vocals', 'drums')
+  // Triggers Mureka /v1/track/generate for that specific stem type
+  window._spRunRegen = async function (stemName) {
+    // stemName is passed from the per-row Regen button
+    // Fall back to _selectedRegen for legacy callers
+    var targetStem = stemName || _selectedRegen;
+    if (!_jobId || !targetStem) return;
+    _selectedRegen = targetStem;
+
     _stopAllAudio();
     _playing = false;
     _stems = [];
@@ -3957,13 +3924,13 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
 
-    _showProgress('AI is regenerating ' + _capFirst(_selectedRegen) + '…');
+    _showProgress('AI is regenerating ' + _capFirst(targetStem) + '…');
 
     try {
       var res = await fetch('/api/job/regen-stem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: _jobId, stem_type: _selectedRegen })
+        body: JSON.stringify({ job_id: _jobId, stem_type: targetStem })
       });
       var data = await res.json();
       if (!res.ok) {
@@ -4125,7 +4092,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var isAdv = (mode === 'advanced');
     var regenLabel = isAdv && _selectedRegen ? _capFirst(_selectedRegen) : null;
 
-    // Tab body: status + re-extract/re-regen button + stereo download button
+    // Tab body: status + reset/re-extract button + stereo download button
     _setTabBody(
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
         '<span style="color:rgba(255,255,255,0.35);font-size:.72rem">' +
@@ -4133,14 +4100,18 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           (isAdv && regenLabel
             ? regenLabel + ' regenerated clean'
             : _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted') +
+          (isAdv ? '<span style="margin-left:6px;color:rgba(192,132,252,0.6);font-size:.68rem">· click Regen on any row</span>' : '') +
         '</span>' +
         '<div style="display:flex;align-items:center;gap:6px">' +
           _buildDownloadBtn(mode) +
-          '<button onclick="window._spReExtract(\'' + mode + '\')" style="' +
-              'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
-              'background:rgba(255,255,255,.04);color:rgba(255,255,255,.38);font-size:.68rem;cursor:pointer">' +
-            (isAdv ? 'Re-regen' : 'Re-extract') +
-          '</button>' +
+          (isAdv
+            ? '<button onclick="window._spResetAdvanced()" style="' +
+                'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
+                'background:rgba(255,255,255,.04);color:rgba(255,255,255,.38);font-size:.68rem;cursor:pointer">Reset</button>'
+            : '<button onclick="window._spReExtract(\'' + mode + '\')" style="' +
+                'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,255,255,.1);' +
+                'background:rgba(255,255,255,.04);color:rgba(255,255,255,.38);font-size:.68rem;cursor:pointer">Re-extract</button>'
+          ) +
         '</div>' +
       '</div>'
     );
@@ -4148,7 +4119,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var tracksEl = _panel.querySelector('#sp-tracks');
     if (!tracksEl) return;
     tracksEl.innerHTML = _stems.map(function (s, i) {
-      return _buildTrackRow(s, i);
+      return _buildTrackRow(s, i, isAdv);
     }).join('');
     tracksEl.style.display = 'flex';
 
@@ -4156,11 +4127,25 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _audios = [];
     _stems.forEach(function (s, i) {
       var audio = new Audio();
-      // NOTE: do NOT set crossOrigin — it prevents session cookies from being sent
-      // which causes 401 on the /api/stem-audio route
-      audio.preload = 'auto';
+      // Do NOT set crossOrigin at all — without crossOrigin the browser sends cookies
+      // as a regular same-origin request. Setting crossOrigin='anonymous' blocks cookies.
+      audio.preload = 'metadata';  // 'metadata' not 'auto' — less aggressive, still lets us play
       audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
       _audios.push(audio);
+
+      // Log any load errors so we can diagnose the root cause
+      audio.addEventListener('error', function (e) {
+        var err = audio.error;
+        var code = err ? err.code : '?';
+        var msg = err ? err.message : 'unknown';
+        console.error('[StemPlayer] Audio load error stem=' + s.name + ' code=' + code + ' msg=' + msg + ' src=' + audio.src);
+        // If audio failed to load, try to fetch the URL to see what HTTP status we get
+        fetch(audio.src).then(function(r){
+          if (!r.ok) console.error('[StemPlayer] HTTP ' + r.status + ' for stem ' + s.name + ' — check session/auth');
+          else console.log('[StemPlayer] URL reachable (HTTP ' + r.status + ') for stem ' + s.name);
+        }).catch(function(e2){ console.error('[StemPlayer] fetch check failed:', e2); });
+      });
+
       if (i === 0) {
         audio.addEventListener('loadedmetadata', function () { _updateDuration(audio.duration); });
         audio.addEventListener('timeupdate', function () {
@@ -4292,7 +4277,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   //  TRACK ROW
   // ─────────────────────────────────────────────────────────────────────────
-  function _buildTrackRow(s, i) {
+  function _buildTrackRow(s, i, isAdv) {
     var color = STEM_COLORS[s.name] || STEM_COLORS.default;
     var label = _capFirst(s.name);
     var dlUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
@@ -4306,7 +4291,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       '<div style="width:2.5px;height:28px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>' +
 
       // name
-      '<div style="width:80px;flex-shrink:0;font-size:.74rem;font-weight:600;color:#f1f5f9;' +
+      '<div style="width:72px;flex-shrink:0;font-size:.74rem;font-weight:600;color:#f1f5f9;' +
           'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(label) + '</div>' +
 
       // S button
@@ -4335,15 +4320,26 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       '<input type="range" min="0" max="1" step="0.01" value="1"' +
         ' oninput="window._spVol(' + i + ',parseFloat(this.value))"' +
         ' title="Volume"' +
-        ' style="width:52px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
+        ' style="width:48px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
 
-      // per-stem download
-      '<a href="' + dlUrl + '" download="' + _escHtml(label) + '_stem.wav" title="Download ' + _escHtml(label) + '" style="' +
-          'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
-          'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
-        ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
-        '<i class="fas fa-download"></i>' +
-      '</a>' +
+      // Advanced: per-stem Regen button instead of download icon
+      (isAdv
+        ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(label) + ' clean with AI" style="' +
+              'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
+              'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
+              'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
+              'white-space:nowrap;transition:all .15s;letter-spacing:.01em"' +
+            ' onmouseover="this.style.background=\'rgba(168,85,247,0.25)\';this.style.borderColor=\'rgba(192,132,252,0.6)\'"' +
+            ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
+            '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Regen' +
+          '</button>'
+        : '<a href="' + dlUrl + '" download="' + _escHtml(label) + '_stem.wav" title="Download ' + _escHtml(label) + '" style="' +
+              'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
+              'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
+            ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
+            '<i class="fas fa-download"></i>' +
+          '</a>'
+      ) +
 
     '</div>';
   }
@@ -4385,26 +4381,46 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       _audios.forEach(function (a) { try { a.pause(); } catch(e){} });
       _playing = false;
       _updatePlayIcon();
-    } else {
-      // FIX: sync ALL tracks to track 0 time (including track 0 itself stays put)
-      var refTime = (_audios[0] && !isNaN(_audios[0].currentTime)) ? _audios[0].currentTime : 0;
-      _audios.forEach(function (a, i) {
-        if (i > 0) { try { a.currentTime = refTime; } catch(e){} }
-      });
-      // FIX: play individually, don't wait for all — some may be in error state
-      var anyPlaying = false;
-      _audios.forEach(function (a) {
-        if (a.src && a.src !== window.location.href) {
-          var p = a.play();
-          if (p && p.catch) p.catch(function(e){ console.warn('stem play failed:', e.message); });
-          anyPlaying = true;
-        }
-      });
-      if (anyPlaying) {
-        _playing = true;
-        _updatePlayIcon();
-      }
+      return;
     }
+    // Sync all tracks to track 0 time before playing
+    var refTime = (_audios[0] && !isNaN(_audios[0].currentTime)) ? _audios[0].currentTime : 0;
+    _audios.forEach(function (a, i) {
+      if (i > 0) { try { a.currentTime = refTime; } catch(e){} }
+    });
+    // Collect all play() promises
+    var promises = [];
+    _audios.forEach(function (a) {
+      // Only try to play if we have a real src (not empty or about:blank)
+      var src = a.src || '';
+      if (src && src.indexOf('/api/stem-audio/') !== -1) {
+        var p = a.play();
+        if (p) promises.push(p);
+      }
+    });
+    if (promises.length === 0) {
+      console.warn('[StemPlayer] No playable audio sources found');
+      return;
+    }
+    // Optimistically update UI immediately — revert if all fail
+    _playing = true;
+    _updatePlayIcon();
+    // Track failures — if EVERY stem fails, revert playing state
+    var failCount = 0;
+    promises.forEach(function (p) {
+      if (p && p.catch) {
+        p.catch(function (e) {
+          failCount++;
+          console.warn('[StemPlayer] play() rejected:', e.name, e.message);
+          if (failCount === promises.length) {
+            // All failed — revert
+            _playing = false;
+            _updatePlayIcon();
+            console.error('[StemPlayer] ALL stems failed to play. Check browser console for onerror details.');
+          }
+        });
+      }
+    });
   };
 
   window._spSeek = function (e) {

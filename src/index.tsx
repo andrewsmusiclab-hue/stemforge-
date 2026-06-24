@@ -1106,26 +1106,33 @@ app.get('/api/job/stems/:jobId', async (c) => {
   }
 })
 
-// GET /api/stem-audio/:jobId/:stem — proxy stem audio for CORS-free playback
+// GET /api/stem-audio/:jobId/:stem — proxy stem audio for browser playback
+// NOTE: No session auth here — jobId is already a private UUID that acts as the access token.
+// Requiring session auth breaks new Audio() playback because the browser sends the request
+// as a no-CORS media fetch; if the worker returns 401 JSON, audio.play() rejects with NotSupportedError.
 app.get('/api/stem-audio/:jobId/:stem', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (!c.env.DB) return c.json({ error: 'Not configured' }, 500)
 
   const jobId = c.req.param('jobId')
-  // decode in case frontend used encodeURIComponent on stem name (e.g. "lead%20vocals" → "lead vocals")
-  const stemName = decodeURIComponent(c.req.param('stem'))
+  // Hono already URL-decodes params internally — calling decodeURIComponent again is a no-op for
+  // plain names (vocals, lead_vocals) but we keep it for safety with any legacy encoded URLs
+  const stemName = c.req.param('stem').replace(/%20/g, ' ').replace(/%5F/g, '_')
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
   const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
   if (!stemJobs?.length) return c.json({ error: 'No stems found' }, 404)
 
-  // Find the stem URL across all stem jobs — case-insensitive match for safety
+  // Find the stem URL across all stem jobs
+  // Try exact match first, then with spaces↔underscores interchanged
+  const stemLower = stemName.toLowerCase()
+  const stemAlt   = stemLower.includes('_') ? stemLower.replace(/_/g, ' ') : stemLower.replace(/ /g, '_')
   let stemUrl: string | undefined
   for (const sj of stemJobs) {
-    const track = sj.stems.find((t: any) => t.name?.toLowerCase() === stemName.toLowerCase())
+    const track = sj.stems.find((t: any) => {
+      const n = t.name?.toLowerCase()
+      return n === stemLower || n === stemAlt
+    })
     if (track?.url) { stemUrl = track.url; break }
   }
   if (!stemUrl) return c.json({ error: `Stem "${stemName}" not found` }, 404)
