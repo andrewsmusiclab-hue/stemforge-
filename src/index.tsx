@@ -1151,6 +1151,7 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       const compSize   = parseInt(parts[2], 10)
       // parts[3] = fileName, parts[4] = compMethod (0=store,8=deflate), parts[5] = uncompSize
       const compMethod = parts[4] !== undefined ? parseInt(parts[4], 10) : -1  // -1 = unknown (legacy)
+      const uncompSize = parts[5] !== undefined ? parseInt(parts[5], 10) : 0   // 0 = unknown (legacy)
 
       // Read the local file header (30 bytes minimum) to find exact data offset
       // Local header layout: sig(4) ver(2) gpflag(2) method(2) modtime(4) crc(4)
@@ -1189,13 +1190,22 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
         responseBody = responseBody.pipeThrough(ds)
       }
 
-      return new Response(responseBody, {
-        headers: {
-          'Content-Type': 'audio/wav',
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=3600'
-        }
-      })
+      // Build response headers — include Content-Length so the browser can
+      // determine audio.duration.  For deflated entries we use uncompSize
+      // (the decompressed size stored in the zip-entry URL); for stored entries
+      // we use compSize directly.
+      const responseHeaders: Record<string, string> = {
+        'Content-Type': 'audio/wav',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600',
+      }
+      if (localCompMethod === 8 && uncompSize > 0) {
+        responseHeaders['Content-Length'] = String(uncompSize)
+      } else if (localCompMethod !== 8 && compSize > 0) {
+        responseHeaders['Content-Length'] = String(compSize)
+      }
+
+      return new Response(responseBody, { headers: responseHeaders })
     }
 
     const upstream = await fetch(stemUrl)

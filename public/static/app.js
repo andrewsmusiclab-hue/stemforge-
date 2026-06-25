@@ -3516,6 +3516,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   var _stems        = [];
   var _audios       = [];
   var _playing      = false;
+  var _playPending  = false;    // true while play() promises are in-flight (prevents AbortError)
   var _pollTimer    = null;
   var _curTaskId    = null;
   var _rafId        = null;     // requestAnimationFrame id for timeline loop
@@ -4195,7 +4196,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _rafId = null;
     if (!_panel || !_audios.length) return;
     var a = _audios[0];
-    if (a && !isNaN(a.duration) && a.duration > 0) {
+    if (a && !isNaN(a.duration) && isFinite(a.duration) && a.duration > 0) {
       _updateTimeline(a.currentTime, a.duration);
     }
     // Keep looping while playing OR during a post-seek burst
@@ -4275,28 +4276,34 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
   window._spToggleDlMenu = function (e) {
     var menu = _panel && _panel.querySelector('#sp-dl-menu');
+    if (!menu) {
+      // menu might be appended to body (for overflow escape) — search there too
+      menu = document.getElementById('sp-dl-menu');
+    }
     if (!menu) return;
     var isOpen = menu.style.display !== 'none';
     if (isOpen) {
       menu.style.display = 'none';
       return;
     }
-    // Position the menu using fixed coords from the button's bounding rect
-    // so it escapes the card's overflow:hidden
-    var btn = e && e.currentTarget ? e.currentTarget : (e && e.target ? e.target : null);
+    // Use closest('button') so clicking the icon inside the button still works
+    var btn = e && e.target ? e.target.closest('button') : null;
     if (!btn) btn = _panel && _panel.querySelector('#sp-dl-wrap button');
     if (btn) {
       var rect = btn.getBoundingClientRect();
       menu.style.top    = (rect.bottom + 4) + 'px';
       menu.style.right  = 'auto';
-      menu.style.left   = Math.max(0, rect.right - 150) + 'px';
+      menu.style.left   = Math.max(0, rect.right - 160) + 'px';
     }
     menu.style.display = 'block';
-    // Close on outside click
+    // Close on outside click (next tick so this click doesn't immediately close it)
     setTimeout(function () {
       document.addEventListener('click', function closeDl(ev) {
         var wrap = _panel && _panel.querySelector('#sp-dl-wrap');
-        if (!wrap || !wrap.contains(ev.target)) {
+        var bodyMenu = document.getElementById('sp-dl-menu');
+        var clickedInside = (wrap && wrap.contains(ev.target)) ||
+                            (bodyMenu && bodyMenu.contains(ev.target));
+        if (!clickedInside) {
           if (menu) menu.style.display = 'none';
           document.removeEventListener('click', closeDl);
         }
@@ -4420,12 +4427,17 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   window._spPlay = function () {
     if (!_audios.length) return;
     if (_playing) {
+      // Pause — cancel any in-flight play() to avoid AbortError
+      _playPending = false;
       _audios.forEach(function (a) { try { a.pause(); } catch(e){} });
       _playing = false;
       _updatePlayIcon();
       _stopRaf();
       return;
     }
+    // Guard: if a play() is still resolving, ignore rapid re-clicks
+    if (_playPending) return;
+    _playPending = true;
     // Sync all tracks to track 0 time before playing
     var refTime = (_audios[0] && !isNaN(_audios[0].currentTime)) ? _audios[0].currentTime : 0;
     _audios.forEach(function (a, i) {
@@ -4442,6 +4454,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       }
     });
     if (promises.length === 0) {
+      _playPending = false;
       console.warn('[StemPlayer] No playable audio sources found');
       return;
     }
@@ -4449,12 +4462,21 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _playing = true;
     _updatePlayIcon();
     _startRaf();  // start the rAF timeline loop
-    // Track failures — if EVERY stem fails, revert playing state
+    // Track resolutions — clear _playPending once at least one resolves
+    var settled = false;
     var failCount = 0;
     promises.forEach(function (p) {
+      if (p && p.then) {
+        p.then(function () {
+          if (!settled) { settled = true; _playPending = false; }
+        });
+      }
       if (p && p.catch) {
         p.catch(function (e) {
           failCount++;
+          if (!settled) { settled = true; _playPending = false; }
+          // Suppress expected AbortError when pause() races play()
+          if (e && e.name === 'AbortError') return;
           console.warn('[StemPlayer] play() rejected:', e.name, e.message);
           if (failCount === promises.length) {
             // All failed — revert
@@ -4626,7 +4648,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  TIMELINE UI
   // ─────────────────────────────────────────────────────────────────────────
   function _updateTimeline(cur, dur) {
-    if (!dur || isNaN(dur)) return;
+    if (!dur || isNaN(dur) || !isFinite(dur)) return;
     var pct = (cur / dur * 100).toFixed(2);
     var fill  = _panel && _panel.querySelector('#sp-timeline-fill');
     var thumb = _panel && _panel.querySelector('#sp-timeline-thumb');
@@ -4657,6 +4679,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   function _stopAllAudio() {
     _stopRaf();
+    _playPending = false;
     _audios.forEach(function (a) { try { a.pause(); a.src = ''; } catch (e) {} });
     _audios = [];
   }
@@ -4693,3 +4716,152 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
 }()); // end stem player IIFE
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  EDIT SONG — Save Changes
+//  Called by the "Save changes" button in the song-edit-modal.
+//  Reads all form fields and POSTs to /api/job/update.
+// ═══════════════════════════════════════════════════════════════════════════
+window.saveSongEdit = function () {
+  var jobId = (document.getElementById('edit-job-id') || {}).value;
+  if (!jobId) {
+    alert('No track selected.');
+    return;
+  }
+
+  var title       = (document.getElementById('edit-title')       || {}).value || '';
+  var lyrics      = (document.getElementById('edit-lyrics')      || {}).value || '';
+  var bpm         = (document.getElementById('edit-bpm')         || {}).value || '';
+  var genre       = (document.getElementById('edit-genre')       || {}).value || '';
+  var description = (document.getElementById('edit-description') || {}).value || '';
+
+  var btn = document.getElementById('edit-save-btn');
+  var origHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…';
+  }
+
+  fetch('/api/job/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: jobId, title: title, lyrics: lyrics, bpm: bpm, genre: genre, description: description })
+  })
+  .then(function (r) { return r.json(); })
+  .then(function (data) {
+    if (data.ok) {
+      if (btn) {
+        btn.innerHTML = '<i class="fas fa-check"></i> Saved!';
+        btn.style.background = 'rgba(34,197,94,.18)';
+        btn.style.borderColor = '#22c55e';
+        btn.style.color = '#22c55e';
+        setTimeout(function () {
+          if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = origHtml;
+            btn.style.background = '';
+            btn.style.borderColor = '';
+            btn.style.color = '';
+          }
+        }, 1800);
+      }
+      // Update the in-memory cache so cards re-render with the new title
+      if (window._sfProjects && window._sfProjects[jobId]) {
+        window._sfProjects[jobId].title = title;
+        if (window._sfProjects[jobId].blueprint) {
+          if (bpm) window._sfProjects[jobId].blueprint.bpm = parseInt(bpm, 10);
+          if (genre) window._sfProjects[jobId].blueprint.genre = genre;
+          if (description) window._sfProjects[jobId].blueprint.arrangement = description;
+        }
+        window._sfProjects[jobId].user_lyrics = lyrics;
+      }
+      // Close modal after short delay
+      setTimeout(function () { if (window.closeSongEditModal) window.closeSongEditModal(); }, 1200);
+    } else {
+      alert(data.error || 'Save failed. Please try again.');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = origHtml;
+      }
+    }
+  })
+  .catch(function (err) {
+    console.error('[saveSongEdit] error:', err);
+    alert('Network error. Please try again.');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origHtml;
+    }
+  });
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  EDIT SONG — Instrument Pills (enhanced)
+//  Overrides the existing renderEditInstrumentPills from app_base_final.js
+//  to handle both bp.instruments_include (strings) and bp.instruments (objects)
+//  so all tracks — past and future — show their instruments as highlighted pills.
+// ═══════════════════════════════════════════════════════════════════════════
+window.renderEditInstrumentPills = function (bp) {
+  var group     = document.getElementById('edit-instruments-group');
+  var container = document.getElementById('edit-blueprint-pills');
+  if (!group || !container) return;
+
+  // Collect instruments from either field
+  var pills = [];
+
+  // 1. bp.instruments — array of {family, name} objects (from GPT blueprint)
+  if (bp && bp.instruments && bp.instruments.length > 0) {
+    bp.instruments.forEach(function (ins) {
+      pills.push({ name: typeof ins === 'object' ? ins.name : ins,
+                   family: typeof ins === 'object' ? ins.family : null });
+    });
+  }
+
+  // 2. bp.instruments_include — array of strings (from user form input)
+  if (bp && bp.instruments_include && bp.instruments_include.length > 0) {
+    // Merge: only add entries not already covered by bp.instruments
+    var existingNames = pills.map(function (p) { return (p.name || '').toLowerCase(); });
+    bp.instruments_include.forEach(function (ins) {
+      var name = typeof ins === 'object' ? ins.name : ins;
+      if (existingNames.indexOf((name || '').toLowerCase()) === -1) {
+        pills.push({ name: name, family: null });
+      }
+    });
+  }
+
+  if (pills.length === 0) {
+    group.style.display = 'none';
+    return;
+  }
+
+  var familyIconMap = {
+    drums: 'fa-drum', bass: 'fa-guitar', keys: 'fa-keyboard',
+    guitar: 'fa-guitar', strings: 'fa-music', brass: 'fa-music',
+    woodwind: 'fa-music', synth: 'fa-wave-square', fx: 'fa-wand-magic-sparkles',
+    vocals: 'fa-microphone', default: 'fa-music'
+  };
+
+  container.innerHTML = '';
+  pills.forEach(function (pill) {
+    var name   = pill.name || '';
+    var family = pill.family;
+    if (!family) {
+      var lower = name.toLowerCase();
+      if (lower.includes('kick') || lower.includes('snare') || lower.includes('drum') || lower.includes('hi-hat') || lower.includes('hat')) family = 'drums';
+      else if (lower.includes('bass')) family = 'bass';
+      else if (lower.includes('synth') || lower.includes('pad')) family = 'synth';
+      else if (lower.includes('guitar')) family = 'guitar';
+      else if (lower.includes('piano') || lower.includes('key') || lower.includes('rhodes')) family = 'keys';
+      else if (lower.includes('vocal') || lower.includes('chop')) family = 'vocals';
+      else if (lower.includes('fx') || lower.includes('effect')) family = 'fx';
+      else family = 'default';
+    }
+    var icon = familyIconMap[family] || familyIconMap.default;
+    var el = document.createElement('span');
+    el.className = 'blueprint-pill blueprint-pill--instr';
+    el.innerHTML = '<i class="fas ' + icon + '"></i> ' + name;
+    container.appendChild(el);
+  });
+
+  group.style.display = '';
+};
