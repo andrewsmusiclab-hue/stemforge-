@@ -2502,10 +2502,15 @@ app.post('/api/job/extend-upload', async (c) => {
     // Call Mureka song/extend using the already-uploaded audio ID
     const extendBody: Record<string, any> = {
       upload_audio_id: upload_audio_id,
-      prompt: 'maintain same tempo, timing, and rhythmic groove as the original track, seamless continuation'
+      prompt: 'analyze the track, match its style, tempo, and mood, create a seamless continuation'
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
-    if (lyrics && lyrics.trim()) extendBody.lyrics = lyrics.trim()
+    // If lyrics provided use them; if blank, ask Mureka to analyze the track and generate matching lyrics
+    if (lyrics && lyrics.trim()) {
+      extendBody.lyrics = lyrics.trim()
+    } else {
+      extendBody.lyrics = '[analyze this track, identify the vocal style and theme, then write and sing matching continuation lyrics that fit the genre, mood, and energy of the original]'
+    }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -2616,11 +2621,15 @@ app.post('/api/job/extend', async (c) => {
     // Step 2: Call Mureka song/extend — always preserve the original timing/BPM
     const extendBody: Record<string, any> = {
       upload_audio_id: uploadAudioId,
-      // Keep same tempo and rhythmic feel as the source track
-      prompt: 'maintain same tempo, timing, and rhythmic groove as the original track, seamless continuation'
+      prompt: 'analyze the track, match its style, tempo, and mood, create a seamless continuation'
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
-    if (lyrics && lyrics.trim()) extendBody.lyrics = lyrics.trim()
+    // If lyrics provided use them; if blank, ask Mureka to analyze and generate matching lyrics
+    if (lyrics && lyrics.trim()) {
+      extendBody.lyrics = lyrics.trim()
+    } else {
+      extendBody.lyrics = '[analyze this track, identify the vocal style and theme, then write and sing matching continuation lyrics that fit the genre, mood, and energy of the original]'
+    }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -3447,6 +3456,38 @@ app.post('/api/generate-lyrics', async (c) => {
   const lyrics = data.choices?.[0]?.message?.content?.trim()
   if (!lyrics) return c.json({ error: 'No lyrics generated' }, 500)
   return c.json({ lyrics })
+})
+
+// POST /api/upload-extend-audio — upload audio for Song Extend (purpose: audio, full file)
+// Does NOT clip — Mureka's extend API needs the full track, not a 30s clip
+app.post('/api/upload-extend-audio', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+
+  const formData = await c.req.formData()
+  const file = formData.get('file') as File | null
+  if (!file) return c.json({ error: 'No file provided' }, 400)
+
+  const mForm = new FormData()
+  mForm.append('purpose', 'audio')   // ← must be 'audio' for song/extend
+  mForm.append('file', file)
+
+  const res = await fetch(`${MUREKA_BASE}/files/upload`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+    body: mForm
+  })
+
+  if (!res.ok) {
+    let errMsg = `Mureka upload error ${res.status}`
+    try { const e = await res.json() as any; errMsg = e?.error?.message || e?.message || errMsg } catch {}
+    return c.json({ error: errMsg }, 502)
+  }
+
+  const data = await res.json() as any
+  return c.json({ ok: true, file_id: data.id, filename: file.name, duration: data.duration || null })
 })
 
 // POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
@@ -5023,10 +5064,10 @@ function generatorPage() {
     <button class="creator-popup__close" onclick="closeCreatorPopup('extend')"><i class="fas fa-times"></i></button>
   </div>
   <div class="creator-popup__body">
-    <!-- Step 1: Upload a track to extend -->
+
+    <!-- Step 1: Upload -->
     <div id="ext-step-pick" style="display:block">
       <label class="suno-option-label" style="margin-bottom:10px">Upload a track to extend</label>
-      <!-- Upload zone -->
       <div class="ref-upload-zone" id="ext-upload-zone" onclick="document.getElementById('ext-audio-file').click()" style="cursor:pointer">
         <input type="file" id="ext-audio-file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/flac,audio/*" style="display:none" onchange="extHandleFileSelect(this)"/>
         <div id="ext-upload-idle" style="display:flex;flex-direction:column;align-items:center">
@@ -5041,46 +5082,67 @@ function generatorPage() {
         <div id="ext-upload-done" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
           <p style="margin:0;font-weight:600;font-size:.85rem" id="ext-upload-name">track.mp3</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem">Ready to extend</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem">Ready — scrub below to set extend point</p>
         </div>
       </div>
       <div id="ext-upload-error" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:.8rem;color:#f87171;text-align:center"></div>
       <button id="ext-upload-next-btn" onclick="extGoToOptions()" class="btn btn--primary" style="width:100%;margin-top:12px;padding:10px;font-size:.88rem;font-weight:700;display:none">
-        <i class="fas fa-arrow-right"></i> Next: Set Extend Options
+        <i class="fas fa-arrow-right"></i> Next: Pick Extend Point
       </button>
     </div>
-    <!-- Step 2: Extend options (shown after picking a track) -->
-    <div id="ext-step-options" style="display:none;margin-top:14px">
-      <div id="ext-selected-track" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(78,159,255,.35);border-radius:10px;margin-bottom:14px">
-        <div id="ext-sel-cover" style="width:40px;height:40px;border-radius:8px;background:var(--surface-2);flex-shrink:0;overflow:hidden">
-          <img id="ext-sel-cover-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none"/>
-          <div id="ext-sel-cover-icon" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:1rem"><i class="fas fa-music"></i></div>
+
+    <!-- Step 2: Scrubber + lyrics + submit -->
+    <div id="ext-step-options" style="display:none;margin-top:2px">
+
+      <!-- Track name + change button -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          <i class="fas fa-music" style="color:var(--primary);font-size:.9rem;flex-shrink:0"></i>
+          <span id="ext-sel-title" style="font-size:.85rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</span>
         </div>
-        <div style="flex:1;min-width:0">
-          <div id="ext-sel-title" style="font-size:.88rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
-          <div id="ext-sel-meta" style="font-size:.75rem;color:var(--muted)">—</div>
-        </div>
-        <button onclick="extResetUpload()" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 6px;border-radius:6px;font-size:.78rem"><i class="fas fa-times"></i> Change</button>
+        <button onclick="extResetUpload()" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 8px;border-radius:6px;font-size:.78rem;flex-shrink:0;white-space:nowrap"><i class="fas fa-times"></i> Change</button>
       </div>
-      <label class="suno-option-label" style="margin-bottom:6px">Extend at</label>
-      <div style="display:flex;gap:8px;margin-bottom:14px">
-        <button class="ref-bar-btn ref-bar-btn--active" data-ext="end" onclick="selectExtPoint(this,'end')">End of track</button>
-        <button class="ref-bar-btn" data-ext="half" onclick="selectExtPoint(this,'half')">Midpoint</button>
-        <button class="ref-bar-btn" data-ext="custom" onclick="selectExtPoint(this,'custom')">Custom time</button>
+
+      <!-- Extend-at label + live timestamp badge -->
+      <label class="suno-option-label" style="margin-bottom:6px">
+        Extend from
+        <span id="ext-time-badge" style="margin-left:8px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.35);border-radius:6px;padding:2px 8px;font-size:.78rem;font-weight:700;color:var(--primary);letter-spacing:.02em">0:00</span>
+      </label>
+
+      <!-- Hidden audio element for scrubbing -->
+      <audio id="ext-preview-audio" preload="metadata" style="display:none"></audio>
+
+      <!-- Waveform-style scrubber track -->
+      <div id="ext-scrubber-wrap" style="position:relative;margin-bottom:6px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,.04);border:1px solid var(--border);cursor:pointer" onclick="extScrubClick(event,this)">
+        <!-- Progress fill -->
+        <div id="ext-scrubber-fill" style="position:absolute;left:0;top:0;height:100%;background:rgba(78,159,255,.25);pointer-events:none;transition:width .05s linear;width:0%"></div>
+        <!-- Canvas waveform -->
+        <canvas id="ext-waveform-canvas" height="54" style="width:100%;display:block;position:relative;z-index:1"></canvas>
+        <!-- Playhead line -->
+        <div id="ext-playhead" style="position:absolute;top:0;width:2px;height:100%;background:var(--primary);pointer-events:none;left:0%;z-index:2;border-radius:1px"></div>
+        <!-- Time tooltip -->
+        <div id="ext-scrub-tooltip" style="position:absolute;top:4px;background:rgba(0,0,0,.75);color:#fff;font-size:.7rem;padding:2px 6px;border-radius:4px;pointer-events:none;display:none;z-index:3;transform:translateX(-50%)">0:00</div>
       </div>
-      <div id="ext-custom-ms" style="display:none;margin-bottom:14px">
-        <input type="text" id="ext-custom-ms-val" placeholder="e.g. 1:52 or 0:52"
-          style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.9rem"
-          oninput="extFormatTimeInput(this)"/>
-        <p style="color:var(--muted);font-size:.75rem;margin:4px 0 0"><i class="fas fa-info-circle" style="margin-right:3px"></i>Enter playback time as m:ss — e.g. 1:52 means 1 min 52 sec</p>
+
+      <!-- Play/pause + duration display -->
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <button id="ext-play-btn" onclick="extTogglePlay()" style="background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);border-radius:8px;padding:5px 14px;color:var(--primary);cursor:pointer;font-size:.82rem;display:flex;align-items:center;gap:6px">
+          <i class="fas fa-play" id="ext-play-icon"></i> <span id="ext-play-label">Play</span>
+        </button>
+        <span style="font-size:.78rem;color:var(--muted)">Drag scrubber to set the extend start point</span>
+        <span id="ext-duration-label" style="margin-left:auto;font-size:.78rem;color:var(--muted);white-space:nowrap">—</span>
       </div>
-      <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Add continuation lyrics here, or leave blank for instrumental extension…" style="margin-bottom:12px"></textarea>
+
+      <!-- Lyrics -->
+      <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional — leave blank to auto-generate)</span></label>
+      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Leave blank and Mureka will analyze your track and write matching continuation lyrics automatically…" style="margin-bottom:12px"></textarea>
+
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
       </button>
       <div id="ext-submit-status" style="display:none;margin-top:10px;text-align:center;font-size:.82rem;color:var(--muted)"></div>
     </div>
+
   </div>
 </div>
 

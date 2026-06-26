@@ -4906,17 +4906,17 @@ window.renderEditInstrumentPills = function (bp) {
   group.style.display = '';
 };
 
-// ══ Song Extend — Upload-based override ════════════════════════════════════
-// Replaces the library picker with a direct file upload workflow.
-// ext-step-pick now shows a drag-drop zone; ext-step-options shows extend
-// settings. submitSongExtendUpload() posts to /api/job/extend-upload.
-
+// ══ Song Extend — Upload-based workflow with waveform scrubber ═══════════════
 (function initExtendUpload() {
-  var extUploadAudioId = null;  // Mureka upload_audio_id after successful upload
-  var extUploadTitle   = '';    // filename without extension, used as track title
-  var extPoint         = 'end'; // 'end' | 'half' | 'custom'
+  var extUploadAudioId = null;  // Mureka upload_audio_id (purpose=audio)
+  var extUploadTitle   = '';    // filename (no extension)
+  var extExtendAtMs    = 0;     // current scrubber position in ms
+  var extAudioDuration = 0;     // total track duration in seconds
+  var extIsPlaying     = false;
+  var extRafId         = null;  // requestAnimationFrame id for playhead updates
+  var extWaveData      = null;  // Float32Array of normalised peak amplitudes
 
-  // ── Drag-and-drop on the upload zone ──────────────────────────────────────
+  // ── Drag-and-drop on upload zone ──────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', function () {
     var zone = document.getElementById('ext-upload-zone');
     if (!zone) return;
@@ -4936,14 +4936,30 @@ window.renderEditInstrumentPills = function (bp) {
       var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (file) extUploadFile(file);
     });
+
+    // Scrubber: mouse/touch drag on the scrubber wrap
+    var wrap = document.getElementById('ext-scrubber-wrap');
+    if (wrap) {
+      wrap.addEventListener('mousemove', function(e) { extScrubHover(e, wrap); });
+      wrap.addEventListener('mouseleave', function() {
+        var tt = document.getElementById('ext-scrub-tooltip');
+        if (tt) tt.style.display = 'none';
+      });
+      // Touch scrub
+      wrap.addEventListener('touchmove', function(e) {
+        e.preventDefault();
+        extScrubClick(e.touches[0], wrap);
+      }, { passive: false });
+    }
   });
 
-  // ── Called by the file input onchange ─────────────────────────────────────
-  window.extHandleFileSelect = function (input) {
+  // ── Called by file input onchange ─────────────────────────────────────────
+  window.extHandleFileSelect = function(input) {
     var file = input && input.files && input.files[0];
     if (file) extUploadFile(file);
   };
 
+  // ── State helpers ─────────────────────────────────────────────────────────
   function setExtZoneState(state, filename) {
     var idle    = document.getElementById('ext-upload-idle');
     var loading = document.getElementById('ext-upload-loading');
@@ -4959,119 +4975,263 @@ window.renderEditInstrumentPills = function (bp) {
     if (nextBtn) nextBtn.style.display = (state === 'done') ? 'block' : 'none';
   }
 
+  // ── Upload file to /api/upload-extend-audio (purpose=audio) ──────────────
   function extUploadFile(file) {
     var errEl = document.getElementById('ext-upload-error');
     if (errEl) errEl.style.display = 'none';
     setExtZoneState('loading');
     var name = file.name || 'track';
-    extUploadTitle = name.replace(/\.[^.]+$/, ''); // strip extension
+    extUploadTitle = name.replace(/\.[^.]+$/, '');
 
     var fd = new FormData();
     fd.append('file', file);
-    fd.append('purpose', 'audio'); // use 'audio' purpose for extend
 
-    // We upload via the existing reference upload endpoint but with purpose=audio
-    // Actually we upload to /api/upload-extend-audio which accepts FormData + purpose
-    // Use /api/upload-reference since it already forwards to Mureka /files/upload
-    // and returns file_id — we just set purpose to 'audio' server-side isn't needed
-    // because Mureka's extend accepts any upload_audio_id regardless of purpose.
-    // So we POST directly to /api/upload-reference (which always uses purpose='reference')
-    // OR we create a new lightweight fetch to Mureka's upload — but we can't expose
-    // the API key. Use /api/upload-reference and get back file_id.
-    fetch('/api/upload-reference', {
-      method: 'POST',
-      body: fd
-    })
-    .then(function (r) { return r.json(); })
-    .then(function (data) {
-      if (data.error) throw new Error(data.error);
-      extUploadAudioId = data.file_id;
-      setExtZoneState('done', name);
-    })
-    .catch(function (err) {
-      setExtZoneState('idle');
-      if (errEl) {
-        errEl.textContent = 'Upload failed: ' + (err.message || 'Unknown error');
-        errEl.style.display = 'block';
-      }
-    });
+    fetch('/api/upload-extend-audio', { method: 'POST', body: fd })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) throw new Error(data.error);
+        extUploadAudioId = data.file_id;
+        setExtZoneState('done', name);
+        // Load the local file into the hidden audio element for scrubbing
+        var audio = document.getElementById('ext-preview-audio');
+        if (audio) {
+          var url = URL.createObjectURL(file);
+          audio.src = url;
+          audio.onloadedmetadata = function() {
+            extAudioDuration = audio.duration;
+            extExtendAtMs = 0;
+            var durLabel = document.getElementById('ext-duration-label');
+            if (durLabel) durLabel.textContent = extFmtTime(extAudioDuration);
+            extDrawWaveform(file);
+          };
+        }
+      })
+      .catch(function(err) {
+        setExtZoneState('idle');
+        if (errEl) {
+          errEl.textContent = 'Upload failed: ' + (err.message || 'Unknown error');
+          errEl.style.display = 'block';
+        }
+      });
   }
 
-  // ── "Next" button — switch to options panel ────────────────────────────────
-  window.extGoToOptions = function () {
+  // ── Draw waveform on canvas using Web Audio API ───────────────────────────
+  function extDrawWaveform(file) {
+    var canvas = document.getElementById('ext-waveform-canvas');
+    if (!canvas || !window.AudioContext && !window.webkitAudioContext) {
+      extDrawFlatWaveform();
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx.decodeAudioData(e.target.result, function(buffer) {
+        // Downsample to canvas width for peaks
+        var W = canvas.offsetWidth || 300;
+        canvas.width = W * window.devicePixelRatio || W;
+        var data = buffer.getChannelData(0);
+        var step = Math.floor(data.length / W);
+        var peaks = new Float32Array(W);
+        for (var i = 0; i < W; i++) {
+          var max = 0;
+          for (var j = 0; j < step; j++) {
+            var v = Math.abs(data[i * step + j]);
+            if (v > max) max = v;
+          }
+          peaks[i] = max;
+        }
+        extWaveData = peaks;
+        extPaintWaveform(0);
+        ctx.close();
+      }, function() { extDrawFlatWaveform(); });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function extDrawFlatWaveform() {
+    var canvas = document.getElementById('ext-waveform-canvas');
+    if (!canvas) return;
+    var W = canvas.offsetWidth || 300;
+    canvas.width = W;
+    var peaks = new Float32Array(W);
+    for (var i = 0; i < W; i++) peaks[i] = 0.3 + 0.5 * Math.random();
+    extWaveData = peaks;
+    extPaintWaveform(0);
+  }
+
+  function extPaintWaveform(progress) {
+    var canvas = document.getElementById('ext-waveform-canvas');
+    if (!canvas || !extWaveData) return;
+    var W = canvas.width;
+    var H = canvas.height;
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    var split = Math.floor(progress * W);
+    for (var i = 0; i < extWaveData.length; i++) {
+      var amp = extWaveData[i];
+      var barH = Math.max(3, amp * H * 0.85);
+      var x = Math.floor((i / extWaveData.length) * W);
+      ctx.fillStyle = (i < split)
+        ? 'rgba(78,159,255,0.85)'
+        : 'rgba(255,255,255,0.18)';
+      ctx.fillRect(x, (H - barH) / 2, Math.max(1, W / extWaveData.length - 1), barH);
+    }
+  }
+
+  // ── Scrubber interactions ─────────────────────────────────────────────────
+  window.extScrubClick = function(e, wrap) {
+    if (!extAudioDuration) return;
+    var rect = (wrap || document.getElementById('ext-scrubber-wrap')).getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    extExtendAtMs = Math.round(pct * extAudioDuration * 1000);
+    extUpdateScrubberUI(pct);
+    // Seek the audio element
+    var audio = document.getElementById('ext-preview-audio');
+    if (audio && extAudioDuration) audio.currentTime = pct * extAudioDuration;
+  };
+
+  function extScrubHover(e, wrap) {
+    if (!extAudioDuration) return;
+    var rect = wrap.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    var tt   = document.getElementById('ext-scrub-tooltip');
+    if (tt) {
+      tt.style.display = 'block';
+      tt.style.left    = (pct * 100) + '%';
+      tt.textContent   = extFmtTime(pct * extAudioDuration);
+    }
+  }
+
+  function extUpdateScrubberUI(pct) {
+    var fill = document.getElementById('ext-scrubber-fill');
+    var head = document.getElementById('ext-playhead');
+    var badge = document.getElementById('ext-time-badge');
+    if (fill)  fill.style.width  = (pct * 100) + '%';
+    if (head)  head.style.left   = (pct * 100) + '%';
+    if (badge) badge.textContent = extFmtTime(extExtendAtMs / 1000);
+    extPaintWaveform(pct);
+  }
+
+  // ── Play / pause ──────────────────────────────────────────────────────────
+  window.extTogglePlay = function() {
+    var audio = document.getElementById('ext-preview-audio');
+    if (!audio || !extAudioDuration) return;
+    if (extIsPlaying) {
+      audio.pause();
+    } else {
+      audio.play();
+    }
+  };
+
+  // Wire up audio events once (via delegation)
+  document.addEventListener('DOMContentLoaded', function() {
+    var audio = document.getElementById('ext-preview-audio');
+    if (!audio) return;
+    audio.onplay = function() {
+      extIsPlaying = true;
+      var icon = document.getElementById('ext-play-icon');
+      var label = document.getElementById('ext-play-label');
+      if (icon) icon.className = 'fas fa-pause';
+      if (label) label.textContent = 'Pause';
+      extRafLoop();
+    };
+    audio.onpause = audio.onended = function() {
+      extIsPlaying = false;
+      var icon = document.getElementById('ext-play-icon');
+      var label = document.getElementById('ext-play-label');
+      if (icon) icon.className = 'fas fa-play';
+      if (label) label.textContent = 'Play';
+      if (extRafId) { cancelAnimationFrame(extRafId); extRafId = null; }
+    };
+  });
+
+  function extRafLoop() {
+    var audio = document.getElementById('ext-preview-audio');
+    if (!audio || !extAudioDuration) return;
+    var pct = audio.currentTime / extAudioDuration;
+    extExtendAtMs = Math.round(audio.currentTime * 1000);
+    extUpdateScrubberUI(pct);
+    if (extIsPlaying) extRafId = requestAnimationFrame(extRafLoop);
+  }
+
+  // ── "Next" button — show scrubber panel ───────────────────────────────────
+  window.extGoToOptions = function() {
     if (!extUploadAudioId) return;
     var stepPick = document.getElementById('ext-step-pick');
     var stepOpts = document.getElementById('ext-step-options');
     var selTitle = document.getElementById('ext-sel-title');
-    var selMeta  = document.getElementById('ext-sel-meta');
-    var selImg   = document.getElementById('ext-sel-cover-img');
-    var selIcon  = document.getElementById('ext-sel-cover-icon');
     if (stepPick) stepPick.style.display = 'none';
     if (stepOpts) stepOpts.style.display = 'block';
     if (selTitle) selTitle.textContent = extUploadTitle || 'Uploaded Track';
-    if (selMeta)  selMeta.textContent  = 'Uploaded audio file';
-    if (selImg)   selImg.style.display = 'none';
-    if (selIcon)  selIcon.style.display = 'flex';
-    // Reset extend point
-    extPoint = 'end';
-    document.querySelectorAll('[data-ext]').forEach(function (b) {
-      b.classList.toggle('ref-bar-btn--active', b.dataset.ext === 'end');
-    });
-    var customMs = document.getElementById('ext-custom-ms');
-    if (customMs) customMs.style.display = 'none';
+    // Reset scrubber
+    extExtendAtMs = 0;
+    extUpdateScrubberUI(0);
   };
 
-  // ── "Change" button — go back to upload zone ──────────────────────────────
-  window.extResetUpload = function () {
+  // ── "Change" — back to upload ─────────────────────────────────────────────
+  window.extResetUpload = function() {
     extUploadAudioId = null;
     extUploadTitle   = '';
+    extExtendAtMs    = 0;
+    extAudioDuration = 0;
+    extIsPlaying     = false;
+    extWaveData      = null;
+    if (extRafId) { cancelAnimationFrame(extRafId); extRafId = null; }
+    var audio = document.getElementById('ext-preview-audio');
+    if (audio) { try { audio.pause(); } catch(e) {} audio.src = ''; }
     var stepPick = document.getElementById('ext-step-pick');
     var stepOpts = document.getElementById('ext-step-options');
     if (stepPick) stepPick.style.display = 'block';
     if (stepOpts) stepOpts.style.display = 'none';
     setExtZoneState('idle');
-    // Clear the file input so the same file can be re-selected
     var fi = document.getElementById('ext-audio-file');
     if (fi) fi.value = '';
+    var canvas = document.getElementById('ext-waveform-canvas');
+    if (canvas) { var ctx2 = canvas.getContext('2d'); if (ctx2) ctx2.clearRect(0,0,canvas.width,canvas.height); }
   };
 
-  // ── Also reset when popup is closed ──────────────────────────────────────
+  // ── Format seconds → m:ss ────────────────────────────────────────────────
+  function extFmtTime(secs) {
+    if (!secs || isNaN(secs)) return '0:00';
+    var m = Math.floor(secs / 60);
+    var s = Math.floor(secs % 60);
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  // ── Close popup → reset ───────────────────────────────────────────────────
   var _origClose = window.closeCreatorPopup;
-  window.closeCreatorPopup = function (type) {
-    if (_origClose) _origClose(type);
+  window.closeCreatorPopup = function(type) {
     if (type === 'extend') window.extResetUpload && window.extResetUpload();
+    if (_origClose) _origClose(type);
   };
 
-  // ── Override openCreatorPopup for 'extend' — skip library load ────────────
+  // ── Override openCreatorPopup for 'extend' + close ref panel ─────────────
   var _origOpen = window.openCreatorPopup;
-  window.openCreatorPopup = function (type) {
+  window.openCreatorPopup = function(type) {
+    // Always close the ref inline panel when any popup/tab is opened
+    var refPanel = document.getElementById('ref-inline-panel');
+    var refChev  = document.getElementById('ctab-ref-chevron');
+    var refBtn   = document.getElementById('ctab-reference');
+    if (refPanel && refPanel.style.display !== 'none') {
+      refPanel.style.display = 'none';
+      if (refChev) refChev.style.transform = '';
+      if (refBtn && !window._refFileId) refBtn.classList.remove('active');
+    }
     if (type === 'extend') {
-      // Show popup manually (same logic as original openCreatorPopup)
-      var popup = document.getElementById('creator-popup-extend');
-      var overlay = document.getElementById('creator-popup-overlay');
-      if (popup) popup.style.display = 'flex';
-      if (overlay) overlay.style.display = 'block';
-      document.body.style.overflow = 'hidden';
-      // Reset to upload step
-      window.extResetUpload && window.extResetUpload();
-      // Clear any pre-selected job id from ellipsis menu — not needed for upload flow
+      // Use the base app_base_final openCreatorPopup to show popup correctly with overlay
+      // Find the base version (before initSongExtend wrapped it)
+      // We call _origOpen which is the initSongExtend version — it handles 'extend' by
+      // checking for _extendFromJobId. We reset that and let it fall through to base.
       window._extendFromJobId = null;
+      if (_origOpen) _origOpen(type);
+      window.extResetUpload && window.extResetUpload();
       return;
     }
     if (_origOpen) _origOpen(type);
   };
 
-  // ── selectExtPoint override (ext-step-options buttons) ────────────────────
-  // Already defined in app_base_final.js as window.selectExtPoint — reuse it,
-  // just track extPoint locally too.
-  var _origSelectExtPoint = window.selectExtPoint;
-  window.selectExtPoint = function (btn, point) {
-    extPoint = point;
-    if (_origSelectExtPoint) _origSelectExtPoint(btn, point);
-  };
-
   // ── Submit using uploaded audio ID ────────────────────────────────────────
-  window.submitSongExtendUpload = async function () {
+  window.submitSongExtendUpload = async function() {
     if (!extUploadAudioId) {
       alert('Please upload a track first.');
       return;
@@ -5080,74 +5240,53 @@ window.renderEditInstrumentPills = function (bp) {
     var btn    = document.getElementById('ext-submit-btn');
     var lyrics = (document.getElementById('ext-lyrics') || {}).value || '';
 
-    // Determine extend_at — parse mm:ss input to milliseconds
-    var extendAt = 0;
-    if (extPoint === 'custom') {
-      var rawTime = ((document.getElementById('ext-custom-ms-val') || {}).value || '').trim();
-      extendAt = window._parseExtTime(rawTime);
-    }
-    // 'end' and 'half' both send 0 — Mureka treats 0/omitted as "extend from end"
-
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
     if (status) { status.style.display = 'block'; status.style.color = 'var(--muted)'; status.textContent = 'Submitting extend job…'; }
 
     try {
+      var body = {
+        upload_audio_id: extUploadAudioId,
+        title: extUploadTitle || 'Uploaded Track'
+      };
+      if (extExtendAtMs > 0) body.extend_at = extExtendAtMs;
+      if (lyrics.trim()) body.lyrics = lyrics.trim();
+
       var res = await fetch('/api/job/extend-upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          upload_audio_id: extUploadAudioId,
-          extend_at: extendAt || undefined,
-          lyrics: lyrics || undefined,
-          title: extUploadTitle || 'Uploaded Track'
-        })
+        body: JSON.stringify(body)
       });
       var data = await res.json();
       if (data.error) throw new Error(data.error);
-      if (status) { status.style.color = '#10b981'; status.textContent = 'Extend job started! Check your library for the result.'; }
-      setTimeout(function () {
+      if (status) { status.style.color = '#10b981'; status.textContent = 'Extend job started! Check your library.'; }
+      // Stop playback
+      var audio = document.getElementById('ext-preview-audio');
+      if (audio) try { audio.pause(); } catch(e) {}
+      setTimeout(function() {
         window.closeCreatorPopup && window.closeCreatorPopup('extend');
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
         if (status) { status.style.display = 'none'; }
         if (window.navigate) window.navigate('library');
       }, 1800);
-    } catch (e) {
+    } catch(e) {
       if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
     }
   };
 
-  // ── mm:ss time input formatter (called by oninput) ────────────────────────
-  window.extFormatTimeInput = function(input) {
-    var v = input.value.replace(/[^0-9:]/g, '');
-    // Auto-insert colon: if 3+ digits with no colon, insert before last 2 digits
-    if (v.length >= 3 && v.indexOf(':') === -1) {
-      v = v.slice(0, v.length - 2) + ':' + v.slice(v.length - 2);
-    }
-    input.value = v;
-  };
-
-  // ── Parse mm:ss / m:ss string → milliseconds ─────────────────────────────
-  window._parseExtTime = function(raw) {
-    if (!raw) return 0;
-    raw = raw.trim();
-    if (raw.indexOf(':') !== -1) {
-      var parts = raw.split(':');
-      var mins = parseInt(parts[0], 10) || 0;
-      var secs = parseFloat(parts[1]) || 0;
-      return Math.round((mins * 60 + secs) * 1000);
-    }
-    // Fallback: treat as plain seconds
-    var s = parseFloat(raw);
-    return isNaN(s) ? 0 : Math.round(s * 1000);
-  };
-
 })();
 
 // ── Reference Track Dropdown toggle ──────────────────────────────────────────
-// toggleRefDropdown() is called by the ctab-reference button onclick.
-// Opens/closes the ref-inline-panel inline dropdown.
+// Closes any open popup/overlay first, then toggles the ref inline panel.
 window.toggleRefDropdown = function() {
+  // Close any open creator popup first (e.g. extend popup)
+  var anyOpen = document.querySelector('.creator-popup[style*="display: flex"], .creator-popup[style*="display:flex"]');
+  if (anyOpen) {
+    var popupId = anyOpen.id || '';
+    var name = popupId.replace('creator-popup-', '');
+    if (name && window.closeCreatorPopup) window.closeCreatorPopup(name);
+  }
+
   var panel = document.getElementById('ref-inline-panel');
   var chev  = document.getElementById('ctab-ref-chevron');
   var btn   = document.getElementById('ctab-reference');
@@ -5156,7 +5295,6 @@ window.toggleRefDropdown = function() {
   if (isOpen) {
     panel.style.display = 'none';
     if (chev) chev.style.transform = '';
-    // Only remove active class if no ref file loaded
     var refLoaded = window._refFileId || window.refFileId;
     if (btn && !refLoaded) btn.classList.remove('active');
   } else {
