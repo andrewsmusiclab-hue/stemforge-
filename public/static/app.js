@@ -4791,7 +4791,7 @@ window.saveSongEdit = function () {
       // ── Live-update any visible project card that matches this job ──────────
       // Update data attrs, the h4 title, the subtitle <p>, and redraw canvas art
       (function syncCards() {
-        var cards = document.querySelectorAll('.project-card[data-job-id="' + jobId + '"]');
+        var cards = document.querySelectorAll('.project-card[data-id="' + jobId + '"]');
         cards.forEach(function (card) {
           // Update stored attrs
           if (title) card.dataset.title = title;
@@ -5080,11 +5080,11 @@ window.renderEditInstrumentPills = function (bp) {
     var btn    = document.getElementById('ext-submit-btn');
     var lyrics = (document.getElementById('ext-lyrics') || {}).value || '';
 
-    // Determine extend_at — for uploaded files we don't know duration,
-    // so custom ms is the only precise option; end/half send 0 (Mureka default = end)
+    // Determine extend_at — parse mm:ss input to milliseconds
     var extendAt = 0;
     if (extPoint === 'custom') {
-      extendAt = parseInt((document.getElementById('ext-custom-ms-val') || {}).value || '0', 10);
+      var rawTime = ((document.getElementById('ext-custom-ms-val') || {}).value || '').trim();
+      extendAt = window._parseExtTime(rawTime);
     }
     // 'end' and 'half' both send 0 — Mureka treats 0/omitted as "extend from end"
 
@@ -5117,4 +5117,51 @@ window.renderEditInstrumentPills = function (bp) {
     }
   };
 
+  // ── mm:ss time input formatter (called by oninput) ────────────────────────
+  window.extFormatTimeInput = function(input) {
+    var v = input.value.replace(/[^0-9:]/g, '');
+    // Auto-insert colon: if 3+ digits with no colon, insert before last 2 digits
+    if (v.length >= 3 && v.indexOf(':') === -1) {
+      v = v.slice(0, v.length - 2) + ':' + v.slice(v.length - 2);
+    }
+    input.value = v;
+  };
+
+  // ── Parse mm:ss / m:ss string → milliseconds ─────────────────────────────
+  window._parseExtTime = function(raw) {
+    if (!raw) return 0;
+    raw = raw.trim();
+    if (raw.indexOf(':') !== -1) {
+      var parts = raw.split(':');
+      var mins = parseInt(parts[0], 10) || 0;
+      var secs = parseFloat(parts[1]) || 0;
+      return Math.round((mins * 60 + secs) * 1000);
+    }
+    // Fallback: treat as plain seconds
+    var s = parseFloat(raw);
+    return isNaN(s) ? 0 : Math.round(s * 1000);
+  };
+
 })();
+
+// ── Reference Track Dropdown toggle ──────────────────────────────────────────
+// toggleRefDropdown() is called by the ctab-reference button onclick.
+// Opens/closes the ref-inline-panel inline dropdown.
+window.toggleRefDropdown = function() {
+  var panel = document.getElementById('ref-inline-panel');
+  var chev  = document.getElementById('ctab-ref-chevron');
+  var btn   = document.getElementById('ctab-reference');
+  if (!panel) return;
+  var isOpen = panel.style.display !== 'none' && panel.style.display !== '';
+  if (isOpen) {
+    panel.style.display = 'none';
+    if (chev) chev.style.transform = '';
+    // Only remove active class if no ref file loaded
+    var refLoaded = window._refFileId || window.refFileId;
+    if (btn && !refLoaded) btn.classList.remove('active');
+  } else {
+    panel.style.display = 'block';
+    if (chev) chev.style.transform = 'rotate(180deg)';
+    if (btn) btn.classList.add('active');
+  }
+};

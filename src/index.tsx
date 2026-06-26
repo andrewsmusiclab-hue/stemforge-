@@ -5066,12 +5066,13 @@ function generatorPage() {
       <div style="display:flex;gap:8px;margin-bottom:14px">
         <button class="ref-bar-btn ref-bar-btn--active" data-ext="end" onclick="selectExtPoint(this,'end')">End of track</button>
         <button class="ref-bar-btn" data-ext="half" onclick="selectExtPoint(this,'half')">Midpoint</button>
-        <button class="ref-bar-btn" data-ext="custom" onclick="selectExtPoint(this,'custom')">Custom (ms)</button>
+        <button class="ref-bar-btn" data-ext="custom" onclick="selectExtPoint(this,'custom')">Custom time</button>
       </div>
       <div id="ext-custom-ms" style="display:none;margin-bottom:14px">
-        <input type="number" id="ext-custom-ms-val" min="0" value="0" placeholder="e.g. 60000"
-          style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.9rem"/>
-        <p style="color:var(--muted);font-size:.75rem;margin:4px 0 0">Enter time in milliseconds (e.g. 60000 = 1 min)</p>
+        <input type="text" id="ext-custom-ms-val" placeholder="e.g. 1:52 or 0:52"
+          style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.9rem"
+          oninput="extFormatTimeInput(this)"/>
+        <p style="color:var(--muted);font-size:.75rem;margin:4px 0 0"><i class="fas fa-info-circle" style="margin-right:3px"></i>Enter playback time as m:ss — e.g. 1:52 means 1 min 52 sec</p>
       </div>
       <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional)</span></label>
       <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Add continuation lyrics here, or leave blank for instrumental extension…" style="margin-bottom:12px"></textarea>
