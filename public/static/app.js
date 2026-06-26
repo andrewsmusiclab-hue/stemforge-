@@ -4788,6 +4788,33 @@ window.saveSongEdit = function () {
         }
         window._sfProjects[jobId].user_lyrics = lyrics;
       }
+      // ── Live-update any visible project card that matches this job ──────────
+      // Update data attrs, the h4 title, the subtitle <p>, and redraw canvas art
+      (function syncCards() {
+        var cards = document.querySelectorAll('.project-card[data-job-id="' + jobId + '"]');
+        cards.forEach(function (card) {
+          // Update stored attrs
+          if (title) card.dataset.title = title;
+          if (genre) card.dataset.genre = genre;
+          // Update visible title (h4)
+          var h4 = card.querySelector('h4');
+          if (h4 && title) h4.textContent = title;
+          // Update subtitle <p> — it shows genre/bpm
+          var sub = card.querySelector('.project-card__body > p');
+          if (sub) {
+            var parts = [];
+            if (genre) parts.push(genre);
+            if (bpm)   parts.push(bpm + ' BPM');
+            if (parts.length) sub.textContent = parts.join(' · ');
+          }
+          // Redraw canvas art with new genre label
+          var artEl = card.querySelector('.project-card__art');
+          var hue   = parseInt(card.dataset.hue || '180', 10);
+          if (artEl && window.drawCanvasArt) {
+            window.drawCanvasArt(artEl, hue, title || card.dataset.title, genre || card.dataset.genre || 'music');
+          }
+        });
+      })();
       // Close modal after short delay
       setTimeout(function () { if (window.closeSongEditModal) window.closeSongEditModal(); }, 1200);
     } else {
@@ -4878,3 +4905,216 @@ window.renderEditInstrumentPills = function (bp) {
 
   group.style.display = '';
 };
+
+// ══ Song Extend — Upload-based override ════════════════════════════════════
+// Replaces the library picker with a direct file upload workflow.
+// ext-step-pick now shows a drag-drop zone; ext-step-options shows extend
+// settings. submitSongExtendUpload() posts to /api/job/extend-upload.
+
+(function initExtendUpload() {
+  var extUploadAudioId = null;  // Mureka upload_audio_id after successful upload
+  var extUploadTitle   = '';    // filename without extension, used as track title
+  var extPoint         = 'end'; // 'end' | 'half' | 'custom'
+
+  // ── Drag-and-drop on the upload zone ──────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', function () {
+    var zone = document.getElementById('ext-upload-zone');
+    if (!zone) return;
+    zone.addEventListener('dragover', function (e) {
+      e.preventDefault();
+      zone.style.borderColor = 'rgba(78,159,255,.7)';
+      zone.style.background  = 'rgba(78,159,255,.1)';
+    });
+    zone.addEventListener('dragleave', function () {
+      zone.style.borderColor = '';
+      zone.style.background  = '';
+    });
+    zone.addEventListener('drop', function (e) {
+      e.preventDefault();
+      zone.style.borderColor = '';
+      zone.style.background  = '';
+      var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) extUploadFile(file);
+    });
+  });
+
+  // ── Called by the file input onchange ─────────────────────────────────────
+  window.extHandleFileSelect = function (input) {
+    var file = input && input.files && input.files[0];
+    if (file) extUploadFile(file);
+  };
+
+  function setExtZoneState(state, filename) {
+    var idle    = document.getElementById('ext-upload-idle');
+    var loading = document.getElementById('ext-upload-loading');
+    var done    = document.getElementById('ext-upload-done');
+    var nameEl  = document.getElementById('ext-upload-name');
+    var errEl   = document.getElementById('ext-upload-error');
+    var nextBtn = document.getElementById('ext-upload-next-btn');
+    if (idle)    idle.style.display    = (state === 'idle')    ? 'flex' : 'none';
+    if (loading) loading.style.display = (state === 'loading') ? 'flex' : 'none';
+    if (done)    done.style.display    = (state === 'done')    ? 'flex' : 'none';
+    if (errEl)   errEl.style.display   = 'none';
+    if (nameEl && filename) nameEl.textContent = filename;
+    if (nextBtn) nextBtn.style.display = (state === 'done') ? 'block' : 'none';
+  }
+
+  function extUploadFile(file) {
+    var errEl = document.getElementById('ext-upload-error');
+    if (errEl) errEl.style.display = 'none';
+    setExtZoneState('loading');
+    var name = file.name || 'track';
+    extUploadTitle = name.replace(/\.[^.]+$/, ''); // strip extension
+
+    var fd = new FormData();
+    fd.append('file', file);
+    fd.append('purpose', 'audio'); // use 'audio' purpose for extend
+
+    // We upload via the existing reference upload endpoint but with purpose=audio
+    // Actually we upload to /api/upload-extend-audio which accepts FormData + purpose
+    // Use /api/upload-reference since it already forwards to Mureka /files/upload
+    // and returns file_id — we just set purpose to 'audio' server-side isn't needed
+    // because Mureka's extend accepts any upload_audio_id regardless of purpose.
+    // So we POST directly to /api/upload-reference (which always uses purpose='reference')
+    // OR we create a new lightweight fetch to Mureka's upload — but we can't expose
+    // the API key. Use /api/upload-reference and get back file_id.
+    fetch('/api/upload-reference', {
+      method: 'POST',
+      body: fd
+    })
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      if (data.error) throw new Error(data.error);
+      extUploadAudioId = data.file_id;
+      setExtZoneState('done', name);
+    })
+    .catch(function (err) {
+      setExtZoneState('idle');
+      if (errEl) {
+        errEl.textContent = 'Upload failed: ' + (err.message || 'Unknown error');
+        errEl.style.display = 'block';
+      }
+    });
+  }
+
+  // ── "Next" button — switch to options panel ────────────────────────────────
+  window.extGoToOptions = function () {
+    if (!extUploadAudioId) return;
+    var stepPick = document.getElementById('ext-step-pick');
+    var stepOpts = document.getElementById('ext-step-options');
+    var selTitle = document.getElementById('ext-sel-title');
+    var selMeta  = document.getElementById('ext-sel-meta');
+    var selImg   = document.getElementById('ext-sel-cover-img');
+    var selIcon  = document.getElementById('ext-sel-cover-icon');
+    if (stepPick) stepPick.style.display = 'none';
+    if (stepOpts) stepOpts.style.display = 'block';
+    if (selTitle) selTitle.textContent = extUploadTitle || 'Uploaded Track';
+    if (selMeta)  selMeta.textContent  = 'Uploaded audio file';
+    if (selImg)   selImg.style.display = 'none';
+    if (selIcon)  selIcon.style.display = 'flex';
+    // Reset extend point
+    extPoint = 'end';
+    document.querySelectorAll('[data-ext]').forEach(function (b) {
+      b.classList.toggle('ref-bar-btn--active', b.dataset.ext === 'end');
+    });
+    var customMs = document.getElementById('ext-custom-ms');
+    if (customMs) customMs.style.display = 'none';
+  };
+
+  // ── "Change" button — go back to upload zone ──────────────────────────────
+  window.extResetUpload = function () {
+    extUploadAudioId = null;
+    extUploadTitle   = '';
+    var stepPick = document.getElementById('ext-step-pick');
+    var stepOpts = document.getElementById('ext-step-options');
+    if (stepPick) stepPick.style.display = 'block';
+    if (stepOpts) stepOpts.style.display = 'none';
+    setExtZoneState('idle');
+    // Clear the file input so the same file can be re-selected
+    var fi = document.getElementById('ext-audio-file');
+    if (fi) fi.value = '';
+  };
+
+  // ── Also reset when popup is closed ──────────────────────────────────────
+  var _origClose = window.closeCreatorPopup;
+  window.closeCreatorPopup = function (type) {
+    if (_origClose) _origClose(type);
+    if (type === 'extend') window.extResetUpload && window.extResetUpload();
+  };
+
+  // ── Override openCreatorPopup for 'extend' — skip library load ────────────
+  var _origOpen = window.openCreatorPopup;
+  window.openCreatorPopup = function (type) {
+    if (type === 'extend') {
+      // Show popup manually (same logic as original openCreatorPopup)
+      var popup = document.getElementById('creator-popup-extend');
+      var overlay = document.getElementById('creator-popup-overlay');
+      if (popup) popup.style.display = 'flex';
+      if (overlay) overlay.style.display = 'block';
+      document.body.style.overflow = 'hidden';
+      // Reset to upload step
+      window.extResetUpload && window.extResetUpload();
+      // Clear any pre-selected job id from ellipsis menu — not needed for upload flow
+      window._extendFromJobId = null;
+      return;
+    }
+    if (_origOpen) _origOpen(type);
+  };
+
+  // ── selectExtPoint override (ext-step-options buttons) ────────────────────
+  // Already defined in app_base_final.js as window.selectExtPoint — reuse it,
+  // just track extPoint locally too.
+  var _origSelectExtPoint = window.selectExtPoint;
+  window.selectExtPoint = function (btn, point) {
+    extPoint = point;
+    if (_origSelectExtPoint) _origSelectExtPoint(btn, point);
+  };
+
+  // ── Submit using uploaded audio ID ────────────────────────────────────────
+  window.submitSongExtendUpload = async function () {
+    if (!extUploadAudioId) {
+      alert('Please upload a track first.');
+      return;
+    }
+    var status = document.getElementById('ext-submit-status');
+    var btn    = document.getElementById('ext-submit-btn');
+    var lyrics = (document.getElementById('ext-lyrics') || {}).value || '';
+
+    // Determine extend_at — for uploaded files we don't know duration,
+    // so custom ms is the only precise option; end/half send 0 (Mureka default = end)
+    var extendAt = 0;
+    if (extPoint === 'custom') {
+      extendAt = parseInt((document.getElementById('ext-custom-ms-val') || {}).value || '0', 10);
+    }
+    // 'end' and 'half' both send 0 — Mureka treats 0/omitted as "extend from end"
+
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+    if (status) { status.style.display = 'block'; status.style.color = 'var(--muted)'; status.textContent = 'Submitting extend job…'; }
+
+    try {
+      var res = await fetch('/api/job/extend-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          upload_audio_id: extUploadAudioId,
+          extend_at: extendAt || undefined,
+          lyrics: lyrics || undefined,
+          title: extUploadTitle || 'Uploaded Track'
+        })
+      });
+      var data = await res.json();
+      if (data.error) throw new Error(data.error);
+      if (status) { status.style.color = '#10b981'; status.textContent = 'Extend job started! Check your library for the result.'; }
+      setTimeout(function () {
+        window.closeCreatorPopup && window.closeCreatorPopup('extend');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+        if (status) { status.style.display = 'none'; }
+        if (window.navigate) window.navigate('library');
+      }, 1800);
+    } catch (e) {
+      if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+    }
+  };
+
+})();

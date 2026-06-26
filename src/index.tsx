@@ -2466,6 +2466,94 @@ app.post('/api/job/purge', async (c) => {
   return c.json({ ok: true })
 })
 
+// POST /api/job/extend-upload — extend using a directly uploaded audio file
+// Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string }
+app.post('/api/job/extend-upload', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const { upload_audio_id, extend_at, lyrics, title } = await c.req.json<{
+    upload_audio_id: string; extend_at?: number; lyrics?: string; title?: string
+  }>()
+  if (!upload_audio_id) return c.json({ error: 'upload_audio_id required' }, 400)
+
+  await ensureTable(c.env.DB)
+
+  // ── 2-credit deduction ──────────────────────────────────────────────────
+  const EXTEND_COST = 2
+  const freshUser = await c.env.DB.prepare(
+    `SELECT gens_used, gens_limit FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
+  if (!freshUser) return c.json({ error: 'User not found' }, 401)
+  if (freshUser.gens_used + EXTEND_COST > freshUser.gens_limit) {
+    return c.json({
+      error: `Not enough credits. Extend costs ${EXTEND_COST} credits and you only have ${freshUser.gens_limit - freshUser.gens_used} remaining.`,
+      code: 'insufficient_credits'
+    }, 402)
+  }
+  await c.env.DB.prepare(
+    `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
+  ).bind(EXTEND_COST, user.id).run()
+
+  try {
+    // Call Mureka song/extend using the already-uploaded audio ID
+    const extendBody: Record<string, any> = {
+      upload_audio_id: upload_audio_id,
+      prompt: 'maintain same tempo, timing, and rhythmic groove as the original track, seamless continuation'
+    }
+    if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
+    if (lyrics && lyrics.trim()) extendBody.lyrics = lyrics.trim()
+
+    const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(extendBody)
+    })
+    if (!extRes.ok) {
+      const err = await extRes.json() as any
+      return c.json({ error: `Mureka extend error: ${err?.error?.message || extRes.status}` }, 502)
+    }
+    const extData = await extRes.json() as any
+    const extTaskId = extData.id as string
+
+    // Create a new job record to track the extend result
+    const newJobId = crypto.randomUUID()
+    const now = Date.now()
+    const trackTitle = title || 'Uploaded Track'
+    const newJob = {
+      id: newJobId,
+      user_id: user.id,
+      status: 'generating',
+      prompt: `[Extended from uploaded track: ${trackTitle}]`,
+      title: `${trackTitle} (Extended)`,
+      blueprint: {},
+      stereo_task_id: extTaskId,
+      stereo_url: null,
+      created_at: now,
+      extend_task_type: 'song_extend'
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
+    ).bind(newJobId, user.id, JSON.stringify(newJob), now).run()
+
+    return c.json({ ok: true, job_id: newJobId, task_id: extTaskId })
+  } catch (e: any) {
+    // Refund credits on failure
+    try {
+      await c.env.DB.prepare(
+        `UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`
+      ).bind(EXTEND_COST, user.id).run()
+    } catch (_) { /* ignore refund failure */ }
+    return c.json({ error: e.message || 'Extend failed' }, 500)
+  }
+})
+
 // POST /api/job/extend — extend a completed track using Mureka song/extend API
 // Body: { source_job_id: string, extend_at?: number (ms), lyrics?: string }
 app.post('/api/job/extend', async (c) => {
@@ -4080,8 +4168,8 @@ function homePage() {
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-tags"></i></div>
-        <h3>Smart instrument labeling</h3>
-        <p>A flute is labeled "Flute." A guitar is labeled "Guitar." No guessing what's in the FX bus.</p>
+        <h3>Intelligent stem naming</h3>
+        <p>Each stem is named by what it actually contains — drums, bass, keys, lead — so you can work with them straight out of the export.</p>
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-shield-alt"></i></div>
@@ -4247,6 +4335,60 @@ function homePage() {
 </div>
 
 <script>
+// ── Themed plan-change toast (replaces browser alert) ─────────────────────
+window.showSfPlanToast = function(type, plan, msg) {
+  var existing = document.getElementById('sf-plan-toast');
+  if (existing) existing.remove();
+
+  var planLabel = { creator: 'Creator', pro: 'Pro Artist', free: 'Free', developer: 'Developer' }[plan] || plan || '';
+
+  var icon, text, bg, border, shadow;
+  if (type === 'upgrade') {
+    icon   = '<i class="fas fa-arrow-up" style="color:#a855f7"></i>';
+    text   = planLabel ? ('You\u2019re upgrading to ' + planLabel + ' — changes take effect at your next billing cycle.') : 'Upgrade scheduled — changes take effect at next billing cycle.';
+    bg     = 'linear-gradient(135deg,rgba(108,58,255,.18),rgba(168,85,247,.14))';
+    border = 'rgba(168,85,247,.4)';
+    shadow = 'rgba(108,58,255,.35)';
+  } else if (type === 'downgrade') {
+    icon   = '<i class="fas fa-info-circle" style="color:#60a5fa"></i>';
+    text   = planLabel ? ('Scheduled to move to ' + planLabel + ' at end of your billing cycle. You keep all current features until then.') : 'Downgrade scheduled — takes effect at end of billing cycle.';
+    bg     = 'linear-gradient(135deg,rgba(78,159,255,.14),rgba(96,165,250,.10))';
+    border = 'rgba(78,159,255,.35)';
+    shadow = 'rgba(78,159,255,.25)';
+  } else {
+    icon   = '<i class="fas fa-exclamation-triangle" style="color:#f87171"></i>';
+    text   = msg || 'Something went wrong. Please try again.';
+    bg     = 'linear-gradient(135deg,rgba(239,68,68,.14),rgba(248,113,113,.10))';
+    border = 'rgba(239,68,68,.35)';
+    shadow = 'rgba(239,68,68,.25)';
+  }
+
+  var toast = document.createElement('div');
+  toast.id = 'sf-plan-toast';
+  toast.style.cssText = [
+    'position:fixed', 'bottom:28px', 'right:28px', 'z-index:9999999',
+    'max-width:380px', 'width:calc(100vw - 56px)',
+    'background:' + bg,
+    'border:1px solid ' + border,
+    'border-radius:14px',
+    'padding:16px 20px',
+    'display:flex', 'align-items:flex-start', 'gap:12px',
+    'box-shadow:0 8px 32px ' + shadow,
+    'backdrop-filter:blur(10px)',
+    'font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif',
+    'animation:sfToastIn .25s ease'
+  ].join(';');
+  toast.innerHTML =
+    '<style>@keyframes sfToastIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}</style>' +
+    '<div style="font-size:1.1rem;flex-shrink:0;margin-top:1px">' + icon + '</div>' +
+    '<div style="flex:1;min-width:0">' +
+      '<div style="font-size:.88rem;font-weight:600;color:#f1f5f9;line-height:1.45;margin-bottom:2px">' + text + '</div>' +
+    '</div>' +
+    '<button onclick="this.closest(\"#sf-plan-toast\").remove()" style="background:none;border:none;color:rgba(255,255,255,.4);font-size:1rem;cursor:pointer;padding:0;margin-top:-2px;flex-shrink:0" onmouseover="this.style.color=\"#fff\"" onmouseout="this.style.color=\"rgba(255,255,255,.4)\"">&times;</button>';
+  document.body.appendChild(toast);
+  setTimeout(function() { if (toast.parentNode) toast.remove(); }, type === 'error' ? 6000 : 5000);
+};
+
 (function(){
   let _humPlan = null;
 
@@ -4299,10 +4441,10 @@ function homePage() {
         document.getElementById('home-downgrade-modal').style.display = 'none';
         if (data.ok) {
           sessionStorage.setItem('sf_pending_downgrade', _homeDgPlan);
-          alert(data.message || 'Downgrade scheduled. Changes take effect at end of billing period.');
+          showSfPlanToast('downgrade', _homeDgPlan);
           window.location.reload();
-        } else { alert('Error: ' + (data.error || 'Downgrade failed')); }
-      } catch(e) { alert('Network error. Please try again.'); }
+        } else { showSfPlanToast('error', null, data.error || 'Downgrade failed'); }
+      } catch(e) { showSfPlanToast('error', null, 'Network error. Please try again.'); }
       finally { homeDgConfirm.disabled = false; homeDgConfirm.textContent = 'Confirm Downgrade'; }
     });
   }
@@ -4377,10 +4519,10 @@ function homePage() {
       if (data.redirect) { window.location.href = data.redirect; return; }
       if (data.ok) {
         sessionStorage.setItem('sf_pending_upgrade', _humPlan);
-        alert(data.message || 'Upgrade successful!');
-        window.location.href = '/dashboard';
-      } else { alert('Error: ' + (data.error || 'Upgrade failed')); }
-    } catch(e) { closeHomeUpgradeModal(); alert('Network error. Please try again.'); }
+        showSfPlanToast('upgrade', _humPlan);
+        setTimeout(function(){ window.location.href = '/dashboard'; }, 2200);
+      } else { showSfPlanToast('error', null, data.error || 'Upgrade failed'); }
+    } catch(e) { closeHomeUpgradeModal(); showSfPlanToast('error', null, 'Network error. Please try again.'); }
   };
 
   document.getElementById('home-upgrade-modal').addEventListener('click', function(e) {
@@ -4881,15 +5023,31 @@ function generatorPage() {
     <button class="creator-popup__close" onclick="closeCreatorPopup('extend')"><i class="fas fa-times"></i></button>
   </div>
   <div class="creator-popup__body">
-    <!-- Step 1: Pick a track -->
+    <!-- Step 1: Upload a track to extend -->
     <div id="ext-step-pick" style="display:block">
-      <label class="suno-option-label" style="margin-bottom:10px">Pick a track to extend</label>
-      <div id="ext-track-list" style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
-        <div style="text-align:center;padding:24px;color:var(--muted);font-size:.85rem">
-          <i class="fas fa-spinner fa-spin" style="margin-bottom:8px;display:block;font-size:1.4rem"></i>
-          Loading your library…
+      <label class="suno-option-label" style="margin-bottom:10px">Upload a track to extend</label>
+      <!-- Upload zone -->
+      <div class="ref-upload-zone" id="ext-upload-zone" onclick="document.getElementById('ext-audio-file').click()" style="cursor:pointer">
+        <input type="file" id="ext-audio-file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/flac,audio/*" style="display:none" onchange="extHandleFileSelect(this)"/>
+        <div id="ext-upload-idle" style="display:flex;flex-direction:column;align-items:center">
+          <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
+          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Extend</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — MP3, WAV, FLAC supported</p>
+        </div>
+        <div id="ext-upload-loading" style="display:none;flex-direction:column;align-items:center">
+          <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
+          <p style="margin:0;font-size:.85rem;color:var(--muted)">Uploading…</p>
+        </div>
+        <div id="ext-upload-done" style="display:none;flex-direction:column;align-items:center">
+          <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
+          <p style="margin:0;font-weight:600;font-size:.85rem" id="ext-upload-name">track.mp3</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem">Ready to extend</p>
         </div>
       </div>
+      <div id="ext-upload-error" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:.8rem;color:#f87171;text-align:center"></div>
+      <button id="ext-upload-next-btn" onclick="extGoToOptions()" class="btn btn--primary" style="width:100%;margin-top:12px;padding:10px;font-size:.88rem;font-weight:700;display:none">
+        <i class="fas fa-arrow-right"></i> Next: Set Extend Options
+      </button>
     </div>
     <!-- Step 2: Extend options (shown after picking a track) -->
     <div id="ext-step-options" style="display:none;margin-top:14px">
@@ -4902,7 +5060,7 @@ function generatorPage() {
           <div id="ext-sel-title" style="font-size:.88rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</div>
           <div id="ext-sel-meta" style="font-size:.75rem;color:var(--muted)">—</div>
         </div>
-        <button onclick="extResetPick()" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 6px;border-radius:6px;font-size:.78rem"><i class="fas fa-times"></i> Change</button>
+        <button onclick="extResetUpload()" style="background:none;border:none;color:var(--muted);cursor:pointer;padding:4px 6px;border-radius:6px;font-size:.78rem"><i class="fas fa-times"></i> Change</button>
       </div>
       <label class="suno-option-label" style="margin-bottom:6px">Extend at</label>
       <div style="display:flex;gap:8px;margin-bottom:14px">
@@ -4917,7 +5075,7 @@ function generatorPage() {
       </div>
       <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional)</span></label>
       <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Add continuation lyrics here, or leave blank for instrumental extension…" style="margin-bottom:12px"></textarea>
-      <button id="ext-submit-btn" onclick="submitSongExtend()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
+      <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
       </button>
       <div id="ext-submit-status" style="display:none;margin-top:10px;text-align:center;font-size:.82rem;color:var(--muted)"></div>
@@ -5022,7 +5180,7 @@ function pricingPage() {
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of downloads? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase download credit packs from the Subscription page starting from $4.99. Packs never expire and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of downloads? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase download credit packs from the Subscription page starting from $4.99. Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
@@ -5258,9 +5416,9 @@ function pricingPage() {
       const data = await res.json();
       closePricingUpgradeModal();
       if (data.redirect) { window.location.href = data.redirect; return; }
-      if (data.ok) { alert(data.message || 'Upgrade successful!'); window.location.href = '/dashboard'; }
-      else { alert('Error: ' + (data.error || 'Upgrade failed')); }
-    } catch(e) { closePricingUpgradeModal(); alert('Network error. Please try again.'); }
+      if (data.ok) { showSfPlanToast('upgrade', _pumPlan); setTimeout(function(){ window.location.href = '/dashboard'; }, 2200); }
+      else { showSfPlanToast('error', null, data.error || 'Upgrade failed'); }
+    } catch(e) { closePricingUpgradeModal(); showSfPlanToast('error', null, 'Network error. Please try again.'); }
   };
 
   document.getElementById('pricing-upgrade-modal').addEventListener('click', function(e) { if (e.target === this) closePricingUpgradeModal(); });
@@ -5288,9 +5446,9 @@ function pricingPage() {
       });
       const data = await res.json();
       document.getElementById('pricing-downgrade-modal').style.display = 'none';
-      if (data.ok) { alert(data.message || 'Downgrade scheduled.'); window.location.reload(); }
-      else { alert('Error: ' + (data.error || 'Downgrade failed')); }
-    } catch(e) { alert('Network error. Please try again.'); }
+      if (data.ok) { showSfPlanToast('downgrade', _pdgPlan); window.location.reload(); }
+      else { showSfPlanToast('error', null, data.error || 'Downgrade failed'); }
+    } catch(e) { showSfPlanToast('error', null, 'Network error. Please try again.'); }
     finally { btn.disabled = false; btn.textContent = 'Confirm Downgrade'; }
   };
 
@@ -5717,7 +5875,7 @@ function subscriptionPage(user: User, env: Bindings) {
             </span>
             Top Up Downloads
           </h3>
-          <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — never expire, stack on top of your plan</p>
+          <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — valid for current billing cycle, stack on top of your plan</p>
         </div>
         <div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(78,159,255,.08);border:1px solid rgba(78,159,255,.2);border-radius:8px;font-size:.78rem;color:var(--primary)">
           <i class="fas fa-lock-open"></i> No subscription required
