@@ -4333,7 +4333,9 @@ function homePage() {
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
-        <p class="home-downgrade-note" id="home-creator-downgrade-note" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4;text-align:center"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
+        <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-creator-downgrade-note" style="display:none;margin:8px 0 0">
+          <i class="fas fa-clock"></i> <span id="home-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+        </div>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
@@ -4346,7 +4348,9 @@ function homePage() {
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
-        <p class="home-downgrade-note" id="home-pro-downgrade-note" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4;text-align:center"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
+        <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-pro-downgrade-note" style="display:none;margin:8px 0 0">
+          <i class="fas fa-clock"></i> <span id="home-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+        </div>
       </div>
       <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
         <div class="plan-card__tier" style="color:#a78bfa">Developer</div>
@@ -4519,27 +4523,31 @@ window.showSfPlanToast = function(type, plan, msg) {
     const user = me && me.user;
     if (!user) return;
     const rank = { free:0, creator:1, pro:2, developer:3 };
+    const planLabel = { free:'Free', creator:'Creator', pro:'Pro Artist', developer:'Developer' };
     const userRank = rank[user.plan] || 0;
-    // Show "Downgrade takes effect..." note under the Creator card when user is Pro
+    // Show downgrade banner under the Creator card when user is Pro/Developer
     if (userRank > 1) {
       const n = document.getElementById('home-creator-downgrade-note');
-      if (n) n.style.display = 'block';
+      const msg = document.getElementById('home-creator-downgrade-msg');
+      if (msg) msg.textContent = 'Downgrading to Creator at end of billing cycle';
+      if (n) n.style.display = 'flex';
     }
-    // Show note under Pro card when user is on any paid plan (creator/pro = viewing lower or equal — actually only show when they'd be downgrading)
-    // For home page: show pro note when user is on developer (edge case)
+    // Show downgrade banner under Pro card when user is Developer
     if (userRank > 2) {
       const n = document.getElementById('home-pro-downgrade-note');
-      if (n) n.style.display = 'block';
+      const msg = document.getElementById('home-pro-downgrade-msg');
+      if (msg) msg.textContent = 'Downgrading to Pro Artist at end of billing cycle';
+      if (n) n.style.display = 'flex';
     }
     // Also reveal the note immediately when user clicks a downgrade button
     document.querySelectorAll('.home-plan-btn').forEach(function(btn) {
       var plan = btn.dataset.plan;
       var planRank = rank[plan] || 0;
       if (userRank > planRank) {
-        // This button is a downgrade — show its note permanently
+        // This button is a downgrade — show its banner permanently
         var noteId = 'home-' + plan + '-downgrade-note';
         var note = document.getElementById(noteId);
-        if (note) note.style.display = 'block';
+        if (note) note.style.display = 'flex';
       }
     });
   }).catch(function(){});
@@ -5215,10 +5223,11 @@ function generatorPage() {
       </div>
 
       <!-- Extend-at label + live timestamp badge -->
-      <label class="suno-option-label" style="margin-bottom:6px">
-        Extend from
-        <span id="ext-time-badge" style="margin-left:8px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.35);border-radius:6px;padding:2px 8px;font-size:.78rem;font-weight:700;color:var(--primary);letter-spacing:.02em">0:00</span>
+      <label class="suno-option-label" style="margin-bottom:4px">
+        Extend from <span style="font-weight:400;color:var(--muted);font-size:.8rem">(drag to set start of new section)</span>
+        <span id="ext-time-badge" style="margin-left:8px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.35);border-radius:6px;padding:2px 8px;font-size:.78rem;font-weight:700;color:var(--primary);letter-spacing:.02em">End of track</span>
       </label>
+      <p style="margin:0 0 8px;font-size:.75rem;color:var(--muted)"><i class="fas fa-info-circle" style="margin-right:4px"></i>Leave at end to append new audio after your track. Drag left to regenerate a section from that point.</p>
 
       <!-- Hidden audio element for scrubbing -->
       <audio id="ext-preview-audio" preload="metadata" style="display:none"></audio>
@@ -5317,7 +5326,9 @@ function pricingPage() {
           <li class="muted"><i class="fas fa-times"></i> Unmastered mix for DAW</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $19/mo</button>
-        <p class="pricing-downgrade-note" id="pricing-creator-downgrade" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
+        <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-creator-downgrade" style="display:none;margin:8px 0 0">
+          <i class="fas fa-clock"></i> <span id="pricing-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+        </div>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
@@ -5330,7 +5341,9 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $39/mo</button>
-        <p class="pricing-downgrade-note" id="pricing-pro-downgrade" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
+        <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-pro-downgrade" style="display:none;margin:8px 0 0">
+          <i class="fas fa-clock"></i> <span id="pricing-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+        </div>
       </div>
 
     </div>
@@ -5473,7 +5486,10 @@ function pricingPage() {
         creatorBtn.className = 'btn btn--outline btn--full';
         creatorBtn.style.borderColor = 'rgba(255,100,100,.4)';
         creatorBtn.style.color = '#ff6464';
-        document.getElementById('pricing-creator-downgrade').style.display = 'block';
+        const cdEl = document.getElementById('pricing-creator-downgrade');
+        const cdMsg = document.getElementById('pricing-creator-downgrade-msg');
+        if (cdMsg) cdMsg.textContent = 'Downgrading to Creator at end of billing cycle';
+        if (cdEl) cdEl.style.display = 'flex';
         creatorBtn.onclick = () => openPricingDowngradeModal('creator', 'Creator ($19/mo)');
       } else {
         // Upgrade
@@ -5493,7 +5509,10 @@ function pricingPage() {
         proBtn.className = 'btn btn--outline btn--full';
         proBtn.style.borderColor = 'rgba(255,100,100,.4)';
         proBtn.style.color = '#ff6464';
-        document.getElementById('pricing-pro-downgrade').style.display = 'block';
+        const pdEl = document.getElementById('pricing-pro-downgrade');
+        const pdMsg = document.getElementById('pricing-pro-downgrade-msg');
+        if (pdMsg) pdMsg.textContent = 'Downgrading to Pro Artist at end of billing cycle';
+        if (pdEl) pdEl.style.display = 'flex';
         proBtn.onclick = () => openPricingDowngradeModal('pro', 'Pro Artist ($39/mo)');
       } else {
         proBtn.onclick = () => openPricingUpgradeModal('pro');

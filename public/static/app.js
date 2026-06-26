@@ -4999,9 +4999,12 @@ window.renderEditInstrumentPills = function (bp) {
           audio.src = url;
           audio.onloadedmetadata = function() {
             extAudioDuration = audio.duration;
-            extExtendAtMs = 0;
+            // Default extend point = end of track (pct=1.0), user can drag left to choose earlier
+            extExtendAtMs = 0; // 0 means "use end of track" in submitSongExtendUpload
             var durLabel = document.getElementById('ext-duration-label');
             if (durLabel) durLabel.textContent = extFmtTime(extAudioDuration);
+            // Position scrubber visually at the end
+            extUpdateScrubberUI(1.0);
             extDrawWaveform(file);
           };
         }
@@ -5083,8 +5086,9 @@ window.renderEditInstrumentPills = function (bp) {
     if (!extAudioDuration) return;
     var rect = (wrap || document.getElementById('ext-scrubber-wrap')).getBoundingClientRect();
     var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    extExtendAtMs = Math.round(pct * extAudioDuration * 1000);
-    extUpdateScrubberUI(pct);
+    // At the very end (last 1%), treat as "end of track" = default extend behaviour
+    extExtendAtMs = pct >= 0.99 ? 0 : Math.round(pct * extAudioDuration * 1000);
+    extUpdateScrubberUI(pct >= 0.99 ? 1.0 : pct);
     // Seek the audio element
     var audio = document.getElementById('ext-preview-audio');
     if (audio && extAudioDuration) audio.currentTime = pct * extAudioDuration;
@@ -5108,7 +5112,8 @@ window.renderEditInstrumentPills = function (bp) {
     var badge = document.getElementById('ext-time-badge');
     if (fill)  fill.style.width  = (pct * 100) + '%';
     if (head)  head.style.left   = (pct * 100) + '%';
-    if (badge) badge.textContent = extFmtTime(extExtendAtMs / 1000);
+    // Show "End of track" when scrubber is at or very near the end
+    if (badge) badge.textContent = (pct >= 0.999 || extExtendAtMs <= 0) ? 'End of track' : extFmtTime(extExtendAtMs / 1000);
     extPaintWaveform(pct);
   }
 
@@ -5163,9 +5168,9 @@ window.renderEditInstrumentPills = function (bp) {
     if (stepPick) stepPick.style.display = 'none';
     if (stepOpts) stepOpts.style.display = 'block';
     if (selTitle) selTitle.textContent = extUploadTitle || 'Uploaded Track';
-    // Reset scrubber
+    // Reset scrubber to end of track (default: append after track)
     extExtendAtMs = 0;
-    extUpdateScrubberUI(0);
+    extUpdateScrubberUI(1.0);
   };
 
   // ── "Change" — back to upload ─────────────────────────────────────────────
@@ -5188,6 +5193,8 @@ window.renderEditInstrumentPills = function (bp) {
     if (fi) fi.value = '';
     var canvas = document.getElementById('ext-waveform-canvas');
     if (canvas) { var ctx2 = canvas.getContext('2d'); if (ctx2) ctx2.clearRect(0,0,canvas.width,canvas.height); }
+    // Reset badge to "End of track"
+    extUpdateScrubberUI(1.0);
   };
 
   // ── Format seconds → m:ss ────────────────────────────────────────────────
@@ -5319,7 +5326,7 @@ window.renderEditInstrumentPills = function (bp) {
         .then(function(job) {
           // Update spinner message
           if (ui.spinnerMsg && ui.pipelineStatus) {
-            if (job.status === 'generating') ui.spinnerMsg.textContent = 'Mureka is composing your extended track…';
+            if (job.status === 'generating') ui.spinnerMsg.textContent = 'Composing your extended track… this may take 1–3 min';
           }
 
           if (job.status === 'ready') {
@@ -5334,10 +5341,13 @@ window.renderEditInstrumentPills = function (bp) {
             }
             if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
 
-            // Show the stereo player with the extended track
+            // Show the stereo player with the extended continuation
             if (job.stereo_url && ui.stereoPlayer && ui.stereoAudio) {
               ui.stereoAudio.src = job.stereo_url;
               ui.stereoPlayer.style.display = 'block';
+              // Update the player label to clarify this is the continuation portion
+              var playerLabel = ui.stereoPlayer.querySelector('.stereo-player__label');
+              if (playerLabel) playerLabel.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extended continuation';
               if (ui.stereoDownload) {
                 var currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
                 if (currentPlan === 'free') {
@@ -5347,7 +5357,7 @@ window.renderEditInstrumentPills = function (bp) {
                 } else {
                   var safeTitle = (job.title || 'extended_track').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
                   ui.stereoDownload.href = job.stereo_url;
-                  ui.stereoDownload.setAttribute('download', safeTitle + '_stereo.mp3');
+                  ui.stereoDownload.setAttribute('download', safeTitle + '_extended.mp3');
                   ui.stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download';
                   ui.stereoDownload.style.opacity = '';
                 }
@@ -5364,7 +5374,7 @@ window.renderEditInstrumentPills = function (bp) {
             // Show error toast
             var toast = document.createElement('div');
             toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#ef4444;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(239,68,68,.4)';
-            toast.textContent = 'Extend failed: ' + (job.error || 'Mureka error');
+            toast.textContent = 'Extend failed: ' + (job.error || 'Generation error');
             document.body.appendChild(toast);
             setTimeout(function() { toast.remove(); }, 5000);
             reloadExtendedTab();
@@ -5393,11 +5403,15 @@ window.renderEditInstrumentPills = function (bp) {
     if (status) { status.style.display = 'block'; status.style.color = 'var(--muted)'; status.textContent = 'Submitting extend job…'; }
 
     try {
+      // Default extend_at to end of track (in ms) so Mureka appends after the track ends.
+      // If the user set a scrubber position, use that instead.
+      var effectiveExtendAt = extExtendAtMs > 0 ? extExtendAtMs
+        : (extAudioDuration > 0 ? Math.round(extAudioDuration * 1000) : 0);
       var body = {
         upload_audio_id: extUploadAudioId,
         title: extUploadTitle || 'Uploaded Track'
       };
-      if (extExtendAtMs > 0) body.extend_at = extExtendAtMs;
+      if (effectiveExtendAt > 0) body.extend_at = effectiveExtendAt;
       if (lyrics.trim()) body.lyrics = lyrics.trim();
 
       var res = await fetch('/api/job/extend-upload', {
@@ -5435,7 +5449,7 @@ window.renderEditInstrumentPills = function (bp) {
         if (genResult) genResult.style.display = 'none';
         pipelineStatus.style.display = 'block';
         pipelineStatus.style.opacity = '1';
-        if (spinnerMsg) spinnerMsg.textContent = 'Extending your track… (1–3 min)';
+        if (spinnerMsg) spinnerMsg.textContent = 'Generating your extended track… (1–3 min)';
         if (genBtn) { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
       }
 
