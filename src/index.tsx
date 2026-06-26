@@ -1182,30 +1182,29 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
         return c.json({ error: 'ZIP range request not supported by CDN' }, 502)
       }
 
-      // Decompress if deflated (method=8) — Cloudflare Workers supports DecompressionStream natively
-      let responseBody: ReadableStream<Uint8Array> | null = rangeRes.body
-      if (localCompMethod === 8 && responseBody) {
-        // deflate-raw = raw DEFLATE without zlib wrapper (ZIP uses raw deflate)
+      // Decompress if deflated (method=8).
+      // IMPORTANT: We must decompress into an ArrayBuffer (not stream) so we can
+      // send a real Content-Length header. Cloudflare Workers strips Content-Length
+      // from streaming responses, which makes audio.duration = Infinity in the browser.
+      let audioBuffer: ArrayBuffer
+      if (localCompMethod === 8) {
+        // Fully decompress via DecompressionStream → Response → ArrayBuffer
         const ds = new DecompressionStream('deflate-raw')
-        responseBody = responseBody.pipeThrough(ds)
+        const decompStream = rangeRes.body!.pipeThrough(ds)
+        audioBuffer = await new Response(decompStream).arrayBuffer()
+      } else {
+        // Stored (no compression) — just read as-is
+        audioBuffer = await rangeRes.arrayBuffer()
       }
 
-      // Build response headers — include Content-Length so the browser can
-      // determine audio.duration.  For deflated entries we use uncompSize
-      // (the decompressed size stored in the zip-entry URL); for stored entries
-      // we use compSize directly.
-      const responseHeaders: Record<string, string> = {
-        'Content-Type': 'audio/wav',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=3600',
-      }
-      if (localCompMethod === 8 && uncompSize > 0) {
-        responseHeaders['Content-Length'] = String(uncompSize)
-      } else if (localCompMethod !== 8 && compSize > 0) {
-        responseHeaders['Content-Length'] = String(compSize)
-      }
-
-      return new Response(responseBody, { headers: responseHeaders })
+      return new Response(audioBuffer, {
+        headers: {
+          'Content-Type': 'audio/wav',
+          'Content-Length': String(audioBuffer.byteLength),
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'public, max-age=3600',
+        }
+      })
     }
 
     const upstream = await fetch(stemUrl)
