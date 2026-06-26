@@ -5231,29 +5231,153 @@ window.renderEditInstrumentPills = function (bp) {
   };
 
   // ── Submit using uploaded audio ID ────────────────────────────────────────
-  // ── Background poll for an extend job — polls Mureka and refreshes library ───
-  function _extPollJob(jobId) {
-    var maxAttempts = 72; // 6 min max
-    var attempts = 0;
+  // ── Background poll for an extend job ────────────────────────────────────────
+  // ui = optional object with creator-page pipeline elements to drive
+  // ── Render one extended-track card (mirrors renderBeatCard style) ──────────
+  function renderExtendedCard(p, i) {
+    var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 73 + 200) % 360;
+    var title    = p.title || 'Extended Track';
+    var safeTitle = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
+    var stereoUrl = p.stereo_url || '';
+    var date     = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
+    var playBtn  = stereoUrl
+      ? '<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>'
+      : '<div class="project-card__play" style="opacity:.3;pointer-events:none"><i class="fas fa-hourglass-half"></i></div>';
+    return '<div class="project-card"' +
+      ' data-stereo="' + stereoUrl + '"' +
+      ' data-id="' + p.id + '"' +
+      ' data-title="' + title.replace(/"/g,'&quot;') + '"' +
+      ' data-hue="' + hue + '">' +
+      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + ((hue+60)%360) + ',70%,10%))">' +
+        '<div class="project-card__art-icon"><i class="fas fa-expand-arrows-alt" style="color:hsl(' + hue + ',80%,65%)"></i></div>' +
+        playBtn +
+      '</div>' +
+      '<div class="project-card__body">' +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+          '<h4 style="margin:0;flex:1">' + title + '</h4>' +
+          '<button class="song-dots-btn" title="More options"' +
+            ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + stereoUrl + '\',\'\',\'' + safeTitle + '\',\'extended\')"' +
+            ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
+        '</div>' +
+        '<p style="margin-bottom:6px;color:var(--muted);font-size:.8rem"><i class="fas fa-expand-arrows-alt" style="font-size:.7rem;margin-right:4px;opacity:.6"></i>Extended · ' + date + '</p>' +
+        (stereoUrl ? '<audio class="oneshot-card-audio" src="' + stereoUrl + '" controls preload="none" style="width:100%;margin-top:4px"></audio>' : '<p style="color:var(--muted);font-size:.78rem"><i class="fas fa-spinner fa-spin"></i> Generating…</p>') +
+      '</div>' +
+    '</div>';
+  }
+
+  // ── Hard-reload the extended library tab — renders directly, bypasses _libLoaded closure ──
+  function reloadExtendedTab() {
+    var gridEl = document.getElementById('project-grid-extended');
+    if (!gridEl) return;
+    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+    fetch('/api/projects?tab=extended')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var projects = d.projects || [];
+        if (!projects.length) {
+          gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-expand-arrows-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No extended tracks yet. Use the <strong>Extend</strong> tab in the Creator to extend any track.</p></div>';
+          return;
+        }
+        // Render cards directly — never touch the IIFE cache (_libLoaded/_libData)
+        var html = '';
+        projects.forEach(function(p, i) { html += renderExtendedCard(p, i); });
+        gridEl.innerHTML = html;
+        // Update the tab badge count
+        var badge = document.querySelector('.lib-tab[data-tab="extended"] .lib-tab-count');
+        if (badge) badge.textContent = projects.length;
+        // Make sure the extended panel is visible
+        var panel = document.getElementById('lib-panel-extended');
+        if (panel && panel.style.display === 'none') panel.style.display = '';
+      })
+      .catch(function() {
+        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load extended tracks.</div>';
+      });
+  }
+  // Expose globally so other code can call it (e.g. after extend from library card menu)
+  window.reloadExtendedTab = reloadExtendedTab;
+
+  function _extPollJob(jobId, ui) {
+    var maxAttempts = 72; // 6 min max (~360s)
+    var attempts    = 0;
+    ui = ui || {};
+
+    // Immediately switch to the extended library tab so user sees progress
+    // Also show a "generating" placeholder card immediately
+    var extBtnInit = document.querySelector('.lib-tab[data-tab="extended"]');
+    if (extBtnInit) extBtnInit.click();
+
     function doPoll() {
-      if (attempts++ >= maxAttempts) return;
+      if (attempts++ >= maxAttempts) {
+        // Timeout — reset creator UI
+        if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
+        if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
+        return;
+      }
+
       fetch('/api/poll/' + jobId, { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(job) {
-          if (job.status === 'ready' || job.status === 'error') {
-            // Job done — click the Extended tab button to reload it fresh
-            var extBtn = document.querySelector('.lib-tab[data-tab="extended"]');
-            if (extBtn) extBtn.click();
+          // Update spinner message
+          if (ui.spinnerMsg && ui.pipelineStatus) {
+            if (job.status === 'generating') ui.spinnerMsg.textContent = 'Mureka is composing your extended track…';
+          }
+
+          if (job.status === 'ready') {
+            // ── Done: collapse spinner, show audio player on creator page ──
+            if (ui.pipelineStatus) {
+              ui.pipelineStatus.style.transition = 'opacity .4s ease';
+              ui.pipelineStatus.style.opacity = '0';
+              setTimeout(function() {
+                ui.pipelineStatus.style.display = 'none';
+                ui.pipelineStatus.style.opacity = '1';
+              }, 400);
+            }
+            if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
+
+            // Show the stereo player with the extended track
+            if (job.stereo_url && ui.stereoPlayer && ui.stereoAudio) {
+              ui.stereoAudio.src = job.stereo_url;
+              ui.stereoPlayer.style.display = 'block';
+              if (ui.stereoDownload) {
+                var currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
+                if (currentPlan === 'free') {
+                  ui.stereoDownload.href = '#';
+                  ui.stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  ui.stereoDownload.style.opacity = '0.7';
+                } else {
+                  var safeTitle = (job.title || 'extended_track').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
+                  ui.stereoDownload.href = job.stereo_url;
+                  ui.stereoDownload.setAttribute('download', safeTitle + '_stereo.mp3');
+                  ui.stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download';
+                  ui.stereoDownload.style.opacity = '';
+                }
+              }
+              if (ui.genResult) ui.genResult.style.display = 'block';
+            }
+
+            // Hard-reload the extended library tab so the new card appears
+            reloadExtendedTab();
+
+          } else if (job.status === 'error') {
+            if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
+            if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
+            // Show error toast
+            var toast = document.createElement('div');
+            toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#ef4444;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(239,68,68,.4)';
+            toast.textContent = 'Extend failed: ' + (job.error || 'Mureka error');
+            document.body.appendChild(toast);
+            setTimeout(function() { toast.remove(); }, 5000);
+            reloadExtendedTab();
+
           } else {
+            // Still generating — keep polling
             setTimeout(doPoll, 5000);
           }
         })
         .catch(function() { setTimeout(doPoll, 8000); });
     }
-    // Switch to Extended tab immediately so user sees the generating card
-    var extBtn = document.querySelector('.lib-tab[data-tab="extended"]');
-    if (extBtn) extBtn.click();
-    setTimeout(doPoll, 5000);
+
+    setTimeout(doPoll, 5000); // first poll after 5s
   }
 
   window.submitSongExtendUpload = async function() {
@@ -5261,9 +5385,9 @@ window.renderEditInstrumentPills = function (bp) {
       alert('Please upload a track first.');
       return;
     }
-    var status = document.getElementById('ext-submit-status');
-    var btn    = document.getElementById('ext-submit-btn');
-    var lyrics = (document.getElementById('ext-lyrics') || {}).value || '';
+    var status  = document.getElementById('ext-submit-status');
+    var btn     = document.getElementById('ext-submit-btn');
+    var lyrics  = (document.getElementById('ext-lyrics') || {}).value || '';
 
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
     if (status) { status.style.display = 'block'; status.style.color = 'var(--muted)'; status.textContent = 'Submitting extend job…'; }
@@ -5284,22 +5408,49 @@ window.renderEditInstrumentPills = function (bp) {
       var data = await res.json();
       if (data.error) throw new Error(data.error);
       var jobId = data.job_id;
-      if (status) { status.style.color = '#10b981'; status.textContent = '✓ Extend job started! Mureka is generating your track (takes 1–3 min). Heading to your library…'; }
-      // Stop playback
-      var audio = document.getElementById('ext-preview-audio');
-      if (audio) try { audio.pause(); } catch(e) {}
-      // Close popup, switch to extended tab in library, start polling this job
-      setTimeout(function() {
-        window.closeCreatorPopup && window.closeCreatorPopup('extend');
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
-        if (status) { status.style.display = 'none'; }
-        // Force library to reload so the new generating card appears
-        if (window.switchLibTab) {
-          window.switchLibTab('extended');
-        }
-        // Kick off background polling for this job — updates the card when ready
-        if (jobId) _extPollJob(jobId);
-      }, 2200);
+
+      // Stop scrubber playback
+      var previewAudio = document.getElementById('ext-preview-audio');
+      if (previewAudio) try { previewAudio.pause(); } catch(e) {}
+
+      // Close the extend popup immediately
+      window.closeCreatorPopup && window.closeCreatorPopup('extend');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      if (status) { status.style.display = 'none'; }
+
+      // ── Drive the creator-page pipeline UI (same as a normal generation) ──
+      var pipelineStatus  = document.getElementById('pipeline-status');
+      var genResult       = document.getElementById('gen-result');
+      var genEmpty        = document.getElementById('gen-empty');
+      var genError        = document.getElementById('gen-error');
+      var spinnerMsg      = document.getElementById('pipeline-spinner-msg');
+      var genBtn          = document.getElementById('gen-full-btn');
+      var stereoPlayer    = document.getElementById('stereo-player');
+      var stereoAudio     = document.getElementById('stereo-audio');
+      var stereoDownload  = document.getElementById('stereo-download');
+
+      if (pipelineStatus) {
+        if (genEmpty)  genEmpty.style.display  = 'none';
+        if (genError)  genError.style.display  = 'none';
+        if (genResult) genResult.style.display = 'none';
+        pipelineStatus.style.display = 'block';
+        pipelineStatus.style.opacity = '1';
+        if (spinnerMsg) spinnerMsg.textContent = 'Extending your track… (1–3 min)';
+        if (genBtn) { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+      }
+
+      // Start background polling — updates the pipeline UI and the extended library tab
+      _extPollJob(jobId, {
+        pipelineStatus: pipelineStatus,
+        spinnerMsg: spinnerMsg,
+        genResult: genResult,
+        genEmpty: genEmpty,
+        genBtn: genBtn,
+        stereoPlayer: stereoPlayer,
+        stereoAudio: stereoAudio,
+        stereoDownload: stereoDownload
+      });
+
     } catch(e) {
       if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }

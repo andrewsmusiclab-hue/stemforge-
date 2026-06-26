@@ -2594,7 +2594,13 @@ app.post('/api/job/extend-upload', async (c) => {
       return c.json({ error: `Mureka extend error: ${err?.error?.message || extRes.status}` }, 502)
     }
     const extData = await extRes.json() as any
-    const extTaskId = extData.id as string
+    // Mureka song/extend returns { id: "task_id", status: "...", ... }
+    // Guard against unexpected response shapes
+    const extTaskId = extData.id || extData.task_id || extData.taskId
+    if (!extTaskId) {
+      console.error('[extend-upload] Mureka extend response missing id:', JSON.stringify(extData).slice(0, 500))
+      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
+    }
 
     // Create a new job record to track the extend result
     const newJobId = crypto.randomUUID()
@@ -2713,7 +2719,11 @@ app.post('/api/job/extend', async (c) => {
       return c.json({ error: `Mureka extend error: ${err?.error?.message || extRes.status}` }, 502)
     }
     const extData = await extRes.json() as any
-    const extTaskId = extData.id as string
+    const extTaskId = extData.id || extData.task_id || extData.taskId
+    if (!extTaskId) {
+      console.error('[job/extend] Mureka extend response missing id:', JSON.stringify(extData).slice(0, 500))
+      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
+    }
 
     // Step 3: Create a new job record in D1 to track the extend result
     const newJobId = crypto.randomUUID()
@@ -4323,6 +4333,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
+        <p class="home-downgrade-note" id="home-creator-downgrade-note" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4;text-align:center"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
       </div>
       <div class="plan-card">
         <div class="plan-card__tier">Pro Artist</div>
@@ -4335,6 +4346,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
+        <p class="home-downgrade-note" id="home-pro-downgrade-note" style="display:none;margin:8px 0 0;font-size:.78rem;color:var(--muted);line-height:1.4;text-align:center"><i class="fas fa-info-circle" style="color:#6c3aff;margin-right:4px"></i>Downgrade takes effect at end of your billing cycle. You keep all features until then.</p>
       </div>
       <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
         <div class="plan-card__tier" style="color:#a78bfa">Developer</div>
@@ -4501,6 +4513,36 @@ window.showSfPlanToast = function(type, plan, msg) {
 
 (function(){
   let _humPlan = null;
+
+  // Show downgrade notes on home plan cards for users already on a higher plan
+  fetch('/api/auth/me').then(r => r.json()).then(me => {
+    const user = me && me.user;
+    if (!user) return;
+    const rank = { free:0, creator:1, pro:2, developer:3 };
+    const userRank = rank[user.plan] || 0;
+    // Show "Downgrade takes effect..." note under the Creator card when user is Pro
+    if (userRank > 1) {
+      const n = document.getElementById('home-creator-downgrade-note');
+      if (n) n.style.display = 'block';
+    }
+    // Show note under Pro card when user is on any paid plan (creator/pro = viewing lower or equal — actually only show when they'd be downgrading)
+    // For home page: show pro note when user is on developer (edge case)
+    if (userRank > 2) {
+      const n = document.getElementById('home-pro-downgrade-note');
+      if (n) n.style.display = 'block';
+    }
+    // Also reveal the note immediately when user clicks a downgrade button
+    document.querySelectorAll('.home-plan-btn').forEach(function(btn) {
+      var plan = btn.dataset.plan;
+      var planRank = rank[plan] || 0;
+      if (userRank > planRank) {
+        // This button is a downgrade — show its note permanently
+        var noteId = 'home-' + plan + '-downgrade-note';
+        var note = document.getElementById(noteId);
+        if (note) note.style.display = 'block';
+      }
+    });
+  }).catch(function(){});
 
   // Convert plan card buttons: logged-in users get upgrade/downgrade modal, logged-out go to checkout
   let _homeDgPlan = null;
