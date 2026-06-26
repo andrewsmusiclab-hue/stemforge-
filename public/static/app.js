@@ -5231,6 +5231,31 @@ window.renderEditInstrumentPills = function (bp) {
   };
 
   // ── Submit using uploaded audio ID ────────────────────────────────────────
+  // ── Background poll for an extend job — polls Mureka and refreshes library ───
+  function _extPollJob(jobId) {
+    var maxAttempts = 72; // 6 min max
+    var attempts = 0;
+    function doPoll() {
+      if (attempts++ >= maxAttempts) return;
+      fetch('/api/poll/' + jobId, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(job) {
+          if (job.status === 'ready' || job.status === 'error') {
+            // Job done — click the Extended tab button to reload it fresh
+            var extBtn = document.querySelector('.lib-tab[data-tab="extended"]');
+            if (extBtn) extBtn.click();
+          } else {
+            setTimeout(doPoll, 5000);
+          }
+        })
+        .catch(function() { setTimeout(doPoll, 8000); });
+    }
+    // Switch to Extended tab immediately so user sees the generating card
+    var extBtn = document.querySelector('.lib-tab[data-tab="extended"]');
+    if (extBtn) extBtn.click();
+    setTimeout(doPoll, 5000);
+  }
+
   window.submitSongExtendUpload = async function() {
     if (!extUploadAudioId) {
       alert('Please upload a track first.');
@@ -5258,16 +5283,23 @@ window.renderEditInstrumentPills = function (bp) {
       });
       var data = await res.json();
       if (data.error) throw new Error(data.error);
-      if (status) { status.style.color = '#10b981'; status.textContent = 'Extend job started! Check your library.'; }
+      var jobId = data.job_id;
+      if (status) { status.style.color = '#10b981'; status.textContent = '✓ Extend job started! Mureka is generating your track (takes 1–3 min). Heading to your library…'; }
       // Stop playback
       var audio = document.getElementById('ext-preview-audio');
       if (audio) try { audio.pause(); } catch(e) {}
+      // Close popup, switch to extended tab in library, start polling this job
       setTimeout(function() {
         window.closeCreatorPopup && window.closeCreatorPopup('extend');
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
         if (status) { status.style.display = 'none'; }
-        if (window.navigate) window.navigate('library');
-      }, 1800);
+        // Force library to reload so the new generating card appears
+        if (window.switchLibTab) {
+          window.switchLibTab('extended');
+        }
+        // Kick off background polling for this job — updates the card when ready
+        if (jobId) _extPollJob(jobId);
+      }, 2200);
     } catch(e) {
       if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }

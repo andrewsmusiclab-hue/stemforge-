@@ -504,6 +504,38 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
   }
 }
 
+// ── Mureka polling helpers ────────────────────────────────────────────────────
+// Poll Mureka instrumental/query/:taskId — returns stereo URL string or null if still running
+async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<string | null> {
+  const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  })
+  if (!res.ok) return null
+  const data = await res.json() as any
+  if (data.status === 'succeeded' || data.status === 'completed') {
+    // Mureka instrumental returns choices[0].url or choices[0].audio_url
+    return data.choices?.[0]?.url || data.choices?.[0]?.audio_url || null
+  }
+  if (data.status === 'failed') throw new Error(data.error?.message || 'Mureka instrumental generation failed')
+  return null // still processing
+}
+
+// Poll Mureka song/query/:taskId — used for song/extend results
+// Mureka song/extend uses the same song/query endpoint, returns choices[0].url
+async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<string | null> {
+  const res = await fetch(`${MUREKA_BASE}/song/query/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${apiKey}` }
+  })
+  if (!res.ok) return null
+  const data = await res.json() as any
+  if (data.status === 'succeeded' || data.status === 'completed') {
+    // song/extend returns: { choices: [{ url: "...", audio_url: "..." }] }
+    return data.choices?.[0]?.url || data.choices?.[0]?.audio_url || null
+  }
+  if (data.status === 'failed') throw new Error(data.error?.message || 'Mureka song extend failed')
+  return null // still processing
+}
+
 // Step 2b+3: called on each POST /api/poll/:id from the frontend.
 // Stems are NEVER auto-generated on beat creation (all plans).
 
@@ -2197,7 +2229,44 @@ app.get('/subscription', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login')
-  return c.html(subscriptionPage(user, c.env))
+
+  // ── Detect any pending Stripe plan changes so we can render cancel buttons visible ──
+  let pendingDowngrade: string | null = null  // 'free' | 'creator' | null
+  let pendingUpgrade: string | null = null    // 'creator' | 'pro' | null
+  if (user.stripe_subscription_id && stripeConfigured(c.env)) {
+    try {
+      const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+      // cancel_at_period_end = true means downgrading to free (cancellation)
+      if (sub.cancel_at_period_end) {
+        pendingDowngrade = 'free'
+      }
+      // Check for subscription schedules (downgrade to creator / upgrade)
+      if (!pendingDowngrade) {
+        const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}&limit=5`, {}, c.env.STRIPE_SECRET_KEY)
+        const active = schedules?.data?.find((s: any) => s.status === 'active' && s.subscription === user.stripe_subscription_id)
+        if (active && active.phases?.length >= 2) {
+          // The last phase shows what the plan changes TO
+          const lastPhase = active.phases[active.phases.length - 1]
+          const nextPriceId = lastPhase?.items?.[0]?.price
+          // Map price IDs to plan names (same mapping as cancel-downgrade/cancel-upgrade endpoints)
+          const PRICE_TO_PLAN: Record<string, string> = {
+            [c.env.STRIPE_PRICE_CREATOR || '']: 'creator',
+            [c.env.STRIPE_PRICE_PRO || '']: 'pro'
+          }
+          const nextPlan = PRICE_TO_PLAN[nextPriceId] || null
+          if (nextPlan) {
+            const planRank: Record<string, number> = { free: 0, creator: 1, pro: 2 }
+            const currentRank = planRank[user.plan] ?? 0
+            const nextRank = planRank[nextPlan] ?? 0
+            if (nextRank < currentRank) pendingDowngrade = nextPlan
+            else if (nextRank > currentRank) pendingUpgrade = nextPlan
+          }
+        }
+      }
+    } catch { /* Stripe check failed — show no pending banner */ }
+  }
+
+  return c.html(subscriptionPage(user, c.env, pendingDowngrade, pendingUpgrade))
 })
 
 app.get('/account', async (c) => {
@@ -5876,7 +5945,7 @@ function profilePage(user: User | null) {
 }
 
 // ─── SUBSCRIPTION PAGE ────────────────────────────────────────────────────────
-function subscriptionPage(user: User, env: Bindings) {
+function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | null = null, pendingUpgrade: string | null = null) {
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
@@ -6022,14 +6091,14 @@ function subscriptionPage(user: User, env: Bindings) {
             ? '<span class="sub-current-badge">Current plan</span>'
             : (user.plan === 'creator' || user.plan === 'pro' || user.plan === 'developer')
               ? `<div class="sub-action-wrap" id="sub-free-action-wrap">
-                  <div class="sub-downgrade-pending-banner" id="sub-free-downgrade-banner" style="display:none">
+                  <div class="sub-downgrade-pending-banner" id="sub-free-downgrade-banner" style="display:${pendingDowngrade === 'free' ? 'flex' : 'none'}">
                     <i class="fas fa-clock"></i> <span>Downgrading to Free at end of billing cycle</span>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free" style="border-color:rgba(255,100,100,.4);color:#ff7070">
+                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free" style="border-color:rgba(255,100,100,.4);color:#ff7070;${pendingDowngrade === 'free' ? 'display:none' : ''}">
                       <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Free
                     </button>
-                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-free" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')">
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-free" style="display:${pendingDowngrade === 'free' ? 'inline-flex' : 'none'};border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')">
                       <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
                     </button>
                   </div>
@@ -6052,41 +6121,41 @@ function subscriptionPage(user: User, env: Bindings) {
           ${user.plan === 'creator'
             ? `<div class="sub-action-wrap" id="sub-creator-action-wrap">
                 <span class="sub-current-badge">Current plan</span>
-                <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:none;margin-top:8px">
+                <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:${pendingDowngrade === 'free' ? 'flex' : 'none'};margin-top:8px">
                   <i class="fas fa-clock"></i> <span id="sub-creator-banner-msg">Downgrading to Free at end of billing cycle</span>
                 </div>
                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-                  <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free-from-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070">
+                  <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="free" id="sub-btn-downgrade-to-free-from-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070;${pendingDowngrade === 'free' ? 'display:none' : ''}">
                     <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Free
                   </button>
-                  <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')">
+                  <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-creator" style="display:${pendingDowngrade === 'free' ? 'inline-flex' : 'none'};border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('free')">
                     <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
                   </button>
                 </div>
               </div>`
             : user.plan === 'pro' || user.plan === 'developer'
               ? `<div class="sub-action-wrap" id="sub-creator-action-wrap">
-                  <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:none">
+                  <div class="sub-downgrade-pending-banner" id="sub-creator-downgrade-banner" style="display:${pendingDowngrade === 'creator' ? 'flex' : 'none'}">
                     <i class="fas fa-clock"></i> <span id="sub-creator-banner-msg">Downgrading to Creator at end of billing cycle</span>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" id="sub-btn-downgrade-to-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070">
+                    <button class="btn btn--outline btn--sm sub-downgrade-btn" data-target="creator" id="sub-btn-downgrade-to-creator" style="border-color:rgba(255,100,100,.4);color:#ff7070;${pendingDowngrade === 'creator' ? 'display:none' : ''}">
                       <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Creator
                     </button>
-                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('creator')">
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-creator" style="display:${pendingDowngrade === 'creator' ? 'inline-flex' : 'none'};border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('creator')">
                       <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
                     </button>
                   </div>
                 </div>`
               : `<div class="sub-action-wrap" id="sub-creator-action-wrap">
-                  <div class="sub-upgrade-pending-banner" id="sub-creator-upgrade-banner" style="display:none">
+                  <div class="sub-upgrade-pending-banner" id="sub-creator-upgrade-banner" style="display:${pendingUpgrade === 'creator' ? 'flex' : 'none'}">
                     <i class="fas fa-clock"></i> <span>Upgrading to Creator at end of billing cycle</span>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator" id="sub-btn-upgrade-to-creator">
+                    <button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="creator" id="sub-btn-upgrade-to-creator" style="${pendingUpgrade === 'creator' ? 'display:none' : ''}">
                       <i class="fas fa-arrow-up" style="font-size:.75rem;margin-right:4px"></i>Upgrade to Creator
                     </button>
-                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-upgrade-creator" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelUpgrade('creator')">
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-upgrade-creator" style="display:${pendingUpgrade === 'creator' ? 'inline-flex' : 'none'};border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelUpgrade('creator')">
                       <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Upgrade
                     </button>
                   </div>
@@ -6109,18 +6178,22 @@ function subscriptionPage(user: User, env: Bindings) {
           ${user.plan === 'pro'
             ? `<div class="sub-action-wrap" id="sub-pro-action-wrap">
                 <span class="sub-current-badge">Current plan</span>
+                <div class="sub-downgrade-pending-banner" id="sub-pro-downgrade-banner" style="display:${pendingDowngrade ? 'flex' : 'none'};margin-top:8px">
+                  <i class="fas fa-clock"></i> <span>Downgrading to ${pendingDowngrade === 'creator' ? 'Creator' : 'Free'} at end of billing cycle</span>
+                </div>
+                ${pendingDowngrade ? `<button class="btn btn--outline btn--sm" id="sub-btn-cancel-downgrade-pro" style="display:inline-flex;margin-top:8px;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelDowngrade('${pendingDowngrade}')"><i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade</button>` : ''}
               </div>`
             : user.plan === 'developer'
               ? `<span class="sub-current-badge" style="opacity:.5">Dev override</span>`
               : `<div class="sub-action-wrap" id="sub-pro-action-wrap">
-                  <div class="sub-upgrade-pending-banner" id="sub-pro-upgrade-banner" style="display:none">
+                  <div class="sub-upgrade-pending-banner" id="sub-pro-upgrade-banner" style="display:${pendingUpgrade === 'pro' ? 'flex' : 'none'}">
                     <i class="fas fa-clock"></i> <span>Upgrading to Pro Artist at end of billing cycle</span>
                   </div>
                   <div style="display:flex;gap:8px;flex-wrap:wrap">
-                    <button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="pro" id="sub-btn-upgrade-to-pro">
+                    <button class="btn btn--primary btn--sm sub-upgrade-btn" data-target="pro" id="sub-btn-upgrade-to-pro" style="${pendingUpgrade === 'pro' ? 'display:none' : ''}">
                       <i class="fas fa-arrow-up" style="font-size:.75rem;margin-right:4px"></i>Upgrade to Pro Artist
                     </button>
-                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-upgrade-pro" style="display:none;border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelUpgrade('pro')">
+                    <button class="btn btn--outline btn--sm" id="sub-btn-cancel-upgrade-pro" style="display:${pendingUpgrade === 'pro' ? 'inline-flex' : 'none'};border-color:rgba(78,159,255,.4);color:var(--primary)" onclick="cancelUpgrade('pro')">
                       <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Upgrade
                     </button>
                   </div>
