@@ -4222,8 +4222,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   //  DOWNLOAD BUTTON (per-tab stereo mix)
   // ─────────────────────────────────────────────────────────────────────────
+  //  DOWNLOAD BUTTON — opens a centered modal popup (bulletproof, no positioning)
+  // ─────────────────────────────────────────────────────────────────────────
   function _buildDownloadBtn(mode) {
-    // Free users: no download
+    // Free users: upgrade prompt
     if (_userPlan === 'free') {
       return '<button title="Upgrade to download" onclick="window.location=\'/pricing\'" style="' +
         'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,200,0,.2);' +
@@ -4233,88 +4235,99 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       '</button>';
     }
 
-    // Creator: mp3 only — Pro/developer: mp3 + wav option
-    var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
-
-    if (canWav) {
-      // Dropdown uses position:fixed so it escapes the card's overflow:hidden
-      return '<div style="position:relative;display:inline-block" id="sp-dl-wrap">' +
-        '<button onclick="window._spToggleDlMenu(event)" style="' +
-            'padding:3px 10px;border-radius:5px;border:1px solid rgba(78,159,255,.25);' +
-            'background:rgba(78,159,255,.07);color:#4e9fff;font-size:.68rem;cursor:pointer;' +
-            'display:flex;align-items:center;gap:4px">' +
-          '<i class="fas fa-download" style="font-size:.6rem"></i> Download' +
-          '<i class="fas fa-chevron-down" style="font-size:.5rem;margin-left:2px"></i>' +
-        '</button>' +
-        '<div id="sp-dl-menu" style="display:none;position:fixed;' +
-            'background:#1a1a2e;border:1px solid rgba(255,255,255,.15);border-radius:7px;' +
-            'padding:4px;z-index:999999;min-width:150px;box-shadow:0 12px 32px rgba(0,0,0,.8)">' +
-          '<button onclick="window._spDownloadMix(\'mp3\')" style="' +
-              'width:100%;text-align:left;padding:6px 10px;border-radius:4px;border:none;' +
-              'background:none;color:rgba(255,255,255,.8);font-size:.73rem;cursor:pointer"' +
-            ' onmouseover="this.style.background=\'rgba(255,255,255,.07)\'" onmouseout="this.style.background=\'none\'">' +
-            '<i class="fas fa-file-audio" style="margin-right:6px;color:#4e9fff"></i>MP3 (compressed)' +
-          '</button>' +
-          '<button onclick="window._spDownloadMix(\'wav\')" style="' +
-              'width:100%;text-align:left;padding:6px 10px;border-radius:4px;border:none;' +
-              'background:none;color:rgba(255,255,255,.8);font-size:.73rem;cursor:pointer"' +
-            ' onmouseover="this.style.background=\'rgba(255,255,255,.07)\'" onmouseout="this.style.background=\'none\'">' +
-            '<i class="fas fa-wave-square" style="margin-right:6px;color:#a855f6"></i>WAV (lossless)' +
-          '</button>' +
-        '</div>' +
-      '</div>';
-    }
-
-    // Creator: mp3 only direct link
-    return '<a href="/api/stem-mix/' + _jobId + '?fmt=mp3" download="stems_mix.mp3" style="' +
+    // All paid tiers get the popup button (creator gets MP3 only inside popup)
+    return '<button onclick="window._spOpenDlPopup()" style="' +
         'padding:3px 10px;border-radius:5px;border:1px solid rgba(78,159,255,.25);' +
         'background:rgba(78,159,255,.07);color:#4e9fff;font-size:.68rem;cursor:pointer;' +
-        'text-decoration:none;display:inline-flex;align-items:center;gap:4px">' +
-      '<i class="fas fa-download" style="font-size:.6rem"></i> MP3' +
-    '</a>';
+        'display:flex;align-items:center;gap:4px">' +
+      '<i class="fas fa-download" style="font-size:.6rem"></i> Download' +
+      '<i class="fas fa-chevron-down" style="font-size:.5rem;margin-left:2px"></i>' +
+    '</button>';
   }
 
-  window._spToggleDlMenu = function (e) {
-    var menu = _panel && _panel.querySelector('#sp-dl-menu');
-    if (!menu) {
-      // menu might be appended to body (for overflow escape) — search there too
-      menu = document.getElementById('sp-dl-menu');
-    }
-    if (!menu) return;
-    var isOpen = menu.style.display !== 'none';
-    if (isOpen) {
-      menu.style.display = 'none';
-      return;
-    }
-    // Use closest('button') so clicking the icon inside the button still works
-    var btn = e && e.target ? e.target.closest('button') : null;
-    if (!btn) btn = _panel && _panel.querySelector('#sp-dl-wrap button');
-    if (btn) {
-      var rect = btn.getBoundingClientRect();
-      menu.style.top    = (rect.bottom + 4) + 'px';
-      menu.style.right  = 'auto';
-      menu.style.left   = Math.max(0, rect.right - 160) + 'px';
-    }
-    menu.style.display = 'block';
-    // Close on outside click (next tick so this click doesn't immediately close it)
-    setTimeout(function () {
-      document.addEventListener('click', function closeDl(ev) {
-        var wrap = _panel && _panel.querySelector('#sp-dl-wrap');
-        var bodyMenu = document.getElementById('sp-dl-menu');
-        var clickedInside = (wrap && wrap.contains(ev.target)) ||
-                            (bodyMenu && bodyMenu.contains(ev.target));
-        if (!clickedInside) {
-          if (menu) menu.style.display = 'none';
-          document.removeEventListener('click', closeDl);
-        }
-      });
-    }, 10);
+  // Opens a centered fixed popup with MP3 / WAV options
+  window._spOpenDlPopup = function () {
+    // Remove any existing popup first
+    var existing = document.getElementById('sp-dl-popup-overlay');
+    if (existing) { existing.remove(); return; }
+
+    var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
+
+    var overlay = document.createElement('div');
+    overlay.id = 'sp-dl-popup-overlay';
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:9999999',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'background:rgba(0,0,0,0.55)', 'backdrop-filter:blur(3px)'
+    ].join(';');
+
+    var wavBtn = canWav
+      ? '<button onclick="window._spDownloadMix(\'wav\')" style="' +
+            'flex:1;padding:14px 10px;border-radius:10px;cursor:pointer;' +
+            'border:1px solid rgba(168,85,247,.5);background:rgba(168,85,247,.12);' +
+            'color:#c084fc;font-size:.82rem;display:flex;flex-direction:column;' +
+            'align-items:center;gap:6px;transition:background .15s"' +
+          ' onmouseover="this.style.background=\'rgba(168,85,247,.25)\'"' +
+          ' onmouseout="this.style.background=\'rgba(168,85,247,.12)\'">' +
+          '<i class="fas fa-wave-square" style="font-size:1.4rem"></i>' +
+          '<span style="font-weight:600">WAV</span>' +
+          '<span style="font-size:.68rem;opacity:.7">Lossless · Pro</span>' +
+        '</button>'
+      : '';
+
+    overlay.innerHTML =
+      '<div style="background:#0f0f1a;border:1px solid rgba(255,255,255,.12);border-radius:16px;' +
+          'padding:24px;min-width:280px;max-width:360px;box-shadow:0 24px 60px rgba(0,0,0,.9);' +
+          'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">' +
+          '<h3 style="margin:0;color:#f1f5f9;font-size:.95rem;font-weight:600">' +
+            '<i class="fas fa-download" style="color:#4e9fff;margin-right:8px"></i>Download Mix' +
+          '</h3>' +
+          '<button onclick="document.getElementById(\'sp-dl-popup-overlay\').remove()" style="' +
+              'background:none;border:none;color:rgba(255,255,255,.4);font-size:1.1rem;' +
+              'cursor:pointer;padding:2px 6px;border-radius:4px;line-height:1"' +
+            ' onmouseover="this.style.color=\'#fff\'" onmouseout="this.style.color=\'rgba(255,255,255,.4)\'">' +
+            '&times;' +
+          '</button>' +
+        '</div>' +
+        '<p style="margin:0 0 16px;color:rgba(255,255,255,.45);font-size:.76rem">' +
+          'Choose your download format:' +
+        '</p>' +
+        '<div style="display:flex;gap:10px">' +
+          '<button onclick="window._spDownloadMix(\'mp3\')" style="' +
+              'flex:1;padding:14px 10px;border-radius:10px;cursor:pointer;' +
+              'border:1px solid rgba(78,159,255,.5);background:rgba(78,159,255,.12);' +
+              'color:#4e9fff;font-size:.82rem;display:flex;flex-direction:column;' +
+              'align-items:center;gap:6px;transition:background .15s"' +
+            ' onmouseover="this.style.background=\'rgba(78,159,255,.25)\'"' +
+            ' onmouseout="this.style.background=\'rgba(78,159,255,.12)\'">' +
+            '<i class="fas fa-file-audio" style="font-size:1.4rem"></i>' +
+            '<span style="font-weight:600">MP3</span>' +
+            '<span style="font-size:.68rem;opacity:.7">Compressed</span>' +
+          '</button>' +
+          wavBtn +
+        '</div>' +
+        (!canWav
+          ? '<p style="margin:12px 0 0;color:rgba(255,255,255,.3);font-size:.7rem;text-align:center">' +
+              '<i class="fas fa-lock" style="margin-right:4px"></i>' +
+              'WAV available on <a href="/pricing" style="color:#a855f6;text-decoration:none">Pro plan</a>' +
+            '</p>'
+          : '') +
+      '</div>';
+
+    // Click backdrop to close
+    overlay.addEventListener('click', function (ev) {
+      if (ev.target === overlay) overlay.remove();
+    });
+
+    document.body.appendChild(overlay);
   };
 
   window._spDownloadMix = function (fmt) {
-    var menu = _panel && _panel.querySelector('#sp-dl-menu');
-    if (menu) menu.style.display = 'none';
-    // Trigger download via hidden anchor
+    // Close popup if open
+    var popup = document.getElementById('sp-dl-popup-overlay');
+    if (popup) popup.remove();
+    // Trigger download
     var a = document.createElement('a');
     a.href = '/api/stem-mix/' + _jobId + '?fmt=' + fmt;
     a.download = 'stems_mix.' + fmt;
