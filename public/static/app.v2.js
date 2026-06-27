@@ -2646,6 +2646,18 @@ window.selectBarPreset = function(btn, bars) {
   window.extResetPick = function() {
     window._extVocalMode = 'instrumental';
     window.setExtVocalMode && window.setExtVocalMode('instrumental');
+    window._extActiveTab = 'upload';
+    _extLibLoaded = false; // Allow re-fetch next open
+    // Reset tabs back to Upload
+    var uploadBtn = document.getElementById('ext-tab-upload');
+    var libBtn    = document.getElementById('ext-tab-library');
+    var stepLib   = document.getElementById('ext-step-library');
+    if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
+    if (libBtn)    { libBtn.style.borderBottom = '2px solid transparent'; libBtn.style.color = 'var(--muted)'; libBtn.style.fontWeight = '600'; }
+    if (stepLib)   stepLib.style.display = 'none';
+    // Restore submit btn to upload mode
+    var submitBtn = document.getElementById('ext-submit-btn');
+    if (submitBtn) { submitBtn.onclick = function() { window.submitSongExtendUpload(); }; }
     extSelectedJob = null;
     const stepPick = document.getElementById('ext-step-pick');
     const stepOpts = document.getElementById('ext-step-options');
@@ -2659,6 +2671,163 @@ window.selectBarPreset = function(btn, bars) {
     const customMs = document.getElementById('ext-custom-ms');
     if (customMs) customMs.style.display = point === 'custom' ? 'block' : 'none';
   };
+
+  // ── Extend popup: Upload / Library tab switcher ─────────────────────────────
+  window._extActiveTab = 'upload'; // 'upload' | 'library'
+
+  window.extSwitchTab = function(tab) {
+    window._extActiveTab = tab;
+    var uploadBtn  = document.getElementById('ext-tab-upload');
+    var libBtn     = document.getElementById('ext-tab-library');
+    var stepPick   = document.getElementById('ext-step-pick');
+    var stepLib    = document.getElementById('ext-step-library');
+    var stepOpts   = document.getElementById('ext-step-options');
+
+    // Hide options (step 2) when switching tabs
+    if (stepOpts) stepOpts.style.display = 'none';
+
+    if (tab === 'upload') {
+      if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
+      if (libBtn)    { libBtn.style.borderBottom = '2px solid transparent';   libBtn.style.color = 'var(--muted)'; libBtn.style.fontWeight = '600'; }
+      if (stepPick)  stepPick.style.display = 'block';
+      if (stepLib)   stepLib.style.display = 'none';
+    } else {
+      if (libBtn)    { libBtn.style.borderBottom = '2px solid var(--primary)'; libBtn.style.color = 'var(--primary)'; libBtn.style.fontWeight = '700'; }
+      if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid transparent'; uploadBtn.style.color = 'var(--muted)'; uploadBtn.style.fontWeight = '600'; }
+      if (stepPick)  stepPick.style.display = 'none';
+      if (stepLib)   stepLib.style.display = 'block';
+      extLoadLibraryPicker();
+    }
+  };
+
+  // ── Load library beats into the picker ───────────────────────────────────────
+  var _extLibLoaded = false;
+
+  function extLoadLibraryPicker() {
+    if (_extLibLoaded) return;
+    var loadingEl = document.getElementById('ext-lib-loading');
+    var listEl    = document.getElementById('ext-lib-list');
+    var emptyEl   = document.getElementById('ext-lib-empty');
+    if (!listEl) return;
+
+    if (loadingEl) loadingEl.style.display = 'block';
+    if (emptyEl)   emptyEl.style.display = 'none';
+    listEl.innerHTML = '';
+
+    fetch('/api/projects?tab=beats&limit=50')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        _extLibLoaded = true;
+        if (loadingEl) loadingEl.style.display = 'none';
+        var projects = (d.projects || []).filter(function(p) { return p.stereo_url || (p.data && JSON.parse(p.data || '{}').stereo_url); });
+        if (!projects.length) {
+          if (emptyEl) emptyEl.style.display = 'block';
+          return;
+        }
+        projects.forEach(function(p) {
+          var data = {};
+          try { data = JSON.parse(p.data || '{}'); } catch(e) {}
+          var title    = p.title || data.prompt || p.id || 'Untitled Beat';
+          var stereoUrl = p.stereo_url || data.stereo_url || '';
+          var bpm      = data.bpm  ? data.bpm + ' BPM' : '';
+          var genre    = data.genre || '';
+          var meta     = [genre, bpm].filter(Boolean).join(' · ');
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer;gap:10px;transition:border-color .15s';
+          row.onmouseenter = function() { row.style.borderColor = 'var(--primary)'; };
+          row.onmouseleave = function() { row.style.borderColor = 'var(--border)'; };
+          row.innerHTML =
+            '<div style="min-width:0;flex:1">' +
+              '<div style="font-size:.84rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + title.replace(/</g,'&lt;') + '</div>' +
+              (meta ? '<div style="font-size:.72rem;color:var(--muted);margin-top:2px">' + meta + '</div>' : '') +
+            '</div>' +
+            '<button style="background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);border-radius:8px;padding:5px 14px;color:var(--primary);cursor:pointer;font-size:.8rem;font-weight:700;white-space:nowrap;flex-shrink:0">' +
+              '<i class="fas fa-expand-arrows-alt" style="margin-right:5px"></i>Select' +
+            '</button>';
+          row.querySelector('button').onclick = function(e) {
+            e.stopPropagation();
+            extSelectLibraryBeat(p.id, title, stereoUrl);
+          };
+          row.onclick = function() { extSelectLibraryBeat(p.id, title, stereoUrl); };
+          listEl.appendChild(row);
+        });
+      })
+      .catch(function() {
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (emptyEl) { emptyEl.style.display = 'block'; emptyEl.innerHTML = '<i class="fas fa-exclamation-circle" style="font-size:2rem;opacity:.4;display:block;margin-bottom:10px"></i>Could not load library. Please try again.'; }
+      });
+  }
+
+  // ── Select a beat from library → switch to scrubber/options step ─────────────
+  function extSelectLibraryBeat(jobId, title, stereoUrl) {
+    // Store the selected library job so submitSongExtend can use it
+    extSelectedJob = { id: jobId, title: title, stereo_url: stereoUrl, audioDuration: 0 };
+
+    var stepLib  = document.getElementById('ext-step-library');
+    var stepOpts = document.getElementById('ext-step-options');
+    var titleEl  = document.getElementById('ext-sel-title');
+    var changeBtn = stepOpts && stepOpts.querySelector('button[onclick="extResetUpload()"]');
+
+    // Hide library list, show options/scrubber
+    if (stepLib)  stepLib.style.display = 'none';
+    if (stepOpts) stepOpts.style.display = 'block';
+    if (titleEl)  titleEl.textContent = title;
+
+    // Update change button to go back to library tab
+    if (changeBtn) {
+      changeBtn.onclick = function() { extResetToLibrary(); };
+    }
+
+    // Update submit button to use library extend (not upload extend)
+    var submitBtn = document.getElementById('ext-submit-btn');
+    if (submitBtn) {
+      submitBtn.onclick = function() { window.submitSongExtend(); };
+    }
+
+    // Load audio into scrubber if URL available
+    if (stereoUrl) {
+      var audio = document.getElementById('ext-preview-audio');
+      if (audio) {
+        audio.src = stereoUrl;
+        audio.load();
+        audio.onloadedmetadata = function() {
+          extSelectedJob.audioDuration = Math.round(audio.duration * 1000);
+          var durEl = document.getElementById('ext-duration-label');
+          if (durEl) {
+            var s = Math.round(audio.duration);
+            durEl.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+          }
+        };
+        // Draw waveform if available
+        if (window.extDrawWaveformFromAudio) window.extDrawWaveformFromAudio(audio);
+      }
+    }
+
+    // Reset scrubber position
+    var fill = document.getElementById('ext-scrubber-fill');
+    var head = document.getElementById('ext-playhead');
+    var badge = document.getElementById('ext-time-badge');
+    if (fill)  fill.style.width = '0%';
+    if (head)  head.style.left = '0%';
+    if (badge) badge.textContent = 'End of track';
+    if (window.extExtendAtMs !== undefined) window.extExtendAtMs = 0;
+    if (window.extAudioDuration !== undefined) window.extAudioDuration = 0;
+  }
+
+  // ── Reset from library-selected back to library tab ──────────────────────────
+  function extResetToLibrary() {
+    extSelectedJob = null;
+    var stepOpts = document.getElementById('ext-step-options');
+    var stepLib  = document.getElementById('ext-step-library');
+    if (stepOpts) stepOpts.style.display = 'none';
+    if (stepLib)  stepLib.style.display = 'block';
+    // Restore submit btn to upload mode
+    var submitBtn = document.getElementById('ext-submit-btn');
+    if (submitBtn) submitBtn.onclick = function() { window.submitSongExtendUpload(); };
+  }
+
+  // Expose for external callers
+  window.extSwitchTab = window.extSwitchTab;
 
   // Extend popup: vocal mode toggle state
   // 'instrumental' = make_instrumental:true sent to Mureka

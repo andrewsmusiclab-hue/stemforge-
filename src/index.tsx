@@ -110,7 +110,7 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
       avatar TEXT,
       plan TEXT NOT NULL DEFAULT 'free',
       gens_used INTEGER NOT NULL DEFAULT 0,
-      gens_limit INTEGER NOT NULL DEFAULT 5,
+      gens_limit INTEGER NOT NULL DEFAULT 50,
       password_hash TEXT,
       google_id TEXT,
       stripe_customer_id TEXT,
@@ -160,6 +160,16 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   for (const sql of migrations) {
     try { await db.prepare(sql).run() } catch { /* already exists */ }
   }
+
+  // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
+  // Free users with old download-era limit → 50 pts
+  await db.prepare(`UPDATE users SET gens_limit = 50   WHERE plan = 'free'      AND gens_limit < 50`).run()
+  // Creator users below 600 → 600 pts
+  await db.prepare(`UPDATE users SET gens_limit = 600  WHERE plan = 'creator'   AND gens_limit < 600`).run()
+  // Pro users below 2000 → 2000 pts
+  await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'pro'       AND gens_limit < 2000`).run()
+  // Developer users below 2000 → 2000 pts
+  await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'developer' AND gens_limit < 2000`).run()
 }
 
 // ── Crypto helpers (Web Crypto API — works in CF Workers) ─────
@@ -3578,10 +3588,10 @@ app.get('/api/credit-packs', async (c) => {
 })
 
 const defaultCreditPacks = [
-  { id: 'pack_10',  name: '10 Points',  credits: 10,  price_cents: 499,  label: '$4.99',  popular: false },
-  { id: 'pack_25',  name: '25 Points',  credits: 25,  price_cents: 999,  label: '$9.99',  popular: true  },
-  { id: 'pack_50',  name: '50 Points',  credits: 50,  price_cents: 1799, label: '$17.99', popular: false },
-  { id: 'pack_100', name: '100 Points', credits: 100, price_cents: 2999, label: '$29.99', popular: false },
+  { id: 'pack_50',   name: '50 Points',   credits: 50,   price_cents: 499,  label: '$4.99',  popular: false },
+  { id: 'pack_150',  name: '150 Points',  credits: 150,  price_cents: 999,  label: '$9.99',  popular: true  },
+  { id: 'pack_400',  name: '400 Points',  credits: 400,  price_cents: 1799, label: '$17.99', popular: false },
+  { id: 'pack_1500', name: '1500 Points', credits: 1500, price_cents: 2999, label: '$29.99', popular: false },
 ]
 
 // POST /api/credit-packs/purchase — create a one-time Stripe payment for a credit pack
@@ -3601,7 +3611,7 @@ app.post('/api/credit-packs/purchase', async (c) => {
     mode: 'payment',
     'line_items[0][price_data][currency]': 'usd',
     'line_items[0][price_data][product_data][name]': pack.name,
-    'line_items[0][price_data][product_data][description]': `${pack.credits} download credits for StemForge`,
+    'line_items[0][price_data][product_data][description]': `${pack.credits} points for StemForge`,
     'line_items[0][price_data][unit_amount]': String(pack.price_cents),
     'line_items[0][quantity]': '1',
     'metadata[user_id]': user.id,
@@ -5352,7 +5362,17 @@ function generatorPage() {
   </div>
   <div class="creator-popup__body">
 
-    <!-- Step 1: Upload -->
+    <!-- Source tabs: Upload vs Library -->
+    <div id="ext-source-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px">
+      <button id="ext-tab-upload" onclick="extSwitchTab('upload')" style="flex:1;background:none;border:none;border-bottom:2px solid var(--primary);color:var(--primary);font-weight:700;padding:9px 0;font-size:.84rem;cursor:pointer;transition:all .2s">
+        <i class="fas fa-cloud-upload-alt" style="margin-right:6px"></i>Upload Track
+      </button>
+      <button id="ext-tab-library" onclick="extSwitchTab('library')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:9px 0;font-size:.84rem;cursor:pointer;transition:all .2s">
+        <i class="fas fa-music" style="margin-right:6px"></i>From Library
+      </button>
+    </div>
+
+    <!-- Step 1a: Upload tab -->
     <div id="ext-step-pick" style="display:block">
       <label class="suno-option-label" style="margin-bottom:10px">Upload a track to extend</label>
       <div class="ref-upload-zone" id="ext-upload-zone" onclick="document.getElementById('ext-audio-file').click()" style="cursor:pointer">
@@ -5376,6 +5396,19 @@ function generatorPage() {
       <button id="ext-upload-next-btn" onclick="extGoToOptions()" class="btn btn--primary" style="width:100%;margin-top:12px;padding:10px;font-size:.88rem;font-weight:700;display:none">
         <i class="fas fa-arrow-right"></i> Next: Pick Extend Point
       </button>
+    </div>
+
+    <!-- Step 1b: Library tab — pick from saved beats -->
+    <div id="ext-step-library" style="display:none">
+      <label class="suno-option-label" style="margin-bottom:10px">Pick a beat from your library</label>
+      <div id="ext-lib-loading" style="text-align:center;padding:20px;color:var(--muted);font-size:.85rem">
+        <i class="fas fa-spinner fa-spin" style="margin-right:6px"></i>Loading your beats…
+      </div>
+      <div id="ext-lib-list" style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto"></div>
+      <div id="ext-lib-empty" style="display:none;text-align:center;padding:24px;color:var(--muted);font-size:.85rem">
+        <i class="fas fa-music" style="font-size:2rem;opacity:.3;display:block;margin-bottom:10px"></i>
+        No beats in your library yet. Generate a beat first or use the Upload tab.
+      </div>
     </div>
 
     <!-- Step 2: Scrubber + lyrics + submit -->
@@ -5578,7 +5611,7 @@ function pricingPage() {
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of points? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase point top-up packs from the Subscription page starting from $4.99. Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of points? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase point top-up packs from the Subscription page starting from $4.99 (50 pts). Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
@@ -6399,33 +6432,6 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         </div>
       </div>
       <div class="credit-packs-grid" id="credit-packs-grid">
-        <div class="credit-pack-card" data-pack="pack_10">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">10</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$4.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_10">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_25">
-          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">25</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$9.99</span>
-            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_25">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
         <div class="credit-pack-card" data-pack="pack_50">
           <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
@@ -6433,21 +6439,48 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$17.99</span>
+            <span class="credit-pack__price">$4.99</span>
             <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_50">
               <i class="fas fa-cart-plus"></i> Buy
             </button>
           </div>
         </div>
-        <div class="credit-pack-card" data-pack="pack_100">
+        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_150">
+          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
           <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
-            <div class="credit-pack__credits">100</div>
+            <div class="credit-pack__credits">150</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$9.99</span>
+            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_150">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_400">
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">400</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$17.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_400">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_1500">
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">1500</div>
             <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$29.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_100">
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1500">
               <i class="fas fa-cart-plus"></i> Buy
             </button>
           </div>
