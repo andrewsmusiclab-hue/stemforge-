@@ -5304,38 +5304,53 @@ window.renderEditInstrumentPills = function (bp) {
   window.reloadExtendedTab = reloadExtendedTab;
 
   // ── Override switchLibTab to handle extended tab directly ────────────────
-  // The base app_base_final.js populateGrid() has no 'extended' case, so switching
-  // to the extended tab via the base switchLibTab would silently drop all cards.
-  // We wrap switchLibTab so extended always calls reloadExtendedTab() instead.
+  // The base app_base_final.js populateGrid() has no 'extended' case AND filterLibrary
+  // also calls populateGrid which silently clears the extended grid. We bypass the base
+  // entirely for extended and do all UI updates manually, then call reloadExtendedTab.
   (function() {
     var _baseSwitchLibTab = window.switchLibTab;
     window.switchLibTab = function(tab) {
       if (tab === 'extended') {
-        // Run the base tab switch UI logic (button active states, panel show/hide, search reset)
-        // but intercept the data-load at the end
-        if (_baseSwitchLibTab) {
-          // Temporarily make fetchLibTab a no-op for extended so the base doesn't try to populate
-          var _baseFetchLibTab = window.fetchLibTab;
-          window.fetchLibTab = function(t) {
-            if (t === 'extended') return; // block base fetch; we'll call reloadExtendedTab
-            if (_baseFetchLibTab) _baseFetchLibTab(t);
-          };
-          _baseSwitchLibTab(tab);
-          window.fetchLibTab = _baseFetchLibTab; // restore
-        } else {
-          // Fallback: manually switch panels
-          document.querySelectorAll('.lib-tab').forEach(function(btn) {
-            btn.classList.toggle('lib-tab--active', btn.dataset.tab === 'extended');
-          });
-          ['beats','extended','oneshots','uploads','trash'].forEach(function(t) {
-            var panel = document.getElementById('lib-panel-' + t);
-            if (panel) panel.style.display = t === 'extended' ? '' : 'none';
-          });
+        // ── Manually do everything _baseSwitchLibTab would do, EXCEPT call filterLibrary/fetchLibTab ──
+        // 1. Update tab active state
+        document.querySelectorAll('.lib-tab').forEach(function(btn) {
+          btn.classList.toggle('lib-tab--active', btn.dataset.tab === 'extended');
+          btn.classList.remove('lib-tab--trash');
+        });
+        // 2. Show/hide panels
+        ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
+          var panel = document.getElementById('lib-panel-' + t);
+          if (panel) panel.style.display = t === 'extended' ? '' : 'none';
+        });
+        // 3. Update search placeholder and reset it (do NOT call filterLibrary — it would wipe the grid)
+        var searchInput = document.getElementById('lib-search');
+        if (searchInput) {
+          searchInput.placeholder = 'Search extended tracks…';
+          searchInput.value = '';
         }
+        var clearBtn = document.getElementById('lib-search-clear');
+        if (clearBtn) clearBtn.style.display = 'none';
+        // 4. Set _libActive so the base knows current tab (important for filterLibrary guard later)
+        // We patch filterLibrary too so it can't wipe extended grid
+        // 5. Load data our way
         reloadExtendedTab();
       } else {
         if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
       }
+    };
+
+    // ── Also override filterLibrary so typing in search doesn't wipe extended grid ──
+    var _baseFilterLibrary = window.filterLibrary;
+    window.filterLibrary = function(query) {
+      // Determine active tab
+      var activeTab = (document.querySelector('.lib-tab--active') || {}).dataset;
+      var tab = activeTab ? activeTab.tab : null;
+      if (tab === 'extended') {
+        // Do nothing — extended tab search is not supported via _libData
+        // (reloadExtendedTab manages its own data from API)
+        return;
+      }
+      if (_baseFilterLibrary) _baseFilterLibrary(query);
     };
   })();
 
@@ -5527,13 +5542,81 @@ window.renderEditInstrumentPills = function (bp) {
 })();
 
 // ── Override renderUploadsGrid with card-style layout matching beats/oneshots ─
-// The base app_base_final.js uses a list-row layout (.upload-item).
-// We replace it with a grid-card layout that visually matches the beat/oneshot cards
-// while keeping the "click to use as reference" action.
+// Cards have three-dot menu (Use as reference, Delete), no arrow badge.
 (function() {
-  // Wait for DOM ready so window.renderUploadsGrid exists from the base IIFE
+  // Open a context menu for an upload card
+  window.openUploadCardMenu = function(btn, fileId, filename, summary) {
+    var existing = document.getElementById('card-context-menu');
+    if (existing) existing.remove();
+
+    var menu = document.createElement('div');
+    menu.id = 'card-context-menu';
+    menu.style.cssText = 'position:fixed;z-index:99999;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);min-width:200px;overflow:hidden;padding:4px 0';
+
+    var items = [
+      {
+        icon: 'fa-headphones',
+        label: 'Use as Reference',
+        action: function() { if (window.useExistingUpload) window.useExistingUpload(fileId, filename, summary); }
+      },
+      {
+        icon: 'fa-trash-alt',
+        label: 'Delete Upload',
+        danger: true,
+        action: function() { deleteUploadItem(fileId, filename); }
+      }
+    ];
+
+    items.forEach(function(item) {
+      var el = document.createElement('button');
+      el.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:' + (item.danger ? 'var(--danger)' : 'var(--text)') + ';cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s';
+      el.innerHTML = '<i class="fas ' + item.icon + '" style="width:15px;opacity:.7;flex-shrink:0"></i>' + item.label;
+      el.onmouseover = function() { el.style.background = 'rgba(255,255,255,.06)'; };
+      el.onmouseout  = function() { el.style.background = 'none'; };
+      el.onclick = function(e) { e.stopPropagation(); menu.remove(); item.action(); };
+      menu.appendChild(el);
+    });
+
+    var rect = btn.getBoundingClientRect();
+    document.body.appendChild(menu);
+    var mh = menu.offsetHeight, mw = menu.offsetWidth;
+    var top  = rect.bottom + 6;
+    var left = rect.right  - mw;
+    if (left < 8) left = 8;
+    if (top + mh > window.innerHeight - 8) top = rect.top - mh - 6;
+    menu.style.top  = top  + 'px';
+    menu.style.left = left + 'px';
+
+    setTimeout(function() {
+      document.addEventListener('click', function closeMenu(e) {
+        if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); }
+      });
+    }, 0);
+  };
+
+  // Delete an upload item (calls API then re-renders)
+  function deleteUploadItem(fileId, filename) {
+    if (!confirm('Delete "' + filename + '"? This cannot be undone.')) return;
+    fetch('/api/reference-uploads/' + encodeURIComponent(fileId), { method: 'DELETE' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok || d.success) {
+          // Re-fetch uploads and re-render
+          var gridEl = document.getElementById('project-grid-uploads');
+          if (gridEl) {
+            gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+            fetch('/api/reference-uploads').then(function(r) { return r.json(); }).then(function(data) {
+              window.renderUploadsGrid(gridEl, data.uploads || []);
+            }).catch(function() {});
+          }
+        } else {
+          alert(d.error || 'Could not delete upload.');
+        }
+      })
+      .catch(function() { alert('Network error. Please try again.'); });
+  }
+
   function installUploadGridOverride() {
-    var _baseRenderUploadsGrid = window.renderUploadsGrid;
     window.renderUploadsGrid = function(gridEl, uploads) {
       if (!gridEl) return;
       if (!uploads || uploads.length === 0) {
@@ -5542,29 +5625,31 @@ window.renderEditInstrumentPills = function (bp) {
       }
       var html = '';
       uploads.forEach(function(u, i) {
-        var analysis  = u.analysis || {};
-        var genre     = analysis.genre || '';
-        var bpm       = analysis.bpm ? (analysis.bpm + ' BPM') : '';
-        var dur       = u.duration ? (Math.floor(u.duration / 60) + ':' + String(Math.floor(u.duration % 60)).padStart(2, '0')) : '';
-        var mood      = analysis.mood || '';
+        var analysis    = u.analysis || {};
+        var genre       = analysis.genre || '';
+        var bpm         = analysis.bpm ? (analysis.bpm + ' BPM') : '';
+        var dur         = u.duration ? (Math.floor(u.duration / 60) + ':' + String(Math.floor(u.duration % 60)).padStart(2, '0')) : '';
+        var mood        = analysis.mood || '';
         var instruments = analysis.instruments ? analysis.instruments.slice(0, 3).join(', ') : '';
-        var dateStr   = u.created_at ? new Date(u.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
-        var filename  = (u.filename || 'Reference track').replace(/\.[^.]+$/, ''); // strip extension
-        var summary   = (analysis.summary || '').slice(0, 90);
-        // Color hue based on index for card art gradient
-        var hues = [210, 270, 160, 30, 330, 190];
-        var hue = hues[i % hues.length];
-        var hue2 = (hue + 40) % 360;
-        var safeFileId = (u.file_id || '').replace(/'/g, '');
+        var dateStr     = u.created_at ? new Date(u.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
+        var filename    = (u.filename || 'Reference track').replace(/\.[^.]+$/, '');
+        var summary     = (analysis.summary || '').slice(0, 90);
+        var hues        = [210, 270, 160, 30, 330, 190];
+        var hue         = hues[i % hues.length];
+        var hue2        = (hue + 40) % 360;
+        var safeFileId  = (u.file_id || '').replace(/'/g, '');
         var safeFilename = (u.filename || '').replace(/'/g, '\\u0027');
-        var safeSummary = (analysis.summary || genre || '').replace(/'/g, '\\u0027').replace(/"/g, '&quot;').slice(0, 120);
+        var safeSummary  = (analysis.summary || genre || '').replace(/'/g, '\\u0027').replace(/"/g, '&quot;').slice(0, 120);
+        var displayName  = filename.replace(/"/g, '&quot;');
+
         html +=
-          '<div class="project-card upload-card" onclick="useExistingUpload(\'' + safeFileId + '\',\'' + safeFilename + '\',\'' + safeSummary + '\')" title="Use as reference">' +
-            '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',50%,14%),hsl(' + hue2 + ',60%,8%));position:relative">' +
+          // Card — clicking the art/body uses as reference; three-dot opens menu
+          '<div class="project-card upload-card">' +
+            // Art area — click to use as reference
+            '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',50%,14%),hsl(' + hue2 + ',60%,8%));position:relative;cursor:pointer"' +
+              ' onclick="useExistingUpload(\'' + safeFileId + '\',\'' + safeFilename + '\',\'' + safeSummary + '\')" title="Use as reference">' +
               '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">' +
-                '<i class="fas fa-waveform-path" style="font-size:2rem;color:hsl(' + hue + ',80%,65%);opacity:.8"></i>' +
-                // Fallback icon since fa-waveform-path may not exist in FA free
-                '<i class="fas fa-music" style="font-size:1.6rem;color:hsl(' + hue + ',80%,65%);opacity:.6;display:none" class="upload-card-fallback"></i>' +
+                '<i class="fas fa-music upload-art-icon" style="font-size:2rem;color:hsl(' + hue + ',80%,65%);opacity:.75"></i>' +
               '</div>' +
               '<div style="position:absolute;top:10px;left:10px">' +
                 '<span style="background:rgba(0,0,0,.45);color:hsl(' + hue + ',80%,70%);font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:99px;letter-spacing:.04em;backdrop-filter:blur(4px)">' +
@@ -5573,43 +5658,33 @@ window.renderEditInstrumentPills = function (bp) {
               '</div>' +
               (dur ? '<div style="position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.5);color:rgba(255,255,255,.8);font-size:.67rem;padding:2px 6px;border-radius:6px;backdrop-filter:blur(4px)">' + dur + '</div>' : '') +
             '</div>' +
+            // Body
             '<div class="project-card__body">' +
-              '<h4 style="font-size:.88rem;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (u.filename || '') + '">' + filename + '</h4>' +
-              '<p style="font-size:.75rem;color:var(--primary);font-weight:500;margin-bottom:6px">' +
+              '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+                '<h4 style="font-size:.88rem;margin:0 0 3px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (u.filename || '') + '">' + displayName + '</h4>' +
+                '<button class="song-dots-btn" title="More options"' +
+                  ' onclick="event.stopPropagation();openUploadCardMenu(this,\'' + safeFileId + '\',\'' + safeFilename + '\',\'' + safeSummary + '\')"' +
+                  ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
+              '</div>' +
+              '<p style="font-size:.75rem;color:var(--primary);font-weight:500;margin-bottom:5px">' +
                 [genre, bpm].filter(Boolean).join(' · ') +
               '</p>' +
               (mood ? '<p style="font-size:.72rem;color:var(--muted);font-style:italic;margin-bottom:4px">' + mood + '</p>' : '') +
               (instruments ? '<p style="font-size:.71rem;color:var(--muted);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><i class="fas fa-guitar" style="color:var(--primary);margin-right:3px;font-size:.65rem"></i>' + instruments + '</p>' : '') +
               (summary ? '<p style="font-size:.72rem;color:var(--muted);line-height:1.45;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">' + summary + '</p>' : '') +
               '<div class="project-card__tags">' +
-                '<span class="export-badge export-badge--stereo"><i class="fas fa-arrow-right" style="margin-right:3px;font-size:.6rem"></i>Use as ref</span>' +
-                (dateStr ? '<span style="font-size:.67rem;color:var(--muted);margin-left:auto;align-self:center">' + dateStr + '</span>' : '') +
+                (dateStr ? '<span style="font-size:.67rem;color:var(--muted)">' + dateStr + '</span>' : '') +
+                '<span style="font-size:.67rem;color:var(--primary);margin-left:auto;opacity:.7"><i class="fas fa-headphones" style="margin-right:3px;font-size:.6rem"></i>Tap to use</span>' +
               '</div>' +
             '</div>' +
           '</div>';
       });
       gridEl.innerHTML = html;
-      // If FA free doesn't have fa-waveform-path, fall back to fa-music
-      gridEl.querySelectorAll('.upload-card .project-card__art').forEach(function(art) {
-        var waveIcon = art.querySelector('.fa-waveform-path');
-        var fallback = art.querySelector('.upload-card-fallback');
-        if (waveIcon && fallback) {
-          // Check if the icon rendered (has non-zero width)
-          setTimeout(function() {
-            var w = waveIcon.getBoundingClientRect().width;
-            if (!w || w < 2) {
-              waveIcon.style.display = 'none';
-              fallback.style.display = '';
-            }
-          }, 50);
-        }
-      });
     };
-    // If uploads tab is already loaded, re-render it with the new style
+
+    // If uploads tab is already loaded with old list-row style, re-render
     var uploadsGrid = document.getElementById('project-grid-uploads');
     if (uploadsGrid && uploadsGrid.querySelector('.upload-item')) {
-      // Re-render using cached data from _libData if possible (can't access IIFE closure,
-      // so just trigger a re-fetch by clearing the loaded flag via a fetch)
       uploadsGrid.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
       fetch('/api/reference-uploads').then(function(r) { return r.json(); }).then(function(d) {
         window.renderUploadsGrid(uploadsGrid, d.uploads || []);

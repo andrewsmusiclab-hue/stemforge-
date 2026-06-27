@@ -4365,6 +4365,14 @@ function homePage() {
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
+        <div id="home-free-plan-status" style="margin:8px 0 0">
+          <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-free-downgrade-note" style="display:none">
+            <i class="fas fa-clock"></i> <span id="home-free-downgrade-msg">Downgrading to Free at end of billing cycle</span>
+          </div>
+          <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-free" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('free')">
+            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+          </button>
+        </div>
       </div>
       <div class="plan-card plan-card--featured">
         <div class="plan-card__badge">Most popular</div>
@@ -4574,11 +4582,27 @@ window.showSfPlanToast = function(type, plan, msg) {
 
   // ── Sync home plan cards with actual Stripe pending state ──────────────────
   function homeApplyPendingState(state) {
-    const pd = state.pendingDowngrade; // 'creator' | 'free' | null
-    const pu = state.pendingUpgrade;  // 'pro' | 'creator' | null
+    const pd   = state.pendingDowngrade; // 'creator' | 'free' | null
+    const pu   = state.pendingUpgrade;   // 'pro' | 'creator' | null
     const plan = state.plan || null;
 
-    // Creator card banner + cancel button
+    // ── Free card: show banner+cancel when pending downgrade is 'free' ──
+    const frNote  = document.getElementById('home-free-downgrade-note');
+    const frMsg   = document.getElementById('home-free-downgrade-msg');
+    const frCancel= document.getElementById('home-btn-cancel-downgrade-free');
+    const freePlanBtn = document.getElementById('home-free-plan-btn');
+    if (pd === 'free' && frNote) {
+      if (frMsg) frMsg.textContent = 'Downgrading to Free at end of billing cycle';
+      frNote.style.display = 'flex';
+      if (frCancel) frCancel.style.display = 'inline-flex';
+      // Hide/disable the downgrade button itself
+      if (freePlanBtn) { freePlanBtn.style.display = 'none'; }
+    } else if (frNote) {
+      frNote.style.display = 'none';
+      if (frCancel) frCancel.style.display = 'none';
+    }
+
+    // ── Creator card: show banner+cancel when pending downgrade is 'creator' (from Pro) ──
     const crNote  = document.getElementById('home-creator-downgrade-note');
     const crMsg   = document.getElementById('home-creator-downgrade-msg');
     const crCancel= document.getElementById('home-btn-cancel-downgrade-creator');
@@ -4591,11 +4615,11 @@ window.showSfPlanToast = function(type, plan, msg) {
       if (crCancel) crCancel.style.display = 'none';
     }
 
-    // Pro card banner + cancel button
+    // ── Pro card: show banner+cancel when pro user is downgrading to anything ──
     const prNote  = document.getElementById('home-pro-downgrade-note');
     const prMsg   = document.getElementById('home-pro-downgrade-msg');
     const prCancel= document.getElementById('home-btn-cancel-downgrade-pro');
-    if ((pd === 'creator' || pd === 'free') && plan === 'pro' && prNote) {
+    if (pd && plan === 'pro' && prNote) {
       if (prMsg) prMsg.textContent = 'Downgrading to ' + (pd === 'creator' ? 'Creator' : 'Free') + ' at end of billing cycle';
       prNote.style.display = 'flex';
       if (prCancel) prCancel.style.display = 'inline-flex';
@@ -4777,10 +4801,10 @@ window.showSfPlanToast = function(type, plan, msg) {
 
       const rank = { free:0, creator:1, pro:2, developer:3 };
       const userRank = rank[user.plan] ?? 0;
-      const pendingDowngrade = sessionStorage.getItem('sf_pending_downgrade');
-      const pendingUpgrade   = sessionStorage.getItem('sf_pending_upgrade');
 
       // ── FREE tier button (it's an <a> tag, not a .home-plan-btn) ──
+      // Pending-state is handled by homeApplyPendingState (hides button, shows banner+cancel).
+      // Here we just set the button label/style for logged-in users; pending-state API call handles the rest.
       const freePlanBtn = document.getElementById('home-free-plan-btn');
       if (freePlanBtn) {
         freePlanBtn.removeAttribute('href');
@@ -4789,24 +4813,18 @@ window.showSfPlanToast = function(type, plan, msg) {
           freePlanBtn.style.opacity = '0.6';
           freePlanBtn.style.pointerEvents = 'none';
         } else {
-          // Paid user → can downgrade to free
+          // Paid user → can downgrade to free (pending-state API will hide this if already pending)
           freePlanBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Free';
           freePlanBtn.style.borderColor = 'rgba(255,100,100,.5)';
           freePlanBtn.style.color = '#ff7070';
           freePlanBtn.style.cursor = 'pointer';
-          if (pendingDowngrade === 'free') {
-            freePlanBtn.innerHTML = '<i class="fas fa-clock" style="font-size:.8rem;margin-right:4px"></i>Pending Downgrade';
-            freePlanBtn.style.opacity = '0.7';
-            freePlanBtn.style.pointerEvents = 'none';
-          } else {
-            freePlanBtn.addEventListener('click', (e) => {
-              e.preventDefault();
-              _homeDgPlan = 'free';
-              const msg = document.getElementById('home-downgrade-msg');
-              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
-              document.getElementById('home-downgrade-modal').style.display = 'flex';
-            });
-          }
+          freePlanBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            _homeDgPlan = 'free';
+            const msg = document.getElementById('home-downgrade-msg');
+            if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
+            document.getElementById('home-downgrade-modal').style.display = 'flex';
+          });
         }
       }
 
@@ -5386,7 +5404,15 @@ function pricingPage() {
           <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
         </ul>
-        <a href="/signup" class="btn btn--outline btn--full">Start free</a>
+        <a href="/signup" class="btn btn--outline btn--full" id="pricing-free-btn">Start free</a>
+        <div id="pricing-free-plan-status" style="margin:8px 0 0">
+          <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-free-downgrade" style="display:none">
+            <i class="fas fa-clock"></i> <span id="pricing-free-downgrade-msg">Downgrading to Free at end of billing cycle</span>
+          </div>
+          <button class="btn btn--outline btn--sm" id="pricing-btn-cancel-downgrade-free" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="pricingCancelDowngrade('free')">
+            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+          </button>
+        </div>
       </div>
       <div class="plan-card plan-card--featured">
         <div class="plan-card__badge">Most popular</div>
@@ -5551,10 +5577,25 @@ function pricingPage() {
 
   // ── Apply Stripe pending state to pricing cards ─────────────────────────────
   function pricingApplyPendingState(pendingState, userPlan) {
-    const pd = (pendingState && pendingState.pendingDowngrade) || null;
+    const pd   = (pendingState && pendingState.pendingDowngrade) || null;
     const plan = userPlan || (pendingState && pendingState.plan) || null;
 
-    // Creator card
+    // ── Free card: show banner+cancel, hide button when pending downgrade = 'free' ──
+    const fdEl       = document.getElementById('pricing-free-downgrade');
+    const fdMsg      = document.getElementById('pricing-free-downgrade-msg');
+    const fdCancel   = document.getElementById('pricing-btn-cancel-downgrade-free');
+    const freeBtn    = document.getElementById('pricing-free-btn');
+    if (pd === 'free') {
+      if (fdMsg) fdMsg.textContent = 'Downgrading to Free at end of billing cycle';
+      if (fdEl) fdEl.style.display = 'flex';
+      if (fdCancel) fdCancel.style.display = 'inline-flex';
+      if (freeBtn) freeBtn.style.display = 'none';
+    } else {
+      if (fdEl) fdEl.style.display = 'none';
+      if (fdCancel) fdCancel.style.display = 'none';
+    }
+
+    // ── Creator card: show banner+cancel when pending downgrade = 'creator' (from Pro) ──
     const cdEl  = document.getElementById('pricing-creator-downgrade');
     const cdMsg = document.getElementById('pricing-creator-downgrade-msg');
     const cdCancelBtn = document.getElementById('pricing-btn-cancel-downgrade-creator');
@@ -5567,11 +5608,11 @@ function pricingPage() {
       if (cdCancelBtn) cdCancelBtn.style.display = 'none';
     }
 
-    // Pro card
+    // ── Pro card: show banner+cancel when pro user is downgrading to anything ──
     const pdEl  = document.getElementById('pricing-pro-downgrade');
     const pdMsg = document.getElementById('pricing-pro-downgrade-msg');
     const pdCancelBtn = document.getElementById('pricing-btn-cancel-downgrade-pro');
-    if ((pd === 'creator' || pd === 'free') && plan === 'pro') {
+    if (pd && plan === 'pro') {
       if (pdMsg) pdMsg.textContent = 'Downgrading to ' + (pd === 'creator' ? 'Creator' : 'Free') + ' at end of billing cycle';
       if (pdEl) pdEl.style.display = 'flex';
       if (pdCancelBtn) pdCancelBtn.style.display = 'inline-flex';
@@ -5609,6 +5650,27 @@ function pricingPage() {
     const userRank = rank[user.plan] || 0;
     const creatorBtn = document.getElementById('pricing-creator-btn');
     const proBtn     = document.getElementById('pricing-pro-btn');
+
+    // ── Free button: adjust for logged-in users ──
+    const pricingFreeBtn = document.getElementById('pricing-free-btn');
+    if (pricingFreeBtn) {
+      pricingFreeBtn.removeAttribute('href');
+      if (userRank === 0) {
+        pricingFreeBtn.textContent = 'Current Plan';
+        pricingFreeBtn.style.opacity = '.6';
+        pricingFreeBtn.style.pointerEvents = 'none';
+      } else {
+        // Paid user → downgrade to free (pending-state will hide if already pending)
+        pricingFreeBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Free';
+        pricingFreeBtn.style.borderColor = 'rgba(255,100,100,.5)';
+        pricingFreeBtn.style.color = '#ff7070';
+        pricingFreeBtn.style.cursor = 'pointer';
+        pricingFreeBtn.onclick = (e) => {
+          e.preventDefault();
+          openPricingDowngradeModal('free', 'Free ($0/mo — cancel subscription)');
+        };
+      }
+    }
 
     // Creator button
     if (creatorBtn) {
