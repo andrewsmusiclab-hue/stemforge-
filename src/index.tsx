@@ -2822,6 +2822,47 @@ app.post('/api/subscription/downgrade', async (c) => {
   }
 })
 
+// ─── CANCEL SUBSCRIPTION ────────────────────────────────────────────────────────
+// POST /api/subscription/cancel — immediately cancels (schedules end-of-period cancellation)
+// This is the full "I want to stop paying" flow — sets cancel_at_period_end = true on Stripe.
+// User keeps access until the end of their current billing period, then moves to Free.
+app.post('/api/subscription/cancel', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  if (!stripeConfigured(c.env)) return c.json({ error: 'Stripe not configured' }, 500)
+
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan === 'free') return c.json({ error: 'You are already on the free plan.' }, 400)
+  if (!user.stripe_subscription_id) return c.json({ error: 'No active subscription found.' }, 400)
+
+  try {
+    // Check if already scheduled to cancel
+    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    if (sub.cancel_at_period_end) {
+      return c.json({ ok: false, error: 'Your subscription is already scheduled to cancel.' })
+    }
+
+    // Schedule cancellation at end of billing period
+    const updated = await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
+      cancel_at_period_end: 'true',
+    }, c.env.STRIPE_SECRET_KEY)
+
+    // Calculate end date for user-friendly message
+    const periodEnd = updated.current_period_end
+    const endDate = periodEnd
+      ? new Date(periodEnd * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+      : 'the end of your billing period'
+
+    return c.json({
+      ok: true,
+      message: `Your subscription has been cancelled. You will keep full access until ${endDate}, then move to the Free plan.`
+    })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Cancellation failed' }, 500)
+  }
+})
+
 // ─── CANCEL DOWNGRADE ────────────────────────────────────────────────────────
 // POST /api/subscription/cancel-downgrade — removes a scheduled plan change or cancellation
 app.post('/api/subscription/cancel-downgrade', async (c) => {
@@ -3994,7 +4035,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20260627c"></script>
 </body>
 </html>`
 }
@@ -5488,7 +5529,8 @@ function pricingPage() {
         
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes. Cancel anytime from account settings. No cancellation fees. You keep access until the end of your billing period.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I cancel anytime? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — cancel anytime with no fees. Go to <strong>Account Settings → Subscription</strong> and click <strong>"Cancel Subscription"</strong>. You keep full access to your current plan until the end of your billing period, then your account automatically moves to the Free plan. You can also manage your plan from the <a href="/subscription" style="color:var(--primary)">Subscription page</a>.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>How do I cancel my subscription? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">To cancel: go to <a href="/account" style="color:var(--primary)"><strong>Account Settings</strong></a>, find the <strong>Subscription</strong> section, and click <strong>"Cancel Subscription"</strong>. You'll see a confirmation before anything changes. Your plan stays active until your billing period ends — no charges after that. You can also downgrade to a lower paid plan (Creator or Free) from the <a href="/subscription" style="color:var(--primary)">Subscription page</a> instead of cancelling completely.</div></div>
       </div>
     </div>
   </div>
@@ -7111,8 +7153,96 @@ function accountPage(user: User) {
             </span>
           </div>
         </div>
-        <a href="/subscription" class="btn btn--outline btn--sm" style="margin-top:12px">Manage subscription</a>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <a href="/subscription" class="btn btn--outline btn--sm">Manage subscription</a>
+          ${user.plan !== 'free' && user.plan !== 'developer' ? `
+          <button class="btn btn--sm" id="account-cancel-sub-btn"
+            style="background:transparent;border:1px solid rgba(255,100,100,.5);color:#ff7070;font-weight:600"
+            onclick="showCancelSubscriptionModal()">
+            <i class="fas fa-times-circle" style="margin-right:5px"></i>Cancel Subscription
+          </button>` : ''}
+        </div>
+        ${user.plan !== 'free' && user.plan !== 'developer' ? `
+        <p style="font-size:.78rem;color:var(--muted);margin-top:10px;line-height:1.5">
+          <i class="fas fa-info-circle" style="margin-right:3px;opacity:.6"></i>
+          Cancelling keeps your plan active until the end of your billing period, then moves you to Free.
+        </p>` : ''}
       </div>
+
+      <!-- Cancel Subscription Modal -->
+      <div id="cancel-sub-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px">
+        <div style="background:var(--surface);border:1px solid rgba(255,100,100,.25);border-radius:18px;padding:32px 28px;max-width:440px;width:100%;text-align:center;position:relative">
+          <div style="width:52px;height:52px;border-radius:50%;background:rgba(255,100,100,.12);border:2px solid rgba(255,100,100,.4);display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:1.3rem;color:#ff7070">
+            <i class="fas fa-times-circle"></i>
+          </div>
+          <h3 style="font-size:1.1rem;margin-bottom:8px">Cancel Your Subscription?</h3>
+          <p style="color:var(--muted);font-size:.88rem;margin-bottom:12px;line-height:1.6">
+            You will keep full access to your current plan features until the end of your billing period.
+            After that, your account moves to the <strong>Free plan</strong> (5 credits/month).
+          </p>
+          <div style="background:rgba(255,100,100,.07);border:1px solid rgba(255,100,100,.18);border-radius:10px;padding:12px 16px;margin-bottom:20px;text-align:left">
+            <p style="margin:0 0 6px;font-size:.82rem;color:#ff9090;font-weight:600"><i class="fas fa-exclamation-triangle" style="margin-right:5px"></i>What you'll lose on Free:</p>
+            <ul style="margin:0;padding:0 0 0 18px;color:var(--muted);font-size:.81rem;line-height:1.8">
+              <li>Unlimited generations → 5 credits/month</li>
+              <li>Download access (must upgrade to download)</li>
+              <li>Commercial use rights</li>
+              <li>Song Extend, Stem tools & one-shots</li>
+            </ul>
+          </div>
+          <div id="cancel-sub-error" style="display:none;color:#ff7070;font-size:.83rem;margin-bottom:12px;padding:8px 12px;background:rgba(255,100,100,.08);border-radius:8px"></div>
+          <div style="display:flex;gap:10px;justify-content:center">
+            <button class="btn btn--outline btn--sm" style="flex:1" onclick="closeCancelSubscriptionModal()">Keep My Plan</button>
+            <button class="btn btn--sm" id="cancel-sub-confirm-btn"
+              style="flex:1;background:rgba(255,60,60,.15);border:1px solid rgba(255,100,100,.5);color:#ff7070;font-weight:700"
+              onclick="confirmCancelSubscription()">
+              <i class="fas fa-times-circle"></i> Yes, Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <script>
+      function showCancelSubscriptionModal() {
+        var err = document.getElementById('cancel-sub-error');
+        if (err) { err.style.display = 'none'; err.textContent = ''; }
+        var btn = document.getElementById('cancel-sub-confirm-btn');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-times-circle"></i> Yes, Cancel'; }
+        document.getElementById('cancel-sub-modal').style.display = 'flex';
+      }
+      function closeCancelSubscriptionModal() {
+        document.getElementById('cancel-sub-modal').style.display = 'none';
+      }
+      async function confirmCancelSubscription() {
+        var btn = document.getElementById('cancel-sub-confirm-btn');
+        var err = document.getElementById('cancel-sub-error');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…';
+        err.style.display = 'none';
+        try {
+          var res = await fetch('/api/subscription/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+          var data = await res.json();
+          closeCancelSubscriptionModal();
+          if (data.ok) {
+            alert(data.message || 'Subscription cancelled. You keep access until the end of your billing period.');
+            window.location.reload();
+          } else {
+            err.textContent = data.error || 'Could not cancel subscription.';
+            err.style.display = 'block';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-times-circle"></i> Yes, Cancel';
+          }
+        } catch(e) {
+          err.textContent = 'Network error. Please try again.';
+          err.style.display = 'block';
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-times-circle"></i> Yes, Cancel';
+        }
+      }
+      // Close on backdrop click
+      document.getElementById('cancel-sub-modal').addEventListener('click', function(e) {
+        if (e.target === this) closeCancelSubscriptionModal();
+      });
+      </script>
       <div class="account-card">
         <h3>Security</h3>
         <div class="account-field">
