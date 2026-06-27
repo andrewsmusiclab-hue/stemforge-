@@ -12,8 +12,10 @@ type Bindings = {
   GOOGLE_CLIENT_SECRET: string      // Google OAuth App client secret
   STRIPE_SECRET_KEY: string         // Stripe secret key (sk_live_... or sk_test_...)
   STRIPE_WEBHOOK_SECRET: string     // Stripe webhook signing secret
-  STRIPE_CREATOR_PRICE_ID: string   // Stripe Price ID for Creator $19/mo
-  STRIPE_PRO_PRICE_ID: string       // Stripe Price ID for Pro Artist $39/mo
+  STRIPE_CREATOR_PRICE_ID: string          // Stripe Price ID for Creator (current)
+  STRIPE_PRO_PRICE_ID: string              // Stripe Price ID for Pro Artist (current)
+  STRIPE_CREATOR_PRICE_ID_LEGACY?: string  // Old Creator price — keeps existing subs recognised
+  STRIPE_PRO_PRICE_ID_LEGACY?: string      // Old Pro price — keeps existing subs recognised
   SESSION_SECRET: string            // 32+ char random string for session HMAC
   SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
   ADMIN_EMAIL: string               // Developer admin email — grants developer plan access
@@ -412,8 +414,13 @@ function googleConfigured(env: Bindings): boolean {
 
 // ── Plan name from Stripe price ID ───────────────────────────
 function planFromPriceId(env: Bindings, priceId: string): string {
+  // Current prices
   if (priceId === env.STRIPE_CREATOR_PRICE_ID) return 'creator'
   if (priceId === env.STRIPE_PRO_PRICE_ID) return 'pro'
+  // Legacy prices — subscribers on the old price IDs are still recognised correctly.
+  // These keep working until every subscriber has been migrated or renewed onto the new price.
+  if (env.STRIPE_CREATOR_PRICE_ID_LEGACY && priceId === env.STRIPE_CREATOR_PRICE_ID_LEGACY) return 'creator'
+  if (env.STRIPE_PRO_PRICE_ID_LEGACY && priceId === env.STRIPE_PRO_PRICE_ID_LEGACY) return 'pro'
   return 'free'
 }
 
@@ -7710,8 +7717,32 @@ function privacyPage() {
 }
 
 // ─── FEEDBACK PAGE ───────────────────────────────────────────────────────────
+// Email delivery: EmailJS (client-side) → sends directly to stemforgesupport@gmail.com
+// Setup required (one-time, free):
+//   1. Sign up at https://www.emailjs.com (free: 200 emails/month)
+//   2. Add service: Connect Gmail account → copy Service ID
+//   3. Create template with variables: {{feedback_type}}, {{message}}, {{reply_email}}
+//      Set "To email" in template to stemforgesupport@gmail.com
+//   4. Copy Public Key from Account → API Keys
+//   5. Replace the three EMAILJS_* placeholders below and redeploy
+const EMAILJS_PUBLIC_KEY    = 'EMAILJS_PUBLIC_KEY'    // e.g. user_abc123XYZ
+const EMAILJS_SERVICE_ID    = 'EMAILJS_SERVICE_ID'    // e.g. service_abc123
+const EMAILJS_TEMPLATE_ID   = 'EMAILJS_TEMPLATE_ID'   // e.g. template_abc123
+
 function feedbackPage() {
+  const ejsReady = !EMAILJS_PUBLIC_KEY.startsWith('EMAILJS_')
   return shell('Give Us Feedback', `
+<!-- EmailJS CDN — sends email directly from browser to Gmail, no backend needed -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"><\/script>
+<script>
+  // Initialise EmailJS with the public key
+  (function() {
+    if (typeof emailjs !== 'undefined') {
+      emailjs.init({ publicKey: '${EMAILJS_PUBLIC_KEY}' });
+    }
+  })();
+<\/script>
+
 <main class="inner-page gs-content">
 <section class="inner-hero">
   <div class="container">
@@ -7730,19 +7761,28 @@ function feedbackPage() {
         <h2 style="font-size:1.3rem;margin:0 0 6px">Share Your Thoughts</h2>
         <p style="color:var(--muted);font-size:.9rem;margin:0">Tell us what's working, what's broken, or what you'd love to see next.</p>
       </div>
+
+      ${!ejsReady ? `
+      <!-- Setup banner — only visible until EmailJS keys are configured -->
+      <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:14px 16px;margin-bottom:20px;font-size:.84rem;color:var(--text)">
+        <strong style="color:#f59e0b"><i class="fas fa-wrench"></i> Setup needed:</strong>
+        Feedback is currently sent via the server fallback. To deliver directly to Gmail, follow the EmailJS setup steps in <code>src/index.tsx</code> and replace the three <code>EMAILJS_*</code> placeholders.
+      </div>` : ''}
+
       <div id="feedback-sent" style="display:none;text-align:center;padding:24px">
         <i class="fas fa-check-circle" style="font-size:2.5rem;color:#10b981;margin-bottom:12px;display:block"></i>
         <h3 style="margin:0 0 6px">Thank you!</h3>
-        <p style="color:var(--muted)">Your feedback has been noted. We'll review it shortly.</p>
+        <p style="color:var(--muted)">Your feedback has been sent directly to our inbox. We'll review it shortly.</p>
       </div>
+
       <div id="feedback-form">
         <div class="form-group" style="margin-bottom:16px">
           <label style="font-size:.88rem;font-weight:600;display:block;margin-bottom:6px;color:var(--text)">Type of feedback</label>
           <select id="feedback-type" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem">
-            <option value="bug">🐛 Bug Report</option>
-            <option value="feature" selected>💡 Feature Request</option>
-            <option value="general">💬 General Feedback</option>
-            <option value="pricing">💰 Pricing Feedback</option>
+            <option value="🐛 Bug Report">🐛 Bug Report</option>
+            <option value="💡 Feature Request" selected>💡 Feature Request</option>
+            <option value="💬 General Feedback">💬 General Feedback</option>
+            <option value="💰 Pricing Feedback">💰 Pricing Feedback</option>
           </select>
         </div>
         <div class="form-group" style="margin-bottom:16px">
@@ -7752,7 +7792,7 @@ function feedbackPage() {
             style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem;resize:vertical;box-sizing:border-box;font-family:inherit"></textarea>
         </div>
         <div class="form-group" style="margin-bottom:20px">
-          <label style="font-size:.88rem;font-weight:600;display:block;margin-bottom:6px;color:var(--text)">Email (optional)</label>
+          <label style="font-size:.88rem;font-weight:600;display:block;margin-bottom:6px;color:var(--text)">Your email (optional)</label>
           <input type="email" id="feedback-email" placeholder="We'll reply here if you want a response"
             style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.9rem;box-sizing:border-box"/>
         </div>
@@ -7761,18 +7801,24 @@ function feedbackPage() {
           <i class="fas fa-paper-plane"></i> Send Feedback
         </button>
         <p style="text-align:center;color:var(--muted);font-size:.75rem;margin-top:12px">
-          <i class="fas fa-envelope"></i> Goes directly to stemforgesupport@gmail.com
+          <i class="fas fa-envelope"></i> Sent directly to stemforgesupport@gmail.com
         </p>
       </div>
     </div>
   </div>
 </section>
 </main>
+
 <script>
+var _ejsReady = ${ejsReady};
+var _ejsServiceId  = '${EMAILJS_SERVICE_ID}';
+var _ejsTemplateId = '${EMAILJS_TEMPLATE_ID}';
+
 async function submitFeedback() {
-  const text = document.getElementById('feedback-text').value.trim();
-  const errEl = document.getElementById('feedback-error');
-  const btn = document.getElementById('feedback-submit-btn');
+  var text   = document.getElementById('feedback-text').value.trim();
+  var errEl  = document.getElementById('feedback-error');
+  var btn    = document.getElementById('feedback-submit-btn');
+
   if (!text) {
     errEl.textContent = 'Please enter your feedback before submitting.';
     errEl.style.display = 'block';
@@ -7781,13 +7827,34 @@ async function submitFeedback() {
   errEl.style.display = 'none';
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…';
+
+  var type       = document.getElementById('feedback-type').value;
+  var replyEmail = document.getElementById('feedback-email').value.trim();
+
+  // ── Path A: EmailJS (direct to Gmail, no backend) ──────────────────────────
+  if (_ejsReady && typeof emailjs !== 'undefined') {
+    try {
+      await emailjs.send(_ejsServiceId, _ejsTemplateId, {
+        feedback_type: type,
+        message:       text,
+        reply_email:   replyEmail || 'Not provided',
+        // 'to_email' maps to stemforgesupport@gmail.com set in your EmailJS template
+      });
+      document.getElementById('feedback-form').style.display = 'none';
+      document.getElementById('feedback-sent').style.display = 'block';
+      return;
+    } catch(ejsErr) {
+      console.warn('EmailJS failed, falling back to server:', ejsErr);
+      // fall through to server fallback below
+    }
+  }
+
+  // ── Path B: Server fallback (/api/feedback — logs or uses MailerSend/Resend) ─
   try {
-    const type = document.getElementById('feedback-type').value;
-    const email = document.getElementById('feedback-email').value.trim();
-    const res = await fetch('/api/feedback', {
+    var res = await fetch('/api/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type, text, email: email || undefined })
+      body: JSON.stringify({ type, text, email: replyEmail || undefined })
     });
     if (!res.ok) throw new Error('Server error');
     document.getElementById('feedback-form').style.display = 'none';
@@ -7799,7 +7866,7 @@ async function submitFeedback() {
     errEl.style.display = 'block';
   }
 }
-</script>
+<\/script>
 `)
 }
 
