@@ -399,12 +399,12 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      // All tiers show downloads used / limit directly (1 generation = 1 download)
+      // All tiers show points used / limit directly
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
       const limitMap = { free: 50, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
-      if (creditsLabel) creditsLabel.textContent = 'Downloads';
+      if (creditsLabel) creditsLabel.textContent = 'Points';
       if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
@@ -1893,7 +1893,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (genResult) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
-            // Refresh sidebar downloads counter to reflect the new usage
+            // Refresh sidebar points counter to reflect the new usage
             fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
               if (!user) return;
               // Update global user object
@@ -1905,8 +1905,8 @@ document.addEventListener('DOMContentLoaded', () => {
               const gv = document.getElementById('gs-gens-val');
               const gb = document.getElementById('gs-gens-bar');
               const cl = document.getElementById('gs-credits-label');
-              if (cl) cl.textContent = 'Downloads';
-              // Always show downloads used / limit directly
+              if (cl) cl.textContent = 'Points';
+              // Always show points used / limit directly
               const limitMap = { free: 50, creator: 600, pro: 2000 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
               if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
@@ -2644,6 +2644,8 @@ window.selectBarPreset = function(btn, bars) {
   }
 
   window.extResetPick = function() {
+    window._extVocalMode = 'instrumental';
+    window.setExtVocalMode && window.setExtVocalMode('instrumental');
     extSelectedJob = null;
     const stepPick = document.getElementById('ext-step-pick');
     const stepOpts = document.getElementById('ext-step-options');
@@ -2656,6 +2658,35 @@ window.selectBarPreset = function(btn, bars) {
     document.querySelectorAll('[data-ext]').forEach(b => b.classList.toggle('ref-bar-btn--active', b.dataset.ext === point));
     const customMs = document.getElementById('ext-custom-ms');
     if (customMs) customMs.style.display = point === 'custom' ? 'block' : 'none';
+  };
+
+  // Extend popup: vocal mode toggle state
+  // 'instrumental' = make_instrumental:true sent to Mureka
+  // 'vocal' = make_instrumental omitted (allows vocal continuation)
+  window._extVocalMode = 'instrumental'; // default: instrumental
+
+  window.setExtVocalMode = function(mode) {
+    window._extVocalMode = mode;
+    var instrBtn = document.getElementById('ext-vocal-instrumental-btn');
+    var vocalBtn = document.getElementById('ext-vocal-vocal-btn');
+    if (!instrBtn || !vocalBtn) return;
+    if (mode === 'instrumental') {
+      instrBtn.classList.add('beat-count-btn--active');
+      vocalBtn.classList.remove('beat-count-btn--active');
+    } else {
+      vocalBtn.classList.add('beat-count-btn--active');
+      instrBtn.classList.remove('beat-count-btn--active');
+    }
+    // Show/hide lyrics textarea based on mode
+    var lyricsLabel = document.querySelector('label[for="ext-lyrics"], .suno-option-label + .suno-textarea, #ext-lyrics');
+    var lyricsSection = document.getElementById('ext-lyrics');
+    if (lyricsSection) {
+      lyricsSection.parentElement && lyricsSection.parentElement.querySelectorAll('label').forEach(function(l){
+        if (l.textContent && l.textContent.indexOf('Continuation lyrics') > -1) {
+          l.style.display = mode === 'vocal' ? '' : '';
+        }
+      });
+    }
   };
 
   window.submitSongExtend = async function() {
@@ -2677,10 +2708,11 @@ window.selectBarPreset = function(btn, bars) {
     if (status) { status.style.display = 'block'; status.textContent = 'Submitting extend job…'; }
 
     try {
+      var makeInstrumental = (window._extVocalMode !== 'vocal');
       const res = await fetch('/api/job/extend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics })
+        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics, make_instrumental: makeInstrumental })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -5511,12 +5543,15 @@ window.renderEditInstrumentPills = function (bp) {
       // If the user set a scrubber position, use that instead.
       var effectiveExtendAt = extExtendAtMs > 0 ? extExtendAtMs
         : (extAudioDuration > 0 ? Math.round(extAudioDuration * 1000) : 0);
+      var makeInstrumental = (window._extVocalMode !== 'vocal');
       var body = {
         upload_audio_id: extUploadAudioId,
-        title: extUploadTitle || 'Uploaded Track'
+        title: extUploadTitle || 'Uploaded Track',
+        make_instrumental: makeInstrumental
       };
       if (effectiveExtendAt > 0) body.extend_at = effectiveExtendAt;
-      if (lyrics.trim()) body.lyrics = lyrics.trim();
+      // Only pass lyrics if vocal mode and user typed something
+      if (!makeInstrumental && lyrics.trim()) body.lyrics = lyrics.trim();
 
       var res = await fetch('/api/job/extend-upload', {
         method: 'POST',

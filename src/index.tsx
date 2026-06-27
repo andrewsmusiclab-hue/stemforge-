@@ -2551,7 +2551,7 @@ app.post('/api/job/purge', async (c) => {
 })
 
 // POST /api/job/extend-upload — extend using a directly uploaded audio file
-// Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string }
+// Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string, make_instrumental?: boolean }
 app.post('/api/job/extend-upload', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
@@ -2559,8 +2559,8 @@ app.post('/api/job/extend-upload', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
 
-  const { upload_audio_id, extend_at, lyrics, title } = await c.req.json<{
-    upload_audio_id: string; extend_at?: number; lyrics?: string; title?: string
+  const { upload_audio_id, extend_at, lyrics, title, make_instrumental } = await c.req.json<{
+    upload_audio_id: string; extend_at?: number; lyrics?: string; title?: string; make_instrumental?: boolean
   }>()
   if (!upload_audio_id) return c.json({ error: 'upload_audio_id required' }, 400)
 
@@ -2589,12 +2589,14 @@ app.post('/api/job/extend-upload', async (c) => {
       prompt: 'analyze the track, match its style, tempo, and mood, create a seamless continuation'
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
-    // NEVER send lyrics for instrumental beats — Mureka would sing them aloud
-    // Only pass user lyrics if explicitly provided; otherwise omit entirely so Mureka produces a pure instrumental extension
-    if (lyrics && lyrics.trim()) {
+    // make_instrumental: true = pure beat extension, false/omit = allow vocal continuation
+    if (make_instrumental === true) {
+      extendBody.make_instrumental = true
+    }
+    // Only pass lyrics if user provided them (and not instrumental-only mode)
+    if (lyrics && lyrics.trim() && !make_instrumental) {
       extendBody.lyrics = lyrics.trim()
     }
-    // No else — omitting lyrics = fully instrumental extension
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -2650,7 +2652,7 @@ app.post('/api/job/extend-upload', async (c) => {
 })
 
 // POST /api/job/extend — extend a completed track using Mureka song/extend API
-// Body: { source_job_id: string, extend_at?: number (ms), lyrics?: string }
+// Body: { source_job_id: string, extend_at?: number (ms), lyrics?: string, make_instrumental?: boolean }
 app.post('/api/job/extend', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
@@ -2658,8 +2660,8 @@ app.post('/api/job/extend', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
 
-  const { source_job_id, extend_at, lyrics } = await c.req.json<{
-    source_job_id: string; extend_at?: number; lyrics?: string
+  const { source_job_id, extend_at, lyrics, make_instrumental } = await c.req.json<{
+    source_job_id: string; extend_at?: number; lyrics?: string; make_instrumental?: boolean
   }>()
   if (!source_job_id) return c.json({ error: 'source_job_id required' }, 400)
 
@@ -2714,12 +2716,14 @@ app.post('/api/job/extend', async (c) => {
       prompt: 'analyze the track, match its style, tempo, and mood, create a seamless continuation'
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
-    // NEVER send lyrics for instrumental beats — Mureka would sing them aloud
-    // Only pass user lyrics if explicitly provided; otherwise omit so extension is purely instrumental
-    if (lyrics && lyrics.trim()) {
+    // make_instrumental: true = pure beat extension, false/omit = allow vocal continuation
+    if (make_instrumental === true) {
+      extendBody.make_instrumental = true
+    }
+    // Only pass lyrics if user provided them (and not instrumental-only mode)
+    if (lyrics && lyrics.trim() && !make_instrumental) {
       extendBody.lyrics = lyrics.trim()
     }
-    // No else — omitting = instrumental extension
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -3209,7 +3213,7 @@ app.post('/api/promo/redeem', async (c) => {
   // Record redemption
   await c.env.DB.prepare(`INSERT INTO promo_redemptions (id,code,user_id,redeemed_at) VALUES (?,?,?,?)`).bind('pr_'+Date.now()+'_'+Math.random().toString(36).slice(2,6), upperCode, user.id, Date.now()).run()
   await c.env.DB.prepare(`UPDATE promo_codes SET uses_count=uses_count+1 WHERE code=?`).bind(upperCode).run()
-  return c.json({ ok: true, message: `Promo code applied! ${row.bonus_credits > 0 ? `+${row.bonus_credits} bonus downloads added.` : ''} ${row.description}` })
+  return c.json({ ok: true, message: `Promo code applied! ${row.bonus_credits > 0 ? `+${row.bonus_credits} bonus points added.` : ''} ${row.description}` })
 })
 
 // ─── ADMIN ROUTES — developer only ───────────────────────────────────────────
@@ -3574,10 +3578,10 @@ app.get('/api/credit-packs', async (c) => {
 })
 
 const defaultCreditPacks = [
-  { id: 'pack_10',  name: '10 Credits/Downloads',  credits: 10,  price_cents: 499,  label: '$4.99',  popular: false },
-  { id: 'pack_25',  name: '25 Credits/Downloads',  credits: 25,  price_cents: 999,  label: '$9.99',  popular: true  },
-  { id: 'pack_50',  name: '50 Credits/Downloads',  credits: 50,  price_cents: 1799, label: '$17.99', popular: false },
-  { id: 'pack_100', name: '100 Credits/Downloads', credits: 100, price_cents: 2999, label: '$29.99', popular: false },
+  { id: 'pack_10',  name: '10 Points',  credits: 10,  price_cents: 499,  label: '$4.99',  popular: false },
+  { id: 'pack_25',  name: '25 Points',  credits: 25,  price_cents: 999,  label: '$9.99',  popular: true  },
+  { id: 'pack_50',  name: '50 Points',  credits: 50,  price_cents: 1799, label: '$17.99', popular: false },
+  { id: 'pack_100', name: '100 Points', credits: 100, price_cents: 2999, label: '$29.99', popular: false },
 ]
 
 // POST /api/credit-packs/purchase — create a one-time Stripe payment for a credit pack
@@ -3834,7 +3838,7 @@ app.get('/api/download-wav/:id', async (c) => {
   if (!user) return c.redirect('/login')
   // Free plan: downloads locked — stems and tracks are saved until upgrade
   if (user.plan === 'free') {
-    return c.json({ error: 'Downloads require a Creator or Pro Artist plan. Your tracks are saved — upgrade anytime to download.', locked: true, upgrade: true }, 403)
+    return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan. Your tracks are saved — upgrade anytime to download.', locked: true, upgrade: true }, 403)
   }
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
@@ -4141,7 +4145,7 @@ function globalSidebar() {
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
-    <div class="gs-credits__label" id="gs-credits-label">Downloads</div>
+    <div class="gs-credits__label" id="gs-credits-label">Points</div>
     <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
     <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
   </div>
@@ -5417,6 +5421,20 @@ function generatorPage() {
         <span id="ext-duration-label" style="margin-left:auto;font-size:.78rem;color:var(--muted);white-space:nowrap">—</span>
       </div>
 
+      <!-- Vocal / Instrumental Toggle -->
+      <div style="margin-bottom:14px">
+        <label class="suno-option-label" style="margin-bottom:8px">Track type <span style="color:var(--muted);font-weight:400">(tells Mureka how to build the extension)</span></label>
+        <div style="display:flex;gap:8px">
+          <button id="ext-vocal-instrumental-btn" onclick="setExtVocalMode('instrumental')" class="beat-count-btn beat-count-btn--active" style="flex:1;padding:9px 12px;font-size:.82rem;display:flex;align-items:center;justify-content:center;gap:7px">
+            <i class="fas fa-music"></i> Instrumental only
+          </button>
+          <button id="ext-vocal-vocal-btn" onclick="setExtVocalMode('vocal')" class="beat-count-btn" style="flex:1;padding:9px 12px;font-size:.82rem;display:flex;align-items:center;justify-content:center;gap:7px">
+            <i class="fas fa-microphone"></i> Has vocals
+          </button>
+        </div>
+        <p style="margin:6px 0 0;font-size:.73rem;color:var(--muted)"><i class="fas fa-info-circle" style="margin-right:4px"></i><strong>Instrumental only</strong> — Mureka generates a pure beat extension. <strong>Has vocals</strong> — Mureka matches and continues any vocal track.</p>
+      </div>
+
       <!-- Lyrics -->
       <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional — leave blank to auto-generate)</span></label>
       <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Leave blank and Mureka will analyze your track and write matching continuation lyrics automatically…" style="margin-bottom:12px"></textarea>
@@ -5560,7 +5578,7 @@ function pricingPage() {
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of downloads? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase download credit packs from the Subscription page starting from $4.99. Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of points? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase point top-up packs from the Subscription page starting from $4.99. Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
@@ -6372,7 +6390,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <span style="width:32px;height:32px;background:linear-gradient(135deg,var(--primary),#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center">
               <i class="fas fa-bolt" style="color:#fff;font-size:.85rem"></i>
             </span>
-            Top Up Downloads
+            Top Up Points
           </h3>
           <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — valid for current billing cycle, stack on top of your plan</p>
         </div>
@@ -6382,10 +6400,10 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       </div>
       <div class="credit-packs-grid" id="credit-packs-grid">
         <div class="credit-pack-card" data-pack="pack_10">
-          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">10</div>
-            <div class="credit-pack__label">Credits / Downloads</div>
+            <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$4.99</span>
@@ -6396,10 +6414,10 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         </div>
         <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_25">
           <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
-          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">25</div>
-            <div class="credit-pack__label">Credits / Downloads</div>
+            <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$9.99</span>
@@ -6409,10 +6427,10 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
         </div>
         <div class="credit-pack-card" data-pack="pack_50">
-          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">50</div>
-            <div class="credit-pack__label">Credits / Downloads</div>
+            <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$17.99</span>
@@ -6422,10 +6440,10 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
         </div>
         <div class="credit-pack-card" data-pack="pack_100">
-          <div class="credit-pack__icon"><i class="fas fa-download"></i></div>
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">100</div>
-            <div class="credit-pack__label">Credits / Downloads</div>
+            <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$29.99</span>
@@ -6451,7 +6469,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <div class="sub-plan-card__price">$0<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 5 credits/downloads monthly</li>
+            <li><i class="fas fa-check"></i> 50 points monthly</li>
             <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           </ul>
           ${user.plan === 'free'
@@ -6832,7 +6850,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       const modal = document.getElementById('sub-downgrade-modal');
       const msg = document.getElementById('sub-downgrade-msg');
       if (pendingTarget === 'free') {
-        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (5 credits/downloads monthly) after that.';
+        msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (50 points monthly) after that.';
       } else if (pendingTarget === 'creator') {
         msg.textContent = 'You will be downgraded to the Creator plan ($10/mo, 600 points/mo) at the end of your current billing cycle.';
       }
@@ -6921,7 +6939,7 @@ function promoPage() {
   <div class="container" style="max-width:560px">
     <div class="sub-header">
       <h1><i class="fas fa-tag" style="color:var(--primary)"></i> Promo Codes</h1>
-      <p>Have a promo code? Enter it below to apply bonus downloads or discounts to your account.</p>
+      <p>Have a promo code? Enter it below to apply bonus points or discounts to your account.</p>
     </div>
     <div class="promo-card" style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;margin-bottom:24px">
       <div id="promo-success" style="display:none;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:10px;padding:16px;margin-bottom:20px;color:#10b981;font-weight:600"></div>
@@ -7023,7 +7041,7 @@ function adminPage(user: User) {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div><label style="font-size:.85rem;color:var(--muted)">Code *</label><input id="new-code" type="text" placeholder="WELCOME20" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"/></div>
           <div><label style="font-size:.85rem;color:var(--muted)">Description</label><input id="new-desc" type="text" placeholder="20% off for new users" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
-          <div><label style="font-size:.85rem;color:var(--muted)">Bonus Downloads</label><input id="new-credits" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
+          <div><label style="font-size:.85rem;color:var(--muted)">Bonus Points</label><input id="new-credits" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
           <div><label style="font-size:.85rem;color:var(--muted)">Max Uses (0=unlimited)</label><input id="new-maxuses" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
           <div style="grid-column:1/-1"><label style="font-size:.85rem;color:var(--muted)">Terms &amp; Conditions shown to user</label><textarea id="new-terms" rows="2" placeholder="Valid for new users only. One use per account." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea></div>
         </div>

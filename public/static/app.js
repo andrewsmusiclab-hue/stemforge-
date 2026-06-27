@@ -399,12 +399,12 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      // All tiers show downloads used / limit directly (1 generation = 1 download)
+      // All tiers show points used / limit directly
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
       const limitMap = { free: 50, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
-      if (creditsLabel) creditsLabel.textContent = 'Downloads';
+      if (creditsLabel) creditsLabel.textContent = 'Points';
       if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
@@ -1893,7 +1893,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (genResult) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
-            // Refresh sidebar downloads counter to reflect the new usage
+            // Refresh sidebar points counter to reflect the new usage
             fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
               if (!user) return;
               // Update global user object
@@ -1905,8 +1905,8 @@ document.addEventListener('DOMContentLoaded', () => {
               const gv = document.getElementById('gs-gens-val');
               const gb = document.getElementById('gs-gens-bar');
               const cl = document.getElementById('gs-credits-label');
-              if (cl) cl.textContent = 'Downloads';
-              // Always show downloads used / limit directly
+              if (cl) cl.textContent = 'Points';
+              // Always show points used / limit directly
               const limitMap = { free: 50, creator: 600, pro: 2000 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
               if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
