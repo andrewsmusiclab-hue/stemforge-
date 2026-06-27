@@ -4629,12 +4629,10 @@ window.showSfPlanToast = function(type, plan, msg) {
     }
   }
 
-  // Fetch real pending state from Stripe (via our API)
-  fetch('/api/subscription/pending-state').then(r => r.json()).then(function(state) {
-    homeApplyPendingState(state);
-  }).catch(function(){});
+  // NOTE: pending state fetch is now done inside the auth/me async block below (Promise.all)
+  // so homeApplyPendingState is called there with real data.
 
-  // Convert plan card buttons: logged-in users get upgrade/downgrade modal, logged-out go to checkout
+  // Convert plan card buttons for logged-OUT users only (logged-in is handled below)
   let _homeDgPlan = null;
   document.querySelectorAll('.home-plan-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -4793,18 +4791,38 @@ window.showSfPlanToast = function(type, plan, msg) {
   // Free user   → Creator card: "Upgrade to Creator" | Pro card: "Upgrade to Pro Artist"
   // Creator user → Free card: "Downgrade to Free"   | Pro card:  "Upgrade to Pro Artist"
   // Pro user    → Free card: "Downgrade to Free"    | Creator card: "Downgrade to Creator"
+  // Any pending state → ALL other plan buttons locked (show "Pending — cancel first")
   (async function() {
     try {
-      const me = await fetch('/api/auth/me').then(r => r.json());
-      const user = me && me.user;
+      const [meRes, pendingRes] = await Promise.all([
+        fetch('/api/auth/me').then(r => r.json()),
+        fetch('/api/subscription/pending-state').then(r => r.json()).catch(() => ({}))
+      ]);
+      const user = meRes && meRes.user;
       if (!user) return;
 
       const rank = { free:0, creator:1, pro:2, developer:3 };
       const userRank = rank[user.plan] ?? 0;
+      const pd = (pendingRes && pendingRes.pendingDowngrade) || null; // e.g. 'free' | 'creator'
+      const pu = (pendingRes && pendingRes.pendingUpgrade)   || null; // e.g. 'pro' | 'creator'
+      const hasPending = !!(pd || pu); // any pending state → lock all other buttons
+
+      // Apply banner/cancel buttons from pending state
+      homeApplyPendingState(pendingRes || {});
+
+      // Helper: lock a button (shows "Pending — cancel first")
+      function lockBtn(btn) {
+        btn.innerHTML = '<i class="fas fa-lock" style="font-size:.75rem;margin-right:4px"></i>Cancel pending first';
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+        btn.style.cursor = 'not-allowed';
+        btn.classList.remove('btn--primary');
+        btn.classList.add('btn--outline');
+        btn.style.borderColor = 'rgba(255,255,255,.15)';
+        btn.style.color = 'var(--muted)';
+      }
 
       // ── FREE tier button (it's an <a> tag, not a .home-plan-btn) ──
-      // Pending-state is handled by homeApplyPendingState (hides button, shows banner+cancel).
-      // Here we just set the button label/style for logged-in users; pending-state API call handles the rest.
       const freePlanBtn = document.getElementById('home-free-plan-btn');
       if (freePlanBtn) {
         freePlanBtn.removeAttribute('href');
@@ -4812,8 +4830,13 @@ window.showSfPlanToast = function(type, plan, msg) {
           freePlanBtn.textContent = 'Current plan';
           freePlanBtn.style.opacity = '0.6';
           freePlanBtn.style.pointerEvents = 'none';
+        } else if (pd === 'free') {
+          // Already pending downgrade to free — banner+cancel shown by homeApplyPendingState; hide button
+          freePlanBtn.style.display = 'none';
+        } else if (hasPending) {
+          // Some other pending change → lock
+          lockBtn(freePlanBtn);
         } else {
-          // Paid user → can downgrade to free (pending-state API will hide this if already pending)
           freePlanBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Free';
           freePlanBtn.style.borderColor = 'rgba(255,100,100,.5)';
           freePlanBtn.style.color = '#ff7070';
@@ -4842,57 +4865,40 @@ window.showSfPlanToast = function(type, plan, msg) {
           btn.style.cursor = 'default';
           btn.classList.remove('btn--primary');
           btn.classList.add('btn--outline');
+        } else if (pd === plan || pu === plan) {
+          // This card IS the pending target — banner+cancel shown by homeApplyPendingState
+          // Hide the button itself (banner takes its place)
+          btn.style.display = 'none';
+        } else if (hasPending) {
+          // Some other pending change — lock this button
+          lockBtn(btn);
         } else if (userRank > planRank) {
-          // Downgrade path
-          const isPendingDg = pendingDowngrade === plan;
-          if (isPendingDg) {
-            btn.innerHTML = '<i class="fas fa-clock" style="font-size:.8rem;margin-right:4px"></i>Pending Downgrade';
-            btn.disabled = true;
-            btn.style.opacity = '0.7';
-            btn.classList.remove('btn--primary');
-            btn.classList.add('btn--outline');
-            btn.style.borderColor = 'rgba(234,179,8,.4)';
-            btn.style.color = '#fbbf24';
-          } else {
-            const label = plan === 'creator' ? 'Downgrade to Creator' : 'Downgrade to Free';
-            btn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>' + label;
-            btn.classList.remove('btn--primary');
-            btn.classList.add('btn--outline');
-            btn.style.borderColor = 'rgba(255,100,100,.5)';
-            btn.style.color = '#ff7070';
-            // Remove old listeners by cloning
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', () => {
-              _homeDgPlan = plan;
-              const msg = document.getElementById('home-downgrade-msg');
-              if (plan === 'free') {
-                if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
-              } else if (plan === 'creator') {
-                if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/downloads monthly) at the end of your current billing cycle. You keep all features until then.';
-              }
-              document.getElementById('home-downgrade-modal').style.display = 'flex';
-            });
-          }
+          // Downgrade path — no pending state
+          const label = plan === 'creator' ? 'Downgrade to Creator' : 'Downgrade to Free';
+          btn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>' + label;
+          btn.classList.remove('btn--primary');
+          btn.classList.add('btn--outline');
+          btn.style.borderColor = 'rgba(255,100,100,.5)';
+          btn.style.color = '#ff7070';
+          const newBtn = btn.cloneNode(true);
+          btn.parentNode.replaceChild(newBtn, btn);
+          newBtn.addEventListener('click', () => {
+            _homeDgPlan = plan;
+            const msg = document.getElementById('home-downgrade-msg');
+            if (plan === 'free') {
+              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (5 credits/downloads monthly) after your billing cycle ends.';
+            } else if (plan === 'creator') {
+              if (msg) msg.textContent = 'You will be downgraded to Creator ($19/mo, 50 credits/downloads monthly) at the end of your current billing cycle. You keep all features until then.';
+            }
+            document.getElementById('home-downgrade-modal').style.display = 'flex';
+          });
         } else {
-          // Upgrade path
-          const isPendingUp = pendingUpgrade === plan;
-          if (isPendingUp) {
-            btn.innerHTML = '<i class="fas fa-clock" style="font-size:.8rem;margin-right:4px"></i>Pending Upgrade';
-            btn.disabled = true;
-            btn.style.opacity = '0.7';
-            btn.classList.remove('btn--outline');
-            btn.classList.add('btn--primary');
-            btn.style.background = 'rgba(108,58,255,.3)';
-          } else {
-            const label = plan === 'creator' ? 'Upgrade to Creator' : 'Upgrade to Pro Artist';
-            btn.innerHTML = '<i class="fas fa-arrow-up" style="font-size:.8rem;margin-right:4px"></i>' + label;
-            // Leave upgrade button class as-is (already btn--primary for creator, btn--outline for pro)
-            // Remove old listeners by cloning
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            newBtn.addEventListener('click', () => openHomeUpgradeModal(plan));
-          }
+          // Upgrade path — no pending state
+          const label = plan === 'creator' ? 'Upgrade to Creator' : 'Upgrade to Pro Artist';
+          btn.innerHTML = '<i class="fas fa-arrow-up" style="font-size:.8rem;margin-right:4px"></i>' + label;
+          const newBtn = btn.cloneNode(true);
+          btn.parentNode.replaceChild(newBtn, btn);
+          newBtn.addEventListener('click', () => openHomeUpgradeModal(plan));
         }
       });
 
@@ -5640,67 +5646,99 @@ function pricingPage() {
     } catch(e) { showSfPlanToast('error', null, 'Network error. Please try again.'); }
   };
 
-  // Detect current user plan and adjust buttons
+  // Detect current user plan, pending state, and adjust all buttons with locking
   let _pricingUserPlan = null;
-  fetch('/api/auth/me').then(r => r.json()).then(me => {
+  Promise.all([
+    fetch('/api/auth/me').then(r => r.json()),
+    fetch('/api/subscription/pending-state').then(r => r.json()).catch(() => ({}))
+  ]).then(([me, pendingRes]) => {
     const user = me.user;
-    if (!user) return; // not logged in — buttons go to checkout as-is
+    if (!user) {
+      // Not logged in — wire up buttons for checkout
+      document.querySelectorAll('.pricing-plan-btn').forEach(btn => {
+        if (!btn.onclick) btn.onclick = () => { window.location.href = '/checkout?plan=' + btn.dataset.plan; };
+      });
+      return;
+    }
     _pricingUserPlan = user.plan;
-
     const userRank = rank[user.plan] || 0;
+    const pd = (pendingRes && pendingRes.pendingDowngrade) || null;
+    const pu = (pendingRes && pendingRes.pendingUpgrade)   || null;
+    const hasPending = !!(pd || pu);
+
+    // Apply banner/cancel buttons
+    pricingApplyPendingState(pendingRes || {}, user.plan);
+
+    // Helper: lock a button
+    function lockBtn(btn) {
+      btn.innerHTML = '<i class="fas fa-lock" style="font-size:.75rem;margin-right:4px"></i>Cancel pending first';
+      btn.disabled = true;
+      btn.style.opacity = '0.5';
+      btn.style.cursor = 'not-allowed';
+      btn.className = 'btn btn--outline btn--full';
+      btn.style.borderColor = 'rgba(255,255,255,.15)';
+      btn.style.color = 'var(--muted)';
+    }
+
     const creatorBtn = document.getElementById('pricing-creator-btn');
     const proBtn     = document.getElementById('pricing-pro-btn');
+    const freeBtn    = document.getElementById('pricing-free-btn');
 
-    // ── Free button: adjust for logged-in users ──
-    const pricingFreeBtn = document.getElementById('pricing-free-btn');
-    if (pricingFreeBtn) {
-      pricingFreeBtn.removeAttribute('href');
+    // ── Free button ──
+    if (freeBtn) {
+      freeBtn.removeAttribute('href');
       if (userRank === 0) {
-        pricingFreeBtn.textContent = 'Current Plan';
-        pricingFreeBtn.style.opacity = '.6';
-        pricingFreeBtn.style.pointerEvents = 'none';
+        freeBtn.textContent = 'Current Plan';
+        freeBtn.style.opacity = '.6';
+        freeBtn.style.pointerEvents = 'none';
+      } else if (pd === 'free') {
+        freeBtn.style.display = 'none'; // banner takes its place
+      } else if (hasPending) {
+        lockBtn(freeBtn);
       } else {
-        // Paid user → downgrade to free (pending-state will hide if already pending)
-        pricingFreeBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Free';
-        pricingFreeBtn.style.borderColor = 'rgba(255,100,100,.5)';
-        pricingFreeBtn.style.color = '#ff7070';
-        pricingFreeBtn.style.cursor = 'pointer';
-        pricingFreeBtn.onclick = (e) => {
-          e.preventDefault();
-          openPricingDowngradeModal('free', 'Free ($0/mo — cancel subscription)');
-        };
+        freeBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Free';
+        freeBtn.style.borderColor = 'rgba(255,100,100,.5)';
+        freeBtn.style.color = '#ff7070';
+        freeBtn.style.cursor = 'pointer';
+        freeBtn.onclick = (e) => { e.preventDefault(); openPricingDowngradeModal('free', 'Free ($0/mo — cancel subscription)'); };
       }
     }
 
-    // Creator button
+    // ── Creator button ──
     if (creatorBtn) {
       const creatorRank = rank['creator'];
       if (userRank === creatorRank) {
         creatorBtn.textContent = 'Current Plan';
         creatorBtn.disabled = true;
         creatorBtn.style.opacity = '.5';
+      } else if (pd === 'creator' || pu === 'creator') {
+        creatorBtn.style.display = 'none'; // banner takes its place
+      } else if (hasPending) {
+        lockBtn(creatorBtn);
       } else if (userRank > creatorRank) {
-        // Downgrade
-        creatorBtn.textContent = 'Downgrade to Creator';
+        creatorBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Creator';
         creatorBtn.className = 'btn btn--outline btn--full';
         creatorBtn.style.borderColor = 'rgba(255,100,100,.4)';
         creatorBtn.style.color = '#ff6464';
         creatorBtn.onclick = () => openPricingDowngradeModal('creator', 'Creator ($19/mo)');
       } else {
-        // Upgrade
         creatorBtn.onclick = () => openPricingUpgradeModal('creator');
       }
     }
 
-    // Pro button
+    // ── Pro button ──
     if (proBtn) {
       const proRank = rank['pro'];
       if (userRank === proRank) {
         proBtn.textContent = 'Current Plan';
         proBtn.disabled = true;
         proBtn.style.opacity = '.5';
+      } else if (pd === 'pro' || pu === 'pro') {
+        proBtn.style.display = 'none'; // banner takes its place
+      } else if (hasPending) {
+        lockBtn(proBtn);
       } else if (userRank > proRank) {
-        proBtn.textContent = 'Downgrade to Pro Artist';
+        proBtn.innerHTML = '<i class="fas fa-arrow-down" style="font-size:.8rem;margin-right:4px"></i>Downgrade to Pro Artist';
         proBtn.className = 'btn btn--outline btn--full';
         proBtn.style.borderColor = 'rgba(255,100,100,.4)';
         proBtn.style.color = '#ff6464';
@@ -5709,11 +5747,6 @@ function pricingPage() {
         proBtn.onclick = () => openPricingUpgradeModal('pro');
       }
     }
-
-    // Now fetch real Stripe pending state and apply
-    fetch('/api/subscription/pending-state').then(r => r.json()).then(function(state) {
-      pricingApplyPendingState(state, user.plan);
-    }).catch(function(){});
   }).catch(() => {
     // Auth failed — wire up buttons for non-logged-in (go straight to checkout)
     document.querySelectorAll('.pricing-plan-btn').forEach(btn => {
@@ -6755,6 +6788,50 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
     banner.innerHTML = '<i class="fas fa-check-circle"></i> Credits added to your account!';
     document.querySelector('.sub-header')?.after(banner);
   }
+
+  // ── Global pending-state locking ───────────────────────────────────────────
+  // If ANY pending downgrade/upgrade exists, ALL other plan buttons must be
+  // disabled so the user must cancel the current pending change first.
+  // The server already shows/hides the correct banner+cancel for the pending target.
+  // This client-side block locks all OTHER (non-target) upgrade/downgrade buttons.
+  (async function() {
+    try {
+      const pendingRes = await fetch('/api/subscription/pending-state').then(r => r.json()).catch(() => ({}));
+      const pd = (pendingRes && pendingRes.pendingDowngrade) || null;
+      const pu = (pendingRes && pendingRes.pendingUpgrade)   || null;
+      const hasPending = !!(pd || pu);
+      if (!hasPending) return; // nothing to lock
+
+      function lockSubBtn(btn) {
+        // Don't lock the cancel buttons or already-hidden buttons
+        if (btn.id && (btn.id.includes('cancel') || btn.id.includes('Cancel'))) return;
+        if (btn.style.display === 'none') return;
+        btn.innerHTML = '<i class="fas fa-lock" style="font-size:.75rem;margin-right:5px;opacity:.7"></i>Cancel pending first';
+        btn.disabled = true;
+        btn.style.opacity = '0.45';
+        btn.style.cursor = 'not-allowed';
+        btn.style.pointerEvents = 'none';
+        btn.style.borderColor = 'rgba(255,255,255,.12)';
+        btn.style.color = 'var(--muted)';
+        btn.classList.remove('btn--primary', 'btn--danger');
+        btn.classList.add('btn--outline');
+      }
+
+      // Lock all upgrade buttons whose target is NOT the pending upgrade target
+      document.querySelectorAll('.sub-upgrade-btn').forEach(btn => {
+        const target = btn.dataset.target;
+        if (target === pu) return; // this IS the pending target — already hidden by server
+        lockSubBtn(btn);
+      });
+
+      // Lock all downgrade buttons whose target is NOT the pending downgrade target
+      document.querySelectorAll('.sub-downgrade-btn').forEach(btn => {
+        const target = btn.dataset.target;
+        if (target === pd) return; // this IS the pending target — already hidden by server
+        lockSubBtn(btn);
+      });
+    } catch(e) { /* silent — non-critical */ }
+  })();
 })();
 </script>`)
 }

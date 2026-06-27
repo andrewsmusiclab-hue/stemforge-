@@ -5303,51 +5303,87 @@ window.renderEditInstrumentPills = function (bp) {
   // Expose globally so other code can call it (e.g. after extend from library card menu)
   window.reloadExtendedTab = reloadExtendedTab;
 
-  // ── Override switchLibTab to handle extended tab directly ────────────────
-  // The base app_base_final.js populateGrid() has no 'extended' case AND filterLibrary
-  // also calls populateGrid which silently clears the extended grid. We bypass the base
-  // entirely for extended and do all UI updates manually, then call reloadExtendedTab.
+  // ── Override switchLibTab: intercept 'extended' and 'uploads' ───────────
+  // • extended: base populateGrid() silently drops cards → bypass entirely, call reloadExtendedTab()
+  // • uploads: base fetchUploadsTab() calls IIFE-local renderUploadsGrid() → bypass, call our window version
+  // Both tabs do full manual panel switching so filterLibrary / IIFE closure never interferes.
   (function() {
     var _baseSwitchLibTab = window.switchLibTab;
+
+    // Shared: manually switch panels + tab buttons (same logic as base, but without calling
+    // filterLibrary or the base data-load functions)
+    function manualSwitchUI(tab) {
+      var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
+      document.querySelectorAll('.lib-tab').forEach(function(btn) {
+        btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
+        btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
+        if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
+      });
+      ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
+        var panel = document.getElementById('lib-panel-' + t);
+        if (panel) panel.style.display = t === tab ? '' : 'none';
+      });
+      var searchInput = document.getElementById('lib-search');
+      if (searchInput) {
+        searchInput.placeholder = placeholders[tab] || 'Search…';
+        searchInput.value = '';
+      }
+      var clearBtn = document.getElementById('lib-search-clear');
+      if (clearBtn) clearBtn.style.display = 'none';
+    }
+
     window.switchLibTab = function(tab) {
       if (tab === 'extended') {
-        // ── Manually do everything _baseSwitchLibTab would do, EXCEPT call filterLibrary/fetchLibTab ──
-        // 1. Update tab active state
-        document.querySelectorAll('.lib-tab').forEach(function(btn) {
-          btn.classList.toggle('lib-tab--active', btn.dataset.tab === 'extended');
-          btn.classList.remove('lib-tab--trash');
-        });
-        // 2. Show/hide panels
-        ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
-          var panel = document.getElementById('lib-panel-' + t);
-          if (panel) panel.style.display = t === 'extended' ? '' : 'none';
-        });
-        // 3. Update search placeholder and reset it (do NOT call filterLibrary — it would wipe the grid)
-        var searchInput = document.getElementById('lib-search');
-        if (searchInput) {
-          searchInput.placeholder = 'Search extended tracks…';
-          searchInput.value = '';
-        }
-        var clearBtn = document.getElementById('lib-search-clear');
-        if (clearBtn) clearBtn.style.display = 'none';
-        // 4. Set _libActive so the base knows current tab (important for filterLibrary guard later)
-        // We patch filterLibrary too so it can't wipe extended grid
-        // 5. Load data our way
+        manualSwitchUI('extended');
         reloadExtendedTab();
+
+      } else if (tab === 'uploads') {
+        manualSwitchUI('uploads');
+        // Bypass the IIFE's fetchUploadsTab (which calls closure-local renderUploadsGrid).
+        // Instead fetch ourselves and call window.renderUploadsGrid (our override).
+        var gridEl = document.getElementById('project-grid-uploads');
+        if (!gridEl) return;
+        gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+        fetch('/api/reference-uploads')
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, d.uploads || []);
+          })
+          .catch(function() {
+            gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
+          });
+
       } else {
         if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
       }
     };
 
-    // ── Also override filterLibrary so typing in search doesn't wipe extended grid ──
+    // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
+    // (search input uses oninput="filterLibrary(this.value)" → goes through window.filterLibrary)
     var _baseFilterLibrary = window.filterLibrary;
     window.filterLibrary = function(query) {
-      // Determine active tab
-      var activeTab = (document.querySelector('.lib-tab--active') || {}).dataset;
-      var tab = activeTab ? activeTab.tab : null;
-      if (tab === 'extended') {
-        // Do nothing — extended tab search is not supported via _libData
-        // (reloadExtendedTab manages its own data from API)
+      var activeBtn = document.querySelector('.lib-tab--active');
+      var tab = activeBtn ? activeBtn.dataset.tab : null;
+      if (tab === 'extended') return; // don't wipe — reloadExtendedTab owns the grid
+      if (tab === 'uploads') {
+        // Re-render cached uploads with filter
+        var gridEl = document.getElementById('project-grid-uploads');
+        if (!gridEl) return;
+        fetch('/api/reference-uploads')
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            var uploads = d.uploads || [];
+            if (query) {
+              var q = query.toLowerCase();
+              uploads = uploads.filter(function(u) {
+                var fn = (u.filename || '').toLowerCase();
+                var g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
+                return fn.includes(q) || g.includes(q);
+              });
+            }
+            if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, uploads);
+          })
+          .catch(function() {});
         return;
       }
       if (_baseFilterLibrary) _baseFilterLibrary(query);
