@@ -276,8 +276,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Read plan from URL param
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
-      creator: { name: 'Creator Plan', price: '$19', total: '$19.00', features: ['50 downloads/month', 'Mastered stereo mix download', 'Commercial use rights'] },
-      pro:     { name: 'Pro Artist Plan', price: '$39', total: '$39.00', features: ['200 downloads/month', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
+      creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'Mastered stereo mix download', 'Commercial use rights'] },
+      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -402,7 +402,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // All tiers show downloads used / limit directly (1 generation = 1 download)
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
-      const limitMap = { free: 5, creator: 50, pro: 200 };
+      const limitMap = { free: 50, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
       if (creditsLabel) creditsLabel.textContent = 'Downloads';
       if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
@@ -1072,8 +1072,8 @@ document.addEventListener('DOMContentLoaded', () => {
           <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
           <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
           <div style="display:flex;flex-direction:column;gap:10px">
-            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $19/mo · 50 beats</a>
-            <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $39/mo · 200 beats</a>
+            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 600 pts</a>
+            <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $26/mo · 2,000 pts</a>
           </div>
           <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
         </div>`;
@@ -1733,10 +1733,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen to your beat, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
                     <div style="display:flex;flex-direction:column;gap:10px">
                       <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
-                        <i class="fas fa-crown"></i> Creator — $19/mo · 50 beats
+                        <i class="fas fa-crown"></i> Creator — $10/mo · 600 pts
                       </a>
                       <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
-                        <i class="fas fa-star"></i> Pro Artist — $39/mo · 200 beats
+                        <i class="fas fa-star"></i> Pro Artist — $26/mo · 2,000 pts
                       </a>
                     </div>
                     <p style="color:var(--muted);font-size:.78rem;margin-top:16px">You keep your generated beat — just upgrade anytime to download it.</p>
@@ -1907,7 +1907,7 @@ document.addEventListener('DOMContentLoaded', () => {
               const cl = document.getElementById('gs-credits-label');
               if (cl) cl.textContent = 'Downloads';
               // Always show downloads used / limit directly
-              const limitMap = { free: 5, creator: 50, pro: 200 };
+              const limitMap = { free: 50, creator: 600, pro: 2000 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
               if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
               if (gb) {
@@ -2912,7 +2912,7 @@ window.setVocalToggle = function(val) {
 };
 
 // ── Beat count toggle (1 or 2) — 2 beats is Pro Artist only ──
-window._beatCount = 1;
+window._beatCount = 2;
 // ── Duration picker ──────────────────────────────────────────
 window._userDuration = 0; // 0 = Auto
 window.setDuration = function(sec) {
@@ -2963,7 +2963,7 @@ window.setBeatCount = function(n) {
   // 2-beat option requires Pro Artist plan
   if (n === 2) {
     const plan = (window._currentPlan || window.currentPlan || '').toLowerCase();
-    if (plan !== 'pro' && plan !== 'developer') {
+    if (plan !== 'pro' && plan !== 'creator' && plan !== 'developer') {
       // Show upgrade nudge
       const bc2 = document.getElementById('bc-2');
       if (bc2) {
@@ -2977,7 +2977,7 @@ window.setBeatCount = function(n) {
         tip = document.createElement('div');
         tip.id = 'beat-count-pro-tip';
         tip.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e1e2e;border:1px solid rgba(168,85,247,.4);color:#c4b5fd;padding:10px 18px;border-radius:10px;font-size:.85rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5)';
-        tip.innerHTML = '<i class="fas fa-crown" style="color:#a855f7;margin-right:6px"></i>2 Beats is a <strong>Pro Artist</strong> feature — <a href="/pricing" style="color:#a855f7">upgrade</a>';
+        tip.innerHTML = '<i class="fas fa-crown" style="color:#a855f7;margin-right:6px"></i>2 Beats requires <strong>Creator or Pro Artist</strong> — <a href="/pricing" style="color:#a855f7">upgrade</a>';
         document.body.appendChild(tip);
         setTimeout(() => tip && tip.remove(), 3500);
       }
