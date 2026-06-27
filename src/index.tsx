@@ -1969,14 +1969,29 @@ app.post('/api/account/delete', async (c) => {
 // GET /api/auth/me — return current user (used by frontend to check session)
 app.get('/api/auth/me', async (c) => {
   const token = getSessionCookie(c.req.raw)
-  if (!token || !c.env.DB) return c.json({ user: null })
+  if (!token || !c.env.DB) {
+    c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
+    return c.json({ user: null })
+  }
+  // Always fetch fresh from DB — re-read gens_used/gens_limit directly
   const user = await getSessionUser(c.env.DB, token)
-  if (!user) return c.json({ user: null })
+  if (!user) {
+    c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
+    return c.json({ user: null })
+  }
+  // Re-fetch fresh gens from DB (session cache may be stale)
+  const fresh = await c.env.DB.prepare(
+    `SELECT gens_used, gens_limit, plan FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string }>()
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
+  c.header('Pragma', 'no-cache')
   return c.json({
     user: {
       id: user.id, name: user.name, email: user.email,
-      avatar: user.avatar, plan: user.plan,
-      gens_used: user.gens_used, gens_limit: user.gens_limit
+      avatar: user.avatar,
+      plan: fresh?.plan ?? user.plan,
+      gens_used: fresh?.gens_used ?? user.gens_used,
+      gens_limit: fresh?.gens_limit ?? user.gens_limit
     }
   })
 })
@@ -2600,12 +2615,13 @@ app.post('/api/job/extend-upload', async (c) => {
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
     // make_instrumental: true = pure beat extension, false/omit = allow vocal continuation
+    // IMPORTANT: Mureka requires `lyrics` field even in instrumental mode — send empty string
     if (make_instrumental === true) {
       extendBody.make_instrumental = true
-    }
-    // Only pass lyrics if user provided them (and not instrumental-only mode)
-    if (lyrics && lyrics.trim() && !make_instrumental) {
-      extendBody.lyrics = lyrics.trim()
+      extendBody.lyrics = ''
+    } else {
+      // Vocal mode: pass user lyrics if provided, otherwise empty string (Mureka auto-generates)
+      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : ''
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
@@ -2727,12 +2743,13 @@ app.post('/api/job/extend', async (c) => {
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
     // make_instrumental: true = pure beat extension, false/omit = allow vocal continuation
+    // IMPORTANT: Mureka requires `lyrics` field even in instrumental mode — send empty string
     if (make_instrumental === true) {
       extendBody.make_instrumental = true
-    }
-    // Only pass lyrics if user provided them (and not instrumental-only mode)
-    if (lyrics && lyrics.trim() && !make_instrumental) {
-      extendBody.lyrics = lyrics.trim()
+      extendBody.lyrics = ''
+    } else {
+      // Vocal mode: pass user lyrics if provided, otherwise empty string (Mureka auto-generates)
+      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : ''
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {

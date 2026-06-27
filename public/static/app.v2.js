@@ -362,7 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window._sfUser = null;
   (async () => {
     try {
-      const res = await fetch('/api/auth/me');
+      const res = await fetch('/api/auth/me', { cache: 'no-store' });
       if (!res.ok) return;
       const { user } = await res.json();
       if (!user) return;
@@ -1894,7 +1894,7 @@ document.addEventListener('DOMContentLoaded', () => {
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
             // Refresh sidebar points counter to reflect the new usage
-            fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
+            fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
               if (!user) return;
               // Update global user object
               if (window._sfUser) {
