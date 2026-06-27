@@ -7725,9 +7725,9 @@ function privacyPage() {
 //      Set "To email" in template to stemforgesupport@gmail.com
 //   4. Copy Public Key from Account → API Keys
 //   5. Replace the three EMAILJS_* placeholders below and redeploy
-const EMAILJS_PUBLIC_KEY    = 'EMAILJS_PUBLIC_KEY'    // e.g. user_abc123XYZ
-const EMAILJS_SERVICE_ID    = 'EMAILJS_SERVICE_ID'    // e.g. service_abc123
-const EMAILJS_TEMPLATE_ID   = 'EMAILJS_TEMPLATE_ID'   // e.g. template_abc123
+const EMAILJS_PUBLIC_KEY    = 'Q6GPcwT6SGAmZj3nr'
+const EMAILJS_SERVICE_ID    = 'service_jl0z9ec'
+const EMAILJS_TEMPLATE_ID   = 'template_yqyzgyx'
 
 function feedbackPage() {
   const ejsReady = !EMAILJS_PUBLIC_KEY.startsWith('EMAILJS_')
