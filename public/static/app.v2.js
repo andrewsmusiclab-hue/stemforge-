@@ -1069,7 +1069,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
           <button onclick="document.getElementById('sf-dash-upgrade').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
           <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-lock-open"></i></div>
-          <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+          <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to access</h3>
           <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
           <div style="display:flex;flex-direction:column;gap:10px">
             <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 600 pts</a>
@@ -1729,7 +1729,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff">
                       <i class="fas fa-lock-open"></i>
                     </div>
-                    <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+                    <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to access</h3>
                     <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen to your beat, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
                     <div style="display:flex;flex-direction:column;gap:10px">
                       <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
@@ -1757,7 +1757,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   // Show lock state on download button
                   stereoDownload.href = '#';
                   stereoDownload.setAttribute('download', '');
-                  stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to access';
                   stereoDownload.style.opacity = '0.7';
                   stereoDownload.addEventListener('click', e => { e.preventDefault(); showUpgradePrompt(); });
                 } else {
@@ -4428,7 +4428,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   function _buildDownloadBtn(mode) {
     // Free users: upgrade prompt
     if (_userPlan === 'free') {
-      return '<button title="Upgrade to download" onclick="window.location=\'/pricing\'" style="' +
+      return '<button title="Upgrade to access" onclick="window.location=\'/pricing\'" style="' +
         'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,200,0,.2);' +
         'background:rgba(255,200,0,.05);color:rgba(255,200,0,.5);font-size:.68rem;cursor:pointer;' +
         'display:flex;align-items:center;gap:4px">' +
@@ -5505,90 +5505,110 @@ window.renderEditInstrumentPills = function (bp) {
   window.reloadExtendedTab = reloadExtendedTab;
 
   // ── Override switchLibTab: intercept 'extended' and 'uploads' ───────────
-  // • extended: base populateGrid() silently drops cards → bypass entirely, call reloadExtendedTab()
-  // • uploads: base fetchUploadsTab() calls IIFE-local renderUploadsGrid() → bypass, call our window version
-  // Both tabs do full manual panel switching so filterLibrary / IIFE closure never interferes.
+  // CRITICAL: The base switchLibTab is set inside a DOMContentLoaded listener (line ~867).
+  // If we override at parse-time, the DOMContentLoaded handler will OVERWRITE our override.
+  // Fix: register our override inside a DOMContentLoaded listener that runs AFTER the base,
+  // using setTimeout(0) to push to the back of the DOMContentLoaded queue.
+  // Also attach directly to tab buttons as onclick fallback to guarantee correct behavior.
   (function() {
-    var _baseSwitchLibTab = window.switchLibTab;
+    function installSwitchLibTabOverride() {
+      var _baseSwitchLibTab = window.switchLibTab;
 
-    // Shared: manually switch panels + tab buttons (same logic as base, but without calling
-    // filterLibrary or the base data-load functions)
-    function manualSwitchUI(tab) {
-      var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
-      document.querySelectorAll('.lib-tab').forEach(function(btn) {
-        btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
-        btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
-        if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
-      });
-      ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
-        var panel = document.getElementById('lib-panel-' + t);
-        if (panel) panel.style.display = t === tab ? '' : 'none';
-      });
-      var searchInput = document.getElementById('lib-search');
-      if (searchInput) {
-        searchInput.placeholder = placeholders[tab] || 'Search…';
-        searchInput.value = '';
+      // Shared: manually switch panels + tab buttons
+      function manualSwitchUI(tab) {
+        var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
+        document.querySelectorAll('.lib-tab').forEach(function(btn) {
+          btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
+          btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
+          if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
+        });
+        ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
+          var panel = document.getElementById('lib-panel-' + t);
+          if (panel) panel.style.display = t === tab ? '' : 'none';
+        });
+        var searchInput = document.getElementById('lib-search');
+        if (searchInput) {
+          searchInput.placeholder = placeholders[tab] || 'Search…';
+          searchInput.value = '';
+        }
+        var clearBtn = document.getElementById('lib-search-clear');
+        if (clearBtn) clearBtn.style.display = 'none';
       }
-      var clearBtn = document.getElementById('lib-search-clear');
-      if (clearBtn) clearBtn.style.display = 'none';
+
+      window.switchLibTab = function(tab) {
+        if (tab === 'extended') {
+          manualSwitchUI('extended');
+          reloadExtendedTab();
+
+        } else if (tab === 'uploads') {
+          manualSwitchUI('uploads');
+          var gridEl = document.getElementById('project-grid-uploads');
+          if (!gridEl) return;
+          gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+          fetch('/api/reference-uploads')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, d.uploads || []);
+            })
+            .catch(function() {
+              gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
+            });
+
+        } else {
+          if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
+        }
+      };
+
+      // Also bind directly to the Extended tab button so it always calls our version
+      var extTabBtn = document.querySelector('.lib-tab[data-tab="extended"]');
+      if (extTabBtn) {
+        extTabBtn.onclick = function() { window.switchLibTab('extended'); };
+      }
+      var uploadsTabBtn = document.querySelector('.lib-tab[data-tab="uploads"]');
+      if (uploadsTabBtn) {
+        uploadsTabBtn.onclick = function() { window.switchLibTab('uploads'); };
+      }
+
+      // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
+      var _baseFilterLibrary = window.filterLibrary;
+      window.filterLibrary = function(query) {
+        var activeBtn = document.querySelector('.lib-tab--active');
+        var tab = activeBtn ? activeBtn.dataset.tab : null;
+        if (tab === 'extended') return; // don't wipe — reloadExtendedTab owns the grid
+        if (tab === 'uploads') {
+          var gridEl = document.getElementById('project-grid-uploads');
+          if (!gridEl) return;
+          fetch('/api/reference-uploads')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              var uploads = d.uploads || [];
+              if (query) {
+                var q = query.toLowerCase();
+                uploads = uploads.filter(function(u) {
+                  var fn = (u.filename || '').toLowerCase();
+                  var g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
+                  return fn.includes(q) || g.includes(q);
+                });
+              }
+              if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, uploads);
+            })
+            .catch(function() {});
+          return;
+        }
+        if (_baseFilterLibrary) _baseFilterLibrary(query);
+      };
     }
 
-    window.switchLibTab = function(tab) {
-      if (tab === 'extended') {
-        manualSwitchUI('extended');
-        reloadExtendedTab();
-
-      } else if (tab === 'uploads') {
-        manualSwitchUI('uploads');
-        // Bypass the IIFE's fetchUploadsTab (which calls closure-local renderUploadsGrid).
-        // Instead fetch ourselves and call window.renderUploadsGrid (our override).
-        var gridEl = document.getElementById('project-grid-uploads');
-        if (!gridEl) return;
-        gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-        fetch('/api/reference-uploads')
-          .then(function(r) { return r.json(); })
-          .then(function(d) {
-            if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, d.uploads || []);
-          })
-          .catch(function() {
-            gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
-          });
-
-      } else {
-        if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
-      }
-    };
-
-    // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
-    // (search input uses oninput="filterLibrary(this.value)" → goes through window.filterLibrary)
-    var _baseFilterLibrary = window.filterLibrary;
-    window.filterLibrary = function(query) {
-      var activeBtn = document.querySelector('.lib-tab--active');
-      var tab = activeBtn ? activeBtn.dataset.tab : null;
-      if (tab === 'extended') return; // don't wipe — reloadExtendedTab owns the grid
-      if (tab === 'uploads') {
-        // Re-render cached uploads with filter
-        var gridEl = document.getElementById('project-grid-uploads');
-        if (!gridEl) return;
-        fetch('/api/reference-uploads')
-          .then(function(r) { return r.json(); })
-          .then(function(d) {
-            var uploads = d.uploads || [];
-            if (query) {
-              var q = query.toLowerCase();
-              uploads = uploads.filter(function(u) {
-                var fn = (u.filename || '').toLowerCase();
-                var g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
-                return fn.includes(q) || g.includes(q);
-              });
-            }
-            if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, uploads);
-          })
-          .catch(function() {});
-        return;
-      }
-      if (_baseFilterLibrary) _baseFilterLibrary(query);
-    };
+    // Run after ALL DOMContentLoaded handlers (including the base library IIFE) complete.
+    // setTimeout(0) pushes to end of microtask queue so base switchLibTab is already set.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        setTimeout(installSwitchLibTabOverride, 0);
+      });
+    } else {
+      // DOM already ready (script loaded async/defer)
+      setTimeout(installSwitchLibTabOverride, 0);
+    }
   })();
 
   // ── Patch deleteLibItem to hard-reload extended tab after deletion ──────
@@ -5657,7 +5677,7 @@ window.renderEditInstrumentPills = function (bp) {
                 var currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
                 if (currentPlan === 'free') {
                   ui.stereoDownload.href = '#';
-                  ui.stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  ui.stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to access';
                   ui.stereoDownload.style.opacity = '0.7';
                 } else {
                   var safeTitle = (job.title || 'extended_track').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';

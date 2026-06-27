@@ -362,7 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window._sfUser = null;
   (async () => {
     try {
-      const res = await fetch('/api/auth/me');
+      const res = await fetch('/api/auth/me', { cache: 'no-store' });
       if (!res.ok) return;
       const { user } = await res.json();
       if (!user) return;
@@ -1069,7 +1069,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative">
           <button onclick="document.getElementById('sf-dash-upgrade').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
           <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-lock-open"></i></div>
-          <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+          <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to access</h3>
           <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
           <div style="display:flex;flex-direction:column;gap:10px">
             <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 600 pts</a>
@@ -1729,7 +1729,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#4e9fff,#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff">
                       <i class="fas fa-lock-open"></i>
                     </div>
-                    <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to download</h3>
+                    <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to access</h3>
                     <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen to your beat, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
                     <div style="display:flex;flex-direction:column;gap:10px">
                       <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
@@ -1757,7 +1757,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   // Show lock state on download button
                   stereoDownload.href = '#';
                   stereoDownload.setAttribute('download', '');
-                  stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to access';
                   stereoDownload.style.opacity = '0.7';
                   stereoDownload.addEventListener('click', e => { e.preventDefault(); showUpgradePrompt(); });
                 } else {
@@ -1894,7 +1894,7 @@ document.addEventListener('DOMContentLoaded', () => {
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
             // Refresh sidebar points counter to reflect the new usage
-            fetch('/api/auth/me').then(r => r.json()).then(({ user }) => {
+            fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
               if (!user) return;
               // Update global user object
               if (window._sfUser) {
@@ -2644,6 +2644,20 @@ window.selectBarPreset = function(btn, bars) {
   }
 
   window.extResetPick = function() {
+    window._extVocalMode = 'instrumental';
+    window.setExtVocalMode && window.setExtVocalMode('instrumental');
+    window._extActiveTab = 'upload';
+    _extLibLoaded = false; // Allow re-fetch next open
+    // Reset tabs back to Upload
+    var uploadBtn = document.getElementById('ext-tab-upload');
+    var libBtn    = document.getElementById('ext-tab-library');
+    var stepLib   = document.getElementById('ext-step-library');
+    if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
+    if (libBtn)    { libBtn.style.borderBottom = '2px solid transparent'; libBtn.style.color = 'var(--muted)'; libBtn.style.fontWeight = '600'; }
+    if (stepLib)   stepLib.style.display = 'none';
+    // Restore submit btn to upload mode
+    var submitBtn = document.getElementById('ext-submit-btn');
+    if (submitBtn) { submitBtn.onclick = function() { window.submitSongExtendUpload(); }; }
     extSelectedJob = null;
     const stepPick = document.getElementById('ext-step-pick');
     const stepOpts = document.getElementById('ext-step-options');
@@ -2656,6 +2670,192 @@ window.selectBarPreset = function(btn, bars) {
     document.querySelectorAll('[data-ext]').forEach(b => b.classList.toggle('ref-bar-btn--active', b.dataset.ext === point));
     const customMs = document.getElementById('ext-custom-ms');
     if (customMs) customMs.style.display = point === 'custom' ? 'block' : 'none';
+  };
+
+  // ── Extend popup: Upload / Library tab switcher ─────────────────────────────
+  window._extActiveTab = 'upload'; // 'upload' | 'library'
+
+  window.extSwitchTab = function(tab) {
+    window._extActiveTab = tab;
+    var uploadBtn  = document.getElementById('ext-tab-upload');
+    var libBtn     = document.getElementById('ext-tab-library');
+    var stepPick   = document.getElementById('ext-step-pick');
+    var stepLib    = document.getElementById('ext-step-library');
+    var stepOpts   = document.getElementById('ext-step-options');
+
+    // Hide options (step 2) when switching tabs
+    if (stepOpts) stepOpts.style.display = 'none';
+
+    if (tab === 'upload') {
+      if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
+      if (libBtn)    { libBtn.style.borderBottom = '2px solid transparent';   libBtn.style.color = 'var(--muted)'; libBtn.style.fontWeight = '600'; }
+      if (stepPick)  stepPick.style.display = 'block';
+      if (stepLib)   stepLib.style.display = 'none';
+    } else {
+      if (libBtn)    { libBtn.style.borderBottom = '2px solid var(--primary)'; libBtn.style.color = 'var(--primary)'; libBtn.style.fontWeight = '700'; }
+      if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid transparent'; uploadBtn.style.color = 'var(--muted)'; uploadBtn.style.fontWeight = '600'; }
+      if (stepPick)  stepPick.style.display = 'none';
+      if (stepLib)   stepLib.style.display = 'block';
+      extLoadLibraryPicker();
+    }
+  };
+
+  // ── Load library beats into the picker ───────────────────────────────────────
+  var _extLibLoaded = false;
+
+  function extLoadLibraryPicker() {
+    if (_extLibLoaded) return;
+    var loadingEl = document.getElementById('ext-lib-loading');
+    var listEl    = document.getElementById('ext-lib-list');
+    var emptyEl   = document.getElementById('ext-lib-empty');
+    if (!listEl) return;
+
+    if (loadingEl) loadingEl.style.display = 'block';
+    if (emptyEl)   emptyEl.style.display = 'none';
+    listEl.innerHTML = '';
+
+    fetch('/api/projects?tab=beats&limit=50')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        _extLibLoaded = true;
+        if (loadingEl) loadingEl.style.display = 'none';
+        var projects = (d.projects || []).filter(function(p) { return p.stereo_url || (p.data && JSON.parse(p.data || '{}').stereo_url); });
+        if (!projects.length) {
+          if (emptyEl) emptyEl.style.display = 'block';
+          return;
+        }
+        projects.forEach(function(p) {
+          var data = {};
+          try { data = JSON.parse(p.data || '{}'); } catch(e) {}
+          var title    = p.title || data.prompt || p.id || 'Untitled Beat';
+          var stereoUrl = p.stereo_url || data.stereo_url || '';
+          var bpm      = data.bpm  ? data.bpm + ' BPM' : '';
+          var genre    = data.genre || '';
+          var meta     = [genre, bpm].filter(Boolean).join(' · ');
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer;gap:10px;transition:border-color .15s';
+          row.onmouseenter = function() { row.style.borderColor = 'var(--primary)'; };
+          row.onmouseleave = function() { row.style.borderColor = 'var(--border)'; };
+          row.innerHTML =
+            '<div style="min-width:0;flex:1">' +
+              '<div style="font-size:.84rem;font-weight:700;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + title.replace(/</g,'&lt;') + '</div>' +
+              (meta ? '<div style="font-size:.72rem;color:var(--muted);margin-top:2px">' + meta + '</div>' : '') +
+            '</div>' +
+            '<button style="background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);border-radius:8px;padding:5px 14px;color:var(--primary);cursor:pointer;font-size:.8rem;font-weight:700;white-space:nowrap;flex-shrink:0">' +
+              '<i class="fas fa-expand-arrows-alt" style="margin-right:5px"></i>Select' +
+            '</button>';
+          row.querySelector('button').onclick = function(e) {
+            e.stopPropagation();
+            extSelectLibraryBeat(p.id, title, stereoUrl);
+          };
+          row.onclick = function() { extSelectLibraryBeat(p.id, title, stereoUrl); };
+          listEl.appendChild(row);
+        });
+      })
+      .catch(function() {
+        if (loadingEl) loadingEl.style.display = 'none';
+        if (emptyEl) { emptyEl.style.display = 'block'; emptyEl.innerHTML = '<i class="fas fa-exclamation-circle" style="font-size:2rem;opacity:.4;display:block;margin-bottom:10px"></i>Could not load library. Please try again.'; }
+      });
+  }
+
+  // ── Select a beat from library → switch to scrubber/options step ─────────────
+  function extSelectLibraryBeat(jobId, title, stereoUrl) {
+    // Store the selected library job so submitSongExtend can use it
+    extSelectedJob = { id: jobId, title: title, stereo_url: stereoUrl, audioDuration: 0 };
+
+    var stepLib  = document.getElementById('ext-step-library');
+    var stepOpts = document.getElementById('ext-step-options');
+    var titleEl  = document.getElementById('ext-sel-title');
+    var changeBtn = stepOpts && stepOpts.querySelector('button[onclick="extResetUpload()"]');
+
+    // Hide library list, show options/scrubber
+    if (stepLib)  stepLib.style.display = 'none';
+    if (stepOpts) stepOpts.style.display = 'block';
+    if (titleEl)  titleEl.textContent = title;
+
+    // Update change button to go back to library tab
+    if (changeBtn) {
+      changeBtn.onclick = function() { extResetToLibrary(); };
+    }
+
+    // Update submit button to use library extend (not upload extend)
+    var submitBtn = document.getElementById('ext-submit-btn');
+    if (submitBtn) {
+      submitBtn.onclick = function() { window.submitSongExtend(); };
+    }
+
+    // Load audio into scrubber if URL available
+    if (stereoUrl) {
+      var audio = document.getElementById('ext-preview-audio');
+      if (audio) {
+        audio.src = stereoUrl;
+        audio.load();
+        audio.onloadedmetadata = function() {
+          extSelectedJob.audioDuration = Math.round(audio.duration * 1000);
+          var durEl = document.getElementById('ext-duration-label');
+          if (durEl) {
+            var s = Math.round(audio.duration);
+            durEl.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+          }
+        };
+        // Draw waveform if available
+        if (window.extDrawWaveformFromAudio) window.extDrawWaveformFromAudio(audio);
+      }
+    }
+
+    // Reset scrubber position
+    var fill = document.getElementById('ext-scrubber-fill');
+    var head = document.getElementById('ext-playhead');
+    var badge = document.getElementById('ext-time-badge');
+    if (fill)  fill.style.width = '0%';
+    if (head)  head.style.left = '0%';
+    if (badge) badge.textContent = 'End of track';
+    if (window.extExtendAtMs !== undefined) window.extExtendAtMs = 0;
+    if (window.extAudioDuration !== undefined) window.extAudioDuration = 0;
+  }
+
+  // ── Reset from library-selected back to library tab ──────────────────────────
+  function extResetToLibrary() {
+    extSelectedJob = null;
+    var stepOpts = document.getElementById('ext-step-options');
+    var stepLib  = document.getElementById('ext-step-library');
+    if (stepOpts) stepOpts.style.display = 'none';
+    if (stepLib)  stepLib.style.display = 'block';
+    // Restore submit btn to upload mode
+    var submitBtn = document.getElementById('ext-submit-btn');
+    if (submitBtn) submitBtn.onclick = function() { window.submitSongExtendUpload(); };
+  }
+
+  // Expose for external callers
+  window.extSwitchTab = window.extSwitchTab;
+
+  // Extend popup: vocal mode toggle state
+  // 'instrumental' = make_instrumental:true sent to Mureka
+  // 'vocal' = make_instrumental omitted (allows vocal continuation)
+  window._extVocalMode = 'instrumental'; // default: instrumental
+
+  window.setExtVocalMode = function(mode) {
+    window._extVocalMode = mode;
+    var instrBtn = document.getElementById('ext-vocal-instrumental-btn');
+    var vocalBtn = document.getElementById('ext-vocal-vocal-btn');
+    if (!instrBtn || !vocalBtn) return;
+    if (mode === 'instrumental') {
+      instrBtn.classList.add('beat-count-btn--active');
+      vocalBtn.classList.remove('beat-count-btn--active');
+    } else {
+      vocalBtn.classList.add('beat-count-btn--active');
+      instrBtn.classList.remove('beat-count-btn--active');
+    }
+    // Show/hide lyrics textarea based on mode
+    var lyricsLabel = document.querySelector('label[for="ext-lyrics"], .suno-option-label + .suno-textarea, #ext-lyrics');
+    var lyricsSection = document.getElementById('ext-lyrics');
+    if (lyricsSection) {
+      lyricsSection.parentElement && lyricsSection.parentElement.querySelectorAll('label').forEach(function(l){
+        if (l.textContent && l.textContent.indexOf('Continuation lyrics') > -1) {
+          l.style.display = mode === 'vocal' ? '' : '';
+        }
+      });
+    }
   };
 
   window.submitSongExtend = async function() {
@@ -2677,10 +2877,11 @@ window.selectBarPreset = function(btn, bars) {
     if (status) { status.style.display = 'block'; status.textContent = 'Submitting extend job…'; }
 
     try {
+      var makeInstrumental = (window._extVocalMode !== 'vocal');
       const res = await fetch('/api/job/extend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics })
+        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics, make_instrumental: makeInstrumental })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -4227,7 +4428,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   function _buildDownloadBtn(mode) {
     // Free users: upgrade prompt
     if (_userPlan === 'free') {
-      return '<button title="Upgrade to download" onclick="window.location=\'/pricing\'" style="' +
+      return '<button title="Upgrade to access" onclick="window.location=\'/pricing\'" style="' +
         'padding:3px 10px;border-radius:5px;border:1px solid rgba(255,200,0,.2);' +
         'background:rgba(255,200,0,.05);color:rgba(255,200,0,.5);font-size:.68rem;cursor:pointer;' +
         'display:flex;align-items:center;gap:4px">' +
@@ -5304,90 +5505,110 @@ window.renderEditInstrumentPills = function (bp) {
   window.reloadExtendedTab = reloadExtendedTab;
 
   // ── Override switchLibTab: intercept 'extended' and 'uploads' ───────────
-  // • extended: base populateGrid() silently drops cards → bypass entirely, call reloadExtendedTab()
-  // • uploads: base fetchUploadsTab() calls IIFE-local renderUploadsGrid() → bypass, call our window version
-  // Both tabs do full manual panel switching so filterLibrary / IIFE closure never interferes.
+  // CRITICAL: The base switchLibTab is set inside a DOMContentLoaded listener (line ~867).
+  // If we override at parse-time, the DOMContentLoaded handler will OVERWRITE our override.
+  // Fix: register our override inside a DOMContentLoaded listener that runs AFTER the base,
+  // using setTimeout(0) to push to the back of the DOMContentLoaded queue.
+  // Also attach directly to tab buttons as onclick fallback to guarantee correct behavior.
   (function() {
-    var _baseSwitchLibTab = window.switchLibTab;
+    function installSwitchLibTabOverride() {
+      var _baseSwitchLibTab = window.switchLibTab;
 
-    // Shared: manually switch panels + tab buttons (same logic as base, but without calling
-    // filterLibrary or the base data-load functions)
-    function manualSwitchUI(tab) {
-      var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
-      document.querySelectorAll('.lib-tab').forEach(function(btn) {
-        btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
-        btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
-        if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
-      });
-      ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
-        var panel = document.getElementById('lib-panel-' + t);
-        if (panel) panel.style.display = t === tab ? '' : 'none';
-      });
-      var searchInput = document.getElementById('lib-search');
-      if (searchInput) {
-        searchInput.placeholder = placeholders[tab] || 'Search…';
-        searchInput.value = '';
+      // Shared: manually switch panels + tab buttons
+      function manualSwitchUI(tab) {
+        var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
+        document.querySelectorAll('.lib-tab').forEach(function(btn) {
+          btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
+          btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
+          if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
+        });
+        ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
+          var panel = document.getElementById('lib-panel-' + t);
+          if (panel) panel.style.display = t === tab ? '' : 'none';
+        });
+        var searchInput = document.getElementById('lib-search');
+        if (searchInput) {
+          searchInput.placeholder = placeholders[tab] || 'Search…';
+          searchInput.value = '';
+        }
+        var clearBtn = document.getElementById('lib-search-clear');
+        if (clearBtn) clearBtn.style.display = 'none';
       }
-      var clearBtn = document.getElementById('lib-search-clear');
-      if (clearBtn) clearBtn.style.display = 'none';
+
+      window.switchLibTab = function(tab) {
+        if (tab === 'extended') {
+          manualSwitchUI('extended');
+          reloadExtendedTab();
+
+        } else if (tab === 'uploads') {
+          manualSwitchUI('uploads');
+          var gridEl = document.getElementById('project-grid-uploads');
+          if (!gridEl) return;
+          gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+          fetch('/api/reference-uploads')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, d.uploads || []);
+            })
+            .catch(function() {
+              gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
+            });
+
+        } else {
+          if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
+        }
+      };
+
+      // Also bind directly to the Extended tab button so it always calls our version
+      var extTabBtn = document.querySelector('.lib-tab[data-tab="extended"]');
+      if (extTabBtn) {
+        extTabBtn.onclick = function() { window.switchLibTab('extended'); };
+      }
+      var uploadsTabBtn = document.querySelector('.lib-tab[data-tab="uploads"]');
+      if (uploadsTabBtn) {
+        uploadsTabBtn.onclick = function() { window.switchLibTab('uploads'); };
+      }
+
+      // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
+      var _baseFilterLibrary = window.filterLibrary;
+      window.filterLibrary = function(query) {
+        var activeBtn = document.querySelector('.lib-tab--active');
+        var tab = activeBtn ? activeBtn.dataset.tab : null;
+        if (tab === 'extended') return; // don't wipe — reloadExtendedTab owns the grid
+        if (tab === 'uploads') {
+          var gridEl = document.getElementById('project-grid-uploads');
+          if (!gridEl) return;
+          fetch('/api/reference-uploads')
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              var uploads = d.uploads || [];
+              if (query) {
+                var q = query.toLowerCase();
+                uploads = uploads.filter(function(u) {
+                  var fn = (u.filename || '').toLowerCase();
+                  var g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
+                  return fn.includes(q) || g.includes(q);
+                });
+              }
+              if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, uploads);
+            })
+            .catch(function() {});
+          return;
+        }
+        if (_baseFilterLibrary) _baseFilterLibrary(query);
+      };
     }
 
-    window.switchLibTab = function(tab) {
-      if (tab === 'extended') {
-        manualSwitchUI('extended');
-        reloadExtendedTab();
-
-      } else if (tab === 'uploads') {
-        manualSwitchUI('uploads');
-        // Bypass the IIFE's fetchUploadsTab (which calls closure-local renderUploadsGrid).
-        // Instead fetch ourselves and call window.renderUploadsGrid (our override).
-        var gridEl = document.getElementById('project-grid-uploads');
-        if (!gridEl) return;
-        gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-        fetch('/api/reference-uploads')
-          .then(function(r) { return r.json(); })
-          .then(function(d) {
-            if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, d.uploads || []);
-          })
-          .catch(function() {
-            gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
-          });
-
-      } else {
-        if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
-      }
-    };
-
-    // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
-    // (search input uses oninput="filterLibrary(this.value)" → goes through window.filterLibrary)
-    var _baseFilterLibrary = window.filterLibrary;
-    window.filterLibrary = function(query) {
-      var activeBtn = document.querySelector('.lib-tab--active');
-      var tab = activeBtn ? activeBtn.dataset.tab : null;
-      if (tab === 'extended') return; // don't wipe — reloadExtendedTab owns the grid
-      if (tab === 'uploads') {
-        // Re-render cached uploads with filter
-        var gridEl = document.getElementById('project-grid-uploads');
-        if (!gridEl) return;
-        fetch('/api/reference-uploads')
-          .then(function(r) { return r.json(); })
-          .then(function(d) {
-            var uploads = d.uploads || [];
-            if (query) {
-              var q = query.toLowerCase();
-              uploads = uploads.filter(function(u) {
-                var fn = (u.filename || '').toLowerCase();
-                var g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
-                return fn.includes(q) || g.includes(q);
-              });
-            }
-            if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, uploads);
-          })
-          .catch(function() {});
-        return;
-      }
-      if (_baseFilterLibrary) _baseFilterLibrary(query);
-    };
+    // Run after ALL DOMContentLoaded handlers (including the base library IIFE) complete.
+    // setTimeout(0) pushes to end of microtask queue so base switchLibTab is already set.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        setTimeout(installSwitchLibTabOverride, 0);
+      });
+    } else {
+      // DOM already ready (script loaded async/defer)
+      setTimeout(installSwitchLibTabOverride, 0);
+    }
   })();
 
   // ── Patch deleteLibItem to hard-reload extended tab after deletion ──────
@@ -5456,7 +5677,7 @@ window.renderEditInstrumentPills = function (bp) {
                 var currentPlan = (window._sfUser && window._sfUser.plan) || 'free';
                 if (currentPlan === 'free') {
                   ui.stereoDownload.href = '#';
-                  ui.stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  ui.stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to access';
                   ui.stereoDownload.style.opacity = '0.7';
                 } else {
                   var safeTitle = (job.title || 'extended_track').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
@@ -5511,12 +5732,15 @@ window.renderEditInstrumentPills = function (bp) {
       // If the user set a scrubber position, use that instead.
       var effectiveExtendAt = extExtendAtMs > 0 ? extExtendAtMs
         : (extAudioDuration > 0 ? Math.round(extAudioDuration * 1000) : 0);
+      var makeInstrumental = (window._extVocalMode !== 'vocal');
       var body = {
         upload_audio_id: extUploadAudioId,
-        title: extUploadTitle || 'Uploaded Track'
+        title: extUploadTitle || 'Uploaded Track',
+        make_instrumental: makeInstrumental
       };
       if (effectiveExtendAt > 0) body.extend_at = effectiveExtendAt;
-      if (lyrics.trim()) body.lyrics = lyrics.trim();
+      // Only pass lyrics if vocal mode and user typed something
+      if (!makeInstrumental && lyrics.trim()) body.lyrics = lyrics.trim();
 
       var res = await fetch('/api/job/extend-upload', {
         method: 'POST',

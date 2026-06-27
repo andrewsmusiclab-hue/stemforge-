@@ -2198,9 +2198,11 @@ app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
 app.get('/feedback', (c) => c.html(feedbackPage()))
 
-// POST /api/feedback — sends feedback to stemforgesupport@gmail.com via email.js / Resend fallback
-// Since we can't run SMTP in Workers, we use the Resend free-tier API to relay the email.
-// If RESEND_API_KEY is not set, the feedback is stored in KV (fallback).
+// POST /api/feedback — sends feedback to your inbox via MailerSend (primary) or Resend (fallback)
+// MailerSend setup:  gsk hosted secret put MAILERSEND_API_KEY mlsn.xxxx
+//                   gsk hosted secret put FEEDBACK_FROM_EMAIL you@yourdomain.com   (must be verified in MailerSend)
+//                   gsk hosted secret put FEEDBACK_TO_EMAIL   stemforgesupport@gmail.com
+// Resend fallback:   gsk hosted secret put RESEND_API_KEY re_xxxx  (100 emails/day free tier)
 app.post('/api/feedback', async (c) => {
   const { type, text, email: replyEmail } = await c.req.json<{ type?: string; text?: string; email?: string }>()
   if (!text?.trim()) return c.json({ error: 'Feedback text is required' }, 400)
@@ -2221,8 +2223,39 @@ app.post('/api/feedback', async (c) => {
     <p style="font-size:12px;color:#999">Sent from StemForge feedback form</p>
   `
 
-  // Try Resend API (free tier: 100 emails/day, no credit card needed)
-  // Set RESEND_API_KEY secret via: gsk hosted secret put RESEND_API_KEY re_xxxx
+  // ── PRIMARY: MailerSend API ──────────────────────────────────────────────────
+  // Docs: https://developers.mailersend.com/api/v1/email
+  // Requires: MAILERSEND_API_KEY + FEEDBACK_FROM_EMAIL (verified sender domain in MailerSend)
+  const mailerSendKey = (c.env as any).MAILERSEND_API_KEY
+  const feedbackFromEmail = (c.env as any).FEEDBACK_FROM_EMAIL || 'feedback@stemforge.app'
+  const feedbackToEmail   = (c.env as any).FEEDBACK_TO_EMAIL   || 'stemforgesupport@gmail.com'
+
+  if (mailerSendKey) {
+    try {
+      const msPayload: Record<string, any> = {
+        from:    { email: feedbackFromEmail, name: 'StemForge Feedback' },
+        to:      [{ email: feedbackToEmail }],
+        subject,
+        html:    bodyHtml
+      }
+      // Add reply_to only if the user left their email
+      if (replyEmail) msPayload.reply_to = { email: replyEmail }
+
+      const res = await fetch('https://api.mailersend.com/v1/email', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${mailerSendKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(msPayload)
+      })
+      if (res.status === 202) return c.json({ ok: true })
+      const errText = await res.text()
+      console.error('[feedback] MailerSend error:', res.status, errText)
+    } catch (e) { console.error('[feedback] MailerSend fetch failed:', e) }
+  }
+
+  // ── FALLBACK: Resend API ─────────────────────────────────────────────────────
   const resendKey = (c.env as any).RESEND_API_KEY
   if (resendKey) {
     try {
@@ -2231,7 +2264,7 @@ app.post('/api/feedback', async (c) => {
         headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from: 'StemForge Feedback <onboarding@resend.dev>',
-          to: ['stemforgesupport@gmail.com'],
+          to: [feedbackToEmail],
           reply_to: replyEmail || undefined,
           subject,
           html: bodyHtml
@@ -2239,13 +2272,13 @@ app.post('/api/feedback', async (c) => {
       })
       if (res.ok) return c.json({ ok: true })
       const err = await res.json() as any
-      console.error('Resend error:', err)
-    } catch (e) { console.error('Resend fetch failed:', e) }
+      console.error('[feedback] Resend error:', err)
+    } catch (e) { console.error('[feedback] Resend fetch failed:', e) }
   }
 
-  // Fallback: log to console (visible in CF Logs) if no email service configured
+  // ── FINAL FALLBACK: log to Cloudflare Workers console ───────────────────────
   console.log(`FEEDBACK [${label}] from=${replyEmail||'anon'}: ${text}`)
-  return c.json({ ok: true, note: 'Feedback logged. Add RESEND_API_KEY secret for email delivery.' })
+  return c.json({ ok: true, note: 'Feedback logged. Add MAILERSEND_API_KEY secret for email delivery.' })
 })
 app.get('/promos', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
@@ -2270,12 +2303,21 @@ app.get('/subscription', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login')
 
-  // ── Detect any pending Stripe plan changes so we can render cancel buttons visible ──
+  // ── Detect any pending Stripe plan changes + fetch real billing date ──
   let pendingDowngrade: string | null = null  // 'free' | 'creator' | null
   let pendingUpgrade: string | null = null    // 'creator' | 'pro' | null
+  let realNextBillingDate: string | null = null  // e.g. "Jul 14, 2026"
   if (user.stripe_subscription_id && stripeConfigured(c.env)) {
     try {
       const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+      // ── Extract real period_end (Stripe API ≥2025-03-31 moved it to items) ──
+      const item0 = sub.items?.data?.[0]
+      const periodEnd: number = item0?.current_period_end ?? sub.current_period_end
+      if (periodEnd && !isNaN(Number(periodEnd))) {
+        realNextBillingDate = new Date(periodEnd * 1000).toLocaleDateString('en-US', {
+          month: 'short', day: 'numeric', year: 'numeric'
+        })
+      }
       // cancel_at_period_end = true means downgrading to free (cancellation)
       if (sub.cancel_at_period_end) {
         pendingDowngrade = 'free'
@@ -2306,7 +2348,7 @@ app.get('/subscription', async (c) => {
     } catch { /* Stripe check failed — show no pending banner */ }
   }
 
-  return c.html(subscriptionPage(user, c.env, pendingDowngrade, pendingUpgrade))
+  return c.html(subscriptionPage(user, c.env, pendingDowngrade, pendingUpgrade, realNextBillingDate))
 })
 
 app.get('/account', async (c) => {
@@ -2609,19 +2651,18 @@ app.post('/api/job/extend-upload', async (c) => {
 
   try {
     // Call Mureka song/extend using the already-uploaded audio ID
+    // NOTE: Mureka song/extend API requires `lyrics` field always.
+    // `make_instrumental` is NOT a real Mureka field — use "[Instrumental]" lyrics tag instead.
     const extendBody: Record<string, any> = {
-      upload_audio_id: upload_audio_id,
-      prompt: 'analyze the track, match its style, tempo, and mood, create a seamless continuation'
+      upload_audio_id: upload_audio_id
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
-    // make_instrumental: true = pure beat extension, false/omit = allow vocal continuation
-    // IMPORTANT: Mureka requires `lyrics` field even in instrumental mode — send empty string
     if (make_instrumental === true) {
-      extendBody.make_instrumental = true
-      extendBody.lyrics = ''
+      // Instrumental mode: use [Instrumental] tag — tells Mureka to continue without vocals
+      extendBody.lyrics = '[Instrumental]'
     } else {
-      // Vocal mode: pass user lyrics if provided, otherwise empty string (Mureka auto-generates)
-      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : ''
+      // Vocal mode: use provided lyrics, or let Mureka auto-generate continuation
+      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
@@ -2736,20 +2777,19 @@ app.post('/api/job/extend', async (c) => {
     const uploadData = await uploadRes.json() as any
     const uploadAudioId = uploadData.id as string
 
-    // Step 2: Call Mureka song/extend — always preserve the original timing/BPM
+    // Step 2: Call Mureka song/extend
+    // NOTE: Mureka song/extend API requires `lyrics` field always.
+    // `make_instrumental` is NOT a real Mureka field — use "[Instrumental]" lyrics tag instead.
     const extendBody: Record<string, any> = {
-      upload_audio_id: uploadAudioId,
-      prompt: 'analyze the track, match its style, tempo, and mood, create a seamless continuation'
+      upload_audio_id: uploadAudioId
     }
     if (extend_at != null && extend_at > 0) extendBody.extend_at = extend_at
-    // make_instrumental: true = pure beat extension, false/omit = allow vocal continuation
-    // IMPORTANT: Mureka requires `lyrics` field even in instrumental mode — send empty string
     if (make_instrumental === true) {
-      extendBody.make_instrumental = true
-      extendBody.lyrics = ''
+      // Instrumental mode: use [Instrumental] tag — tells Mureka to continue without vocals
+      extendBody.lyrics = '[Instrumental]'
     } else {
-      // Vocal mode: pass user lyrics if provided, otherwise empty string (Mureka auto-generates)
-      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : ''
+      // Vocal mode: use provided lyrics, or let Mureka auto-generate continuation
+      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
@@ -6380,14 +6420,13 @@ function profilePage(user: User | null) {
 }
 
 // ─── SUBSCRIPTION PAGE ────────────────────────────────────────────────────────
-function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | null = null, pendingUpgrade: string | null = null) {
+function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | null = null, pendingUpgrade: string | null = null, realNextBillingDate: string | null = null) {
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
   const billingPeriod = user.plan === 'free' ? 'N/A' : 'Monthly'
-  const nextBilling = user.stripe_subscription_id
-    ? new Date(Date.now() + 30*24*3600*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})
-    : 'N/A'
+  // Use real Stripe period_end if available, otherwise show N/A (not a hardcoded +30 days guess)
+  const nextBilling = realNextBillingDate ?? (user.stripe_subscription_id ? 'Loading…' : 'N/A')
   const stripeOk = stripeConfigured(env)
   // Downgrade options based on current plan
   const canDowngrade = user.plan !== 'free' && stripeOk && !!user.stripe_subscription_id
@@ -6425,7 +6464,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
     </div>
     <div class="sub-usage-card">
       <div class="sub-usage-header">
-        <h3>Download Usage</h3>
+        <h3>Points Usage</h3>
         <span class="sub-usage-count" id="sub-usage-count">${user.gens_used} / ${user.gens_limit} pts used</span>
       </div>
       <div class="sub-usage-bar"><div class="sub-usage-bar__fill" id="sub-usage-bar-fill" style="width:${pct}%"></div></div>
@@ -7179,7 +7218,7 @@ async function changeUserPlan(userId,email){
 }
 
 async function addCredits(userId,email){
-  const n=parseInt(prompt('Add how many download credits to '+email+'?'));
+  const n=parseInt(prompt('Add how many points to '+email+'?'));
   if(!n||isNaN(n))return;
   const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,gens_limit:n})});
   // This sets gens_limit — we need additive, use a workaround
