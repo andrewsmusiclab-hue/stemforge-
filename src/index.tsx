@@ -2250,8 +2250,8 @@ app.get('/subscription', async (c) => {
           const nextPriceId = lastPhase?.items?.[0]?.price
           // Map price IDs to plan names (same mapping as cancel-downgrade/cancel-upgrade endpoints)
           const PRICE_TO_PLAN: Record<string, string> = {
-            [c.env.STRIPE_PRICE_CREATOR || '']: 'creator',
-            [c.env.STRIPE_PRICE_PRO || '']: 'pro'
+            [c.env.STRIPE_CREATOR_PRICE_ID || '']: 'creator',
+            [c.env.STRIPE_PRO_PRICE_ID || '']: 'pro'
           }
           const nextPlan = PRICE_TO_PLAN[nextPriceId] || null
           if (nextPlan) {
@@ -2884,6 +2884,50 @@ app.post('/api/subscription/cancel-upgrade', async (c) => {
     return c.json({ ok: false, message: 'No pending upgrade found to cancel.' })
   } catch (e: any) {
     return c.json({ error: e?.message || 'Cancel upgrade failed' }, 500)
+  }
+})
+
+// ─── PENDING STATE ───────────────────────────────────────────────────────────
+// GET /api/subscription/pending-state — returns { pendingDowngrade, pendingUpgrade } for home/pricing pages
+// pendingDowngrade: 'free' | 'creator' | null
+// pendingUpgrade:   'creator' | 'pro' | null
+app.get('/api/subscription/pending-state', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ pendingDowngrade: null, pendingUpgrade: null })
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user || !user.stripe_subscription_id || !stripeConfigured(c.env)) {
+    return c.json({ pendingDowngrade: null, pendingUpgrade: null })
+  }
+  try {
+    let pendingDowngrade: string | null = null
+    let pendingUpgrade: string | null = null
+    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    if (sub.cancel_at_period_end) {
+      pendingDowngrade = 'free'
+    }
+    if (!pendingDowngrade) {
+      const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}&limit=5`, {}, c.env.STRIPE_SECRET_KEY)
+      const active = schedules?.data?.find((s: any) => s.status === 'active' && s.subscription === user.stripe_subscription_id)
+      if (active && active.phases?.length >= 2) {
+        const lastPhase = active.phases[active.phases.length - 1]
+        const nextPriceId = lastPhase?.items?.[0]?.price
+        const PRICE_TO_PLAN: Record<string, string> = {
+          [c.env.STRIPE_CREATOR_PRICE_ID || '']: 'creator',
+          [c.env.STRIPE_PRO_PRICE_ID || '']: 'pro'
+        }
+        const nextPlan = PRICE_TO_PLAN[nextPriceId] || null
+        if (nextPlan) {
+          const planRank: Record<string, number> = { free: 0, creator: 1, pro: 2 }
+          const currentRank = planRank[user.plan] ?? 0
+          const nextRank = planRank[nextPlan] ?? 0
+          if (nextRank < currentRank) pendingDowngrade = nextPlan
+          else if (nextRank > currentRank) pendingUpgrade = nextPlan
+        }
+      }
+    }
+    return c.json({ pendingDowngrade, pendingUpgrade, plan: user.plan })
+  } catch {
+    return c.json({ pendingDowngrade: null, pendingUpgrade: null, plan: user.plan })
   }
 })
 
@@ -4333,8 +4377,13 @@ function homePage() {
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
-        <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-creator-downgrade-note" style="display:none;margin:8px 0 0">
-          <i class="fas fa-clock"></i> <span id="home-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+        <div id="home-creator-plan-status" style="margin:8px 0 0">
+          <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-creator-downgrade-note" style="display:none">
+            <i class="fas fa-clock"></i> <span id="home-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+          </div>
+          <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-creator" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('creator')">
+            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+          </button>
         </div>
       </div>
       <div class="plan-card">
@@ -4348,8 +4397,13 @@ function homePage() {
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
-        <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-pro-downgrade-note" style="display:none;margin:8px 0 0">
-          <i class="fas fa-clock"></i> <span id="home-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+        <div id="home-pro-plan-status" style="margin:8px 0 0">
+          <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-pro-downgrade-note" style="display:none">
+            <i class="fas fa-clock"></i> <span id="home-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+          </div>
+          <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-pro" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('pro')">
+            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+          </button>
         </div>
       </div>
       <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
@@ -4518,38 +4572,42 @@ window.showSfPlanToast = function(type, plan, msg) {
 (function(){
   let _humPlan = null;
 
-  // Show downgrade notes on home plan cards for users already on a higher plan
-  fetch('/api/auth/me').then(r => r.json()).then(me => {
-    const user = me && me.user;
-    if (!user) return;
-    const rank = { free:0, creator:1, pro:2, developer:3 };
-    const planLabel = { free:'Free', creator:'Creator', pro:'Pro Artist', developer:'Developer' };
-    const userRank = rank[user.plan] || 0;
-    // Show downgrade banner under the Creator card when user is Pro/Developer
-    if (userRank > 1) {
-      const n = document.getElementById('home-creator-downgrade-note');
-      const msg = document.getElementById('home-creator-downgrade-msg');
-      if (msg) msg.textContent = 'Downgrading to Creator at end of billing cycle';
-      if (n) n.style.display = 'flex';
+  // ── Sync home plan cards with actual Stripe pending state ──────────────────
+  function homeApplyPendingState(state) {
+    const pd = state.pendingDowngrade; // 'creator' | 'free' | null
+    const pu = state.pendingUpgrade;  // 'pro' | 'creator' | null
+    const plan = state.plan || null;
+
+    // Creator card banner + cancel button
+    const crNote  = document.getElementById('home-creator-downgrade-note');
+    const crMsg   = document.getElementById('home-creator-downgrade-msg');
+    const crCancel= document.getElementById('home-btn-cancel-downgrade-creator');
+    if (pd === 'creator' && crNote) {
+      if (crMsg) crMsg.textContent = 'Downgrading to Creator at end of billing cycle';
+      crNote.style.display = 'flex';
+      if (crCancel) crCancel.style.display = 'inline-flex';
+    } else if (crNote) {
+      crNote.style.display = 'none';
+      if (crCancel) crCancel.style.display = 'none';
     }
-    // Show downgrade banner under Pro card when user is Developer
-    if (userRank > 2) {
-      const n = document.getElementById('home-pro-downgrade-note');
-      const msg = document.getElementById('home-pro-downgrade-msg');
-      if (msg) msg.textContent = 'Downgrading to Pro Artist at end of billing cycle';
-      if (n) n.style.display = 'flex';
+
+    // Pro card banner + cancel button
+    const prNote  = document.getElementById('home-pro-downgrade-note');
+    const prMsg   = document.getElementById('home-pro-downgrade-msg');
+    const prCancel= document.getElementById('home-btn-cancel-downgrade-pro');
+    if ((pd === 'creator' || pd === 'free') && plan === 'pro' && prNote) {
+      if (prMsg) prMsg.textContent = 'Downgrading to ' + (pd === 'creator' ? 'Creator' : 'Free') + ' at end of billing cycle';
+      prNote.style.display = 'flex';
+      if (prCancel) prCancel.style.display = 'inline-flex';
+    } else if (prNote) {
+      prNote.style.display = 'none';
+      if (prCancel) prCancel.style.display = 'none';
     }
-    // Also reveal the note immediately when user clicks a downgrade button
-    document.querySelectorAll('.home-plan-btn').forEach(function(btn) {
-      var plan = btn.dataset.plan;
-      var planRank = rank[plan] || 0;
-      if (userRank > planRank) {
-        // This button is a downgrade — show its banner permanently
-        var noteId = 'home-' + plan + '-downgrade-note';
-        var note = document.getElementById(noteId);
-        if (note) note.style.display = 'flex';
-      }
-    });
+  }
+
+  // Fetch real pending state from Stripe (via our API)
+  fetch('/api/subscription/pending-state').then(r => r.json()).then(function(state) {
+    homeApplyPendingState(state);
   }).catch(function(){});
 
   // Convert plan card buttons: logged-in users get upgrade/downgrade modal, logged-out go to checkout
@@ -4611,6 +4669,23 @@ window.showSfPlanToast = function(type, plan, msg) {
   document.getElementById('home-downgrade-modal').addEventListener('click', function(e) {
     if (e.target === this) this.style.display = 'none';
   });
+
+  // Cancel downgrade from home page card
+  window.homeCancelDowngrade = async function(targetPlan) {
+    try {
+      const res = await fetch('/api/subscription/cancel-downgrade', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showSfPlanToast('upgrade', null, 'Downgrade cancelled — your current plan continues.');
+        // Re-fetch pending state and update UI
+        fetch('/api/subscription/pending-state').then(r => r.json()).then(homeApplyPendingState).catch(function(){});
+      } else {
+        showSfPlanToast('error', null, data.error || 'Could not cancel downgrade.');
+      }
+    } catch(e) { showSfPlanToast('error', null, 'Network error. Please try again.'); }
+  };
 
   window.openHomeUpgradeModal = function(plan) {
     _humPlan = plan;
@@ -5326,8 +5401,13 @@ function pricingPage() {
           <li class="muted"><i class="fas fa-times"></i> Unmastered mix for DAW</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $19/mo</button>
-        <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-creator-downgrade" style="display:none;margin:8px 0 0">
-          <i class="fas fa-clock"></i> <span id="pricing-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+        <div id="pricing-creator-plan-status" style="margin:8px 0 0">
+          <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-creator-downgrade" style="display:none">
+            <i class="fas fa-clock"></i> <span id="pricing-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+          </div>
+          <button class="btn btn--outline btn--sm" id="pricing-btn-cancel-downgrade-creator" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="pricingCancelDowngrade('creator')">
+            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+          </button>
         </div>
       </div>
       <div class="plan-card">
@@ -5341,8 +5421,13 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $39/mo</button>
-        <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-pro-downgrade" style="display:none;margin:8px 0 0">
-          <i class="fas fa-clock"></i> <span id="pricing-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+        <div id="pricing-pro-plan-status" style="margin:8px 0 0">
+          <div class="pricing-downgrade-note sub-downgrade-pending-banner" id="pricing-pro-downgrade" style="display:none">
+            <i class="fas fa-clock"></i> <span id="pricing-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+          </div>
+          <button class="btn btn--outline btn--sm" id="pricing-btn-cancel-downgrade-pro" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="pricingCancelDowngrade('pro')">
+            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+          </button>
         </div>
       </div>
 
@@ -5464,10 +5549,62 @@ function pricingPage() {
   let _pumPlan = null;
   let _pdgPlan = null;
 
+  // ── Apply Stripe pending state to pricing cards ─────────────────────────────
+  function pricingApplyPendingState(pendingState, userPlan) {
+    const pd = (pendingState && pendingState.pendingDowngrade) || null;
+    const plan = userPlan || (pendingState && pendingState.plan) || null;
+
+    // Creator card
+    const cdEl  = document.getElementById('pricing-creator-downgrade');
+    const cdMsg = document.getElementById('pricing-creator-downgrade-msg');
+    const cdCancelBtn = document.getElementById('pricing-btn-cancel-downgrade-creator');
+    if (pd === 'creator') {
+      if (cdMsg) cdMsg.textContent = 'Downgrading to Creator at end of billing cycle';
+      if (cdEl) cdEl.style.display = 'flex';
+      if (cdCancelBtn) cdCancelBtn.style.display = 'inline-flex';
+    } else {
+      if (cdEl) cdEl.style.display = 'none';
+      if (cdCancelBtn) cdCancelBtn.style.display = 'none';
+    }
+
+    // Pro card
+    const pdEl  = document.getElementById('pricing-pro-downgrade');
+    const pdMsg = document.getElementById('pricing-pro-downgrade-msg');
+    const pdCancelBtn = document.getElementById('pricing-btn-cancel-downgrade-pro');
+    if ((pd === 'creator' || pd === 'free') && plan === 'pro') {
+      if (pdMsg) pdMsg.textContent = 'Downgrading to ' + (pd === 'creator' ? 'Creator' : 'Free') + ' at end of billing cycle';
+      if (pdEl) pdEl.style.display = 'flex';
+      if (pdCancelBtn) pdCancelBtn.style.display = 'inline-flex';
+    } else {
+      if (pdEl) pdEl.style.display = 'none';
+      if (pdCancelBtn) pdCancelBtn.style.display = 'none';
+    }
+  }
+
+  // Cancel downgrade from pricing page card
+  window.pricingCancelDowngrade = async function(targetPlan) {
+    try {
+      const res = await fetch('/api/subscription/cancel-downgrade', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showSfPlanToast('upgrade', null, 'Downgrade cancelled — your current plan continues.');
+        fetch('/api/subscription/pending-state').then(r => r.json()).then(function(state) {
+          pricingApplyPendingState(state, null);
+        }).catch(function(){});
+      } else {
+        showSfPlanToast('error', null, data.error || 'Could not cancel downgrade.');
+      }
+    } catch(e) { showSfPlanToast('error', null, 'Network error. Please try again.'); }
+  };
+
   // Detect current user plan and adjust buttons
+  let _pricingUserPlan = null;
   fetch('/api/auth/me').then(r => r.json()).then(me => {
     const user = me.user;
     if (!user) return; // not logged in — buttons go to checkout as-is
+    _pricingUserPlan = user.plan;
 
     const userRank = rank[user.plan] || 0;
     const creatorBtn = document.getElementById('pricing-creator-btn');
@@ -5486,10 +5623,6 @@ function pricingPage() {
         creatorBtn.className = 'btn btn--outline btn--full';
         creatorBtn.style.borderColor = 'rgba(255,100,100,.4)';
         creatorBtn.style.color = '#ff6464';
-        const cdEl = document.getElementById('pricing-creator-downgrade');
-        const cdMsg = document.getElementById('pricing-creator-downgrade-msg');
-        if (cdMsg) cdMsg.textContent = 'Downgrading to Creator at end of billing cycle';
-        if (cdEl) cdEl.style.display = 'flex';
         creatorBtn.onclick = () => openPricingDowngradeModal('creator', 'Creator ($19/mo)');
       } else {
         // Upgrade
@@ -5509,15 +5642,16 @@ function pricingPage() {
         proBtn.className = 'btn btn--outline btn--full';
         proBtn.style.borderColor = 'rgba(255,100,100,.4)';
         proBtn.style.color = '#ff6464';
-        const pdEl = document.getElementById('pricing-pro-downgrade');
-        const pdMsg = document.getElementById('pricing-pro-downgrade-msg');
-        if (pdMsg) pdMsg.textContent = 'Downgrading to Pro Artist at end of billing cycle';
-        if (pdEl) pdEl.style.display = 'flex';
         proBtn.onclick = () => openPricingDowngradeModal('pro', 'Pro Artist ($39/mo)');
       } else {
         proBtn.onclick = () => openPricingUpgradeModal('pro');
       }
     }
+
+    // Now fetch real Stripe pending state and apply
+    fetch('/api/subscription/pending-state').then(r => r.json()).then(function(state) {
+      pricingApplyPendingState(state, user.plan);
+    }).catch(function(){});
   }).catch(() => {
     // Auth failed — wire up buttons for non-logged-in (go straight to checkout)
     document.querySelectorAll('.pricing-plan-btn').forEach(btn => {

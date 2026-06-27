@@ -3532,9 +3532,17 @@ body {
   background: rgba(78,159,255,.3);
 }
 .project-grid--uploads {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+  /* Override: use same auto-fill grid as beats/oneshots for new card-style uploads */
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+}
+/* Upload card — project-card variant with waveform art */
+.upload-card .project-card__art {
+  aspect-ratio: 4/3;
+}
+.upload-card .project-card__art i {
+  pointer-events: none;
 }
 
 /* ═══════════════════════════════════════════════════════════════
