@@ -615,7 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       // ── LAYER 3: Solid black top band (genre label area) ──
-      ctx.fillStyle = 'rgba(0,0,0,0.88)';
+      ctx.fillStyle = 'rgba(0,0,0,0.95)';
       ctx.fillRect(0, 0, W, 46);
 
       // ── LAYER 4: Solid black bottom band (title area) ──
@@ -634,36 +634,32 @@ document.addEventListener('DOMContentLoaded', () => {
       line2 = cur;
 
       const bandH = line2 ? 80 : 60;
-      // Solid opaque base that fades up into transparent
-      const bandGrad = ctx.createLinearGradient(0, H - bandH - 16, 0, H);
-      bandGrad.addColorStop(0,   'rgba(0,0,0,0)');
-      bandGrad.addColorStop(0.3, 'rgba(0,0,0,0.92)');
-      bandGrad.addColorStop(1,   'rgba(0,0,0,1)');
-      ctx.fillStyle = bandGrad;
+      // Fully solid black — no gradient, no transparency
+      ctx.fillStyle = 'rgba(0,0,0,0.97)';
       ctx.fillRect(0, H - bandH - 16, W, bandH + 16);
 
-      // ── LAYER 5: Genre label text — white on solid band ──
+      // ── LAYER 5: Genre label — bright white, letter-spaced ──
       const genreText = (genre||'music').toUpperCase().slice(0,16);
-      ctx.font = '700 12px system-ui,sans-serif';
-      ctx.fillStyle = `hsl(${hue},90%,78%)`;   // tinted accent colour for genre
+      ctx.font = '700 13px system-ui,sans-serif';
+      ctx.fillStyle = '#ffffff';               // pure white — no tint
+      ctx.globalAlpha = 1.0;                   // full opacity guaranteed
       ctx.textAlign = 'center';
-      ctx.letterSpacing = '2.5px';
-      ctx.shadowColor = 'rgba(0,0,0,0)';        // no shadow needed — solid bg behind it
-      ctx.fillText(genreText, W/2, 28);
+      ctx.letterSpacing = '3px';
+      ctx.fillText(genreText, W/2, 29);
       ctx.letterSpacing = '0';
 
-      // ── LAYER 6: Song title text — pure white, 900 weight, on solid band ──
+      // ── LAYER 6: Song title — pure white, 900 weight ──
       ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 1.0;
       ctx.textAlign = 'center';
-      ctx.shadowColor = 'rgba(0,0,0,0)';        // no shadow needed — solid bg behind it
       const titleY = line2 ? H - bandH + 8 : H - bandH + 14;
       if (line2) {
-        ctx.font = '900 18px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 4);
-        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 28);
+        ctx.font = '900 19px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 6);
+        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 30);
       } else {
-        ctx.font = '900 20px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 10);
+        ctx.font = '900 21px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 12);
       }
 
       // ── LAYER 7: Faint watermark ──
