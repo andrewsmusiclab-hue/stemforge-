@@ -611,12 +611,26 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
       }
 
-      // ── Genre label (top) ──
+      // ── Genre label (top) — dark strip + bright text ──
+      const genreText = (genre||'music').toUpperCase().slice(0,16);
+      // Dark pill background behind genre label
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.beginPath();
+      const gw = genreText.length * 7.5 + 20;
+      const gx = W/2 - gw/2;
+      ctx.roundRect(gx, 8, gw, 22, 6);
+      ctx.fill();
+      ctx.restore();
+      // Genre text — white, fully opaque, letter-spaced
       ctx.font = 'bold 11px system-ui,sans-serif';
-      ctx.fillStyle = `hsla(${hue},65%,85%,0.65)`;
+      ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.letterSpacing = '1.5px';
-      ctx.fillText((genre||'music').toUpperCase().slice(0,16), W/2, 26);
+      ctx.shadowColor = 'rgba(0,0,0,0.8)';
+      ctx.shadowBlur = 4;
+      ctx.fillText(genreText, W/2, 24);
+      ctx.shadowBlur = 0;
       ctx.letterSpacing = '0';
 
       // ── Song title (bottom) — large, bold, white with shadow ──
@@ -634,26 +648,27 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!line1) { line1 = cur; cur = ''; }
       line2 = cur;
 
-      // Semi-transparent title background strip
-      const titleY = line2 ? H - 60 : H - 44;
-      const stripH = line2 ? 54 : 38;
-      const stripGrad = ctx.createLinearGradient(0, titleY - 8, 0, titleY + stripH);
+      // Semi-transparent title background strip — stronger gradient
+      const titleY = line2 ? H - 64 : H - 48;
+      const stripH = line2 ? 60 : 44;
+      const stripGrad = ctx.createLinearGradient(0, titleY - 12, 0, titleY + stripH);
       stripGrad.addColorStop(0, 'rgba(0,0,0,0)');
-      stripGrad.addColorStop(1, 'rgba(0,0,0,0.72)');
+      stripGrad.addColorStop(0.4, 'rgba(0,0,0,0.70)');
+      stripGrad.addColorStop(1, 'rgba(0,0,0,0.92)');
       ctx.fillStyle = stripGrad;
-      ctx.fillRect(0, titleY - 8, W, stripH + 16);
+      ctx.fillRect(0, titleY - 12, W, stripH + 20);
 
-      ctx.shadowColor = 'rgba(0,0,0,0.9)';
-      ctx.shadowBlur = 8;
+      ctx.shadowColor = 'rgba(0,0,0,1)';
+      ctx.shadowBlur = 10;
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       if (line2) {
-        ctx.font = 'bold 17px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 14);
-        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 35);
+        ctx.font = 'bold 800 18px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 16);
+        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 38);
       } else {
-        ctx.font = 'bold 19px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 20);
+        ctx.font = 'bold 800 20px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 22);
       }
       ctx.shadowBlur = 0;
 
