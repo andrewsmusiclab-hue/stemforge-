@@ -565,6 +565,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [] };
   let   _libActive  = 'beats';
 
+  // ── Stable unique hue from any ID string ───────────────────
+  // Spreads across full 360° — same ID always returns same hue,
+  // neighbouring IDs land far apart (golden-angle stepping).
+  function hueFromId(id) {
+    // Hash the id string into a number
+    var h = 0;
+    var s = String(id || '0');
+    for (var k = 0; k < s.length; k++) {
+      h = (Math.imul(31, h) + s.charCodeAt(k)) | 0;
+    }
+    // Multiply by golden angle (137.508°) so sequential IDs spread evenly
+    return ((Math.abs(h) * 137) % 360);
+  }
+
   // ── Canvas art generator (shared helper) ───────────────────
   function drawCanvasArt(artEl, hue, title, genre) {
     // ── Inner draw — runs immediately OR after logo loads ──
@@ -690,7 +704,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Render a single beats/songs card ───────────────────────
   function renderBeatCard(p, i) {
-    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id || i);
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
@@ -733,9 +747,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const label = soundType.charAt(0).toUpperCase() + soundType.slice(1);
     const safeFilename = soundType.replace(/[^a-zA-Z0-9]/g,'_').toLowerCase();
     const audioUrl = p.audio_url || '';
-    // Random hue per card — use index + seed for variety
-    const oneshotHues = [280, 320, 200, 160, 30, 240, 350, 100];
-    const hue = oneshotHues[i % oneshotHues.length];
+    const hue  = hueFromId(p.id || i);
     const hue2 = (hue + 50) % 360;
     return `
       <div class="project-card project-card--oneshot"
@@ -762,7 +774,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Render a single trash card ──────────────────────────────
   function renderTrashCard(p, i) {
-    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 47) % 360;
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id || i);
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= p.blueprint ? p.blueprint.genre : (p.sound_type || '');
     const label= p.prompt ? p.prompt.slice(0,32)+(p.prompt.length>32?'…':'') : (p.title||'Item');
@@ -5443,7 +5455,7 @@ window.renderEditInstrumentPills = function (bp) {
   // ui = optional object with creator-page pipeline elements to drive
   // ── Render one extended-track card (mirrors renderBeatCard style) ──────────
   function renderExtendedCard(p, i) {
-    var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 73 + 200) % 360;
+    var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id || i);
     var hue2     = (hue + 60) % 360;
     var title    = p.title || 'Extended Track';
     var safeTitle = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
@@ -5896,8 +5908,7 @@ window.renderEditInstrumentPills = function (bp) {
         var dateStr     = u.created_at ? new Date(u.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
         var filename    = (u.filename || 'Reference track').replace(/\.[^.]+$/, '');
         var summary     = (analysis.summary || '').slice(0, 90);
-        var hues        = [210, 270, 160, 30, 330, 190];
-        var hue         = hues[i % hues.length];
+        var hue         = hueFromId(u.file_id || i);
         var hue2        = (hue + 40) % 360;
         var safeFileId  = (u.file_id || '').replace(/'/g, '');
         var safeFilename = (u.filename || '').replace(/'/g, '\\u0027');
