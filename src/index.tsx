@@ -5134,7 +5134,7 @@ function generatorPage() {
         <i class="fas fa-chevron-down" id="ctab-ref-chevron" style="margin-left:4px;font-size:.6rem;transition:transform .2s"></i>
       </button>
       <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
-        data-tooltip="Continue any track from your library from where it ends.\n2 credits per extend.">
+        data-tooltip="Continue any track from your library or upload from where it ends.\n2 points per extend.">
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
       <button class="creator-tab-btn" id="ctab-blank" onclick="openCreatorPopup('blank')"
@@ -5391,7 +5391,7 @@ function generatorPage() {
     <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline">
       <button class="suno-create-btn" id="gen-full-btn"
-        data-tooltip="Generate your beat using AI — uses 1 download credit (or 2 if 2 beats selected)">
+        data-tooltip="Generate your beat using AI — uses 1 point (or 2 if 2 beats selected)">
         <i class="fas fa-music"></i> Create
       </button>
 
@@ -5591,7 +5591,10 @@ function generatorPage() {
 
       <!-- Lyrics -->
       <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional — leave blank to auto-generate)</span></label>
-      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Leave blank and Mureka will analyze your track and write matching continuation lyrics automatically…" style="margin-bottom:12px"></textarea>
+      <div style="margin-bottom:8px;padding:9px 12px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-radius:8px;font-size:.78rem;line-height:1.55;color:#c4b5fd">
+        <i class="fas fa-drum" style="margin-right:6px;opacity:.8"></i><strong>Extending an instrumental?</strong> Type <code style="background:rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;font-size:.8em">(instrumental)</code> in the lyrics field. If you leave it blank, Mureka will add vocals/lyrics to the new section — it won't automatically detect an instrumental track.
+      </div>
+      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Leave blank and Mureka will analyze your track and write matching continuation lyrics automatically…&#10;For instrumentals type: (instrumental)" style="margin-bottom:12px"></textarea>
 
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
@@ -6219,7 +6222,7 @@ function projectPage() {
 <div style="display:none" class="app-sidebar app-sidebar--dash">
   <nav class="dash-nav"><a href="/dashboard" class="dash-nav__item"><i class="fas fa-arrow-left"></i> Back</a></nav>
   <div class="project-meta-card"><div class="project-meta-card__art project-card__art--1"></div><h4>Surf Noir Trap</h4><p>90 BPM · D Minor · 2:14</p><div class="project-meta-card__plan plan-badge plan-badge--creator">Creator plan</div></div>
-  <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Generations used</div><div class="dash-credits-card__val">32 <small>/ 50 credits</small></div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Upgrade plan</a></div>
+  <div class="dash-credits-card" style="margin-top:16px"><div class="dash-credits-card__label">Generations used</div><div class="dash-credits-card__val">32 <small>/ 50 points</small></div><a href="/pricing" class="btn btn--primary btn--sm btn--full" style="margin-top:8px">Upgrade plan</a></div>
 </div>
 <div class="app-main">
   <div class="dash-header"><h2>Surf Noir Trap <span class="dash-header__sub">Export</span></h2></div>
@@ -7383,12 +7386,12 @@ function accountPage(user: User) {
           <h3 style="font-size:1.1rem;margin-bottom:8px">Cancel Your Subscription?</h3>
           <p style="color:var(--muted);font-size:.88rem;margin-bottom:12px;line-height:1.6">
             You will keep full access to your current plan features until the end of your billing period.
-            After that, your account moves to the <strong>Free plan</strong> (5 credits/month).
+            After that, your account moves to the <strong>Free plan</strong> (5 points/month).
           </p>
           <div style="background:rgba(255,100,100,.07);border:1px solid rgba(255,100,100,.18);border-radius:10px;padding:12px 16px;margin-bottom:20px;text-align:left">
             <p style="margin:0 0 6px;font-size:.82rem;color:#ff9090;font-weight:600"><i class="fas fa-exclamation-triangle" style="margin-right:5px"></i>What you'll lose on Free:</p>
             <ul style="margin:0;padding:0 0 0 18px;color:var(--muted);font-size:.81rem;line-height:1.8">
-              <li>Unlimited generations → 5 credits/month</li>
+              <li>Unlimited generations → 5 points/month</li>
               <li>Download access (must upgrade to download)</li>
               <li>Commercial use rights</li>
               <li>Song Extend, Stem tools & one-shots</li>
@@ -7544,13 +7547,13 @@ function termsPage() {
   <p>Paid plans are billed monthly via Stripe. Subscriptions automatically renew unless cancelled before the next billing date. You authorize us to charge your payment method on file for recurring subscription fees and any overage charges.</p>
 
   <h3>4.4 Refunds</h3>
-  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation credits consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a> and we will review your case.</p>
+  <p>All sales are final. We do not offer refunds for monthly subscription charges or individual generation points consumed. If you believe a charge was made in error, contact us within 14 days at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a> and we will review your case.</p>
 
   <h3>4.5 Cancellation</h3>
   <p>You may cancel your subscription at any time through the Subscription page in your account or via the Stripe billing portal. Cancellation takes effect at the end of your current billing period. You retain access to your plan until then.</p>
 
   <h3>4.6 Generation Credits</h3>
-  <p>Monthly generation credits reset on your billing date and do not roll over to the following month. Unused generations are forfeited at period end.</p>
+  <p>Monthly generation points reset on your billing date and do not roll over to the following month. Unused generations are forfeited at period end.</p>
 </section>
 
 <section>
