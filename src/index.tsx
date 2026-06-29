@@ -319,6 +319,69 @@ async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: s
   ).bind(rolledLimit, customerId).run()
 }
 
+// ── Admin subscription email notification ────────────────────────────────────
+async function sendAdminSubscriptionEmail(
+  env: Bindings,
+  info: { userName: string; userEmail: string; plan: string; event: string; timestamp: string }
+): Promise<void> {
+  const adminEmail = (env as any).ADMIN_EMAIL || 'andrewsmusiclab@gmail.com'
+  const resendKey = (env as any).RESEND_API_KEY
+  const mailerKey = (env as any).MAILERSEND_API_KEY
+  const fromEmail = (env as any).FEEDBACK_FROM_EMAIL || ''
+
+  const subject = `[StemForge] ${info.event} — ${info.plan} plan`
+  const bodyHtml = `
+<div style="font-family:sans-serif;max-width:520px;margin:0 auto;background:#0d0d1a;color:#e2e8f0;padding:32px;border-radius:12px">
+  <h2 style="margin:0 0 20px;color:#4e9fff;font-size:1.3rem">🎉 ${info.event}</h2>
+  <table style="width:100%;border-collapse:collapse;font-size:.9rem">
+    <tr><td style="padding:8px 0;color:#94a3b8;width:120px">Name</td><td style="padding:8px 0;color:#e2e8f0;font-weight:600">${info.userName}</td></tr>
+    <tr><td style="padding:8px 0;color:#94a3b8">Email</td><td style="padding:8px 0;color:#e2e8f0">${info.userEmail}</td></tr>
+    <tr><td style="padding:8px 0;color:#94a3b8">Plan</td><td style="padding:8px 0;color:#10b981;font-weight:700;text-transform:capitalize">${info.plan}</td></tr>
+    <tr><td style="padding:8px 0;color:#94a3b8">Time</td><td style="padding:8px 0;color:#e2e8f0">${info.timestamp}</td></tr>
+  </table>
+  <p style="margin:24px 0 0;font-size:.8rem;color:#475569">Sent automatically by StemForge on subscription event.</p>
+</div>`
+
+  // Try MailerSend first
+  if (mailerKey && fromEmail) {
+    try {
+      const res = await fetch('https://api.mailersend.com/v1/email', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: { email: fromEmail, name: 'StemForge' },
+          to: [{ email: adminEmail }],
+          subject,
+          html: bodyHtml
+        })
+      })
+      if (res.ok || res.status === 202) return
+    } catch (e) { console.error('[sub-email] MailerSend failed:', e) }
+  }
+
+  // Fallback: Resend
+  if (resendKey) {
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from: 'StemForge <onboarding@resend.dev>',
+          to: [adminEmail],
+          subject,
+          html: bodyHtml
+        })
+      })
+      if (res.ok) return
+      const err = await res.json() as any
+      console.error('[sub-email] Resend error:', err)
+    } catch (e) { console.error('[sub-email] Resend failed:', e) }
+  }
+
+  // Final fallback: log to console
+  console.log(`[sub-email] ${info.event} | ${info.userEmail} | plan=${info.plan}`)
+}
+
 // ── Stripe helpers ────────────────────────────────────────────
 const STRIPE_BASE = 'https://api.stripe.com/v1'
 
@@ -2140,6 +2203,22 @@ app.post('/api/stripe/webhook', async (c) => {
         const priceId = sub.items?.data?.[0]?.price?.id
         const plan = planFromPriceId(c.env, priceId)
         await updateUserPlan(c.env.DB, userId, plan, customerId, subId)
+
+        // ── Email admin on new subscription ──────────────────────────────
+        try {
+          const newUser = await c.env.DB.prepare(
+            `SELECT email, name FROM users WHERE id=?`
+          ).bind(userId).first<{ email: string; name: string }>()
+          await sendAdminSubscriptionEmail(c.env, {
+            userName: newUser?.name || 'Unknown',
+            userEmail: newUser?.email || session.customer_details?.email || 'unknown',
+            plan,
+            event: 'New Subscription',
+            timestamp: new Date().toISOString()
+          })
+        } catch (mailErr) {
+          console.error('[webhook] subscription email failed:', mailErr)
+        }
       }
     }
 
@@ -3471,31 +3550,39 @@ app.post('/api/admin/activate-developer', async (c) => {
 })
 
 // ─── MUREKA BALANCE MONITOR ──────────────────────────────────────────────────
-// GET /api/mureka/balance — fetch current Mureka account balance (admin only)
+// GET /api/mureka/balance — returns D1-based usage stats (Mureka API has no balance endpoint)
 app.get('/api/mureka/balance', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'MUREKA_API_KEY not configured' }, 500)
 
   try {
-    const res = await fetch(`${MUREKA_BASE}/account/info`, {
-      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+    // Mureka API does not expose a balance/credits endpoint — use D1 usage stats as proxy
+    const todayStart = new Date(); todayStart.setHours(0,0,0,0)
+    const todayTs = todayStart.getTime()
+
+    const totalRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM generations WHERE provider='mureka'`
+    ).first<{ cnt: number }>().catch(() => null)
+
+    const todayRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM generations WHERE provider='mureka' AND created_at >= ?`
+    ).bind(todayTs).first<{ cnt: number }>().catch(() => null)
+
+    const recentRows = await c.env.DB.prepare(
+      `SELECT id, title, status, created_at FROM generations WHERE provider='mureka' ORDER BY created_at DESC LIMIT 10`
+    ).all<{ id: string; title: string; status: string; created_at: number }>().catch(() => ({ results: [] }))
+
+    return c.json({
+      ok: true,
+      note: 'Mureka does not expose a balance API. Showing generation usage stats instead.',
+      total_generations: totalRow?.cnt ?? 0,
+      generations_today: todayRow?.cnt ?? 0,
+      recent: recentRows?.results ?? []
     })
-    if (!res.ok) {
-      // Mureka may not have /account/info — try /credits endpoint
-      const res2 = await fetch(`${MUREKA_BASE}/credits`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
-      })
-      if (!res2.ok) return c.json({ error: 'Could not fetch Mureka balance', status: res.status }, 500)
-      const data2 = await res2.json() as any
-      return c.json({ ok: true, balance: data2 })
-    }
-    const data = await res.json() as any
-    return c.json({ ok: true, balance: data })
   } catch (e: any) {
-    return c.json({ error: e?.message || 'Balance fetch failed' }, 500)
+    return c.json({ error: e?.message || 'Stats fetch failed' }, 500)
   }
 })
 
@@ -3513,7 +3600,7 @@ function murekaMonitorPage(): string {
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Mureka Balance Monitor — StemForge Admin</title>
+<title>Music API Monitor — StemForge Admin</title>
 <!-- Google Analytics -->
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-74RCBZK52L"></script>
 <script>
@@ -3528,185 +3615,109 @@ function murekaMonitorPage(): string {
   body{background:#0d0d1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:0;margin:0}
   .monitor-wrap{max-width:720px;margin:0 auto;padding:40px 24px}
   .monitor-card{background:#151525;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:28px 32px;margin-bottom:24px}
-  .balance-display{text-align:center;padding:32px 0}
-  .balance-amount{font-size:3rem;font-weight:800;color:#4e9fff;line-height:1}
-  .balance-label{font-size:.9rem;color:#94a3b8;margin-top:8px}
-  .balance-status{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:20px;font-size:.82rem;font-weight:600;margin-top:16px}
-  .balance-status--ok{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);color:#10b981}
-  .balance-status--warn{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);color:#f59e0b}
-  .balance-status--low{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444}
-  .threshold-row{display:flex;align-items:center;gap:12px;margin-bottom:16px}
-  .threshold-row input{flex:1;padding:10px 14px;background:#0d0d1a;border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#e2e8f0;font-size:.9rem}
-  .threshold-row button{padding:10px 20px;background:#4e9fff;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:.9rem}
-  .threshold-row button:hover{background:#3b82f6}
-  .raw-data{background:#0a0a18;border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:16px;font-family:monospace;font-size:.78rem;color:#94a3b8;overflow-x:auto;white-space:pre-wrap;max-height:240px;overflow-y:auto}
-  .history-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:.85rem}
-  .history-row:last-child{border-bottom:none}
+  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:8px}
+  .stat-box{background:#0d0d1a;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:20px;text-align:center}
+  .stat-number{font-size:2.4rem;font-weight:800;color:#4e9fff;line-height:1}
+  .stat-label{font-size:.78rem;color:#64748b;margin-top:6px;text-transform:uppercase;letter-spacing:.04em}
+  .notice-box{background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:16px 20px;margin-bottom:24px;display:flex;gap:14px;align-items:flex-start}
+  .notice-icon{color:#f59e0b;font-size:1.1rem;margin-top:1px;flex-shrink:0}
+  .notice-text{font-size:.85rem;color:#cbd5e1;line-height:1.55}
+  .notice-text strong{color:#f59e0b}
+  .btn-primary{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:#4e9fff;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:.88rem;text-decoration:none}
+  .btn-primary:hover{background:#3b82f6}
   .btn-refresh{background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);color:#4e9fff;padding:8px 18px;border-radius:8px;cursor:pointer;font-size:.85rem;font-weight:600}
   .btn-refresh:hover{background:rgba(78,159,255,.2)}
   h2{font-size:1.1rem;font-weight:700;margin:0 0 20px;color:#e2e8f0}
-  .info-row{display:flex;justify-content:space-between;font-size:.85rem;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
-  .info-row:last-child{border-bottom:none}
-  .info-row span:last-child{color:#4e9fff;font-weight:600}
+  .gen-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid rgba(255,255,255,.05);font-size:.83rem}
+  .gen-row:last-child{border-bottom:none}
+  .gen-status{padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:600}
+  .gen-status--done{background:rgba(16,185,129,.15);color:#10b981}
+  .gen-status--fail{background:rgba(239,68,68,.15);color:#ef4444}
+  .gen-status--pend{background:rgba(245,158,11,.15);color:#f59e0b}
+  .empty-state{color:#64748b;font-size:.85rem;padding:16px 0}
 </style>
 </head>
 <body>
 <div class="monitor-wrap">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:32px">
     <a href="/admin" style="color:#94a3b8;font-size:.85rem;text-decoration:none"><i class="fas fa-arrow-left"></i> Admin</a>
-    <h1 style="font-size:1.4rem;font-weight:800;margin:0;flex:1">Mureka Balance Monitor</h1>
-    <button class="btn-refresh" onclick="refreshBalance()"><i class="fas fa-sync-alt"></i> Refresh</button>
+    <h1 style="font-size:1.4rem;font-weight:800;margin:0;flex:1">Music API Monitor</h1>
+    <button class="btn-refresh" onclick="loadStats()"><i class="fas fa-sync-alt"></i> Refresh</button>
   </div>
 
-  <!-- Balance Card -->
-  <div class="monitor-card">
-    <div class="balance-display">
-      <div class="balance-amount" id="balance-amount">—</div>
-      <div class="balance-label">Credits Remaining</div>
-      <div id="balance-status" class="balance-status" style="display:none"></div>
+  <!-- Balance Notice -->
+  <div class="notice-box">
+    <i class="fas fa-info-circle notice-icon"></i>
+    <div class="notice-text">
+      <strong>Balance not available via API.</strong> The music generation service does not expose a credits/balance API endpoint.
+      To check your remaining balance, visit the platform dashboard directly.<br/>
+      <br/>
+      <a href="https://platform.mureka.ai" target="_blank" rel="noopener" class="btn-primary" style="margin-top:4px">
+        <i class="fas fa-external-link-alt"></i> Check Balance at platform.mureka.ai
+      </a>
     </div>
-    <div id="balance-info" style="margin-top:8px"></div>
   </div>
 
-  <!-- Alert Threshold -->
+  <!-- Usage Stats -->
   <div class="monitor-card">
-    <h2><i class="fas fa-bell" style="color:#f59e0b;margin-right:8px"></i>Alert Threshold</h2>
-    <p style="font-size:.85rem;color:#94a3b8;margin:0 0 16px">Set a credit threshold. When balance drops below this, a warning is shown here. To get email alerts, add your Resend API key (RESEND_API_KEY secret) — then alerts auto-email stemforgesupport@gmail.com.</p>
-    <div class="threshold-row">
-      <input type="number" id="threshold-input" placeholder="e.g. 50" min="1" step="1"/>
-      <button onclick="saveThreshold()"><i class="fas fa-save"></i> Save</button>
+    <h2><i class="fas fa-chart-bar" style="color:#4e9fff;margin-right:8px"></i>Generation Usage</h2>
+    <div class="stat-grid">
+      <div class="stat-box">
+        <div class="stat-number" id="stat-today">—</div>
+        <div class="stat-label">Generations Today</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-number" id="stat-total">—</div>
+        <div class="stat-label">Total Generations</div>
+      </div>
     </div>
-    <div id="threshold-status" style="font-size:.82rem;color:#10b981;min-height:20px"></div>
+    <p style="font-size:.78rem;color:#475569;margin:12px 0 0">Counts all jobs sent to the music API via StemForge.</p>
   </div>
 
-  <!-- Check History -->
+  <!-- Recent Generations -->
   <div class="monitor-card">
-    <h2><i class="fas fa-history" style="color:#94a3b8;margin-right:8px"></i>Check History <span style="font-size:.78rem;font-weight:400;color:#64748b">(this session)</span></h2>
-    <div id="check-history" style="min-height:48px;color:#64748b;font-size:.85rem">No checks yet this session.</div>
-  </div>
-
-  <!-- Raw API Response -->
-  <div class="monitor-card">
-    <h2><i class="fas fa-code" style="color:#94a3b8;margin-right:8px"></i>Raw API Response</h2>
-    <pre class="raw-data" id="raw-data">Fetch balance to see raw API response.</pre>
+    <h2><i class="fas fa-history" style="color:#94a3b8;margin-right:8px"></i>Recent Jobs</h2>
+    <div id="recent-list"><div class="empty-state">Loading…</div></div>
   </div>
 </div>
 
 <script>
-const history = [];
-let balanceValue = null;
-
-async function refreshBalance() {
-  const amtEl = document.getElementById('balance-amount');
-  const statusEl = document.getElementById('balance-status');
-  const rawEl = document.getElementById('raw-data');
-  const infoEl = document.getElementById('balance-info');
-  amtEl.textContent = '…';
-  statusEl.style.display = 'none';
-
+async function loadStats() {
   try {
     const res = await fetch('/api/mureka/balance');
     const data = await res.json();
-    rawEl.textContent = JSON.stringify(data, null, 2);
 
-    if (!res.ok) {
-      amtEl.textContent = 'Error';
-      amtEl.style.color = '#ef4444';
-      statusEl.textContent = data.error || 'Failed to fetch';
-      statusEl.className = 'balance-status balance-status--low';
-      statusEl.style.display = 'inline-flex';
+    document.getElementById('stat-today').textContent = data.generations_today ?? '—';
+    document.getElementById('stat-total').textContent = data.total_generations ?? '—';
+
+    const recent = data.recent || [];
+    const listEl = document.getElementById('recent-list');
+    if (!recent.length) {
+      listEl.innerHTML = '<div class="empty-state">No generations recorded yet.</div>';
       return;
     }
-
-    // Try to extract credit amount from common response shapes
-    const raw = data.balance || data;
-    const credits = raw.credits ?? raw.balance ?? raw.remaining_credits ?? raw.total_credits ?? null;
-    balanceValue = credits;
-
-    if (credits !== null) {
-      amtEl.textContent = credits.toLocaleString();
-      amtEl.style.color = '';
-      const threshold = parseInt(localStorage.getItem('mureka_threshold') || '50', 10);
-      if (credits <= 0) {
-        statusEl.innerHTML = '<i class="fas fa-times-circle"></i> OUT OF CREDITS';
-        statusEl.className = 'balance-status balance-status--low';
-      } else if (credits < threshold) {
-        statusEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> LOW — below threshold (' + threshold + ')';
-        statusEl.className = 'balance-status balance-status--warn';
-      } else {
-        statusEl.innerHTML = '<i class="fas fa-check-circle"></i> Healthy';
-        statusEl.className = 'balance-status balance-status--ok';
-      }
-      statusEl.style.display = 'inline-flex';
-    } else {
-      amtEl.textContent = '?';
-      amtEl.style.color = '#f59e0b';
-      statusEl.innerHTML = '<i class="fas fa-info-circle"></i> Balance shape unknown — check raw response below';
-      statusEl.className = 'balance-status balance-status--warn';
-      statusEl.style.display = 'inline-flex';
-    }
-
-    // Show info rows
-    infoEl.innerHTML = Object.entries(raw)
-      .filter(([k]) => !['choices','items','data'].includes(k))
-      .map(([k,v]) => '<div class="info-row"><span>' + k + '</span><span>' + JSON.stringify(v) + '</span></div>')
-      .join('');
-
-    // Add to history
-    const entry = { time: new Date().toLocaleTimeString(), credits, ok: res.ok };
-    history.unshift(entry);
-    if (history.length > 20) history.pop();
-    renderHistory();
-
-    // Check threshold and show warning if needed
-    checkAlert(credits);
-
+    listEl.innerHTML = recent.map(g => {
+      const ts = g.created_at ? new Date(g.created_at).toLocaleString() : '—';
+      const st = (g.status || 'unknown').toLowerCase();
+      const cls = st === 'completed' || st === 'done' ? 'gen-status--done'
+                : st === 'failed' || st === 'error'   ? 'gen-status--fail'
+                : 'gen-status--pend';
+      return '<div class="gen-row">' +
+        '<span style="color:#cbd5e1;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (g.title || g.id || '—') + '</span>' +
+        '<div style="display:flex;align-items:center;gap:12px;flex-shrink:0">' +
+          '<span style="color:#475569;font-size:.75rem">' + ts + '</span>' +
+          '<span class="gen-status ' + cls + '">' + (g.status || 'unknown') + '</span>' +
+        '</div>' +
+      '</div>';
+    }).join('');
   } catch(e) {
-    amtEl.textContent = 'Error';
-    amtEl.style.color = '#ef4444';
-    rawEl.textContent = e.message;
+    document.getElementById('stat-today').textContent = 'err';
+    document.getElementById('stat-total').textContent = 'err';
+    document.getElementById('recent-list').innerHTML = '<div class="empty-state" style="color:#ef4444">' + e.message + '</div>';
   }
 }
 
-function checkAlert(credits) {
-  const threshold = parseInt(localStorage.getItem('mureka_threshold') || '50', 10);
-  if (credits !== null && credits < threshold) {
-    document.title = '⚠️ Low Credits — Mureka Monitor';
-    // Show persistent alert banner if not already shown
-    if (!document.getElementById('low-credit-alert')) {
-      const alert = document.createElement('div');
-      alert.id = 'low-credit-alert';
-      alert.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ef4444;color:#fff;padding:12px 24px;text-align:center;font-weight:700;z-index:9999;font-size:.9rem';
-      alert.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Mureka credits low: ' + credits + ' remaining (threshold: ' + threshold + ') — <a href="https://mureka.ai" target="_blank" style="color:#fff;text-decoration:underline">Top up now</a>';
-      document.body.prepend(alert);
-    }
-  }
-}
-
-function renderHistory() {
-  const el = document.getElementById('check-history');
-  if (!history.length) { el.innerHTML = '<span style="color:#64748b">No checks yet.</span>'; return; }
-  el.innerHTML = history.map(h =>
-    '<div class="history-row"><span>' + h.time + '</span><span style="color:' + (h.credits < 50 ? '#f59e0b' : '#10b981') + '">' + (h.credits !== null ? h.credits + ' credits' : 'unknown') + '</span></div>'
-  ).join('');
-}
-
-function saveThreshold() {
-  const val = parseInt(document.getElementById('threshold-input').value, 10);
-  if (isNaN(val) || val < 1) { alert('Enter a valid threshold (e.g. 50)'); return; }
-  localStorage.setItem('mureka_threshold', val.toString());
-  document.getElementById('threshold-status').textContent = '✓ Threshold saved: ' + val + ' credits';
-  setTimeout(() => document.getElementById('threshold-status').textContent = '', 3000);
-}
-
-// Load saved threshold on page load
-window.onload = () => {
-  const saved = localStorage.getItem('mureka_threshold');
-  if (saved) document.getElementById('threshold-input').value = saved;
-  refreshBalance();
-  // Auto-refresh every 5 minutes
-  setInterval(refreshBalance, 5 * 60 * 1000);
-};
+window.onload = loadStats;
 </script>
 </body>
 </html>`
