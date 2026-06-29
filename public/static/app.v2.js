@@ -738,13 +738,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const label = soundType.charAt(0).toUpperCase() + soundType.slice(1);
     const safeFilename = soundType.replace(/[^a-zA-Z0-9]/g,'_').toLowerCase();
     const audioUrl = p.audio_url || '';
+    // Random hue per card — use index + seed for variety
+    const oneshotHues = [280, 320, 200, 160, 30, 240, 350, 100];
+    const hue = oneshotHues[i % oneshotHues.length];
+    const hue2 = (hue + 50) % 360;
     return `
       <div class="project-card project-card--oneshot"
            data-stereo="${audioUrl}"
            data-id="${p.id}"
            data-title="${label.replace(/"/g,'&quot;')}">
-        <div class="project-card__art" style="background:linear-gradient(135deg,#1a1240,#0d0a1e)">
-          <div class="project-card__art-icon"><i class="fas fa-bolt" style="color:#a855f7"></i></div>
+        <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},60%,16%),hsl(${hue2},70%,9%));display:flex;align-items:center;justify-content:center">
+          <img src="/static/stemforge-logo.png" alt="StemForge"
+            style="width:62%;max-width:80px;object-fit:contain;opacity:0.82;filter:hue-rotate(${hue}deg) saturate(1.4) brightness(1.1);pointer-events:none;user-select:none"/>
           ${audioUrl ? `<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>` : ''}
         </div>
         <div class="project-card__body">
@@ -5444,6 +5449,7 @@ window.renderEditInstrumentPills = function (bp) {
   // ── Render one extended-track card (mirrors renderBeatCard style) ──────────
   function renderExtendedCard(p, i) {
     var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : (i * 73 + 200) % 360;
+    var hue2     = (hue + 60) % 360;
     var title    = p.title || 'Extended Track';
     var safeTitle = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
     var stereoUrl = p.stereo_url || '';
@@ -5456,8 +5462,9 @@ window.renderEditInstrumentPills = function (bp) {
       ' data-id="' + p.id + '"' +
       ' data-title="' + title.replace(/"/g,'&quot;') + '"' +
       ' data-hue="' + hue + '">' +
-      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + ((hue+60)%360) + ',70%,10%))">' +
-        '<div class="project-card__art-icon"><i class="fas fa-expand-arrows-alt" style="color:hsl(' + hue + ',80%,65%)"></i></div>' +
+      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + hue2 + ',70%,10%));display:flex;align-items:center;justify-content:center">' +
+        '<img src="/static/stemforge-logo.png" alt="StemForge"' +
+          ' style="width:62%;max-width:80px;object-fit:contain;opacity:0.82;filter:hue-rotate(' + hue + 'deg) saturate(1.4) brightness(1.1);pointer-events:none;user-select:none"/>' +
         playBtn +
       '</div>' +
       '<div class="project-card__body">' +
@@ -5906,11 +5913,10 @@ window.renderEditInstrumentPills = function (bp) {
           // Card — clicking the art/body uses as reference; three-dot opens menu
           '<div class="project-card upload-card">' +
             // Art area — click to use as reference
-            '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',50%,14%),hsl(' + hue2 + ',60%,8%));position:relative;cursor:pointer"' +
+            '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',50%,14%),hsl(' + hue2 + ',60%,8%));position:relative;cursor:pointer;display:flex;align-items:center;justify-content:center"' +
               ' onclick="useExistingUpload(\'' + safeFileId + '\',\'' + safeFilename + '\',\'' + safeSummary + '\')" title="Use as reference">' +
-              '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">' +
-                '<i class="fas fa-music upload-art-icon" style="font-size:2rem;color:hsl(' + hue + ',80%,65%);opacity:.75"></i>' +
-              '</div>' +
+              '<img src="/static/stemforge-logo.png" alt="StemForge"' +
+                ' style="width:62%;max-width:80px;object-fit:contain;opacity:0.82;filter:hue-rotate(' + hue + 'deg) saturate(1.4) brightness(1.1);pointer-events:none;user-select:none"/>' +
               '<div style="position:absolute;top:10px;left:10px">' +
                 '<span style="background:rgba(0,0,0,.45);color:hsl(' + hue + ',80%,70%);font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:99px;letter-spacing:.04em;backdrop-filter:blur(4px)">' +
                   '<i class="fas fa-cloud-upload-alt" style="margin-right:3px;font-size:.55rem"></i>UPLOAD' +

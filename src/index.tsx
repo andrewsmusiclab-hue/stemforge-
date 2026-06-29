@@ -4145,8 +4145,7 @@ function globalSidebar() {
   return `<aside class="gs-sidebar" id="gs-sidebar">
   <!-- Logo -->
   <a href="/" class="gs-sidebar__logo">
-    <span class="gs-sidebar__logo-icon"><i class="fas fa-wave-square"></i></span>
-    <span class="gs-sidebar__logo-text">Stem<span class="accent">Forge</span></span>
+    <img src="/static/stemforge-logo.png" alt="StemForge" style="height:36px;width:36px;object-fit:contain;flex-shrink:0"/><span class="gs-sidebar__logo-text">Stem<span class="accent">Forge</span></span>
   </a>
 
   <!-- Sign in button — shown when logged out -->
@@ -4357,8 +4356,7 @@ function footer() {
   <div class="sf-footer__inner">
     <div class="sf-footer__brand">
       <a href="/" class="sf-nav__logo">
-        <span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span>
-        <span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
+        <img src="/static/stemforge-logo.png" alt="StemForge" style="height:30px;width:30px;object-fit:contain;flex-shrink:0"/><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
       </a>
       <p>AI beat generation — professional quality, no studio needed.</p>
     </div>
@@ -4398,6 +4396,11 @@ function homePage() {
     <div class="hero__orb hero__orb--1"></div>
     <div class="hero__orb hero__orb--2"></div>
     <div class="hero__grid"></div>
+    <!-- Looping background video — sits above the gradient bg, below all content -->
+    <video class="hero__bg-video" autoplay muted loop playsinline
+      style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.18;mix-blend-mode:screen;pointer-events:none;z-index:0">
+      <source src="/static/hero-wave.mp4" type="video/mp4">
+    </video>
   </div>
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
@@ -6179,7 +6182,7 @@ function signupPage() {
 <main class="auth-page">
   <div class="auth-split">
     <div class="auth-split__left">
-      <a href="/" class="sf-nav__logo auth-logo"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
+      <a href="/" class="sf-nav__logo auth-logo"><img src="/static/stemforge-logo.png" alt="StemForge" style="height:30px;width:30px;object-fit:contain;flex-shrink:0"/><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
       <h1>Start generating.<br/>Keep every track.</h1>
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
@@ -6212,7 +6215,7 @@ function registerPage() {
 <main class="auth-page">
   <div class="auth-split">
     <div class="auth-split__left">
-      <a href="/" class="sf-nav__logo auth-logo"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
+      <a href="/" class="sf-nav__logo auth-logo"><img src="/static/stemforge-logo.png" alt="StemForge" style="height:30px;width:30px;object-fit:contain;flex-shrink:0"/><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
       <h1>Start generating.<br/>Keep every track.</h1>
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
@@ -6271,7 +6274,7 @@ function loginPage(next = '') {
 <main class="auth-page">
   <div class="auth-split">
     <div class="auth-split__left">
-      <a href="/" class="sf-nav__logo auth-logo"><span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
+      <a href="/" class="sf-nav__logo auth-logo"><img src="/static/stemforge-logo.png" alt="StemForge" style="height:30px;width:30px;object-fit:contain;flex-shrink:0"/><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span></a>
       <h1>Welcome back.<br/>Your tracks are waiting.</h1>
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> Access all your projects</li>
@@ -6319,8 +6322,7 @@ function checkoutPage() {
   <div class="checkout-wrap">
     <div class="checkout-left">
       <a href="/" class="sf-nav__logo auth-logo" style="margin-bottom:32px;display:inline-flex">
-        <span class="sf-nav__logo-icon"><i class="fas fa-wave-square"></i></span>
-        <span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
+        <img src="/static/stemforge-logo.png" alt="StemForge" style="height:30px;width:30px;object-fit:contain;flex-shrink:0"/><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
       </a>
       <div class="checkout-plan-summary" id="co-plan-summary">
         <div class="checkout-plan-summary__header">
