@@ -611,25 +611,30 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
       }
 
-      // ── Genre label (top) — dark strip + bright text ──
+      // ── Genre label (top) — solid dark pill + bold white text ──
       const genreText = (genre||'music').toUpperCase().slice(0,16);
-      // Dark pill background behind genre label
-      ctx.save();
-      ctx.fillStyle = 'rgba(0,0,0,0.55)';
-      ctx.beginPath();
-      const gw = genreText.length * 7.5 + 20;
+      // Measure text first for pill sizing
+      ctx.font = '800 13px system-ui,sans-serif';
+      const gTextW = ctx.measureText(genreText).width;
+      const gw = gTextW + 28;
       const gx = W/2 - gw/2;
-      ctx.roundRect(gx, 8, gw, 22, 6);
+      // Solid dark pill (no transparency issues)
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.9)';
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = 'rgba(0,0,0,0.82)';
+      ctx.beginPath();
+      ctx.roundRect(gx, 7, gw, 26, 7);
       ctx.fill();
       ctx.restore();
-      // Genre text — white, fully opaque, letter-spaced
-      ctx.font = 'bold 11px system-ui,sans-serif';
+      // Genre text — solid white, heavy weight, letter-spaced
+      ctx.font = '800 13px system-ui,sans-serif';
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
-      ctx.letterSpacing = '1.5px';
-      ctx.shadowColor = 'rgba(0,0,0,0.8)';
-      ctx.shadowBlur = 4;
-      ctx.fillText(genreText, W/2, 24);
+      ctx.letterSpacing = '2px';
+      ctx.shadowColor = 'rgba(0,0,0,1)';
+      ctx.shadowBlur = 6;
+      ctx.fillText(genreText, W/2, 26);
       ctx.shadowBlur = 0;
       ctx.letterSpacing = '0';
 
@@ -648,27 +653,37 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!line1) { line1 = cur; cur = ''; }
       line2 = cur;
 
-      // Semi-transparent title background strip — stronger gradient
-      const titleY = line2 ? H - 64 : H - 48;
-      const stripH = line2 ? 60 : 44;
-      const stripGrad = ctx.createLinearGradient(0, titleY - 12, 0, titleY + stripH);
+      // Solid dark title strip at bottom — no gradient fade-out issues
+      const titleY = line2 ? H - 72 : H - 54;
+      const stripH = line2 ? 72 : 54;
+      // Solid opaque black base + fade to transparent at top
+      const stripGrad = ctx.createLinearGradient(0, titleY - 20, 0, H);
       stripGrad.addColorStop(0, 'rgba(0,0,0,0)');
-      stripGrad.addColorStop(0.4, 'rgba(0,0,0,0.70)');
-      stripGrad.addColorStop(1, 'rgba(0,0,0,0.92)');
+      stripGrad.addColorStop(0.25, 'rgba(0,0,0,0.85)');
+      stripGrad.addColorStop(1, 'rgba(0,0,0,0.97)');
       ctx.fillStyle = stripGrad;
-      ctx.fillRect(0, titleY - 12, W, stripH + 20);
+      ctx.fillRect(0, titleY - 20, W, stripH + 20);
 
-      ctx.shadowColor = 'rgba(0,0,0,1)';
-      ctx.shadowBlur = 10;
+      // Title text — pure white, max weight, multi-shadow for outline effect
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       if (line2) {
-        ctx.font = 'bold 800 18px system-ui,sans-serif';
+        ctx.font = '900 19px system-ui,sans-serif';
+        // Double shadow pass for strong outline
+        ctx.shadowColor = 'rgba(0,0,0,1)';
+        ctx.shadowBlur = 12;
         ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 16);
-        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 38);
+        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 40);
+        ctx.shadowBlur = 6;
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 16);
+        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 40);
       } else {
-        ctx.font = 'bold 800 20px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 22);
+        ctx.font = '900 21px system-ui,sans-serif';
+        ctx.shadowColor = 'rgba(0,0,0,1)';
+        ctx.shadowBlur = 12;
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 24);
+        ctx.shadowBlur = 6;
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 24);
       }
       ctx.shadowBlur = 0;
 
