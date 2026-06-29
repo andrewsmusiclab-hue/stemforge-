@@ -567,6 +567,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Canvas art generator (shared helper) ───────────────────
   function drawCanvasArt(artEl, hue, title, genre) {
+    // ── Inner draw — runs immediately OR after logo loads ──
+    function doDraw(logoImg) {
     try {
       const W = 320, H = 320;
       const canvas = document.createElement('canvas');
@@ -579,6 +581,21 @@ document.addEventListener('DOMContentLoaded', () => {
       grad.addColorStop(0.5, `hsl(${(hue+50)%360},80%,10%)`);
       grad.addColorStop(1,   `hsl(${(hue+100)%360},65%,7%)`);
       ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+
+      // ── StemForge logo — full bleed, hue-rotated, behind everything ──
+      if (logoImg && logoImg.complete && logoImg.naturalWidth) {
+        ctx.save();
+        ctx.globalAlpha = 0.72;
+        // hue-rotate via CSS filter trick: draw to offscreen, apply filter, draw back
+        const off = document.createElement('canvas');
+        off.width = W; off.height = H;
+        const octx = off.getContext('2d');
+        octx.drawImage(logoImg, 0, 0, W, H);
+        ctx.filter = `hue-rotate(${hue}deg) saturate(1.6) brightness(0.85)`;
+        ctx.drawImage(off, 0, 0);
+        ctx.filter = 'none';
+        ctx.restore();
+      }
 
       // ── Accent glow spots ──
       const r1 = ctx.createRadialGradient(W*0.75, H*0.22, 10, W*0.75, H*0.22, W*0.48);
@@ -676,6 +693,22 @@ document.addEventListener('DOMContentLoaded', () => {
       artEl.style.backgroundSize = 'cover';
       artEl.style.backgroundPosition = 'center';
     } catch(e) { /* gradient fallback */ }
+    } // end doDraw
+
+    // Load logo then draw; if already cached draw immediately
+    if (window._sfLogoImg && window._sfLogoImg.complete) {
+      doDraw(window._sfLogoImg);
+    } else if (!window._sfLogoImg) {
+      window._sfLogoImg = new Image();
+      window._sfLogoImg.crossOrigin = 'anonymous';
+      window._sfLogoImg.onload  = () => doDraw(window._sfLogoImg);
+      window._sfLogoImg.onerror = () => doDraw(null);
+      window._sfLogoImg.src = '/static/stemforge-logo.png';
+    } else {
+      // Still loading — wait then draw
+      window._sfLogoImg.addEventListener('load',  () => doDraw(window._sfLogoImg), { once: true });
+      window._sfLogoImg.addEventListener('error', () => doDraw(null),               { once: true });
+    }
   }
   // Expose globally so the edit modal (outside this IIFE) can call it
   window.drawCanvasArt = drawCanvasArt;
@@ -712,7 +745,9 @@ document.addEventListener('DOMContentLoaded', () => {
            data-hue="${hue}"
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
            >
-        <div class="project-card__art" style="background:hsl(${hue},50%,10%)">
+        <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},55%,12%),hsl(${(hue+60)%360},65%,8%));position:relative;overflow:hidden">
+          <img src="/static/stemforge-logo.png" alt="StemForge"
+            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(${hue}deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>
           <div class="project-card__play" onclick="playDashProject(this)">
             <i class="fas fa-play"></i>
           </div>
