@@ -5608,9 +5608,9 @@ function generatorPage() {
       <!-- Lyrics -->
       <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional — leave blank to auto-generate)</span></label>
       <div style="margin-bottom:8px;padding:9px 12px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-radius:8px;font-size:.78rem;line-height:1.55;color:#c4b5fd">
-        <i class="fas fa-drum" style="margin-right:6px;opacity:.8"></i><strong>Extending an instrumental?</strong> Type <code style="background:rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;font-size:.8em">(instrumental)</code> in the lyrics field. If you leave it blank, Mureka will add vocals/lyrics to the new section — it won't automatically detect an instrumental track.
+        <i class="fas fa-drum" style="margin-right:6px;opacity:.8"></i><strong>Extending an instrumental?</strong> Type <code style="background:rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;font-size:.8em">(instrumental)</code> — include the brackets — in the lyrics field below. If left blank, vocals will be added to the new section.
       </div>
-      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse 2]&#10;Leave blank and Mureka will analyze your track and write matching continuation lyrics automatically…&#10;For instrumentals type: (instrumental)" style="margin-bottom:12px"></textarea>
+      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse]&#10;Leave blank to auto-generate matching continuation lyrics…&#10;For instrumentals type: (instrumental)" style="margin-bottom:12px"></textarea>
 
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
