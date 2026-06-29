@@ -599,15 +599,15 @@ document.addEventListener('DOMContentLoaded', () => {
       // ── LAYER 2: Logo — dimmed to 35% so it doesn't compete with text ──
       if (logoImg && logoImg.complete && logoImg.naturalWidth) {
         ctx.save();
-        ctx.globalAlpha = 0.35;
+        ctx.globalAlpha = 0.55;
         const off = document.createElement('canvas');
         off.width = W; off.height = H;
         const octx = off.getContext('2d');
         octx.drawImage(logoImg, 0, 0, W, H);
-        ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.7)`;
-        // Only draw logo in the MIDDLE zone — leave top 48px and bottom 80px clear for text
+        ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.8)`;
+        // Only clip top — leave 48px clear for genre label band
         ctx.beginPath();
-        ctx.rect(0, 48, W, H - 48 - 80);
+        ctx.rect(0, 48, W, H - 48);
         ctx.clip();
         ctx.drawImage(off, 0, 0);
         ctx.filter = 'none';
@@ -618,51 +618,17 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.fillStyle = 'rgba(0,0,0,0.95)';
       ctx.fillRect(0, 0, W, 46);
 
-      // ── LAYER 4: Solid black bottom band (title area) ──
-      // Calculate title lines first so we know height needed
-      const displayTitle = (title || 'Untitled Beat').trim();
-      const maxChars = 18;
-      const words = displayTitle.split(' ');
-      let line1 = '', line2 = '';
-      let cur = '';
-      for (let i = 0; i < words.length; i++) {
-        const test = cur ? cur + ' ' + words[i] : words[i];
-        if (test.length <= maxChars) { cur = test; }
-        else { line1 = cur; cur = words[i]; }
-      }
-      if (!line1) { line1 = cur; cur = ''; }
-      line2 = cur;
-
-      const bandH = line2 ? 80 : 60;
-      // Fully solid black — no gradient, no transparency
-      ctx.fillStyle = 'rgba(0,0,0,0.97)';
-      ctx.fillRect(0, H - bandH - 16, W, bandH + 16);
-
-      // ── LAYER 5: Genre label — bright white, letter-spaced ──
+      // ── LAYER 4: Genre label — bright white, letter-spaced ──
       const genreText = (genre||'music').toUpperCase().slice(0,16);
       ctx.font = '700 13px system-ui,sans-serif';
-      ctx.fillStyle = '#ffffff';               // pure white — no tint
-      ctx.globalAlpha = 1.0;                   // full opacity guaranteed
+      ctx.fillStyle = '#ffffff';
+      ctx.globalAlpha = 1.0;
       ctx.textAlign = 'center';
       ctx.letterSpacing = '3px';
       ctx.fillText(genreText, W/2, 29);
       ctx.letterSpacing = '0';
 
-      // ── LAYER 6: Song title — pure white, 900 weight ──
-      ctx.fillStyle = '#ffffff';
-      ctx.globalAlpha = 1.0;
-      ctx.textAlign = 'center';
-      const titleY = line2 ? H - bandH + 8 : H - bandH + 14;
-      if (line2) {
-        ctx.font = '900 19px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 6);
-        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 30);
-      } else {
-        ctx.font = '900 21px system-ui,sans-serif';
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 12);
-      }
-
-      // ── LAYER 7: Faint watermark ──
+      // ── LAYER 5: Faint watermark ──
       ctx.font = '600 9px system-ui,sans-serif';
       ctx.fillStyle = `hsla(${hue},60%,70%,0.35)`;
       ctx.textAlign = 'right';
