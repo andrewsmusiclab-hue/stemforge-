@@ -4610,36 +4610,36 @@ function homePage() {
 </section>
 
 <!-- Bottom stems video — fixed to viewport bottom, fades in as user scrolls to bottom -->
-<video id="stems-bg-video" autoplay muted loop playsinline
-  style="position:fixed;bottom:0;left:0;width:100%;height:40vh;object-fit:cover;opacity:0;mix-blend-mode:screen;pointer-events:none;z-index:0;transition:opacity .6s ease;will-change:opacity">
-  <source src="/static/stems-wave.mp4" type="video/mp4">
-</video>
+<!-- Wrapper handles the gradient bleed — transparent top, solid bottom -->
+<div id="stems-bg-wrap" style="position:fixed;bottom:0;left:0;width:100%;height:65vh;pointer-events:none;z-index:0;opacity:0;transition:opacity .6s ease;will-change:opacity;-webkit-mask-image:linear-gradient(to bottom,transparent 0%,black 38%);mask-image:linear-gradient(to bottom,transparent 0%,black 38%)">
+  <video id="stems-bg-video" autoplay muted loop playsinline
+    style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;mix-blend-mode:screen;pointer-events:none">
+    <source src="/static/stems-wave.mp4" type="video/mp4">
+  </video>
+</div>
 <script>
 (function(){
-  var vid = document.getElementById('stems-bg-video');
-  if (!vid) return;
+  var wrap = document.getElementById('stems-bg-wrap');
+  if (!wrap) return;
   var ticking = false;
   function onScroll() {
     if (ticking) return;
     ticking = true;
     requestAnimationFrame(function() {
       ticking = false;
-      var scrolled   = window.scrollY;
-      var winH       = window.innerHeight;
-      var docH       = document.documentElement.scrollHeight;
-      /* progress = 0 when at page top, 1 when fully scrolled to bottom */
-      var progress   = scrolled / (docH - winH);
-      /* start fading in at 70% scroll, fully visible at 90% */
-      var fadeIn     = Math.max(0, Math.min(1, (progress - 0.70) / 0.20));
-      /* fade back out in last 2% (at absolute bottom) — keep it subtle */
-      var fadeOut    = progress > 0.98 ? Math.max(0, (1 - progress) / 0.02) : 1;
-      var opacity    = parseFloat((0.22 * fadeIn * fadeOut).toFixed(3));
-      vid.style.opacity      = opacity;
-      vid.style.visibility   = opacity < 0.005 ? 'hidden' : 'visible';
+      var scrolled = window.scrollY;
+      var winH     = window.innerHeight;
+      var docH     = document.documentElement.scrollHeight;
+      /* progress: 0 = page top, 1 = page bottom */
+      var progress = scrolled / Math.max(1, docH - winH);
+      /* fade in from 70% → 90% scroll; once visible, stays visible all the way to bottom */
+      var opacity  = parseFloat((0.22 * Math.max(0, Math.min(1, (progress - 0.70) / 0.20))).toFixed(3));
+      wrap.style.opacity    = opacity;
+      wrap.style.visibility = opacity < 0.005 ? 'hidden' : 'visible';
     });
   }
   window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll(); /* run once on load in case page is already scrolled */
+  onScroll();
 })();
 </script>
 
