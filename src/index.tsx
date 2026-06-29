@@ -7501,7 +7501,7 @@ function termsPage() {
   return legalShell('Terms of Service', 'June 7, 2025', `
 <section>
   <h2>1. Acceptance of Terms</h2>
-  <p>Welcome to <strong>StemForge</strong> ("StemForge," "we," "our," or "us"). By accessing or using our website at <a href="https://stemforge.com">stemforge.com</a>, our beat generation platform, or any related services (collectively, the "Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, do not use our Service.</p>
+  <p>Welcome to <strong>StemForge</strong> ("StemForge," "we," "our," or "us"). By accessing or using our website at <a href="https://stemforge.studio">stemforge.studio</a>, our beat generation platform, or any related services (collectively, the "Service"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, do not use our Service.</p>
   <p>We reserve the right to modify these Terms at any time. We will provide notice of significant changes by updating the "Last Updated" date above or sending an email to registered users. Your continued use of the Service after such changes constitutes your acceptance of the revised Terms.</p>
 </section>
 
@@ -7631,7 +7631,7 @@ function termsPage() {
   <p>If you have any questions about these Terms, please contact us:</p>
   <ul>
     <li>Email: <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></li>
-    <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
+    <li>Website: <a href="https://stemforge.studio">stemforge.studio</a></li>
   </ul>
 </section>
 `)
@@ -7769,7 +7769,7 @@ function privacyPage() {
   <ul>
     <li>Email: <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></li>
     <li>General: <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a></li>
-    <li>Website: <a href="https://stemforge.com">stemforge.com</a></li>
+    <li>Website: <a href="https://stemforge.studio">stemforge.studio</a></li>
   </ul>
 </section>
 `)
