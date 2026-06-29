@@ -589,61 +589,41 @@ document.addEventListener('DOMContentLoaded', () => {
       canvas.width = W; canvas.height = H;
       const ctx = canvas.getContext('2d');
 
-      // ── Background gradient (unique per hue) ──
+      // ── LAYER 1: Dark background gradient ──
       const grad = ctx.createLinearGradient(0, 0, W, H);
-      grad.addColorStop(0,   `hsl(${hue},70%,16%)`);
-      grad.addColorStop(0.5, `hsl(${(hue+50)%360},80%,10%)`);
-      grad.addColorStop(1,   `hsl(${(hue+100)%360},65%,7%)`);
+      grad.addColorStop(0,   `hsl(${hue},70%,14%)`);
+      grad.addColorStop(0.5, `hsl(${(hue+50)%360},80%,8%)`);
+      grad.addColorStop(1,   `hsl(${(hue+100)%360},65%,5%)`);
       ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
 
-      // ── StemForge logo — full bleed, hue-rotated, behind everything ──
+      // ── LAYER 2: Logo — dimmed to 35% so it doesn't compete with text ──
       if (logoImg && logoImg.complete && logoImg.naturalWidth) {
         ctx.save();
-        ctx.globalAlpha = 0.72;
-        // hue-rotate via CSS filter trick: draw to offscreen, apply filter, draw back
+        ctx.globalAlpha = 0.35;
         const off = document.createElement('canvas');
         off.width = W; off.height = H;
         const octx = off.getContext('2d');
         octx.drawImage(logoImg, 0, 0, W, H);
-        ctx.filter = `hue-rotate(${hue}deg) saturate(1.6) brightness(0.85)`;
+        ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.7)`;
+        // Only draw logo in the MIDDLE zone — leave top 48px and bottom 80px clear for text
+        ctx.beginPath();
+        ctx.rect(0, 48, W, H - 48 - 80);
+        ctx.clip();
         ctx.drawImage(off, 0, 0);
         ctx.filter = 'none';
         ctx.restore();
       }
 
-      // ── Genre label (top) — solid dark pill + bold white text ──
-      const genreText = (genre||'music').toUpperCase().slice(0,16);
-      // Measure text first for pill sizing
-      ctx.font = '800 13px system-ui,sans-serif';
-      const gTextW = ctx.measureText(genreText).width;
-      const gw = gTextW + 28;
-      const gx = W/2 - gw/2;
-      // Solid dark pill (no transparency issues)
-      ctx.save();
-      ctx.shadowColor = 'rgba(0,0,0,0.9)';
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = 'rgba(0,0,0,0.82)';
-      ctx.beginPath();
-      ctx.roundRect(gx, 7, gw, 26, 7);
-      ctx.fill();
-      ctx.restore();
-      // Genre text — solid white, heavy weight, letter-spaced
-      ctx.font = '800 13px system-ui,sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.letterSpacing = '2px';
-      ctx.shadowColor = 'rgba(0,0,0,1)';
-      ctx.shadowBlur = 6;
-      ctx.fillText(genreText, W/2, 26);
-      ctx.shadowBlur = 0;
-      ctx.letterSpacing = '0';
+      // ── LAYER 3: Solid black top band (genre label area) ──
+      ctx.fillStyle = 'rgba(0,0,0,0.88)';
+      ctx.fillRect(0, 0, W, 46);
 
-      // ── Song title (bottom) — large, bold, white with shadow ──
+      // ── LAYER 4: Solid black bottom band (title area) ──
+      // Calculate title lines first so we know height needed
       const displayTitle = (title || 'Untitled Beat').trim();
       const maxChars = 18;
       const words = displayTitle.split(' ');
       let line1 = '', line2 = '';
-      // Split into 2 lines smartly
       let cur = '';
       for (let i = 0; i < words.length; i++) {
         const test = cur ? cur + ' ' + words[i] : words[i];
@@ -653,45 +633,46 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!line1) { line1 = cur; cur = ''; }
       line2 = cur;
 
-      // Solid dark title strip at bottom — no gradient fade-out issues
-      const titleY = line2 ? H - 72 : H - 54;
-      const stripH = line2 ? 72 : 54;
-      // Solid opaque black base + fade to transparent at top
-      const stripGrad = ctx.createLinearGradient(0, titleY - 20, 0, H);
-      stripGrad.addColorStop(0, 'rgba(0,0,0,0)');
-      stripGrad.addColorStop(0.25, 'rgba(0,0,0,0.85)');
-      stripGrad.addColorStop(1, 'rgba(0,0,0,0.97)');
-      ctx.fillStyle = stripGrad;
-      ctx.fillRect(0, titleY - 20, W, stripH + 20);
+      const bandH = line2 ? 80 : 60;
+      // Solid opaque base that fades up into transparent
+      const bandGrad = ctx.createLinearGradient(0, H - bandH - 16, 0, H);
+      bandGrad.addColorStop(0,   'rgba(0,0,0,0)');
+      bandGrad.addColorStop(0.3, 'rgba(0,0,0,0.92)');
+      bandGrad.addColorStop(1,   'rgba(0,0,0,1)');
+      ctx.fillStyle = bandGrad;
+      ctx.fillRect(0, H - bandH - 16, W, bandH + 16);
 
-      // Title text — pure white, max weight, multi-shadow for outline effect
+      // ── LAYER 5: Genre label text — white on solid band ──
+      const genreText = (genre||'music').toUpperCase().slice(0,16);
+      ctx.font = '700 12px system-ui,sans-serif';
+      ctx.fillStyle = `hsl(${hue},90%,78%)`;   // tinted accent colour for genre
+      ctx.textAlign = 'center';
+      ctx.letterSpacing = '2.5px';
+      ctx.shadowColor = 'rgba(0,0,0,0)';        // no shadow needed — solid bg behind it
+      ctx.fillText(genreText, W/2, 28);
+      ctx.letterSpacing = '0';
+
+      // ── LAYER 6: Song title text — pure white, 900 weight, on solid band ──
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(0,0,0,0)';        // no shadow needed — solid bg behind it
+      const titleY = line2 ? H - bandH + 8 : H - bandH + 14;
       if (line2) {
-        ctx.font = '900 19px system-ui,sans-serif';
-        // Double shadow pass for strong outline
-        ctx.shadowColor = 'rgba(0,0,0,1)';
-        ctx.shadowBlur = 12;
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 16);
-        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 40);
-        ctx.shadowBlur = 6;
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 16);
-        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 40);
+        ctx.font = '900 18px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 4);
+        ctx.fillText(line2.slice(0, maxChars), W/2, titleY + 28);
       } else {
-        ctx.font = '900 21px system-ui,sans-serif';
-        ctx.shadowColor = 'rgba(0,0,0,1)';
-        ctx.shadowBlur = 12;
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 24);
-        ctx.shadowBlur = 6;
-        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 24);
+        ctx.font = '900 20px system-ui,sans-serif';
+        ctx.fillText(line1.slice(0, maxChars), W/2, titleY + 10);
       }
-      ctx.shadowBlur = 0;
 
-      // ── StemForge "SF" monogram mark (bottom-right corner) ──
-      ctx.font = 'bold 10px system-ui,sans-serif';
-      ctx.fillStyle = `hsla(${hue},70%,75%,0.45)`;
+      // ── LAYER 7: Faint watermark ──
+      ctx.font = '600 9px system-ui,sans-serif';
+      ctx.fillStyle = `hsla(${hue},60%,70%,0.35)`;
       ctx.textAlign = 'right';
+      ctx.letterSpacing = '0.5px';
       ctx.fillText('STEMFORGE', W - 10, H - 8);
+      ctx.letterSpacing = '0';
 
       artEl.style.backgroundImage = `url('${canvas.toDataURL('image/png')}')`;
       artEl.style.backgroundSize = 'cover';
