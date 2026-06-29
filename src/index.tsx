@@ -163,6 +163,15 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     try { await db.prepare(sql).run() } catch { /* already exists */ }
   }
 
+  // ── Site version table — controls preview vs live ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS site_version (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`).run()
+  // Seed default row: 'live' is the active version
+  await db.prepare(`INSERT OR IGNORE INTO site_version (key, value, updated_at) VALUES ('active_version', 'live', ?)`).bind(Date.now()).run()
+
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
   // Free users with old download-era limit → 50 pts
   await db.prepare(`UPDATE users SET gens_limit = 50   WHERE plan = 'free'      AND gens_limit < 50`).run()
@@ -2166,6 +2175,17 @@ app.post('/api/stripe/webhook', async (c) => {
 //  PAGE ROUTES
 // ═══════════════════════════════════════════════════════════════
 
+// ── /preview — admin-only preview of the latest deployed version ──
+// Anyone who is NOT admin gets silently redirected to /dashboard
+app.get('/preview', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.redirect('/')
+  // Admin sees the app with a visible preview banner
+  return c.html(generatorPage(true))
+})
+
 app.get('/', (c) => c.html(homePage()))
 app.get('/pricing', (c) => c.html(pricingPage()))
 app.get('/generator', async (c) => {
@@ -3299,6 +3319,24 @@ function isAdmin(user: User | null, env: Bindings): boolean {
   return false
 }
 
+// ── Site version helpers ─────────────────────────────────────────────────────
+async function getActiveVersion(db: D1Database): Promise<string> {
+  try {
+    const row = await db.prepare(`SELECT value FROM site_version WHERE key = 'active_version'`).first<{ value: string }>()
+    return row?.value ?? 'live'
+  } catch { return 'live' }
+}
+async function setActiveVersion(db: D1Database, version: 'live' | 'preview'): Promise<void> {
+  await db.prepare(`INSERT OR REPLACE INTO site_version (key, value, updated_at) VALUES ('active_version', ?, ?)`)
+    .bind(version, Date.now()).run()
+}
+async function getVersionUpdatedAt(db: D1Database): Promise<number> {
+  try {
+    const row = await db.prepare(`SELECT updated_at FROM site_version WHERE key = 'active_version'`).first<{ updated_at: number }>()
+    return row?.updated_at ?? 0
+  } catch { return 0 }
+}
+
 // GET /admin — admin dashboard page
 app.get('/admin', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
@@ -3306,6 +3344,29 @@ app.get('/admin', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.redirect('/')
   return c.html(adminPage(user!))
+})
+
+// GET /api/admin/version-status — returns current active version + timestamp
+app.get('/api/admin/version-status', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const active_version = await getActiveVersion(c.env.DB)
+  const updated_at = await getVersionUpdatedAt(c.env.DB)
+  return c.json({ active_version, updated_at })
+})
+
+// POST /api/admin/publish — flip the active version flag
+app.post('/api/admin/publish', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const body = await c.req.json<{ version?: string }>().catch(() => ({}))
+  const version = body.version === 'preview' ? 'preview' : 'live'
+  await setActiveVersion(c.env.DB, version)
+  return c.json({ ok: true, active_version: version })
 })
 
 // GET /api/admin/stats — overview stats
@@ -5132,8 +5193,34 @@ window.showSfPlanToast = function(type, plan, msg) {
 
 
 // ─── GENERATOR PAGE (real pipeline UI) ───────────────────────────────────────
-function generatorPage() {
+function generatorPage(isPreview = false) {
+  const previewBanner = isPreview ? `
+  <div id="preview-banner" style="position:fixed;top:0;left:0;right:0;z-index:9999;background:linear-gradient(90deg,#f59e0b,#ef4444);color:#fff;padding:10px 20px;display:flex;align-items:center;justify-content:space-between;font-size:.88rem;font-weight:700;box-shadow:0 2px 12px rgba(0,0,0,.4)">
+    <span><i class="fas fa-eye" style="margin-right:8px"></i>PREVIEW MODE — Only you can see this version</span>
+    <div style="display:flex;gap:10px;align-items:center">
+      <a href="/admin" style="color:#fff;text-decoration:none;background:rgba(0,0,0,.25);padding:5px 12px;border-radius:6px;font-size:.82rem"><i class="fas fa-shield-alt"></i> Admin Panel</a>
+      <button onclick="publishVersion()" style="background:#fff;color:#ef4444;border:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-weight:800;font-size:.82rem"><i class="fas fa-rocket"></i> Publish Live</button>
+    </div>
+  </div>
+  <div style="height:44px"></div>
+  <script>
+  async function publishVersion() {
+    if (!confirm('Publish this version live for all users?')) return;
+    const btn = document.querySelector('#preview-banner button');
+    btn.textContent = 'Publishing…'; btn.disabled = true;
+    const res = await fetch('/api/admin/publish', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: 'live' }) });
+    const data = await res.json();
+    if (data.ok) {
+      btn.textContent = '✅ Published!';
+      document.getElementById('preview-banner').style.background = 'linear-gradient(90deg,#10b981,#059669)';
+      setTimeout(() => window.location.href = '/dashboard', 1500);
+    } else {
+      btn.textContent = '❌ Failed'; btn.disabled = false;
+    }
+  }
+  <\/script>` : ''
   return shell('Generator', `
+${previewBanner}
 <div class="gs-content gs-content--gen">
 <!-- Suno-style generator layout: left panel = controls, right panel = result -->
 <div class="suno-gen-page">
@@ -7182,6 +7269,23 @@ function adminPage(user: User) {
       <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
     </div>
 
+    <!-- ── Site Version / Publish Card ── -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 24px;margin-bottom:28px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="width:42px;height:42px;border-radius:10px;background:rgba(167,139,250,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-rocket" style="color:#a78bfa;font-size:1.1rem"></i>
+        </div>
+        <div>
+          <div style="font-weight:700;font-size:.95rem;margin-bottom:2px">Site Version Control</div>
+          <div style="font-size:.82rem;color:var(--muted)">Active: <span id="sv-active" style="font-weight:700;color:#10b981">checking…</span> &nbsp;·&nbsp; Last changed: <span id="sv-time" style="color:var(--muted)">—</span></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <a href="/preview" target="_blank" class="btn btn--outline btn--sm"><i class="fas fa-eye"></i> Open Preview</a>
+        <button id="sv-publish-btn" onclick="adminPublish('live')" class="btn btn--primary btn--sm" style="background:linear-gradient(135deg,#10b981,#059669);border-color:#10b981"><i class="fas fa-rocket"></i> Publish Preview → Live</button>
+      </div>
+    </div>
+
     <!-- Stats bar -->
     <div class="sub-stats-bar" id="admin-stats-bar" style="margin-bottom:32px">
       <div class="sub-stat"><span class="sub-stat__label">Total Users</span><span class="sub-stat__val" id="stat-users">—</span></div>
@@ -7234,6 +7338,45 @@ function adminPage(user: User) {
 .admin-table tr:hover td{background:var(--surface)}
 </style>
 <script>
+// ── Version status ──
+(async()=>{
+  try {
+    const res = await fetch('/api/admin/version-status');
+    const d = await res.json();
+    const activeEl = document.getElementById('sv-active');
+    const timeEl = document.getElementById('sv-time');
+    if (activeEl) {
+      activeEl.textContent = d.active_version === 'live' ? '✅ LIVE' : '👁 PREVIEW';
+      activeEl.style.color = d.active_version === 'live' ? '#10b981' : '#f59e0b';
+    }
+    if (timeEl && d.updated_at) {
+      timeEl.textContent = new Date(d.updated_at).toLocaleString();
+    }
+  } catch(e) {}
+})();
+
+async function adminPublish(version) {
+  const label = version === 'live' ? 'Publish Preview → Live for all users?' : 'Roll back to Preview mode?';
+  if (!confirm(label)) return;
+  const btn = document.getElementById('sv-publish-btn');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing…'; btn.disabled = true;
+  try {
+    const res = await fetch('/api/admin/publish', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ version }) });
+    const d = await res.json();
+    if (d.ok) {
+      btn.innerHTML = '<i class="fas fa-check"></i> Done!';
+      btn.style.background = '#10b981';
+      document.getElementById('sv-active').textContent = version === 'live' ? '✅ LIVE' : '👁 PREVIEW';
+      document.getElementById('sv-time').textContent = new Date().toLocaleString();
+      setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 2500);
+    } else {
+      alert('Publish failed: ' + (d.error || 'unknown error'));
+      btn.innerHTML = orig; btn.disabled = false;
+    }
+  } catch(e) { alert('Network error'); btn.innerHTML = orig; btn.disabled = false; }
+}
+
 // Load stats
 (async()=>{
   const res = await fetch('/api/admin/stats');
