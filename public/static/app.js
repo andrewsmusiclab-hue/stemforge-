@@ -597,46 +597,6 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
       }
 
-      // ── Accent glow spots ──
-      const r1 = ctx.createRadialGradient(W*0.75, H*0.22, 10, W*0.75, H*0.22, W*0.48);
-      r1.addColorStop(0, `hsla(${(hue+130)%360},90%,65%,0.38)`);
-      r1.addColorStop(1, 'transparent');
-      ctx.fillStyle = r1; ctx.fillRect(0, 0, W, H);
-
-      const r2 = ctx.createRadialGradient(W*0.2, H*0.78, 5, W*0.2, H*0.78, W*0.4);
-      r2.addColorStop(0, `hsla(${(hue+250)%360},75%,60%,0.28)`);
-      r2.addColorStop(1, 'transparent');
-      ctx.fillStyle = r2; ctx.fillRect(0, 0, W, H);
-
-      // ── Subtle noise grain ──
-      for (let i = 0; i < 200; i++) {
-        const nx = (Math.sin(i * 127.1 + hue) * 0.5 + 0.5) * W;
-        const ny = (Math.sin(i * 311.7 + hue * 0.3) * 0.5 + 0.5) * H;
-        const a = 0.03 + (Math.sin(i * 53.7) * 0.5 + 0.5) * 0.08;
-        ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
-        ctx.fillRect(nx, ny, 1.5, 1.5);
-      }
-
-      // ── Waveform bars (centre) ──
-      const barCount = 22, barW = 7, gap = 3;
-      const totalW = barCount * (barW + gap) - gap;
-      const startX = (W - totalW) / 2;
-      const centreY = H * 0.52;
-      for (let b = 0; b < barCount; b++) {
-        const seed = hue * 17 + b * 83;
-        const h = 14 + (Math.sin(seed * 0.11) * 0.5 + 0.5) * 52;
-        const x = startX + b * (barW + gap);
-        const y = centreY - h / 2;
-        const bg = ctx.createLinearGradient(0, y, 0, y + h);
-        bg.addColorStop(0, `hsla(${(hue+30)%360},85%,78%,0.95)`);
-        bg.addColorStop(1, `hsla(${hue},65%,45%,0.45)`);
-        ctx.fillStyle = bg;
-        ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(x, y, barW, h, 2);
-        else ctx.rect(x, y, barW, h);
-        ctx.fill();
-      }
-
       // ── Genre label (top) ──
       ctx.font = 'bold 11px system-ui,sans-serif';
       ctx.fillStyle = `hsla(${hue},65%,85%,0.65)`;
