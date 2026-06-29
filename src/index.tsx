@@ -5593,7 +5593,7 @@ function generatorPage() {
 
       <!-- Vocal / Instrumental Toggle -->
       <div style="margin-bottom:14px">
-        <label class="suno-option-label" style="margin-bottom:8px">Track type <span style="color:var(--muted);font-weight:400">(tells Mureka how to build the extension)</span></label>
+        <label class="suno-option-label" style="margin-bottom:8px">Track type</label>
         <div style="display:flex;gap:8px">
           <button id="ext-vocal-instrumental-btn" onclick="setExtVocalMode('instrumental')" class="beat-count-btn beat-count-btn--active" style="flex:1;padding:9px 12px;font-size:.82rem;display:flex;align-items:center;justify-content:center;gap:7px">
             <i class="fas fa-music"></i> Instrumental only
@@ -5602,7 +5602,7 @@ function generatorPage() {
             <i class="fas fa-microphone"></i> Has vocals
           </button>
         </div>
-        <p style="margin:6px 0 0;font-size:.73rem;color:var(--muted)"><i class="fas fa-info-circle" style="margin-right:4px"></i><strong>Instrumental only</strong> — Mureka generates a pure beat extension. <strong>Has vocals</strong> — Mureka matches and continues any vocal track.</p>
+        <p style="margin:6px 0 0;font-size:.73rem;color:var(--muted)"><i class="fas fa-info-circle" style="margin-right:4px"></i><strong>Instrumental only</strong> — extends as a pure beat. <strong>Has vocals</strong> — matches and continues the vocal track.</p>
       </div>
 
       <!-- Lyrics -->
