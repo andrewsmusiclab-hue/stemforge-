@@ -19,7 +19,8 @@
     "STRIPE_PRO_PRICE_ID_LEGACY": "price_1TfYsHCoM6UOJZCWuwYk19gL",
     "SESSION_SECRET": "REDACTED_SESSION_SECRET",
     "SITE_URL": "https://stemforge.studio",
-    "REPLICATE_API_KEY": "REDACTED_REPLICATE_KEY"
+    "REPLICATE_API_KEY": "REDACTED_REPLICATE_KEY",
+    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com"
   },
   "d1_databases": [
     {
