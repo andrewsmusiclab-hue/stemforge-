@@ -4396,11 +4396,31 @@ function homePage() {
     <div class="hero__orb hero__orb--1"></div>
     <div class="hero__orb hero__orb--2"></div>
     <div class="hero__grid"></div>
-    <!-- Looping background video — sits above the gradient bg, below all content -->
-    <video class="hero__bg-video" autoplay muted loop playsinline
-      style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.18;mix-blend-mode:screen;pointer-events:none;z-index:0">
+    <!-- Looping background video — fixed to viewport, fades out on scroll past hero -->
+    <video id="hero-bg-video" autoplay muted loop playsinline
+      style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.18;mix-blend-mode:screen;pointer-events:none;z-index:0;transition:opacity .4s ease">
       <source src="/static/hero-wave.mp4" type="video/mp4">
     </video>
+    <script>
+      (function(){
+        var vid = document.getElementById('hero-bg-video');
+        var hero = vid && vid.closest('.hero');
+        if (!vid || !hero) return;
+        function onScroll() {
+          var bottom = hero.getBoundingClientRect().bottom;
+          if (bottom <= 0) {
+            vid.style.opacity = '0';
+            vid.style.visibility = 'hidden';
+          } else {
+            vid.style.visibility = 'visible';
+            /* fade from 0.18 → 0 as hero bottom approaches viewport top */
+            var fade = Math.max(0, Math.min(1, bottom / window.innerHeight));
+            vid.style.opacity = (0.18 * fade).toFixed(3);
+          }
+        }
+        window.addEventListener('scroll', onScroll, { passive: true });
+      })();
+    </script>
   </div>
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
