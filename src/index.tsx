@@ -2265,15 +2265,12 @@ app.post('/api/stripe/webhook', async (c) => {
 // ═══════════════════════════════════════════════════════════════
 
 app.get('/', async (c) => {
-  const gate = await checkPreviewGate(c); if (gate) return gate
   return c.html(homePage())
 })
 app.get('/pricing', async (c) => {
-  const gate = await checkPreviewGate(c); if (gate) return gate
   return c.html(pricingPage())
 })
 app.get('/generator', async (c) => {
-  const gate = await checkPreviewGate(c); if (gate) return gate
   // Require authentication — guests must sign up first
   if (c.env.DB && c.env.SESSION_SECRET) {
     const token = getSessionCookie(c.req.raw)
@@ -2283,7 +2280,6 @@ app.get('/generator', async (c) => {
   return c.html(generatorPage())
 })
 app.get('/dashboard', async (c) => {
-  const gate = await checkPreviewGate(c); if (gate) return gate
   if (c.env.DB && c.env.SESSION_SECRET) {
     const token = getSessionCookie(c.req.raw)
     const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -3457,52 +3453,18 @@ async function getVersionUpdatedAt(db: D1Database): Promise<number> {
 // ── Gate helper — call on every public page route ────────────────────────────
 // Returns a "coming soon" Response if site is in preview mode and user is not admin.
 // Returns null if the page should be shown normally.
+// checkPreviewGate — only used on the /preview route itself.
+// Public routes are NEVER gated; visitors always see the live site.
+// Preview mode = admin is reviewing a new deploy before "approving" it as live.
 async function checkPreviewGate(c: any): Promise<Response | null> {
-  if (!c.env.DB) return null
-  const version = await getSiteVersion(c.env.DB)
-  if (version === 'live') return null
-  // In preview — check if admin
-  if (c.env.SESSION_SECRET) {
-    const token = getSessionCookie(c.req.raw)
-    const user = token ? await getSessionUser(c.env.DB, token) : null
-    if (isAdmin(user, c.env)) return null  // admin passes through
-  }
-  return c.html(comingSoonPage()) as Response
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/') as any
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.redirect('/') as any
+  return null // admin can view /preview
 }
 
-function comingSoonPage(): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Coming Soon — StemForge</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#0d0d1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-  .wrap{max-width:480px;text-align:center}
-  .logo{font-size:2rem;font-weight:900;margin-bottom:32px;letter-spacing:-.02em}
-  .logo span{color:#4e9fff}
-  .icon{width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#6c3aff22,#4e9fff22);border:2px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;margin:0 auto 28px;font-size:2rem;color:#4e9fff}
-  h1{font-size:1.9rem;font-weight:800;margin-bottom:12px}
-  p{color:#94a3b8;line-height:1.6;font-size:1rem}
-  .badge{display:inline-flex;align-items:center;gap:6px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);color:#4e9fff;padding:6px 16px;border-radius:99px;font-size:.82rem;font-weight:600;margin-top:28px}
-  .dot{width:7px;height:7px;border-radius:50%;background:#4e9fff;animation:pulse 1.4s ease-in-out infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-</style>
-</head>
-<body>
-<div class="wrap">
-  <div class="logo">Stem<span>Forge</span></div>
-  <div class="icon"><i class="fas fa-wrench"></i></div>
-  <h1>We're updating the site</h1>
-  <p>We're making improvements. We'll be back shortly — usually just a few minutes.</p>
-  <div class="badge"><div class="dot"></div> Update in progress</div>
-</div>
-</body>
-</html>`
-}
+// comingSoonPage removed — visitors always see the live site, never a gate page.
 
 // GET /admin — admin dashboard page
 app.get('/admin', async (c) => {
@@ -4375,7 +4337,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260630-5'
+const ASSET_VER = '20260630-6'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7486,7 +7448,21 @@ function adminPage(user: User) {
     <!-- PUBLISH TAB — Site Version Control                        -->
     <!-- ══════════════════════════════════════════════════════════ -->
     <div id="admin-tab-publish">
-      <div style="max-width:640px">
+      <div style="max-width:660px">
+
+        <!-- How it works explanation -->
+        <div style="background:rgba(78,159,255,.07);border:1px solid rgba(78,159,255,.2);border-radius:14px;padding:20px 22px;margin-bottom:20px;display:flex;gap:14px">
+          <i class="fas fa-info-circle" style="color:#4e9fff;margin-top:2px;flex-shrink:0;font-size:1.1rem"></i>
+          <div style="font-size:.88rem;line-height:1.6;color:var(--muted)">
+            <strong style="color:var(--text)">How the publish workflow works:</strong><br>
+            Visitors <strong>always see the live site</strong> — they are never blocked or shown a "coming soon" page.
+            When you make code changes and deploy, click <strong>"Set to Preview"</strong> to mark it as a draft you're reviewing.
+            Use <a href="/preview" style="color:var(--primary)">/preview</a> to test everything as admin.
+            When you're happy, click <strong>"Publish Live"</strong> to record the version as approved.
+            Visitors were already on the new code the moment it deployed — the publish flag is your own sign-off tracker.
+          </div>
+        </div>
+
         <!-- Status card -->
         <div id="version-card" style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px 28px 24px;margin-bottom:20px">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
@@ -7500,34 +7476,50 @@ function adminPage(user: User) {
           <!-- What each mode means -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px">
             <div id="mode-live-explain" style="padding:14px;border-radius:10px;border:1px solid var(--border);opacity:.6">
-              <div style="font-weight:700;color:#10b981;margin-bottom:6px"><i class="fas fa-globe"></i> Live mode</div>
-              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">All visitors see the real site. Use this when your changes are ready.</div>
+              <div style="font-weight:700;color:#10b981;margin-bottom:6px"><i class="fas fa-check-circle"></i> Published / Live</div>
+              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">You've reviewed this deploy and approved it. Everything is good.</div>
             </div>
             <div id="mode-preview-explain" style="padding:14px;border-radius:10px;border:1px solid var(--border);opacity:.6">
-              <div style="font-weight:700;color:#f59e0b;margin-bottom:6px"><i class="fas fa-eye"></i> Preview mode</div>
-              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">Visitors see a "Coming Soon" page. Only you (admin) can see the site at <a href="/preview" style="color:var(--primary)">/preview</a>.</div>
+              <div style="font-weight:700;color:#f59e0b;margin-bottom:6px"><i class="fas fa-eye"></i> Preview / Draft</div>
+              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">New code deployed but not yet reviewed. Test it at <a href="/preview" style="color:var(--primary)">/preview</a> then publish.</div>
             </div>
           </div>
 
           <!-- Buttons -->
           <div style="display:flex;gap:10px;flex-wrap:wrap">
             <button id="btn-set-preview" class="btn btn--outline" onclick="setVersion('preview')" style="border-color:rgba(245,158,11,.5);color:#f59e0b">
-              <i class="fas fa-eye"></i> Set to Preview
+              <i class="fas fa-eye"></i> Mark as Draft / Preview
             </button>
             <button id="btn-publish-live" class="btn btn--primary" onclick="setVersion('live')">
-              <i class="fas fa-rocket"></i> Publish Live
+              <i class="fas fa-check-circle"></i> Publish Live ✓
             </button>
             <span id="version-action-msg" style="align-self:center;font-size:.88rem;color:var(--muted)"></span>
           </div>
         </div>
 
-        <!-- Preview link reminder -->
-        <div style="background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);border-radius:12px;padding:16px;display:flex;gap:12px;align-items:flex-start">
-          <i class="fas fa-info-circle" style="color:#a78bfa;margin-top:2px"></i>
-          <div style="font-size:.88rem;line-height:1.55;color:var(--muted)">
-            While in <strong style="color:#f59e0b">Preview mode</strong>, visit <a href="/preview" style="color:var(--primary);font-weight:700">/preview</a> to test the site as an admin before publishing. Non-admin visitors see the "We're updating" page.
+        <!-- Workflow steps -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:16px;font-size:.95rem"><i class="fas fa-list-ol" style="color:var(--primary);margin-right:8px"></i>Your deploy workflow</h3>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div style="width:26px;height:26px;border-radius:50%;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#4e9fff;flex-shrink:0">1</div>
+              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Make your code changes</strong> in the editor, then deploy via the Deploy button in your project.</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div style="width:26px;height:26px;border-radius:50%;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#f59e0b;flex-shrink:0">2</div>
+              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Click "Mark as Draft"</strong> here so you know you haven't reviewed the new deploy yet. Visitors are unaffected.</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div style="width:26px;height:26px;border-radius:50%;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#4e9fff;flex-shrink:0">3</div>
+              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Test at <a href="/preview" style="color:var(--primary)">/preview</a></strong> — browse the site as admin, click around, check everything works.</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:flex-start">
+              <div style="width:26px;height:26px;border-radius:50%;background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#10b981;flex-shrink:0">4</div>
+              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Click "Publish Live ✓"</strong> — marks this deploy as reviewed and approved. You're done.</div>
+            </div>
           </div>
         </div>
+
       </div>
     </div>
 
@@ -7721,7 +7713,7 @@ function renderVersionStatus(version, updatedAt){
 
   dot.style.background = isLive ? '#10b981' : '#f59e0b';
   dot.style.boxShadow = isLive ? '0 0 0 4px rgba(16,185,129,.25)' : '0 0 0 4px rgba(245,158,11,.25)';
-  label.textContent = isLive ? '🟢 Site is LIVE — all users see the real site' : '🟡 Site is in PREVIEW — visitors see "Coming Soon"';
+  label.textContent = isLive ? '✅ Published — this deploy has been reviewed and approved' : '🟡 Draft / Preview — new deploy not yet reviewed';
   label.style.color = isLive ? '#10b981' : '#f59e0b';
   since.textContent = updatedAt ? 'Since ' + new Date(updatedAt).toLocaleString() : '';
   liveBox.style.opacity = isLive ? '1' : '.45';
@@ -7730,21 +7722,20 @@ function renderVersionStatus(version, updatedAt){
   prevBox.style.borderColor = isLive ? 'var(--border)' : 'rgba(245,158,11,.4)';
   document.getElementById('btn-publish-live').disabled = isLive;
   document.getElementById('btn-set-preview').disabled = !isLive;
-  document.getElementById('stat-mrr').textContent = '…';
 }
 
 async function setVersion(v){
   const msg = document.getElementById('version-action-msg');
-  msg.textContent = v==='live' ? 'Publishing…' : 'Setting preview…';
+  msg.textContent = v==='live' ? 'Publishing…' : 'Marking as draft…';
   msg.style.color = 'var(--muted)';
   try{
     const res = await fetch('/api/admin/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:v})});
     const data = await res.json();
     if(data.ok){
       msg.style.color = '#10b981';
-      msg.textContent = v==='live' ? '✓ Site is now LIVE!' : '✓ Set to Preview mode.';
+      msg.textContent = v==='live' ? '✓ Marked as Published!' : '✓ Marked as Draft — test at /preview then publish.';
       renderVersionStatus(data.version, Date.now());
-      setTimeout(()=>{ msg.textContent=''; },4000);
+      setTimeout(()=>{ msg.textContent=''; },5000);
     } else {
       msg.style.color='#ef4444'; msg.textContent='Error: '+(data.error||'Failed');
     }
