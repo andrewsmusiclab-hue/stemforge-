@@ -163,6 +163,25 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     try { await db.prepare(sql).run() } catch { /* already exists */ }
   }
 
+  // ── Site version table — controls preview vs live for all users ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS site_version (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`).run()
+  await db.prepare(`INSERT OR IGNORE INTO site_version (key, value, updated_at) VALUES ('active_version', 'live', ?)`).bind(Date.now()).run()
+
+  // ── Analytics page_views table ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS page_views (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL,
+    referrer TEXT,
+    source TEXT,
+    medium TEXT,
+    campaign TEXT,
+    created_at INTEGER NOT NULL
+  )`).run()
+
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
   // Free users with old download-era limit → 50 pts
   await db.prepare(`UPDATE users SET gens_limit = 50   WHERE plan = 'free'      AND gens_limit < 50`).run()
@@ -2245,9 +2264,16 @@ app.post('/api/stripe/webhook', async (c) => {
 //  PAGE ROUTES
 // ═══════════════════════════════════════════════════════════════
 
-app.get('/', (c) => c.html(homePage()))
-app.get('/pricing', (c) => c.html(pricingPage()))
+app.get('/', async (c) => {
+  const gate = await checkPreviewGate(c); if (gate) return gate
+  return c.html(homePage())
+})
+app.get('/pricing', async (c) => {
+  const gate = await checkPreviewGate(c); if (gate) return gate
+  return c.html(pricingPage())
+})
 app.get('/generator', async (c) => {
+  const gate = await checkPreviewGate(c); if (gate) return gate
   // Require authentication — guests must sign up first
   if (c.env.DB && c.env.SESSION_SECRET) {
     const token = getSessionCookie(c.req.raw)
@@ -2257,6 +2283,7 @@ app.get('/generator', async (c) => {
   return c.html(generatorPage())
 })
 app.get('/dashboard', async (c) => {
+  const gate = await checkPreviewGate(c); if (gate) return gate
   if (c.env.DB && c.env.SESSION_SECRET) {
     const token = getSessionCookie(c.req.raw)
     const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2283,6 +2310,37 @@ app.get('/checkout', async (c) => {
 app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
 app.get('/feedback', (c) => c.html(feedbackPage()))
+
+// POST /api/analytics/pageview — called client-side on every page load
+app.post('/api/analytics/pageview', async (c) => {
+  if (!c.env.DB) return c.json({ ok: false })
+  try {
+    const body = await c.req.json<{ path?: string; referrer?: string; source?: string; medium?: string; campaign?: string }>().catch(() => ({}))
+    const path = (body.path || '/').slice(0, 200)
+    const referrer = (body.referrer || '').slice(0, 500)
+    // Detect social source from referrer if no explicit UTM source
+    let source = (body.source || '').slice(0, 100)
+    if (!source && referrer) {
+      if (/tiktok\.com/i.test(referrer))    source = 'tiktok'
+      else if (/facebook\.com|fb\.com/i.test(referrer)) source = 'facebook'
+      else if (/instagram\.com/i.test(referrer)) source = 'instagram'
+      else if (/youtube\.com|youtu\.be/i.test(referrer)) source = 'youtube'
+      else if (/twitter\.com|x\.com/i.test(referrer)) source = 'twitter'
+      else if (/snapchat\.com/i.test(referrer)) source = 'snapchat'
+      else if (/pinterest\.com/i.test(referrer)) source = 'pinterest'
+      else if (/reddit\.com/i.test(referrer)) source = 'reddit'
+      else if (/linkedin\.com/i.test(referrer)) source = 'linkedin'
+      else if (/google\.com/i.test(referrer)) source = 'google'
+      else if (/bing\.com/i.test(referrer)) source = 'bing'
+      else if (referrer) source = 'referral'
+      else source = 'direct'
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO page_views (path, referrer, source, medium, campaign, created_at) VALUES (?,?,?,?,?,?)`
+    ).bind(path, referrer, source, body.medium||'', body.campaign||'', Date.now()).run()
+    return c.json({ ok: true })
+  } catch { return c.json({ ok: false }) }
+})
 
 // POST /api/feedback — sends feedback to your inbox via MailerSend (primary) or Resend (fallback)
 // MailerSend setup:  gsk hosted secret put MAILERSEND_API_KEY mlsn.xxxx
@@ -3378,6 +3436,74 @@ function isAdmin(user: User | null, env: Bindings): boolean {
   return false
 }
 
+// ── Site version helpers ─────────────────────────────────────────────────────
+async function getSiteVersion(db: D1Database): Promise<string> {
+  try {
+    const row = await db.prepare(`SELECT value FROM site_version WHERE key='active_version'`).first<{value:string}>()
+    return row?.value ?? 'live'
+  } catch { return 'live' }
+}
+async function setSiteVersion(db: D1Database, version: 'live'|'preview'): Promise<void> {
+  await db.prepare(`INSERT OR REPLACE INTO site_version (key, value, updated_at) VALUES ('active_version', ?, ?)`)
+    .bind(version, Date.now()).run()
+}
+async function getVersionUpdatedAt(db: D1Database): Promise<number> {
+  try {
+    const row = await db.prepare(`SELECT updated_at FROM site_version WHERE key='active_version'`).first<{updated_at:number}>()
+    return row?.updated_at ?? 0
+  } catch { return 0 }
+}
+
+// ── Gate helper — call on every public page route ────────────────────────────
+// Returns a "coming soon" Response if site is in preview mode and user is not admin.
+// Returns null if the page should be shown normally.
+async function checkPreviewGate(c: any): Promise<Response | null> {
+  if (!c.env.DB) return null
+  const version = await getSiteVersion(c.env.DB)
+  if (version === 'live') return null
+  // In preview — check if admin
+  if (c.env.SESSION_SECRET) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (isAdmin(user, c.env)) return null  // admin passes through
+  }
+  return c.html(comingSoonPage()) as Response
+}
+
+function comingSoonPage(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Coming Soon — StemForge</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .wrap{max-width:480px;text-align:center}
+  .logo{font-size:2rem;font-weight:900;margin-bottom:32px;letter-spacing:-.02em}
+  .logo span{color:#4e9fff}
+  .icon{width:80px;height:80px;border-radius:50%;background:linear-gradient(135deg,#6c3aff22,#4e9fff22);border:2px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;margin:0 auto 28px;font-size:2rem;color:#4e9fff}
+  h1{font-size:1.9rem;font-weight:800;margin-bottom:12px}
+  p{color:#94a3b8;line-height:1.6;font-size:1rem}
+  .badge{display:inline-flex;align-items:center;gap:6px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);color:#4e9fff;padding:6px 16px;border-radius:99px;font-size:.82rem;font-weight:600;margin-top:28px}
+  .dot{width:7px;height:7px;border-radius:50%;background:#4e9fff;animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="logo">Stem<span>Forge</span></div>
+  <div class="icon"><i class="fas fa-wrench"></i></div>
+  <h1>We're updating the site</h1>
+  <p>We're making improvements. We'll be back shortly — usually just a few minutes.</p>
+  <div class="badge"><div class="dot"></div> Update in progress</div>
+</div>
+</body>
+</html>`
+}
+
 // GET /admin — admin dashboard page
 app.get('/admin', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
@@ -3385,6 +3511,119 @@ app.get('/admin', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.redirect('/')
   return c.html(adminPage(user!))
+})
+
+// GET /preview — admin only: view the site while in preview mode (bypasses gate)
+app.get('/preview', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.redirect('/')
+  return c.html(generatorPage())
+})
+
+// GET /api/admin/version-status
+app.get('/api/admin/version-status', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const version = await getSiteVersion(c.env.DB)
+  const updated_at = await getVersionUpdatedAt(c.env.DB)
+  return c.json({ version, updated_at })
+})
+
+// POST /api/admin/publish — flip live ↔ preview for ALL users
+app.post('/api/admin/publish', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const { version } = await c.req.json<{ version: string }>().catch(() => ({ version: 'live' }))
+  const v = version === 'preview' ? 'preview' : 'live'
+  await setSiteVersion(c.env.DB, v)
+  return c.json({ ok: true, version: v })
+})
+
+// GET /api/admin/analytics — aggregated page view analytics
+app.get('/api/admin/analytics', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  await ensureAuthTables(c.env.DB)
+  const now = Date.now()
+  const dayMs = 86400000
+  const todayStart = now - (now % dayMs)
+  const weekStart = todayStart - 6 * dayMs
+  const monthStart = todayStart - 29 * dayMs
+
+  const [todayRow, weekRow, monthRow, sourcesRow, topPagesRow, dailyRows] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>(),
+    c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC`).bind(monthStart).all<any>(),
+    c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>(),
+    c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC`).bind(monthStart).all<any>(),
+  ])
+
+  return c.json({
+    today: todayRow?.cnt || 0,
+    week: weekRow?.cnt || 0,
+    month: monthRow?.cnt || 0,
+    sources: sourcesRow.results || [],
+    top_pages: topPagesRow.results || [],
+    daily: dailyRows.results || [],
+  })
+})
+
+// GET /api/admin/revenue — MRR and profit breakdown
+app.get('/api/admin/revenue', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  await ensureAuthTables(c.env.DB)
+
+  const [plansRow, jobsRow, creditPacksRow, recentSubsRow] = await Promise.all([
+    c.env.DB.prepare(`SELECT plan, COUNT(*) as cnt FROM users GROUP BY plan`).all<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) as this_month FROM jobs`).bind(Date.now() - 30*86400000).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt, SUM(amount) as total FROM credit_purchases WHERE created_at >= ?`).bind(Date.now() - 30*86400000).first<any>().catch(() => ({ cnt: 0, total: 0 })),
+    c.env.DB.prepare(`SELECT email, name, plan, created_at FROM users WHERE plan IN ('pro','creator') ORDER BY created_at DESC LIMIT 20`).all<any>(),
+  ])
+
+  const planMap: Record<string, number> = {}
+  for (const row of (plansRow.results || [])) {
+    planMap[row.plan] = row.cnt
+  }
+
+  const proCount = planMap['pro'] || 0
+  const creatorCount = planMap['creator'] || 0
+  const freeCount = planMap['free'] || 0
+
+  const mrr = (proCount * 26) + (creatorCount * 10)
+  const creditPackRevenue = (creditPacksRow as any)?.total || 0
+
+  // Estimated costs (rough)
+  const jobsThisMonth = (jobsRow as any)?.this_month || 0
+  const murekaCostPerJob = 0.04 // approx
+  const estimatedMurekaCost = jobsThisMonth * murekaCostPerJob
+  const cloudflareWorkersCost = 0 // free tier for most usage
+  const estimatedTotalCost = estimatedMurekaCost + cloudflareWorkersCost
+  const estimatedProfit = mrr + creditPackRevenue - estimatedTotalCost
+
+  return c.json({
+    mrr,
+    pro_count: proCount,
+    creator_count: creatorCount,
+    free_count: freeCount,
+    credit_pack_revenue: creditPackRevenue,
+    estimated_mureka_cost: parseFloat(estimatedMurekaCost.toFixed(2)),
+    estimated_total_cost: parseFloat(estimatedTotalCost.toFixed(2)),
+    estimated_profit: parseFloat(estimatedProfit.toFixed(2)),
+    jobs_this_month: jobsThisMonth,
+    recent_subscribers: recentSubsRow.results || [],
+  })
 })
 
 // GET /api/admin/stats — overview stats
@@ -4136,7 +4375,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260630-3'
+const ASSET_VER = '20260630-5'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -4166,6 +4405,21 @@ ${globalSidebar()}
 ${body}
 </div>
 <script src="/static/app.v2.js?v=${ASSET_VER}"></script>
+<script>
+// Analytics beacon — fires on every page load, non-blocking
+(function(){
+  try {
+    const params = new URLSearchParams(location.search);
+    navigator.sendBeacon('/api/analytics/pageview', JSON.stringify({
+      path: location.pathname,
+      referrer: document.referrer,
+      source: params.get('utm_source') || '',
+      medium: params.get('utm_medium') || '',
+      campaign: params.get('utm_campaign') || ''
+    }));
+  } catch(e){}
+})();
+</script>
 </body>
 </html>`
 }
@@ -5677,10 +5931,15 @@ function pricingPage() {
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 50 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full AI beat generation</li>
+          <li><i class="fas fa-check"></i> Full AI beat generation (10 pts)</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-          <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
-          <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
+          <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
+          <li class="muted"><i class="fas fa-times"></i> MP3 / WAV downloads</li>
+          <li class="muted"><i class="fas fa-times"></i> Commercial use rights</li>
+          <li class="muted"><i class="fas fa-times"></i> Extend song</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
+          <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
+          <li class="muted"><i class="fas fa-times"></i> Top-up points packs</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full" id="pricing-free-btn">Start free</a>
         <div id="pricing-free-plan-status" style="margin:8px 0 0">
@@ -5700,12 +5959,17 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation (10 pts/beat)</li>
+          <li><i class="fas fa-check"></i> Generate 2 beats at once (20 pts)</li>
+          <li><i class="fas fa-check"></i> Extend song (20 pts)</li>
           <li><i class="fas fa-check"></i> Auto-split — 5 stems (50 pts)</li>
           <li><i class="fas fa-check"></i> Vocal + Instrumental split (20 pts)</li>
-          <li><i class="fas fa-check"></i> Extend song (20 pts)</li>
-          <li><i class="fas fa-check"></i> 2 beats per generation (20 pts)</li>
-          <li><i class="fas fa-check"></i> MP3 download</li>
-          <li><i class="fas fa-check"></i> Commercial use rights</li>
+          <li><i class="fas fa-check"></i> MP3 download — commercial use</li>
+          <li><i class="fas fa-check"></i> Top-up point packs available</li>
+          <li class="muted"><i class="fas fa-times"></i> WAV / mastered downloads</li>
+          <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
+          <li class="muted"><i class="fas fa-times"></i> Advanced per-stem split</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem regeneration</li>
+          <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $10/mo</button>
         <div id="pricing-creator-plan-status" style="margin:8px 0 0">
@@ -5723,13 +5987,14 @@ function pricingPage() {
         <p class="plan-card__desc">For serious artists who need every track clean.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 2,000 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> All Creator features</li>
+          <li><i class="fas fa-check"></i> Everything in Creator</li>
+          <li><i class="fas fa-check"></i> Reference track uploads (20 pts)</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem (20 pts)</li>
           <li><i class="fas fa-check"></i> Stem regeneration (20 pts)</li>
-          <li><i class="fas fa-check"></i> Reference track uploads (20 pts)</li>
-          <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
+          <li><i class="fas fa-check"></i> WAV + MP3 download (mastered &amp; unmastered)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li><i class="fas fa-check"></i> Priority queue</li>
+          <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
+          <li><i class="fas fa-check"></i> Top-up point packs available</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $26/mo</button>
         <div id="pricing-pro-plan-status" style="margin:8px 0 0">
@@ -7204,24 +7469,186 @@ function adminPage(user: User) {
       <div class="sub-stat"><span class="sub-stat__label">Pro Users</span><span class="sub-stat__val" id="stat-pro">—</span></div>
       <div class="sub-stat"><span class="sub-stat__label">Creator Users</span><span class="sub-stat__val" id="stat-creator">—</span></div>
       <div class="sub-stat"><span class="sub-stat__label">Total Jobs</span><span class="sub-stat__val" id="stat-jobs">—</span></div>
-      <div class="sub-stat"><span class="sub-stat__label">Active Promos</span><span class="sub-stat__val" id="stat-promos">—</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">MRR</span><span class="sub-stat__val" id="stat-mrr">—</span></div>
     </div>
 
     <!-- Tabs -->
-    <div style="display:flex;gap:8px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0">
-      <button class="admin-tab admin-tab--active" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
-      <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promo Codes</button>
-      <a href="/mureka-monitor" class="admin-tab" style="text-decoration:none;margin-left:auto"><i class="fas fa-coins" style="color:#f59e0b"></i> Mureka Balance</a>
+    <div style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;flex-wrap:wrap">
+      <button class="admin-tab admin-tab--active" data-tab="publish" onclick="adminTab('publish')"><i class="fas fa-rocket"></i> Publish</button>
+      <button class="admin-tab" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
+      <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
+      <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
+      <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
+      <a href="/mureka-monitor" class="admin-tab" style="text-decoration:none;margin-left:auto"><i class="fas fa-coins" style="color:#f59e0b"></i> Mureka</a>
     </div>
 
-    <!-- Users Tab -->
-    <div id="admin-tab-users">
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- PUBLISH TAB — Site Version Control                        -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <div id="admin-tab-publish">
+      <div style="max-width:640px">
+        <!-- Status card -->
+        <div id="version-card" style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px 28px 24px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+            <div id="version-dot" style="width:14px;height:14px;border-radius:50%;background:#6b7280;box-shadow:0 0 0 4px rgba(107,114,128,.2);flex-shrink:0"></div>
+            <div>
+              <div style="font-weight:700;font-size:1.05rem" id="version-label">Loading…</div>
+              <div style="font-size:.82rem;color:var(--muted)" id="version-since">—</div>
+            </div>
+          </div>
+
+          <!-- What each mode means -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px">
+            <div id="mode-live-explain" style="padding:14px;border-radius:10px;border:1px solid var(--border);opacity:.6">
+              <div style="font-weight:700;color:#10b981;margin-bottom:6px"><i class="fas fa-globe"></i> Live mode</div>
+              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">All visitors see the real site. Use this when your changes are ready.</div>
+            </div>
+            <div id="mode-preview-explain" style="padding:14px;border-radius:10px;border:1px solid var(--border);opacity:.6">
+              <div style="font-weight:700;color:#f59e0b;margin-bottom:6px"><i class="fas fa-eye"></i> Preview mode</div>
+              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">Visitors see a "Coming Soon" page. Only you (admin) can see the site at <a href="/preview" style="color:var(--primary)">/preview</a>.</div>
+            </div>
+          </div>
+
+          <!-- Buttons -->
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button id="btn-set-preview" class="btn btn--outline" onclick="setVersion('preview')" style="border-color:rgba(245,158,11,.5);color:#f59e0b">
+              <i class="fas fa-eye"></i> Set to Preview
+            </button>
+            <button id="btn-publish-live" class="btn btn--primary" onclick="setVersion('live')">
+              <i class="fas fa-rocket"></i> Publish Live
+            </button>
+            <span id="version-action-msg" style="align-self:center;font-size:.88rem;color:var(--muted)"></span>
+          </div>
+        </div>
+
+        <!-- Preview link reminder -->
+        <div style="background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);border-radius:12px;padding:16px;display:flex;gap:12px;align-items:flex-start">
+          <i class="fas fa-info-circle" style="color:#a78bfa;margin-top:2px"></i>
+          <div style="font-size:.88rem;line-height:1.55;color:var(--muted)">
+            While in <strong style="color:#f59e0b">Preview mode</strong>, visit <a href="/preview" style="color:var(--primary);font-weight:700">/preview</a> to test the site as an admin before publishing. Non-admin visitors see the "We're updating" page.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- ANALYTICS TAB                                             -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <div id="admin-tab-analytics" style="display:none">
+      <!-- Summary stats -->
+      <div class="sub-stats-bar" style="margin-bottom:28px">
+        <div class="sub-stat"><span class="sub-stat__label">Views Today</span><span class="sub-stat__val" id="an-today">—</span></div>
+        <div class="sub-stat"><span class="sub-stat__label">Views This Week</span><span class="sub-stat__val" id="an-week">—</span></div>
+        <div class="sub-stat"><span class="sub-stat__label">Views This Month</span><span class="sub-stat__val" id="an-month">—</span></div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
+
+        <!-- Daily bar chart -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-chart-bar" style="color:var(--primary);margin-right:8px"></i>Daily Page Views (30d)</h3>
+          <div id="daily-chart" style="display:flex;align-items:flex-end;gap:3px;height:120px;overflow:hidden">
+            <p style="color:var(--muted);font-size:.85rem;align-self:center;width:100%;text-align:center"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+          </div>
+        </div>
+
+        <!-- Traffic sources -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-share-alt" style="color:#10b981;margin-right:8px"></i>Traffic Sources (30d)</h3>
+          <div id="sources-chart">
+            <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Social media breakdown -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
+        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-hashtag" style="color:#f59e0b;margin-right:8px"></i>Social Media Breakdown</h3>
+        <div id="social-breakdown" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">
+          <p style="color:var(--muted);font-size:.85rem;grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+        </div>
+      </div>
+
+      <!-- Top pages -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-file-alt" style="color:#a78bfa;margin-right:8px"></i>Top Pages (30d)</h3>
+        <div id="top-pages">
+          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- REVENUE TAB                                               -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <div id="admin-tab-revenue" style="display:none">
+      <!-- MRR headline -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:28px">
+        <div style="background:linear-gradient(135deg,rgba(167,139,250,.15),rgba(99,102,241,.1));border:1px solid rgba(167,139,250,.3);border-radius:14px;padding:22px">
+          <div style="font-size:.82rem;color:var(--muted);margin-bottom:4px">Monthly Recurring Revenue</div>
+          <div id="rv-mrr" style="font-size:2rem;font-weight:800;color:#a78bfa">—</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Active subscriptions</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <div style="font-size:.82rem;color:var(--muted);margin-bottom:4px">Pro Subscribers</div>
+          <div id="rv-pro" style="font-size:1.8rem;font-weight:800;color:#10b981">—</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-top:4px">× $26/mo</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <div style="font-size:.82rem;color:var(--muted);margin-bottom:4px">Creator Subscribers</div>
+          <div id="rv-creator" style="font-size:1.8rem;font-weight:800;color:#3b82f6">—</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-top:4px">× $10/mo</div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <div style="font-size:.82rem;color:var(--muted);margin-bottom:4px">Free Users</div>
+          <div id="rv-free" style="font-size:1.8rem;font-weight:800;color:var(--muted)">—</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-top:4px">no revenue</div>
+        </div>
+      </div>
+
+      <!-- Profit breakdown -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:18px;font-size:.98rem"><i class="fas fa-calculator" style="color:#10b981;margin-right:8px"></i>Estimated Monthly P&amp;L</h3>
+          <table style="width:100%;font-size:.9rem;border-collapse:collapse">
+            <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)">Subscription revenue (MRR)</td><td id="rv-pl-mrr" style="text-align:right;font-weight:700;border-bottom:1px solid var(--border10)">—</td></tr>
+            <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)">Credit pack revenue</td><td id="rv-pl-credits" style="text-align:right;font-weight:700;border-bottom:1px solid var(--border10)">—</td></tr>
+            <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)"><span style="color:#ef4444">−</span> Mureka API costs (~$0.04/job)</td><td id="rv-pl-mureka" style="text-align:right;font-weight:700;color:#ef4444;border-bottom:1px solid var(--border10)">—</td></tr>
+            <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)"><span style="color:#ef4444">−</span> Cloudflare Workers</td><td style="text-align:right;font-weight:700;color:#10b981;border-bottom:1px solid var(--border10)">$0 (free tier)</td></tr>
+            <tr style="background:rgba(16,185,129,.06)"><td style="padding:10px 0 8px;font-weight:700"><i class="fas fa-chart-line" style="color:#10b981"></i> Estimated net profit</td><td id="rv-pl-profit" style="text-align:right;font-weight:800;font-size:1.1rem">—</td></tr>
+          </table>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:12px;line-height:1.4">* Mureka cost estimated at ~$0.04/generation. Actual varies. Stripe fees (~2.9%+$0.30 per charge) not included.</div>
+        </div>
+
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:18px;font-size:.98rem"><i class="fas fa-chart-pie" style="color:#f59e0b;margin-right:8px"></i>Revenue Split</h3>
+          <div id="rv-pie" style="display:flex;flex-direction:column;gap:10px">
+            <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent subscribers -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-user-check" style="color:#a78bfa;margin-right:8px"></i>Recent Paid Subscribers</h3>
+        <div id="rv-subs" style="overflow-x:auto">
+          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- USERS TAB                                                 -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <div id="admin-tab-users" style="display:none">
       <div id="admin-users-list" style="overflow-x:auto">
         <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading users…</p>
       </div>
     </div>
 
-    <!-- Promo Codes Tab -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- PROMOS TAB                                                -->
+    <!-- ══════════════════════════════════════════════════════════ -->
     <div id="admin-tab-promos" style="display:none">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
         <h3 style="margin-bottom:16px"><i class="fas fa-plus-circle" style="color:var(--primary)"></i> Create Promo Code</h3>
@@ -7239,28 +7666,236 @@ function adminPage(user: User) {
       </div>
       <div id="admin-promos-list"><p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p></div>
     </div>
+
   </div>
 </main>
 <style>
-.admin-tab{padding:10px 18px;background:none;border:none;border-bottom:3px solid transparent;color:var(--muted);cursor:pointer;font-size:.95rem;font-weight:600;transition:all .2s}
+.admin-tab{padding:10px 16px;background:none;border:none;border-bottom:3px solid transparent;color:var(--muted);cursor:pointer;font-size:.88rem;font-weight:600;transition:all .2s;white-space:nowrap}
 .admin-tab--active{color:var(--primary);border-bottom-color:var(--primary)}
 .admin-table{width:100%;border-collapse:collapse;font-size:.88rem}
 .admin-table th{text-align:left;padding:10px 12px;color:var(--muted);border-bottom:1px solid var(--border);font-weight:600}
 .admin-table td{padding:10px 12px;border-bottom:1px solid var(--border10)}
 .admin-table tr:hover td{background:var(--surface)}
+.rv-bar-wrap{display:flex;align-items:center;gap:10px;font-size:.85rem}
+.rv-bar-track{flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden}
+.rv-bar-fill{height:100%;border-radius:4px;transition:width .5s}
 </style>
 <script>
-// Load stats
+// ── Load global stats ──────────────────────────────────────
 (async()=>{
   const res = await fetch('/api/admin/stats');
   const data = await res.json();
   if(data.users){ document.getElementById('stat-users').textContent=data.users.total||0; document.getElementById('stat-pro').textContent=data.users.pro_count||0; document.getElementById('stat-creator').textContent=data.users.creator_count||0; }
   if(data.jobs){ document.getElementById('stat-jobs').textContent=data.jobs.total||0; }
-  if(data.promos){ document.getElementById('stat-promos').textContent=data.promos.total||0; }
 })();
 
-// Load users
+// ── Tab switcher ───────────────────────────────────────────
+const adminTabs = ['publish','analytics','revenue','users','promos'];
+function adminTab(tab){
+  document.querySelectorAll('.admin-tab[data-tab]').forEach(t=>t.classList.remove('admin-tab--active'));
+  const btn = document.querySelector(\`[data-tab="\${tab}"]\`);
+  if(btn) btn.classList.add('admin-tab--active');
+  adminTabs.forEach(t=>{ const el=document.getElementById('admin-tab-'+t); if(el) el.style.display=t===tab?'block':'none'; });
+  if(tab==='analytics' && !window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
+  if(tab==='revenue' && !window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
+  if(tab==='users' && !window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
+  if(tab==='promos' && !window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
+}
+
+// ── PUBLISH TAB ────────────────────────────────────────────
 (async()=>{
+  try{
+    const res = await fetch('/api/admin/version-status');
+    const data = await res.json();
+    renderVersionStatus(data.version, data.updated_at);
+  }catch(e){ document.getElementById('version-label').textContent='Error loading status'; }
+})();
+
+function renderVersionStatus(version, updatedAt){
+  const isLive = version === 'live';
+  const dot = document.getElementById('version-dot');
+  const label = document.getElementById('version-label');
+  const since = document.getElementById('version-since');
+  const liveBox = document.getElementById('mode-live-explain');
+  const prevBox = document.getElementById('mode-preview-explain');
+
+  dot.style.background = isLive ? '#10b981' : '#f59e0b';
+  dot.style.boxShadow = isLive ? '0 0 0 4px rgba(16,185,129,.25)' : '0 0 0 4px rgba(245,158,11,.25)';
+  label.textContent = isLive ? '🟢 Site is LIVE — all users see the real site' : '🟡 Site is in PREVIEW — visitors see "Coming Soon"';
+  label.style.color = isLive ? '#10b981' : '#f59e0b';
+  since.textContent = updatedAt ? 'Since ' + new Date(updatedAt).toLocaleString() : '';
+  liveBox.style.opacity = isLive ? '1' : '.45';
+  prevBox.style.opacity = isLive ? '.45' : '1';
+  liveBox.style.borderColor = isLive ? 'rgba(16,185,129,.4)' : 'var(--border)';
+  prevBox.style.borderColor = isLive ? 'var(--border)' : 'rgba(245,158,11,.4)';
+  document.getElementById('btn-publish-live').disabled = isLive;
+  document.getElementById('btn-set-preview').disabled = !isLive;
+  document.getElementById('stat-mrr').textContent = '…';
+}
+
+async function setVersion(v){
+  const msg = document.getElementById('version-action-msg');
+  msg.textContent = v==='live' ? 'Publishing…' : 'Setting preview…';
+  msg.style.color = 'var(--muted)';
+  try{
+    const res = await fetch('/api/admin/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:v})});
+    const data = await res.json();
+    if(data.ok){
+      msg.style.color = '#10b981';
+      msg.textContent = v==='live' ? '✓ Site is now LIVE!' : '✓ Set to Preview mode.';
+      renderVersionStatus(data.version, Date.now());
+      setTimeout(()=>{ msg.textContent=''; },4000);
+    } else {
+      msg.style.color='#ef4444'; msg.textContent='Error: '+(data.error||'Failed');
+    }
+  }catch(e){ msg.style.color='#ef4444'; msg.textContent='Network error'; }
+}
+
+// ── ANALYTICS TAB ──────────────────────────────────────────
+const SOCIAL_ICONS = {
+  tiktok:'<i class="fab fa-tiktok" style="color:#69C9D0"></i>',
+  facebook:'<i class="fab fa-facebook" style="color:#1877F2"></i>',
+  instagram:'<i class="fab fa-instagram" style="color:#E1306C"></i>',
+  youtube:'<i class="fab fa-youtube" style="color:#FF0000"></i>',
+  twitter:'<i class="fab fa-twitter" style="color:#1DA1F2"></i>',
+  snapchat:'<i class="fab fa-snapchat" style="color:#FFFC00;-webkit-text-stroke:1px #ccc"></i>',
+  pinterest:'<i class="fab fa-pinterest" style="color:#E60023"></i>',
+  reddit:'<i class="fab fa-reddit" style="color:#FF4500"></i>',
+  linkedin:'<i class="fab fa-linkedin" style="color:#0A66C2"></i>',
+  google:'<i class="fab fa-google" style="color:#4285F4"></i>',
+  bing:'<i class="fas fa-search" style="color:#008373"></i>',
+  direct:'<i class="fas fa-link" style="color:var(--primary)"></i>',
+  referral:'<i class="fas fa-external-link-alt" style="color:var(--muted)"></i>',
+};
+
+async function loadAnalytics(){
+  try{
+    const res = await fetch('/api/admin/analytics');
+    const d = await res.json();
+    document.getElementById('an-today').textContent = d.today||0;
+    document.getElementById('an-week').textContent = d.week||0;
+    document.getElementById('an-month').textContent = d.month||0;
+
+    // Daily bar chart
+    const daily = d.daily||[];
+    const maxViews = Math.max(...daily.map(r=>r.cnt), 1);
+    const chartEl = document.getElementById('daily-chart');
+    if(!daily.length){ chartEl.innerHTML='<p style="color:var(--muted);font-size:.82rem;text-align:center;width:100%">No data yet</p>'; }
+    else {
+      chartEl.innerHTML = daily.map(r=>{
+        const h = Math.round((r.cnt/maxViews)*100);
+        const label = new Date(r.day_bucket*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+        return \`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0" title="\${label}: \${r.cnt} views">
+          <div style="width:100%;background:var(--primary);border-radius:3px 3px 0 0;height:\${h}%;opacity:.85;transition:height .3s;min-height:2px"></div>
+          <div style="font-size:.55rem;color:var(--muted);writing-mode:vertical-lr;transform:rotate(180deg);max-height:36px;overflow:hidden">\${label}</div>
+        </div>\`;
+      }).join('');
+    }
+
+    // Sources chart
+    const sources = d.sources||[];
+    const totalSrc = sources.reduce((a,s)=>a+s.cnt,0)||1;
+    const srcEl = document.getElementById('sources-chart');
+    if(!sources.length){ srcEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No traffic data yet</p>'; }
+    else {
+      srcEl.innerHTML = sources.map(s=>{
+        const pct = Math.round((s.cnt/totalSrc)*100);
+        const icon = SOCIAL_ICONS[s.source||'direct'] || SOCIAL_ICONS.referral;
+        const name = s.source||'direct';
+        return \`<div class="rv-bar-wrap" style="margin-bottom:10px">
+          <div style="width:22px;text-align:center">\${icon}</div>
+          <div style="width:80px;font-size:.82rem;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${name}</div>
+          <div class="rv-bar-track"><div class="rv-bar-fill" style="width:\${pct}%;background:var(--primary)"></div></div>
+          <div style="width:36px;text-align:right;font-size:.82rem;font-weight:700">\${s.cnt}</div>
+          <div style="width:34px;text-align:right;font-size:.75rem;color:var(--muted)">\${pct}%</div>
+        </div>\`;
+      }).join('');
+    }
+
+    // Social breakdown mini cards
+    const socialKeys = ['tiktok','facebook','instagram','youtube','twitter','snapchat','pinterest','reddit','linkedin'];
+    const srcMap = {};
+    (d.sources||[]).forEach(s=>{ srcMap[s.source]=s.cnt; });
+    const socialEl = document.getElementById('social-breakdown');
+    socialEl.innerHTML = socialKeys.map(k=>{
+      const cnt = srcMap[k]||0;
+      return \`<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
+        <div style="font-size:1.4rem;margin-bottom:6px">\${SOCIAL_ICONS[k]||''}</div>
+        <div style="font-size:1.1rem;font-weight:700">\${cnt}</div>
+        <div style="font-size:.72rem;color:var(--muted);text-transform:capitalize;margin-top:2px">\${k}</div>
+      </div>\`;
+    }).join('');
+
+    // Top pages
+    const pages = d.top_pages||[];
+    const pgEl = document.getElementById('top-pages');
+    if(!pages.length){ pgEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No data yet</p>'; }
+    else {
+      const maxPg = Math.max(...pages.map(p=>p.cnt),1);
+      pgEl.innerHTML = '<table class="admin-table"><thead><tr><th>Page</th><th>Views</th><th style="width:200px">Share</th></tr></thead><tbody>'+
+        pages.map(p=>{
+          const pct = Math.round((p.cnt/maxPg)*100);
+          return \`<tr><td><code style="font-size:.85rem">\${p.path}</code></td><td style="font-weight:700">\${p.cnt}</td><td><div class="rv-bar-track"><div class="rv-bar-fill" style="width:\${pct}%;background:#a78bfa"></div></div></td></tr>\`;
+        }).join('')+'</tbody></table>';
+    }
+  }catch(e){ document.getElementById('daily-chart').innerHTML='<p style="color:#ef4444;font-size:.82rem">Error loading analytics</p>'; }
+}
+
+// ── REVENUE TAB ────────────────────────────────────────────
+async function loadRevenue(){
+  try{
+    const res = await fetch('/api/admin/revenue');
+    const d = await res.json();
+    document.getElementById('rv-mrr').textContent = '\$'+d.mrr.toLocaleString();
+    document.getElementById('rv-pro').textContent = d.pro_count;
+    document.getElementById('rv-creator').textContent = d.creator_count;
+    document.getElementById('rv-free').textContent = d.free_count;
+    document.getElementById('stat-mrr').textContent = '\$'+d.mrr;
+    document.getElementById('rv-pl-mrr').textContent = '\$'+d.mrr.toLocaleString();
+    document.getElementById('rv-pl-credits').textContent = d.credit_pack_revenue ? '\$'+parseFloat(d.credit_pack_revenue).toFixed(2) : '\$0';
+    document.getElementById('rv-pl-mureka').textContent = '-\$'+d.estimated_mureka_cost.toFixed(2)+' ('+d.jobs_this_month+' jobs)';
+    const profit = d.estimated_profit;
+    const profitEl = document.getElementById('rv-pl-profit');
+    profitEl.textContent = (profit>=0?'+':'')+'\$'+profit.toFixed(2);
+    profitEl.style.color = profit>=0 ? '#10b981' : '#ef4444';
+
+    // Revenue pie bars
+    const total = d.mrr + (d.credit_pack_revenue||0);
+    const pieEl = document.getElementById('rv-pie');
+    if(!total){ pieEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No revenue yet</p>'; }
+    else {
+      const proRev = d.pro_count*26;
+      const creatorRev = d.creator_count*10;
+      const packRev = d.credit_pack_revenue||0;
+      const rows = [
+        {label:'Pro Artist ('+d.pro_count+'×$26)',val:proRev,color:'#a78bfa'},
+        {label:'Creator ('+d.creator_count+'×$10)',val:creatorRev,color:'#3b82f6'},
+        {label:'Credit Packs',val:packRev,color:'#f59e0b'},
+      ];
+      pieEl.innerHTML = rows.map(r=>{
+        const pct = total>0 ? Math.round((r.val/total)*100) : 0;
+        return \`<div class="rv-bar-wrap" style="margin-bottom:12px">
+          <div style="width:12px;height:12px;border-radius:3px;background:\${r.color};flex-shrink:0"></div>
+          <div style="flex:1;font-size:.85rem">\${r.label}</div>
+          <div class="rv-bar-track"><div class="rv-bar-fill" style="width:\${pct}%;background:\${r.color}"></div></div>
+          <div style="width:52px;text-align:right;font-size:.85rem;font-weight:700">\$\${r.val}</div>
+        </div>\`;
+      }).join('');
+    }
+
+    // Recent subscribers table
+    const subs = d.recent_subscribers||[];
+    const subsEl = document.getElementById('rv-subs');
+    if(!subs.length){ subsEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No paid subscribers yet.</p>'; }
+    else {
+      subsEl.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Joined</th></tr></thead><tbody>'+
+        subs.map(s=>\`<tr><td>\${s.email}</td><td>\${s.name}</td><td><span class="plan-badge plan-badge--\${s.plan}">\${s.plan}</span></td><td>\${new Date(s.created_at).toLocaleDateString()}</td></tr>\`).join('')+'</tbody></table>';
+    }
+  }catch(e){ document.getElementById('rv-mrr').textContent='Error'; }
+}
+
+// ── USERS TAB ──────────────────────────────────────────────
+async function loadUsers(){
   const res = await fetch('/api/admin/users');
   const data = await res.json();
   const el = document.getElementById('admin-users-list');
@@ -7270,9 +7905,10 @@ function adminPage(user: User) {
     <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">Edit Plan</button>
     <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">+Credits</button>
     </td></tr>\`).join('')+'</tbody></table>';
-})();
+  window._usersLoaded = true;
+}
 
-// Load promos
+// ── PROMOS TAB ─────────────────────────────────────────────
 async function loadPromos(){
   const res = await fetch('/api/admin/promos');
   const data = await res.json();
@@ -7281,14 +7917,7 @@ async function loadPromos(){
   el.innerHTML='<table class="admin-table"><thead><tr><th>Code</th><th>Description</th><th>Bonus Credits</th><th>Uses</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
     data.promos.map(p=>\`<tr><td style="font-family:monospace;font-weight:700">\${p.code}</td><td>\${p.description||'—'}</td><td>\${p.bonus_credits||0}</td><td>\${p.uses_count}\${p.max_uses?'/'+p.max_uses:''}</td><td>\${p.active?'<span style="color:#10b981">Active</span>':'<span style="color:var(--muted)">Inactive</span>'}</td>
     <td><button onclick="deactivatePromo('\${p.code}')" class="btn btn--outline btn--sm" style="font-size:.78rem;color:#ff6464;border-color:#ff646440">Deactivate</button></td></tr>\`).join('')+'</tbody></table>';
-}
-loadPromos();
-
-function adminTab(tab){
-  document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('admin-tab--active'));
-  document.querySelector(\`[data-tab="\${tab}"]\`).classList.add('admin-tab--active');
-  document.getElementById('admin-tab-users').style.display=tab==='users'?'block':'none';
-  document.getElementById('admin-tab-promos').style.display=tab==='promos'?'block':'none';
+  window._promosLoaded = true;
 }
 
 async function createPromo(){
@@ -7298,13 +7927,13 @@ async function createPromo(){
   status.textContent='Creating…';
   const res=await fetch('/api/admin/promos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,description:document.getElementById('new-desc').value,bonus_credits:parseInt(document.getElementById('new-credits').value)||0,max_uses:parseInt(document.getElementById('new-maxuses').value)||0,terms:document.getElementById('new-terms').value,active:1})});
   const data=await res.json();
-  if(data.ok){status.style.color='#10b981';status.textContent='✓ Code '+code+' created!';loadPromos();document.getElementById('new-code').value='';document.getElementById('new-desc').value='';document.getElementById('new-credits').value='0';document.getElementById('new-terms').value='';}
+  if(data.ok){status.style.color='#10b981';status.textContent='✓ Code '+code+' created!';window._promosLoaded=false;loadPromos();document.getElementById('new-code').value='';document.getElementById('new-desc').value='';document.getElementById('new-credits').value='0';document.getElementById('new-terms').value='';}
   else{status.style.color='#ef4444';status.textContent='Error: '+(data.error||'Failed');}
 }
 
 async function deactivatePromo(code){
   if(!confirm('Deactivate '+code+'?'))return;
-  await fetch('/api/admin/promos/'+code,{method:'DELETE'});loadPromos();
+  await fetch('/api/admin/promos/'+code,{method:'DELETE'});window._promosLoaded=false;loadPromos();
 }
 
 async function changeUserPlan(userId,email){
@@ -7312,15 +7941,14 @@ async function changeUserPlan(userId,email){
   if(!plan)return;
   const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,plan})});
   const data=await res.json();
-  if(data.ok){alert('Plan updated.');location.reload();}else{alert('Error: '+(data.error||'Failed'));}
+  if(data.ok){alert('Plan updated.');window._usersLoaded=false;loadUsers();}else{alert('Error: '+(data.error||'Failed'));}
 }
 
 async function addCredits(userId,email){
   const n=parseInt(prompt('Add how many points to '+email+'?'));
   if(!n||isNaN(n))return;
   const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,gens_limit:n})});
-  // This sets gens_limit — we need additive, use a workaround
-  alert('Credits updated. Refresh to see new totals.');location.reload();
+  alert('Credits updated. Refresh to see new totals.');window._usersLoaded=false;loadUsers();
 }
 </script>`)
 }
