@@ -3610,7 +3610,7 @@ function murekaMonitorPage(): string {
   gtag('config', 'G-74RCBZK52L');
 </script>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
-<link href="/static/style.css" rel="stylesheet"/>
+<link href="/static/style.css?v=${ASSET_VER}" rel="stylesheet"/>
 <style>
   body{background:#0d0d1a;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:0;margin:0}
   .monitor-wrap{max-width:720px;margin:0 auto;padding:40px 24px}
@@ -4196,6 +4196,9 @@ app.get('/api/check-duplicate-upload', async (c) => {
 })
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
+// Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
+const ASSET_VER = '20260630-3'
+
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -4215,7 +4218,7 @@ function shell(title: string, body: string, extraHead = '') {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
-<link rel="stylesheet" href="/static/style.css"/>
+<link rel="stylesheet" href="/static/style.css?v=${ASSET_VER}"/>
 ${extraHead}
 </head>
 <body>
@@ -4223,7 +4226,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.js"></script>
+<script src="/static/app.v2.js?v=${ASSET_VER}"></script>
 </body>
 </html>`
 }
