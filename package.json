@@ -6,6 +6,8 @@
     "build": "vite build",
     "preview": "wrangler pages dev",
     "deploy": "npm run build && wrangler pages deploy",
+    "deploy:staging": "npm run build && gsk hosted deploy",
+    "deploy:prod": "npm run build && bash scripts/publish-prod.sh",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {

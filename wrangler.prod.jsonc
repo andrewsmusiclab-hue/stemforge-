@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // PRODUCTION config — deploys to stemforge.studio
+  // Run: npm run deploy:prod
+  // This is the worker users hit at stemforge.studio
+  "name": "webapp",
+  "compatibility_date": "2026-05-01",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "SITE_URL": "https://stemforge.studio",
+    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "andrew-pryce-db",
+      "database_id": "ffd0c782-4ccc-42c2-9f35-4c577105516b"
+    }
+  ]
+}

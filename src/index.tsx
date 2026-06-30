@@ -19,6 +19,7 @@ type Bindings = {
   SESSION_SECRET: string            // 32+ char random string for session HMAC
   SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
   ADMIN_EMAIL: string               // Developer admin email — grants developer plan access
+  STAGING_URL?: string              // Set by wrangler.staging.jsonc — shown in admin Publish tab
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -3492,7 +3493,9 @@ app.get('/api/admin/version-status', async (c) => {
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
   const version = await getSiteVersion(c.env.DB)
   const updated_at = await getVersionUpdatedAt(c.env.DB)
-  return c.json({ version, updated_at })
+  const staging_url = c.env.STAGING_URL || null
+  const prod_url = c.env.SITE_URL || null
+  return c.json({ version, updated_at, staging_url, prod_url })
 })
 
 // POST /api/admin/publish — flip live ↔ preview for ALL users
@@ -4337,7 +4340,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260630-6'
+const ASSET_VER = '20260630-7'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7445,79 +7448,102 @@ function adminPage(user: User) {
     </div>
 
     <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- PUBLISH TAB — Site Version Control                        -->
+    <!-- PUBLISH TAB — Staging → Production Pipeline               -->
     <!-- ══════════════════════════════════════════════════════════ -->
     <div id="admin-tab-publish">
-      <div style="max-width:660px">
+      <div style="max-width:700px">
 
-        <!-- How it works explanation -->
-        <div style="background:rgba(78,159,255,.07);border:1px solid rgba(78,159,255,.2);border-radius:14px;padding:20px 22px;margin-bottom:20px;display:flex;gap:14px">
-          <i class="fas fa-info-circle" style="color:#4e9fff;margin-top:2px;flex-shrink:0;font-size:1.1rem"></i>
-          <div style="font-size:.88rem;line-height:1.6;color:var(--muted)">
-            <strong style="color:var(--text)">How the publish workflow works:</strong><br>
-            Visitors <strong>always see the live site</strong> — they are never blocked or shown a "coming soon" page.
-            When you make code changes and deploy, click <strong>"Set to Preview"</strong> to mark it as a draft you're reviewing.
-            Use <a href="/preview" style="color:var(--primary)">/preview</a> to test everything as admin.
-            When you're happy, click <strong>"Publish Live"</strong> to record the version as approved.
-            Visitors were already on the new code the moment it deployed — the publish flag is your own sign-off tracker.
+        <!-- Pipeline diagram -->
+        <div style="display:flex;align-items:center;gap:0;margin-bottom:24px;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+          <div style="flex:1;padding:18px 20px;border-right:1px solid var(--border)">
+            <div style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Step 1 — You test here</div>
+            <div style="font-weight:700;font-size:1rem;color:#f59e0b;margin-bottom:4px"><i class="fas fa-flask"></i> Staging</div>
+            <div id="pub-staging-url" style="font-size:.78rem;color:var(--muted);word-break:break-all">Loading…</div>
+          </div>
+          <div style="padding:0 8px;color:var(--muted);font-size:1.4rem">→</div>
+          <div style="flex:1;padding:18px 20px">
+            <div style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Step 2 — Users see this</div>
+            <div style="font-weight:700;font-size:1rem;color:#10b981;margin-bottom:4px"><i class="fas fa-globe"></i> Production</div>
+            <div id="pub-prod-url" style="font-size:.78rem;color:var(--muted);word-break:break-all">Loading…</div>
           </div>
         </div>
 
-        <!-- Status card -->
-        <div id="version-card" style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:28px 28px 24px;margin-bottom:20px">
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px">
+        <!-- Current status card -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
             <div id="version-dot" style="width:14px;height:14px;border-radius:50%;background:#6b7280;box-shadow:0 0 0 4px rgba(107,114,128,.2);flex-shrink:0"></div>
             <div>
-              <div style="font-weight:700;font-size:1.05rem" id="version-label">Loading…</div>
-              <div style="font-size:.82rem;color:var(--muted)" id="version-since">—</div>
+              <div style="font-weight:700;font-size:1rem" id="version-label">Loading…</div>
+              <div style="font-size:.8rem;color:var(--muted)" id="version-since">—</div>
             </div>
           </div>
-
-          <!-- What each mode means -->
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px">
-            <div id="mode-live-explain" style="padding:14px;border-radius:10px;border:1px solid var(--border);opacity:.6">
-              <div style="font-weight:700;color:#10b981;margin-bottom:6px"><i class="fas fa-check-circle"></i> Published / Live</div>
-              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">You've reviewed this deploy and approved it. Everything is good.</div>
-            </div>
-            <div id="mode-preview-explain" style="padding:14px;border-radius:10px;border:1px solid var(--border);opacity:.6">
-              <div style="font-weight:700;color:#f59e0b;margin-bottom:6px"><i class="fas fa-eye"></i> Preview / Draft</div>
-              <div style="font-size:.82rem;color:var(--muted);line-height:1.5">New code deployed but not yet reviewed. Test it at <a href="/preview" style="color:var(--primary)">/preview</a> then publish.</div>
-            </div>
-          </div>
-
-          <!-- Buttons -->
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
             <button id="btn-set-preview" class="btn btn--outline" onclick="setVersion('preview')" style="border-color:rgba(245,158,11,.5);color:#f59e0b">
-              <i class="fas fa-eye"></i> Mark as Draft / Preview
+              <i class="fas fa-flask"></i> Mark as In Review
             </button>
             <button id="btn-publish-live" class="btn btn--primary" onclick="setVersion('live')">
-              <i class="fas fa-check-circle"></i> Publish Live ✓
+              <i class="fas fa-check-circle"></i> Mark as Published ✓
             </button>
-            <span id="version-action-msg" style="align-self:center;font-size:.88rem;color:var(--muted)"></span>
+            <span id="version-action-msg" style="font-size:.88rem;color:var(--muted)"></span>
           </div>
         </div>
 
-        <!-- Workflow steps -->
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
-          <h3 style="margin-bottom:16px;font-size:.95rem"><i class="fas fa-list-ol" style="color:var(--primary);margin-right:8px"></i>Your deploy workflow</h3>
-          <div style="display:flex;flex-direction:column;gap:12px">
-            <div style="display:flex;gap:12px;align-items:flex-start">
-              <div style="width:26px;height:26px;border-radius:50%;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#4e9fff;flex-shrink:0">1</div>
-              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Make your code changes</strong> in the editor, then deploy via the Deploy button in your project.</div>
+        <!-- HOW IT WORKS -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
+          <h3 style="margin-bottom:18px;font-size:.95rem"><i class="fas fa-route" style="color:var(--primary);margin-right:8px"></i>How to deploy safely</h3>
+          <div style="display:flex;flex-direction:column;gap:0">
+
+            <div style="display:flex;gap:14px;padding-bottom:16px;border-bottom:1px solid var(--border10)">
+              <div style="width:32px;height:32px;border-radius:50%;background:rgba(78,159,255,.12);border:2px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#4e9fff;flex-shrink:0">1</div>
+              <div>
+                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Make your code changes in this editor</div>
+                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Edit files, add features, fix bugs.</div>
+              </div>
             </div>
-            <div style="display:flex;gap:12px;align-items:flex-start">
-              <div style="width:26px;height:26px;border-radius:50%;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#f59e0b;flex-shrink:0">2</div>
-              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Click "Mark as Draft"</strong> here so you know you haven't reviewed the new deploy yet. Visitors are unaffected.</div>
+
+            <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border10)">
+              <div style="width:32px;height:32px;border-radius:50%;background:rgba(245,158,11,.12);border:2px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#f59e0b;flex-shrink:0">2</div>
+              <div>
+                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Deploy to <span style="color:#f59e0b">Staging</span> — users are not affected</div>
+                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Click the <strong>Deploy button</strong> in the Genspark sidebar. This deploys to the staging URL only. Your users at <code style="background:var(--border);padding:1px 5px;border-radius:4px">stemforge.studio</code> keep seeing the previous version.</div>
+              </div>
             </div>
-            <div style="display:flex;gap:12px;align-items:flex-start">
-              <div style="width:26px;height:26px;border-radius:50%;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#4e9fff;flex-shrink:0">3</div>
-              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Test at <a href="/preview" style="color:var(--primary)">/preview</a></strong> — browse the site as admin, click around, check everything works.</div>
+
+            <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border10)">
+              <div style="width:32px;height:32px;border-radius:50%;background:rgba(78,159,255,.12);border:2px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#4e9fff;flex-shrink:0">3</div>
+              <div>
+                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Test on the staging URL</div>
+                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Open the staging link <span id="pub-staging-inline" style="color:var(--primary);font-weight:600"></span> and test everything. Log in, generate a beat, check the UI. You're the only one who can see this.</div>
+              </div>
             </div>
-            <div style="display:flex;gap:12px;align-items:flex-start">
-              <div style="width:26px;height:26px;border-radius:50%;background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#10b981;flex-shrink:0">4</div>
-              <div style="font-size:.88rem;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Click "Publish Live ✓"</strong> — marks this deploy as reviewed and approved. You're done.</div>
+
+            <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border10)">
+              <div style="width:32px;height:32px;border-radius:50%;background:rgba(16,185,129,.12);border:2px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#10b981;flex-shrink:0">4</div>
+              <div>
+                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Happy? Tell the AI: <em style="color:var(--primary)">"publish to production"</em></div>
+                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Type <strong>"publish to production"</strong> in the chat. The AI runs the production deploy — your users at <code style="background:var(--border);padding:1px 5px;border-radius:4px">stemforge.studio</code> get the new version. Takes about 60 seconds.</div>
+              </div>
             </div>
+
+            <div style="display:flex;gap:14px;padding-top:16px">
+              <div style="width:32px;height:32px;border-radius:50%;background:rgba(167,139,250,.12);border:2px solid rgba(167,139,250,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#a78bfa;flex-shrink:0">5</div>
+              <div>
+                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Click <strong>"Mark as Published ✓"</strong> above</div>
+                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Records this deploy as reviewed and approved. You're done.</div>
+              </div>
+            </div>
+
           </div>
+        </div>
+
+        <!-- Quick links -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <a id="pub-staging-link" href="#" target="_blank" class="btn btn--outline" style="text-align:center;text-decoration:none">
+            <i class="fas fa-external-link-alt"></i> Open Staging
+          </a>
+          <a href="https://stemforge.studio" target="_blank" class="btn btn--outline" style="text-align:center;text-decoration:none;border-color:rgba(16,185,129,.4);color:#10b981">
+            <i class="fas fa-globe"></i> Open Production
+          </a>
         </div>
 
       </div>
@@ -7695,11 +7721,24 @@ function adminTab(tab){
 }
 
 // ── PUBLISH TAB ────────────────────────────────────────────
+const STAGING_FALLBACK = 'https://3000-imt3710l9t5a5efg1rvvj-5185f4aa.sandbox.novita.ai';
+
 (async()=>{
   try{
     const res = await fetch('/api/admin/version-status');
     const data = await res.json();
     renderVersionStatus(data.version, data.updated_at);
+    // Populate URLs
+    const stagingUrl = data.staging_url || STAGING_FALLBACK;
+    const prodUrl = data.prod_url || 'https://stemforge.studio';
+    document.getElementById('pub-staging-url').innerHTML =
+      \`<a href="\${stagingUrl}" target="_blank" style="color:#f59e0b">\${stagingUrl}</a>\`;
+    document.getElementById('pub-prod-url').innerHTML =
+      \`<a href="\${prodUrl}" target="_blank" style="color:#10b981">\${prodUrl}</a>\`;
+    document.getElementById('pub-staging-inline').innerHTML =
+      \`<a href="\${stagingUrl}" target="_blank" style="color:var(--primary)">\${stagingUrl.replace('https://','')}</a>\`;
+    const stagingLink = document.getElementById('pub-staging-link');
+    if(stagingLink) stagingLink.href = stagingUrl;
   }catch(e){ document.getElementById('version-label').textContent='Error loading status'; }
 })();
 
@@ -7708,34 +7747,31 @@ function renderVersionStatus(version, updatedAt){
   const dot = document.getElementById('version-dot');
   const label = document.getElementById('version-label');
   const since = document.getElementById('version-since');
-  const liveBox = document.getElementById('mode-live-explain');
-  const prevBox = document.getElementById('mode-preview-explain');
-
   dot.style.background = isLive ? '#10b981' : '#f59e0b';
   dot.style.boxShadow = isLive ? '0 0 0 4px rgba(16,185,129,.25)' : '0 0 0 4px rgba(245,158,11,.25)';
-  label.textContent = isLive ? '✅ Published — this deploy has been reviewed and approved' : '🟡 Draft / Preview — new deploy not yet reviewed';
+  label.textContent = isLive
+    ? '✅ Published — production is up to date with staging'
+    : '🟡 In Review — staged but not yet pushed to production';
   label.style.color = isLive ? '#10b981' : '#f59e0b';
   since.textContent = updatedAt ? 'Since ' + new Date(updatedAt).toLocaleString() : '';
-  liveBox.style.opacity = isLive ? '1' : '.45';
-  prevBox.style.opacity = isLive ? '.45' : '1';
-  liveBox.style.borderColor = isLive ? 'rgba(16,185,129,.4)' : 'var(--border)';
-  prevBox.style.borderColor = isLive ? 'var(--border)' : 'rgba(245,158,11,.4)';
   document.getElementById('btn-publish-live').disabled = isLive;
   document.getElementById('btn-set-preview').disabled = !isLive;
 }
 
 async function setVersion(v){
   const msg = document.getElementById('version-action-msg');
-  msg.textContent = v==='live' ? 'Publishing…' : 'Marking as draft…';
+  msg.textContent = v==='live' ? 'Saving…' : 'Saving…';
   msg.style.color = 'var(--muted)';
   try{
     const res = await fetch('/api/admin/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:v})});
     const data = await res.json();
     if(data.ok){
       msg.style.color = '#10b981';
-      msg.textContent = v==='live' ? '✓ Marked as Published!' : '✓ Marked as Draft — test at /preview then publish.';
+      msg.textContent = v==='live'
+        ? '✅ Marked as Published!'
+        : '🟡 Marked as In Review — test on staging, then say "publish to production" in chat.';
       renderVersionStatus(data.version, Date.now());
-      setTimeout(()=>{ msg.textContent=''; },5000);
+      setTimeout(()=>{ msg.textContent=''; },8000);
     } else {
       msg.style.color='#ef4444'; msg.textContent='Error: '+(data.error||'Failed');
     }
