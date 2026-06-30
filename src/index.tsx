@@ -4236,6 +4236,8 @@ function globalSidebar() {
     <img src="/static/stemforge-logo.png" alt="StemForge" style="height:36px;width:36px;object-fit:contain;flex-shrink:0"/><span class="gs-sidebar__logo-text">Stem<span class="accent">Forge</span></span>
   </a>
 
+  <!-- Navigation (desktop: vertical column; mobile: horizontal row) -->
+
   <!-- Sign in button — shown when logged out -->
   <a href="/login" class="gs-sidebar__signin-btn" id="gs-signin-btn">
     <i class="fas fa-sign-in-alt"></i>
@@ -4293,11 +4295,11 @@ function globalSidebar() {
     </a>
     <a href="/promos" class="gs-sidebar__nav-item" data-page="promos">
       <i class="fas fa-tag"></i>
-      <span>Promo Codes</span>
+      <span class="nav-label-full">Promo Codes</span><span class="nav-label-short">Promos</span>
     </a>
     <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
       <i class="fas fa-comment-alt"></i>
-      <span>Give Us Feedback</span>
+      <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
   </nav>
 
