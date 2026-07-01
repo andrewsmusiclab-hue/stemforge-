@@ -4340,7 +4340,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260630-7'
+const ASSET_VER = '20260630-8'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7448,28 +7448,11 @@ function adminPage(user: User) {
     </div>
 
     <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- PUBLISH TAB — Staging → Production Pipeline               -->
+    <!-- PUBLISH TAB -->
     <!-- ══════════════════════════════════════════════════════════ -->
     <div id="admin-tab-publish">
-      <div style="max-width:700px">
-
-        <!-- Pipeline diagram -->
-        <div style="display:flex;align-items:center;gap:0;margin-bottom:24px;background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden">
-          <div style="flex:1;padding:18px 20px;border-right:1px solid var(--border)">
-            <div style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Step 1 — You test here</div>
-            <div style="font-weight:700;font-size:1rem;color:#f59e0b;margin-bottom:4px"><i class="fas fa-flask"></i> Staging</div>
-            <div id="pub-staging-url" style="font-size:.78rem;color:var(--muted);word-break:break-all">Loading…</div>
-          </div>
-          <div style="padding:0 8px;color:var(--muted);font-size:1.4rem">→</div>
-          <div style="flex:1;padding:18px 20px">
-            <div style="font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">Step 2 — Users see this</div>
-            <div style="font-weight:700;font-size:1rem;color:#10b981;margin-bottom:4px"><i class="fas fa-globe"></i> Production</div>
-            <div id="pub-prod-url" style="font-size:.78rem;color:var(--muted);word-break:break-all">Loading…</div>
-          </div>
-        </div>
-
-        <!-- Current status card -->
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
+      <div style="max-width:480px">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px">
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
             <div id="version-dot" style="width:14px;height:14px;border-radius:50%;background:#6b7280;box-shadow:0 0 0 4px rgba(107,114,128,.2);flex-shrink:0"></div>
             <div>
@@ -7487,65 +7470,6 @@ function adminPage(user: User) {
             <span id="version-action-msg" style="font-size:.88rem;color:var(--muted)"></span>
           </div>
         </div>
-
-        <!-- HOW IT WORKS -->
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
-          <h3 style="margin-bottom:18px;font-size:.95rem"><i class="fas fa-route" style="color:var(--primary);margin-right:8px"></i>How to deploy safely</h3>
-          <div style="display:flex;flex-direction:column;gap:0">
-
-            <div style="display:flex;gap:14px;padding-bottom:16px;border-bottom:1px solid var(--border10)">
-              <div style="width:32px;height:32px;border-radius:50%;background:rgba(78,159,255,.12);border:2px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#4e9fff;flex-shrink:0">1</div>
-              <div>
-                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Make your code changes in this editor</div>
-                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Edit files, add features, fix bugs.</div>
-              </div>
-            </div>
-
-            <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border10)">
-              <div style="width:32px;height:32px;border-radius:50%;background:rgba(245,158,11,.12);border:2px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#f59e0b;flex-shrink:0">2</div>
-              <div>
-                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Deploy to <span style="color:#f59e0b">Staging</span> — users are not affected</div>
-                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Click the <strong>Deploy button</strong> in the Genspark sidebar. This deploys to the staging URL only. Your users at <code style="background:var(--border);padding:1px 5px;border-radius:4px">stemforge.studio</code> keep seeing the previous version.</div>
-              </div>
-            </div>
-
-            <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border10)">
-              <div style="width:32px;height:32px;border-radius:50%;background:rgba(78,159,255,.12);border:2px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#4e9fff;flex-shrink:0">3</div>
-              <div>
-                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Test on the staging URL</div>
-                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Open the staging link <span id="pub-staging-inline" style="color:var(--primary);font-weight:600"></span> and test everything. Log in, generate a beat, check the UI. You're the only one who can see this.</div>
-              </div>
-            </div>
-
-            <div style="display:flex;gap:14px;padding:16px 0;border-bottom:1px solid var(--border10)">
-              <div style="width:32px;height:32px;border-radius:50%;background:rgba(16,185,129,.12);border:2px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#10b981;flex-shrink:0">4</div>
-              <div>
-                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Happy? Tell the AI: <em style="color:var(--primary)">"publish to production"</em></div>
-                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Type <strong>"publish to production"</strong> in the chat. The AI runs the production deploy — your users at <code style="background:var(--border);padding:1px 5px;border-radius:4px">stemforge.studio</code> get the new version. Takes about 60 seconds.</div>
-              </div>
-            </div>
-
-            <div style="display:flex;gap:14px;padding-top:16px">
-              <div style="width:32px;height:32px;border-radius:50%;background:rgba(167,139,250,.12);border:2px solid rgba(167,139,250,.3);display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:800;color:#a78bfa;flex-shrink:0">5</div>
-              <div>
-                <div style="font-weight:700;font-size:.92rem;margin-bottom:3px">Click <strong>"Mark as Published ✓"</strong> above</div>
-                <div style="font-size:.83rem;color:var(--muted);line-height:1.5">Records this deploy as reviewed and approved. You're done.</div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- Quick links -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <a id="pub-staging-link" href="#" target="_blank" class="btn btn--outline" style="text-align:center;text-decoration:none">
-            <i class="fas fa-external-link-alt"></i> Open Staging
-          </a>
-          <a href="https://stemforge.studio" target="_blank" class="btn btn--outline" style="text-align:center;text-decoration:none;border-color:rgba(16,185,129,.4);color:#10b981">
-            <i class="fas fa-globe"></i> Open Production
-          </a>
-        </div>
-
       </div>
     </div>
 
@@ -7721,24 +7645,11 @@ function adminTab(tab){
 }
 
 // ── PUBLISH TAB ────────────────────────────────────────────
-const STAGING_FALLBACK = 'https://3000-imt3710l9t5a5efg1rvvj-5185f4aa.sandbox.novita.ai';
-
 (async()=>{
   try{
     const res = await fetch('/api/admin/version-status');
     const data = await res.json();
     renderVersionStatus(data.version, data.updated_at);
-    // Populate URLs
-    const stagingUrl = data.staging_url || STAGING_FALLBACK;
-    const prodUrl = data.prod_url || 'https://stemforge.studio';
-    document.getElementById('pub-staging-url').innerHTML =
-      \`<a href="\${stagingUrl}" target="_blank" style="color:#f59e0b">\${stagingUrl}</a>\`;
-    document.getElementById('pub-prod-url').innerHTML =
-      \`<a href="\${prodUrl}" target="_blank" style="color:#10b981">\${prodUrl}</a>\`;
-    document.getElementById('pub-staging-inline').innerHTML =
-      \`<a href="\${stagingUrl}" target="_blank" style="color:var(--primary)">\${stagingUrl.replace('https://','')}</a>\`;
-    const stagingLink = document.getElementById('pub-staging-link');
-    if(stagingLink) stagingLink.href = stagingUrl;
   }catch(e){ document.getElementById('version-label').textContent='Error loading status'; }
 })();
 
