@@ -3923,8 +3923,8 @@ app.post('/api/generate-lyrics', async (c) => {
   const { description, genre, mood } = await c.req.json<{ description: string; genre?: string; mood?: string }>()
   if (!description) return c.json({ error: 'Missing description' }, 400)
 
-  const systemPrompt = `You are a professional hip-hop/R&B/trap songwriter. Write song lyrics based on the artist's description. Structure lyrics with [Intro], [Verse 1], [Chorus], [Verse 2], [Chorus], [Outro] sections. Make lyrics authentic, rhythmic, and genre-appropriate. Do NOT include any commentary — just the lyrics.`
-  const userPrompt = `Write song lyrics for a ${genre || 'hip hop'} track with a ${mood || 'energetic'} feel. The song is about: "${description}". Include proper sections with labels like [Verse 1], [Chorus], etc.`
+  const systemPrompt = `You are a professional songwriter across all genres. Write song lyrics based on the artist's description. Structure lyrics with [Intro], [Verse 1], [Chorus], [Verse 2], [Chorus], [Outro] sections. Make lyrics authentic, rhythmic, and genre-appropriate. Do NOT include any commentary — just the lyrics.`
+  const userPrompt = `Write song lyrics for a ${genre || 'music'} track with a ${mood || 'energetic'} feel. The song is about: "${description}". Include proper sections with labels like [Verse 1], [Chorus], etc.`
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -4535,7 +4535,7 @@ function globalSidebar() {
         </div>
         <div style="flex:2">
           <label>Genre / Style</label>
-          <input type="text" id="edit-genre" placeholder="e.g. hip hop, trap..." style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;width:100%;box-sizing:border-box;color:var(--text);font-family:inherit;font-size:.9rem"/>
+          <input type="text" id="edit-genre" placeholder="e.g. afrobeats, jazz, house..." style="background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;width:100%;box-sizing:border-box;color:var(--text);font-family:inherit;font-size:.9rem"/>
         </div>
       </div>
       <div class="form-group">
@@ -4676,7 +4676,7 @@ function homePage() {
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
     <h1 class="hero__title">Generate the beat.<br/><span class="gradient-text">Download it clean.</span></h1>
-    <p class="hero__sub">StemForge generates professional rap, trap, and R&B beats using AI. Download the full stereo mix and take your beats straight to the DAW.</p>
+    <p class="hero__sub">StemForge generates professional tracks in your favorite genre using AI. Download the full stereo mix and take your beats straight to the DAW.</p>
     <div class="hero__ctas">
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
       <a href="#pricing-preview" class="btn btn--outline btn--lg" onclick="event.preventDefault();document.getElementById('pricing-preview').scrollIntoView({behavior:'smooth'})"><i class="fas fa-tags"></i> See pricing</a>
