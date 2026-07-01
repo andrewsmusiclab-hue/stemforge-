@@ -7439,44 +7439,16 @@ function adminPage(user: User) {
 
     <!-- Tabs -->
     <div style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;flex-wrap:wrap">
-      <button class="admin-tab admin-tab--active" data-tab="publish" onclick="adminTab('publish')"><i class="fas fa-rocket"></i> Publish</button>
-      <button class="admin-tab" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
+      <button class="admin-tab admin-tab--active" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
       <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
-      <a href="/mureka-monitor" class="admin-tab" style="text-decoration:none;margin-left:auto"><i class="fas fa-coins" style="color:#f59e0b"></i> Mureka</a>
-    </div>
-
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- PUBLISH TAB -->
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <div id="admin-tab-publish">
-      <div style="max-width:480px">
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px">
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
-            <div id="version-dot" style="width:14px;height:14px;border-radius:50%;background:#6b7280;box-shadow:0 0 0 4px rgba(107,114,128,.2);flex-shrink:0"></div>
-            <div>
-              <div style="font-weight:700;font-size:1rem" id="version-label">Loading…</div>
-              <div style="font-size:.8rem;color:var(--muted)" id="version-since">—</div>
-            </div>
-          </div>
-          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-            <button id="btn-set-preview" class="btn btn--outline" onclick="setVersion('preview')" style="border-color:rgba(245,158,11,.5);color:#f59e0b">
-              <i class="fas fa-flask"></i> Mark as In Review
-            </button>
-            <button id="btn-publish-live" class="btn btn--primary" onclick="setVersion('live')">
-              <i class="fas fa-check-circle"></i> Mark as Published ✓
-            </button>
-            <span id="version-action-msg" style="font-size:.88rem;color:var(--muted)"></span>
-          </div>
-        </div>
-      </div>
     </div>
 
     <!-- ══════════════════════════════════════════════════════════ -->
     <!-- ANALYTICS TAB                                             -->
     <!-- ══════════════════════════════════════════════════════════ -->
-    <div id="admin-tab-analytics" style="display:none">
+    <div id="admin-tab-analytics">
       <!-- Summary stats -->
       <div class="sub-stats-bar" style="margin-bottom:28px">
         <div class="sub-stat"><span class="sub-stat__label">Views Today</span><span class="sub-stat__val" id="an-today">—</span></div>
@@ -7632,7 +7604,7 @@ function adminPage(user: User) {
 })();
 
 // ── Tab switcher ───────────────────────────────────────────
-const adminTabs = ['publish','analytics','revenue','users','promos'];
+const adminTabs = ['analytics','revenue','users','promos'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(t=>t.classList.remove('admin-tab--active'));
   const btn = document.querySelector(\`[data-tab="\${tab}"]\`);
@@ -7644,50 +7616,8 @@ function adminTab(tab){
   if(tab==='promos' && !window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
 }
 
-// ── PUBLISH TAB ────────────────────────────────────────────
-(async()=>{
-  try{
-    const res = await fetch('/api/admin/version-status');
-    const data = await res.json();
-    renderVersionStatus(data.version, data.updated_at);
-  }catch(e){ document.getElementById('version-label').textContent='Error loading status'; }
-})();
-
-function renderVersionStatus(version, updatedAt){
-  const isLive = version === 'live';
-  const dot = document.getElementById('version-dot');
-  const label = document.getElementById('version-label');
-  const since = document.getElementById('version-since');
-  dot.style.background = isLive ? '#10b981' : '#f59e0b';
-  dot.style.boxShadow = isLive ? '0 0 0 4px rgba(16,185,129,.25)' : '0 0 0 4px rgba(245,158,11,.25)';
-  label.textContent = isLive
-    ? '✅ Published — production is up to date with staging'
-    : '🟡 In Review — staged but not yet pushed to production';
-  label.style.color = isLive ? '#10b981' : '#f59e0b';
-  since.textContent = updatedAt ? 'Since ' + new Date(updatedAt).toLocaleString() : '';
-  document.getElementById('btn-publish-live').disabled = isLive;
-  document.getElementById('btn-set-preview').disabled = !isLive;
-}
-
-async function setVersion(v){
-  const msg = document.getElementById('version-action-msg');
-  msg.textContent = v==='live' ? 'Saving…' : 'Saving…';
-  msg.style.color = 'var(--muted)';
-  try{
-    const res = await fetch('/api/admin/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:v})});
-    const data = await res.json();
-    if(data.ok){
-      msg.style.color = '#10b981';
-      msg.textContent = v==='live'
-        ? '✅ Marked as Published!'
-        : '🟡 Marked as In Review — test on staging, then say "publish to production" in chat.';
-      renderVersionStatus(data.version, Date.now());
-      setTimeout(()=>{ msg.textContent=''; },8000);
-    } else {
-      msg.style.color='#ef4444'; msg.textContent='Error: '+(data.error||'Failed');
-    }
-  }catch(e){ msg.style.color='#ef4444'; msg.textContent='Network error'; }
-}
+// Auto-load analytics on page open (it's the default tab)
+loadAnalytics(); window._analyticsLoaded = true;
 
 // ── ANALYTICS TAB ──────────────────────────────────────────
 const SOCIAL_ICONS = {
