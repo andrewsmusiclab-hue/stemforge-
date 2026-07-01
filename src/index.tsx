@@ -2766,6 +2766,9 @@ app.post('/api/job/extend-upload', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Song Extend requires a Pro Artist plan.', upgrade: true }, 403)
+  }
 
   const { upload_audio_id, extend_at, lyrics, title, make_instrumental } = await c.req.json<{
     upload_audio_id: string; extend_at?: number; lyrics?: string; title?: string; make_instrumental?: boolean
@@ -2867,6 +2870,9 @@ app.post('/api/job/extend', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Song Extend requires a Pro Artist plan.', upgrade: true }, 403)
+  }
 
   const { source_job_id, extend_at, lyrics, make_instrumental } = await c.req.json<{
     source_job_id: string; extend_at?: number; lyrics?: string; make_instrumental?: boolean
@@ -3971,12 +3977,15 @@ app.post('/api/upload-extend-audio', async (c) => {
 })
 
 // POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
-// Available to all authenticated users
+// Pro Artist only
 app.post('/api/upload-reference', async (c) => {
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Reference track uploads require a Pro Artist plan.', upgrade: true }, 403)
+  }
 
   // Deduct 20 points for reference upload
   const refFresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
@@ -4816,6 +4825,8 @@ function homePage() {
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
+          <li><i class="fas fa-check"></i> Reference track uploads</li>
+          <li><i class="fas fa-check"></i> Song Extend</li>
           <li><i class="fas fa-check"></i> All split modes + advanced</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -5954,6 +5965,7 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
           <li><i class="fas fa-check"></i> Reference track uploads (20 pts)</li>
+          <li><i class="fas fa-check"></i> Song Extend (20 pts)</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem (20 pts)</li>
           <li><i class="fas fa-check"></i> Stem regeneration (20 pts)</li>
           <li><i class="fas fa-check"></i> WAV + MP3 download (mastered &amp; unmastered)</li>
@@ -5985,7 +5997,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-music"></i> 2 AI beats</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>

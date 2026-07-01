@@ -5411,6 +5411,12 @@ window.renderEditInstrumentPills = function (bp) {
       if (refBtn && !window._refFileId) refBtn.classList.remove('active');
     }
     if (type === 'extend') {
+      // Pro Artist only
+      var _extPlan = (window._sfUser && window._sfUser.plan) || 'free';
+      if (_extPlan !== 'pro' && _extPlan !== 'developer') {
+        showProUpgradeModal('Song Extend');
+        return;
+      }
       // Use the base app_base_final openCreatorPopup to show popup correctly with overlay
       // Find the base version (before initSongExtend wrapped it)
       // We call _origOpen which is the initSongExtend version — it handles 'extend' by
@@ -5944,9 +5950,35 @@ window.renderEditInstrumentPills = function (bp) {
   }
 })();
 
+// ── Pro Artist upgrade modal (Reference Track / Song Extend) ─────────────────
+function showProUpgradeModal(featureName) {
+  var existing = document.getElementById('sf-pro-upgrade-modal');
+  if (existing) { existing.style.display = 'flex'; return; }
+  var modal = document.createElement('div');
+  modal.id = 'sf-pro-upgrade-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px)';
+  modal.innerHTML =
+    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:400px;width:90%;text-align:center;position:relative">' +
+      '<button onclick="document.getElementById(\'sf-pro-upgrade-modal\').style.display=\'none\'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>' +
+      '<div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#ec4899);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-star"></i></div>' +
+      '<h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Pro Artist only</h3>' +
+      '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6"><strong>' + featureName + '</strong> is a Pro Artist feature. Upgrade to unlock reference track uploads, song extend, advanced splits, WAV downloads, and priority queue.</p>' +
+      '<a href="/pricing?plan=pro" style="display:block;padding:13px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Upgrade to Pro Artist — $26/mo</a>' +
+      '<p style="color:var(--muted);font-size:.78rem;margin-top:14px">Your existing beats and points are kept when you upgrade.</p>' +
+    '</div>';
+  modal.addEventListener('click', function(e){ if (e.target === modal) modal.style.display = 'none'; });
+  document.body.appendChild(modal);
+}
+
 // ── Reference Track Dropdown toggle ──────────────────────────────────────────
 // Closes any open popup/overlay first, then toggles the ref inline panel.
 window.toggleRefDropdown = function() {
+  // Pro Artist only
+  var _plan = (window._sfUser && window._sfUser.plan) || 'free';
+  if (_plan !== 'pro' && _plan !== 'developer') {
+    showProUpgradeModal('Reference Track');
+    return;
+  }
   // Close any open creator popup first (e.g. extend popup)
   var anyOpen = document.querySelector('.creator-popup[style*="display: flex"], .creator-popup[style*="display:flex"]');
   if (anyOpen) {
