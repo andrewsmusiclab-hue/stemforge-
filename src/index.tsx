@@ -4431,20 +4431,23 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
   }
 
-  const { prompt } = await c.req.json<{ prompt: string }>()
+  const { prompt, duration_seconds } = await c.req.json<{ prompt: string; duration_seconds?: number }>()
   if (!prompt?.trim()) return c.json({ error: 'prompt is required' }, 400)
 
-  // Call ElevenLabs — omit duration_seconds so AI auto-determines natural length
+  // Build ElevenLabs request body — include duration only when user specified one (1–22s)
+  const elBody: Record<string, unknown> = { text: prompt.trim(), prompt_influence: 0.3 }
+  if (duration_seconds && duration_seconds > 0) {
+    elBody.duration_seconds = Math.max(1, Math.min(22, Math.round(duration_seconds)))
+  }
+
+  // Call ElevenLabs — duration auto-determined when not supplied
   const res = await fetch('https://api.elevenlabs.io/v1/sound-generation', {
     method: 'POST',
     headers: {
       'xi-api-key': c.env.ELEVENLABS_API_KEY,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      text: prompt.trim(),
-      prompt_influence: 0.3
-    })
+    body: JSON.stringify(elBody)
   })
 
   if (!res.ok) {
@@ -4769,7 +4772,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-10'
+const ASSET_VER = '20260704-11'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6298,13 +6301,28 @@ function generatorPage() {
       Describe any sound — AI will generate it from scratch using ElevenLabs. Duration is chosen automatically based on what you request.
     </p>
 
-    <!-- Prompt textarea — the only input needed -->
-    <div style="margin-bottom:16px">
+    <!-- Prompt textarea -->
+    <div style="margin-bottom:14px">
       <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">Describe your sound</label>
       <textarea id="oneshot-sfx-desc" rows="4"
         placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
         style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55"></textarea>
-      <p style="color:var(--muted);font-size:.74rem;margin:5px 0 0">The more detail you give, the better the result. AI determines the natural duration automatically.</p>
+      <p style="color:var(--muted);font-size:.74rem;margin:5px 0 0">The more detail you give, the better the result.</p>
+    </div>
+
+    <!-- Duration slider -->
+    <div style="margin-bottom:16px">
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span>Duration</span>
+        <span id="oneshot-dur-label" style="color:var(--primary);font-weight:700;font-size:.85rem">Auto</span>
+      </label>
+      <input type="range" id="oneshot-sfx-duration" min="0" max="22" step="1" value="0"
+        oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=v==0?'Auto':v+'s'})(this.value)"
+        style="width:100%;accent-color:var(--primary);cursor:pointer;height:4px"/>
+      <div style="display:flex;justify-content:space-between;margin-top:4px">
+        <span style="font-size:.7rem;color:var(--muted)">Auto</span>
+        <span style="font-size:.7rem;color:var(--muted)">22s max</span>
+      </div>
     </div>
 
     <!-- Generate button -->

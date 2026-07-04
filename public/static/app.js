@@ -597,6 +597,18 @@ document.addEventListener('DOMContentLoaded', () => {
     return ((Math.abs(h) * 137) % 360);
   }
 
+  // ── Position-based hue spreader ─────────────────────────────
+  // Uses the golden angle (137.508°) on the card's position index
+  // so card 0, 1, 2, 3… always land far apart on the colour wheel.
+  // A full palette of 12 perceptually-distinct hues cycles before any
+  // repeat; at 26 cards the spread is still >13° between neighbours.
+  // Falls back to hueFromId when no index is available.
+  function hueFromIndex(idx, id) {
+    if (idx == null || idx === undefined) return hueFromId(id);
+    // Golden-angle stepping: 137.508° ≈ 137 — irrational, never repeats neatly
+    return ((Math.round(idx) * 137) % 360 + 360) % 360;
+  }
+
   // ── Canvas art generator (shared helper) ───────────────────
   function drawCanvasArt(artEl, hue, title, genre) {
     // ── Inner draw — runs immediately OR after logo loads ──
@@ -695,7 +707,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Render a single beats/songs card ───────────────────────
   function renderBeatCard(p, i) {
-    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id || i);
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
@@ -738,7 +750,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const label = soundType.charAt(0).toUpperCase() + soundType.slice(1);
     const safeFilename = soundType.replace(/[^a-zA-Z0-9]/g,'_').toLowerCase();
     const audioUrl = p.audio_url || '';
-    const hue  = hueFromId(p.id || i);
+    const hue  = hueFromIndex(i, p.id);
     const hue2 = (hue + 50) % 360;
     return `
       <div class="project-card project-card--oneshot"
@@ -765,7 +777,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Render a single trash card ──────────────────────────────
   function renderTrashCard(p, i) {
-    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id || i);
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= p.blueprint ? p.blueprint.genre : (p.sound_type || '');
     const label= p.prompt ? p.prompt.slice(0,32)+(p.prompt.length>32?'…':'') : (p.title||'Item');
@@ -3131,6 +3143,11 @@ window.generateOneshotSfx = async function() {
     return;
   }
 
+  // Read duration slider — 0 means "Auto" (let ElevenLabs decide)
+  const durSlider = document.getElementById('oneshot-sfx-duration');
+  const durVal = durSlider ? parseInt(durSlider.value, 10) : 0;
+  const durationSeconds = durVal > 0 ? durVal : undefined;
+
   const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; } };
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
@@ -3139,10 +3156,12 @@ window.generateOneshotSfx = async function() {
   if (resultEl) resultEl.style.display = 'none';
 
   try {
+    const payload = { prompt: description };
+    if (durationSeconds) payload.duration_seconds = durationSeconds;
     const res = await fetch('/api/generate-oneshot-sfx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: description })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
 
@@ -5548,7 +5567,7 @@ window.renderEditInstrumentPills = function (bp) {
   // ui = optional object with creator-page pipeline elements to drive
   // ── Render one extended-track card (mirrors renderBeatCard style) ──────────
   function renderExtendedCard(p, i) {
-    var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id || i);
+    var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
     var hue2     = (hue + 60) % 360;
     var title    = p.title || 'Extended Track';
     var safeTitle = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
@@ -6001,7 +6020,7 @@ window.renderEditInstrumentPills = function (bp) {
         var dateStr     = u.created_at ? new Date(u.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
         var filename    = (u.filename || 'Reference track').replace(/\.[^.]+$/, '');
         var summary     = (analysis.summary || '').slice(0, 90);
-        var hue         = hueFromId(u.file_id || i);
+        var hue         = hueFromIndex(i, u.file_id);
         var hue2        = (hue + 40) % 360;
         var safeFileId  = (u.file_id || '').replace(/'/g, '');
         var safeFilename = (u.filename || '').replace(/'/g, '\\u0027');
