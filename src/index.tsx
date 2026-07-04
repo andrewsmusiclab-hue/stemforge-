@@ -3968,7 +3968,9 @@ app.post('/api/admin/activate-developer', async (c) => {
 })
 
 // ─── ELEVENLABS CREDITS MONITOR ──────────────────────────────────────────────
-// GET /api/admin/elevenlabs-credits — fetch remaining credits from ElevenLabs API
+// GET /api/admin/elevenlabs-credits — returns local D1-based usage tracking
+// Note: ElevenLabs API key only has sound_generation scope (not user_read),
+//       so /v1/user/subscription returns 401. We track usage locally instead.
 // ElevenLabs free tier: 10,000 characters/month
 app.get('/api/admin/elevenlabs-credits', async (c) => {
   if (!c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
@@ -3977,34 +3979,50 @@ app.get('/api/admin/elevenlabs-credits', async (c) => {
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
 
   if (!c.env.ELEVENLABS_API_KEY) {
-    return c.json({ error: 'ELEVENLABS_API_KEY not configured', character_limit: 0, character_count: 0, remaining: 0 }, 200)
+    return c.json({ error: 'ELEVENLABS_API_KEY not configured', character_limit: 10000, character_count: 0, remaining: 10000 }, 200)
   }
 
   try {
-    // ElevenLabs /v1/user/subscription returns credit usage for the API key
-    const res = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
-      headers: { 'xi-api-key': c.env.ELEVENLABS_API_KEY }
-    })
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '')
-      return c.json({ error: `ElevenLabs API error ${res.status}: ${txt}`, character_limit: 0, character_count: 0, remaining: 0 }, 200)
-    }
-    const data = await res.json() as any
-    const limit = data.character_limit ?? 10000
-    const used  = data.character_count ?? 0
+    // Ensure el_usage table exists
+    await c.env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS el_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chars INTEGER NOT NULL, created_at INTEGER NOT NULL)`
+    ).run()
+
+    // Get current month boundaries (UTC)
+    const now = new Date()
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).getTime()
+    const nextMonth  = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+    const nextReset  = nextMonth.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+
+    // Sum characters used this month
+    const row = await c.env.DB.prepare(
+      `SELECT COALESCE(SUM(chars), 0) as total_chars, COUNT(*) as total_calls FROM el_usage WHERE created_at >= ?`
+    ).bind(monthStart).first<{ total_chars: number; total_calls: number }>()
+
+    const used      = row?.total_chars ?? 0
+    const calls     = row?.total_calls ?? 0
+    const limit     = 10000  // ElevenLabs free tier monthly limit
     const remaining = Math.max(0, limit - used)
+
+    // Also get all-time totals for context
+    const allTime = await c.env.DB.prepare(
+      `SELECT COALESCE(SUM(chars), 0) as total_chars, COUNT(*) as total_calls FROM el_usage`
+    ).first<{ total_chars: number; total_calls: number }>()
+
     return c.json({
       ok: true,
-      tier: data.tier || 'free',
+      tier: 'free',
       character_limit: limit,
       character_count: used,
       remaining,
-      next_reset: data.next_character_count_reset_unix
-        ? new Date(data.next_character_count_reset_unix * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-        : null
+      total_calls_month: calls,
+      all_time_chars: allTime?.total_chars ?? 0,
+      all_time_calls: allTime?.total_calls ?? 0,
+      next_reset: nextReset,
+      tracking_note: 'Usage tracked locally (API key has sound_generation scope only)'
     })
   } catch (e: any) {
-    return c.json({ error: e.message || 'Unknown error', character_limit: 0, character_count: 0, remaining: 0 }, 200)
+    return c.json({ error: e.message || 'Unknown error', character_limit: 10000, character_count: 0, remaining: 10000 }, 200)
   }
 })
 
@@ -4523,6 +4541,18 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     } catch { /* R2 not bound or failed — skip */ }
   }
 
+  // Track ElevenLabs character usage in D1 (API key lacks user_read scope for balance endpoint)
+  if (c.env.DB) {
+    try {
+      await c.env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS el_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chars INTEGER NOT NULL, created_at INTEGER NOT NULL)`
+      ).run()
+      await c.env.DB.prepare(
+        `INSERT INTO el_usage (user_id, chars, created_at) VALUES (?, ?, ?)`
+      ).bind(user.id, prompt.trim().length, Date.now()).run()
+    } catch { /* ignore tracking errors */ }
+  }
+
   // Save to jobs table with is_oneshot=1 so it appears in the One Shots library tab
   if (c.env.DB) {
     try {
@@ -4819,7 +4849,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-12'
+const ASSET_VER = '20260704-13'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5093,7 +5123,7 @@ function footer() {
       <a href="/" class="sf-nav__logo">
         <img src="/static/stemforge-logo.png" alt="StemForge" style="height:30px;width:30px;object-fit:contain;flex-shrink:0"/><span class="sf-nav__logo-text">Stem<span class="accent">Forge</span></span>
       </a>
-      <p>AI beat generation — professional quality, no studio needed.</p>
+      <p>StemForge beat generation — professional quality, no studio needed.</p>
     </div>
     <div class="sf-footer__cols">
       <div>
@@ -5944,7 +5974,7 @@ function generatorPage() {
 
       <!-- Mode pills — shown after upload -->
       <div id="ref-mode-panel" style="display:none;margin-top:12px">
-        <label class="suno-option-label" style="margin-bottom:8px;font-size:.8rem">How should AI use this track?</label>
+        <label class="suno-option-label" style="margin-bottom:8px;font-size:.8rem">How should StemForge use this track?</label>
         <div style="display:flex;flex-direction:column;gap:6px">
           <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
             <i class="fas fa-fingerprint ref-mode-btn__icon" style="color:var(--primary)"></i>
@@ -6003,7 +6033,7 @@ function generatorPage() {
             placeholder="[Verse]&#10;Write your lyrics here...&#10;&#10;Section tags like [Chorus] help structure your track.&#10;Duration is auto-calculated from your lyrics."></textarea>
           <div class="suno-textarea-actions">
             <button class="suno-icon-btn" title="Magic Wand" id="lyrics-magic-btn" data-tooltip="Auto-suggest lyric ideas based on your style"><i class="fas fa-magic"></i></button>
-            <button class="suno-icon-btn" title="Generate Lyrics with AI" id="gen-lyrics-btn" data-tooltip="Let AI write full lyrics for you based on your style settings" style="display:flex;align-items:center;gap:5px;padding:6px 10px;font-size:.78rem;font-weight:600;border-radius:8px;background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.18));border:1px solid rgba(78,159,255,.35);color:var(--primary);white-space:nowrap"><i class="fas fa-wand-magic-sparkles"></i> Generate Lyrics</button>
+            <button class="suno-icon-btn" title="Generate Lyrics with StemForge" id="gen-lyrics-btn" data-tooltip="Let StemForge write full lyrics for you based on your style settings" style="display:flex;align-items:center;gap:5px;padding:6px 10px;font-size:.78rem;font-weight:600;border-radius:8px;background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.18));border:1px solid rgba(78,159,255,.35);color:var(--primary);white-space:nowrap"><i class="fas fa-wand-magic-sparkles"></i> Generate Lyrics</button>
             <button class="suno-icon-btn" title="Expand" data-tooltip="Expand or collapse the text area" onclick="document.getElementById('gen-lyrics').rows=document.getElementById('gen-lyrics').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
           </div>
           <!-- Live duration estimate from lyrics -->
@@ -6013,7 +6043,7 @@ function generatorPage() {
           </div>
           <!-- Generate Lyrics panel — shown when gen-lyrics-btn is clicked -->
           <div id="gen-lyrics-panel" style="display:none;margin-top:12px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-            <p style="font-size:.8rem;color:var(--muted);margin:0 0 8px">Describe what the song is about and AI will write the lyrics:</p>
+            <p style="font-size:.8rem;color:var(--muted);margin:0 0 8px">Describe what the song is about and StemForge will write the lyrics:</p>
             <textarea id="gen-lyrics-desc" class="suno-textarea" rows="3" placeholder="e.g. A song about grinding late nights in the studio, chasing dreams, staying loyal to the team..."></textarea>
             <button id="gen-lyrics-submit" onclick="generateLyricsAI()" style="margin-top:10px;width:100%;padding:10px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:.88rem"><i class="fas fa-sparkles"></i> Generate Lyrics</button>
             <div id="gen-lyrics-status" style="display:none;margin-top:8px;font-size:.8rem;color:var(--muted)"></div>
@@ -6127,7 +6157,7 @@ function generatorPage() {
     <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline">
       <button class="suno-create-btn" id="gen-full-btn"
-        data-tooltip="Generate your beat using AI — uses 10 points">
+        data-tooltip="Generate your beat using StemForge — uses 10 points">
         <i class="fas fa-music"></i> Create
       </button>
 
@@ -6351,7 +6381,7 @@ function generatorPage() {
 
     <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px;line-height:1.5">
       <i class="fas fa-info-circle" style="color:var(--primary);margin-right:5px"></i>
-      Describe any sound — AI generates it from scratch. Adjust duration or leave at default for a natural length.
+      Describe any sound — StemForge generates it from scratch. Adjust duration or leave at default for a natural length.
     </p>
 
     <!-- Prompt textarea -->
@@ -6386,7 +6416,7 @@ function generatorPage() {
     <!-- Status -->
     <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
       <i class="fas fa-spinner fa-spin" style="color:var(--primary);margin-right:6px"></i>
-      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">AI is crafting your sound…</span>
+      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">StemForge is crafting your sound…</span>
     </div>
 
     <!-- Result -->
@@ -6431,7 +6461,7 @@ function pricingPage() {
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 50 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full AI beat generation (10 pts)</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation (10 pts)</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
           <li class="muted"><i class="fas fa-times"></i> MP3 / WAV downloads</li>
@@ -6458,7 +6488,7 @@ function pricingPage() {
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full AI beat generation (10 pts/beat)</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation (10 pts/beat)</li>
           <li><i class="fas fa-check"></i> Extend song (20 pts)</li>
           <li><i class="fas fa-check"></i> Auto-split — 5 stems (50 pts)</li>
           <li><i class="fas fa-check"></i> Vocal + Instrumental split (20 pts)</li>
@@ -6495,7 +6525,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — AI sound effects (5 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX (5 pts)</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $26/mo</button>
         <div id="pricing-pro-plan-status" style="margin:8px 0 0">
@@ -6517,8 +6547,8 @@ function pricingPage() {
       </div>
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 AI beat</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> 2 AI beats</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> 2 StemForge beats</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -6532,7 +6562,7 @@ function pricingPage() {
     <div class="faq-wrap">
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full AI beat. The AI builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full StemForge beat. StemForge builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of points? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase point top-up packs from the Subscription page starting from $4.99 (50 pts). Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
@@ -7041,7 +7071,7 @@ function signupPage() {
       <h1>Start generating.<br/>Keep every track.</h1>
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
-        <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
+        <li><i class="fas fa-check-circle"></i> Real StemForge beat generation</li>
         <li><i class="fas fa-check-circle"></i> Commercial use rights</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
@@ -7074,7 +7104,7 @@ function registerPage() {
       <h1>Start generating.<br/>Keep every track.</h1>
       <ul class="auth-benefits">
         <li><i class="fas fa-check-circle"></i> 3 free generations, no card needed</li>
-        <li><i class="fas fa-check-circle"></i> Real AI beat generation</li>
+        <li><i class="fas fa-check-circle"></i> Real StemForge beat generation</li>
         <li><i class="fas fa-check-circle"></i> Commercial use rights</li>
         <li><i class="fas fa-check-circle"></i> Cancel anytime</li>
       </ul>
@@ -8154,7 +8184,12 @@ function adminPage(user: User) {
             </div>
           </div>
           <div style="font-size:.8rem;color:var(--muted);margin-top:10px" id="el-reset-date"></div>
-          <p style="font-size:.75rem;color:var(--muted);margin-top:8px;opacity:.7">Each One Shot generation uses approximately 20–80 characters. 10,000 character free tier = ~125–500 one shots per month.</p>
+          <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+            <div style="font-size:.82rem;color:var(--muted)">One Shots this month: <strong id="el-calls-month" style="color:var(--text)">—</strong></div>
+            <div style="font-size:.82rem;color:var(--muted)">All-time One Shots: <strong id="el-calls-alltime" style="color:var(--text)">—</strong></div>
+            <div style="font-size:.82rem;color:var(--muted)">All-time chars: <strong id="el-chars-alltime" style="color:var(--text)">—</strong></div>
+          </div>
+          <p style="font-size:.75rem;color:#a78bfa;margin-top:10px;padding:8px 10px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);border-radius:8px"><i class="fas fa-info-circle"></i> Usage tracked locally in D1 — API key has <code>sound_generation</code> scope only (not <code>user_read</code>). Each prompt's character count is saved on every generation.</p>
         </div>
         <div id="el-credits-error" style="display:none;color:var(--danger);font-size:.88rem"></div>
       </div>
@@ -8227,6 +8262,9 @@ async function loadElevenLabsCredits(){
     if(bar){ bar.style.width=pct+'%'; bar.style.background=pct>80?'#ef4444':pct>50?'linear-gradient(90deg,#10b981,#f59e0b)':'#10b981'; }
     const resetEl = document.getElementById('el-reset-date');
     if(resetEl && data.next_reset) resetEl.textContent = 'Resets on: '+data.next_reset;
+    if(document.getElementById('el-calls-month'))   document.getElementById('el-calls-month').textContent   = (data.total_calls_month||0).toLocaleString();
+    if(document.getElementById('el-calls-alltime')) document.getElementById('el-calls-alltime').textContent = (data.all_time_calls||0).toLocaleString();
+    if(document.getElementById('el-chars-alltime')) document.getElementById('el-chars-alltime').textContent = (data.all_time_chars||0).toLocaleString();
     if(dataEl) dataEl.style.display='block';
   } catch(e){
     if(loadingEl) loadingEl.style.display='none';

@@ -3158,7 +3158,7 @@ window.generateOneshotSfx = async function() {
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
   if (statusEl) statusEl.style.display = 'block';
-  if (statusMsg) statusMsg.textContent = 'ElevenLabs AI is crafting your sound…';
+  if (statusMsg) statusMsg.textContent = 'StemForge is crafting your sound…';
   if (resultEl) resultEl.style.display = 'none';
 
   try {
@@ -4106,7 +4106,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '<div style="display:flex;align-items:flex-start;gap:12px">' +
           '<div style="flex:1;min-width:0">' +
             '<p style="color:rgba(255,255,255,0.48);font-size:.77rem;line-height:1.55;margin:0 0 4px 0">' +
-              '<span style="color:#c084fc;font-weight:600">AI Regeneration</span> — ' +
+              '<span style="color:#c084fc;font-weight:600">StemForge Regeneration</span> — ' +
               'Extracts your stems, then re-synthesizes any one stem from scratch.' +
             '</p>' +
             '<p style="color:rgba(255,255,255,0.28);font-size:.7rem;margin:0">' +
@@ -4250,7 +4250,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
 
-    _showProgress('AI is regenerating ' + _capFirst(targetStem) + '…');
+    _showProgress('StemForge is regenerating ' + _capFirst(targetStem) + '…');
 
     try {
       var res = await fetch('/api/job/regen-stem', {
@@ -4710,7 +4710,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
       // Advanced: per-stem Regen button instead of download icon
       (isAdv
-        ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(label) + ' clean with AI" style="' +
+        ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(label) + ' clean with StemForge" style="' +
               'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
               'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
               'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
