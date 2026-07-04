@@ -413,6 +413,11 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
+      // Show Admin sidebar link only to developer/admin users
+      if (user.plan === 'developer') {
+        const adminLink = document.getElementById('sidebar-admin-link');
+        if (adminLink) adminLink.style.display = 'flex';
+      }
       // Show remaining points clearly: "X pts remaining" with used/limit below
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
@@ -760,7 +765,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},60%,16%),hsl(${hue2},70%,9%));position:relative;overflow:hidden">
           <img src="/static/stemforge-logo.png" alt="StemForge"
             style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(${hue}deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>
-          ${audioUrl ? `<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>` : ''}
+          ${audioUrl ? `<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>` : '<div class="project-card__play" style="opacity:.3;pointer-events:none"><i class="fas fa-hourglass-half"></i></div>'}
         </div>
         <div class="project-card__body">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
@@ -769,15 +774,16 @@ document.addEventListener('DOMContentLoaded', () => {
               onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${audioUrl}','','${safeFilename}','oneshots')"
               style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
           </div>
-          <p style="margin-bottom:8px">One Shot · ${new Date(p.created_at).toLocaleDateString()}</p>
-          ${audioUrl ? `<audio class="oneshot-card-audio" src="${audioUrl}" controls preload="none"></audio>` : ''}
+          <p style="margin-bottom:4px">One Shot · ${new Date(p.created_at).toLocaleDateString()}</p>
         </div>
       </div>`;
   }
 
   // ── Render a single trash card ──────────────────────────────
+  // Trash cards always use thumbnail_seed or hueFromId (ID-stable hash, not position)
+  // so a track keeps the same colour it had before it was deleted.
   function renderTrashCard(p, i) {
-    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
+    const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id);
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= p.blueprint ? p.blueprint.genre : (p.sound_type || '');
     const label= p.prompt ? p.prompt.slice(0,32)+(p.prompt.length>32?'…':'') : (p.title||'Item');
@@ -3143,10 +3149,10 @@ window.generateOneshotSfx = async function() {
     return;
   }
 
-  // Read duration slider — 0 means "Auto" (let ElevenLabs decide)
+  // Read duration slider — slider value × 0.5 = seconds (range 0.5s–8s, default 3.0s)
   const durSlider = document.getElementById('oneshot-sfx-duration');
-  const durVal = durSlider ? parseInt(durSlider.value, 10) : 0;
-  const durationSeconds = durVal > 0 ? durVal : undefined;
+  const durVal = durSlider ? parseInt(durSlider.value, 10) : 6;
+  const durationSeconds = durVal > 0 ? durVal * 0.5 : 3.0;
 
   const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; } };
 
@@ -3156,8 +3162,7 @@ window.generateOneshotSfx = async function() {
   if (resultEl) resultEl.style.display = 'none';
 
   try {
-    const payload = { prompt: description };
-    if (durationSeconds) payload.duration_seconds = durationSeconds;
+    const payload = { prompt: description, duration_seconds: durationSeconds };
     const res = await fetch('/api/generate-oneshot-sfx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5594,7 +5599,7 @@ window.renderEditInstrumentPills = function (bp) {
             ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
         '</div>' +
         '<p style="margin-bottom:6px;color:var(--muted);font-size:.8rem"><i class="fas fa-expand-arrows-alt" style="font-size:.7rem;margin-right:4px;opacity:.6"></i>Extended · ' + date + '</p>' +
-        (stereoUrl ? '<audio class="oneshot-card-audio" src="' + stereoUrl + '" controls preload="none" style="width:100%;margin-top:4px"></audio>' : '<p style="color:var(--muted);font-size:.78rem"><i class="fas fa-spinner fa-spin"></i> Generating…</p>') +
+        (!stereoUrl ? '<p style="color:var(--muted);font-size:.78rem"><i class="fas fa-spinner fa-spin"></i> Generating...</p>' : '') +
       '</div>' +
     '</div>';
   }

@@ -3967,6 +3967,47 @@ app.post('/api/admin/activate-developer', async (c) => {
   return c.json({ ok: true, message: 'Developer plan activated. Unlimited access granted.' })
 })
 
+// ─── ELEVENLABS CREDITS MONITOR ──────────────────────────────────────────────
+// GET /api/admin/elevenlabs-credits — fetch remaining credits from ElevenLabs API
+// ElevenLabs free tier: 10,000 characters/month
+app.get('/api/admin/elevenlabs-credits', async (c) => {
+  if (!c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token && c.env.DB ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  if (!c.env.ELEVENLABS_API_KEY) {
+    return c.json({ error: 'ELEVENLABS_API_KEY not configured', character_limit: 0, character_count: 0, remaining: 0 }, 200)
+  }
+
+  try {
+    // ElevenLabs /v1/user/subscription returns credit usage for the API key
+    const res = await fetch('https://api.elevenlabs.io/v1/user/subscription', {
+      headers: { 'xi-api-key': c.env.ELEVENLABS_API_KEY }
+    })
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '')
+      return c.json({ error: `ElevenLabs API error ${res.status}: ${txt}`, character_limit: 0, character_count: 0, remaining: 0 }, 200)
+    }
+    const data = await res.json() as any
+    const limit = data.character_limit ?? 10000
+    const used  = data.character_count ?? 0
+    const remaining = Math.max(0, limit - used)
+    return c.json({
+      ok: true,
+      tier: data.tier || 'free',
+      character_limit: limit,
+      character_count: used,
+      remaining,
+      next_reset: data.next_character_count_reset_unix
+        ? new Date(data.next_character_count_reset_unix * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : null
+    })
+  } catch (e: any) {
+    return c.json({ error: e.message || 'Unknown error', character_limit: 0, character_count: 0, remaining: 0 }, 200)
+  }
+})
+
 // ─── MUREKA BALANCE MONITOR ──────────────────────────────────────────────────
 // GET /api/mureka/balance — returns D1-based usage stats (Mureka API has no balance endpoint)
 app.get('/api/mureka/balance', async (c) => {
@@ -4434,10 +4475,10 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
   const { prompt, duration_seconds } = await c.req.json<{ prompt: string; duration_seconds?: number }>()
   if (!prompt?.trim()) return c.json({ error: 'prompt is required' }, 400)
 
-  // Build ElevenLabs request body — include duration only when user specified one (1–22s)
+  // Build ElevenLabs request body — clamp duration to 0.5–8s range
   const elBody: Record<string, unknown> = { text: prompt.trim(), prompt_influence: 0.3 }
   if (duration_seconds && duration_seconds > 0) {
-    elBody.duration_seconds = Math.max(1, Math.min(22, Math.round(duration_seconds)))
+    elBody.duration_seconds = Math.max(0.5, Math.min(8, Math.round(duration_seconds * 2) / 2))
   }
 
   // Call ElevenLabs — duration auto-determined when not supplied
@@ -4462,8 +4503,14 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
   // ElevenLabs returns raw audio bytes (MP3)
   const audioBytes = await res.arrayBuffer()
 
-  // Convert to base64 so the browser can play it directly without a separate fetch
-  const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioBytes)))
+  // Convert to base64 — chunked to avoid call-stack overflow on large audio buffers
+  const bytes = new Uint8Array(audioBytes)
+  let binary = ''
+  const CHUNK = 8192
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  const base64Audio = btoa(binary)
 
   // Build a safe display title from the prompt
   const displayTitle = prompt.trim().slice(0, 60)
@@ -4772,7 +4819,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-11'
+const ASSET_VER = '20260704-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -4893,6 +4940,11 @@ function globalSidebar() {
     <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
+    </a>
+    <!-- Admin link — only shown to developer/admin plan via JS -->
+    <a href="/admin" class="gs-sidebar__nav-item gs-sidebar__nav-item--admin" data-page="admin" id="sidebar-admin-link" style="display:none">
+      <i class="fas fa-shield-alt" style="color:#a78bfa"></i>
+      <span>Admin</span>
     </a>
   </nav>
 
@@ -5254,6 +5306,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (AI SFX, 5 pts)</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
         <div id="home-pro-plan-status" style="margin:8px 0 0">
@@ -6298,7 +6351,7 @@ function generatorPage() {
 
     <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px;line-height:1.5">
       <i class="fas fa-info-circle" style="color:var(--primary);margin-right:5px"></i>
-      Describe any sound — AI will generate it from scratch using ElevenLabs. Duration is chosen automatically based on what you request.
+      Describe any sound — AI generates it from scratch. Adjust duration or leave at default for a natural length.
     </p>
 
     <!-- Prompt textarea -->
@@ -6310,18 +6363,18 @@ function generatorPage() {
       <p style="color:var(--muted);font-size:.74rem;margin:5px 0 0">The more detail you give, the better the result.</p>
     </div>
 
-    <!-- Duration slider -->
+    <!-- Duration slider: 0.5s – 8s in 0.5s steps -->
     <div style="margin-bottom:16px">
       <label class="suno-option-label" style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
         <span>Duration</span>
-        <span id="oneshot-dur-label" style="color:var(--primary);font-weight:700;font-size:.85rem">Auto</span>
+        <span id="oneshot-dur-label" style="color:var(--primary);font-weight:700;font-size:.85rem">3.0s</span>
       </label>
-      <input type="range" id="oneshot-sfx-duration" min="0" max="22" step="1" value="0"
-        oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=v==0?'Auto':v+'s'})(this.value)"
+      <input type="range" id="oneshot-sfx-duration" min="1" max="16" step="1" value="6"
+        oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=(v*0.5).toFixed(1)+'s'})(this.value)"
         style="width:100%;accent-color:var(--primary);cursor:pointer;height:4px"/>
       <div style="display:flex;justify-content:space-between;margin-top:4px">
-        <span style="font-size:.7rem;color:var(--muted)">Auto</span>
-        <span style="font-size:.7rem;color:var(--muted)">22s max</span>
+        <span style="font-size:.7rem;color:var(--muted)">0.5s</span>
+        <span style="font-size:.7rem;color:var(--muted)">8s</span>
       </div>
     </div>
 
@@ -6333,7 +6386,7 @@ function generatorPage() {
     <!-- Status -->
     <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
       <i class="fas fa-spinner fa-spin" style="color:var(--primary);margin-right:6px"></i>
-      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">ElevenLabs AI is crafting your sound…</span>
+      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">AI is crafting your sound…</span>
     </div>
 
     <!-- Result -->
@@ -6442,6 +6495,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — AI sound effects (5 pts)</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $26/mo</button>
         <div id="pricing-pro-plan-status" style="margin:8px 0 0">
@@ -7925,6 +7979,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
       <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
+      <button class="admin-tab" data-tab="elevenlabs" onclick="adminTab('elevenlabs')"><i class="fas fa-bolt" style="color:#f59e0b"></i> ElevenLabs</button>
     </div>
 
     <!-- ══════════════════════════════════════════════════════════ -->
@@ -8063,6 +8118,48 @@ function adminPage(user: User) {
       <div id="admin-promos-list"><p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p></div>
     </div>
 
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- ELEVENLABS CREDITS TAB                                    -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <div id="admin-tab-elevenlabs" style="display:none">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
+          <h3 style="margin:0"><i class="fas fa-bolt" style="color:#f59e0b"></i> ElevenLabs Credits</h3>
+          <button onclick="loadElevenLabsCredits()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
+        </div>
+        <div id="el-credits-loading" style="color:var(--muted);font-size:.9rem"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+        <div id="el-credits-data" style="display:none">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:20px">
+            <div style="background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center">
+              <div style="font-size:1.8rem;font-weight:800;color:var(--primary)" id="el-remaining">—</div>
+              <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Characters Remaining</div>
+            </div>
+            <div style="background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center">
+              <div style="font-size:1.8rem;font-weight:800;color:#f59e0b" id="el-used">—</div>
+              <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Characters Used</div>
+            </div>
+            <div style="background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center">
+              <div style="font-size:1.8rem;font-weight:800;color:var(--text)" id="el-limit">—</div>
+              <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Monthly Limit</div>
+            </div>
+          </div>
+          <!-- Usage bar -->
+          <div style="margin-bottom:12px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span style="font-size:.8rem;color:var(--muted)">Usage</span>
+              <span style="font-size:.8rem;font-weight:600" id="el-pct">0%</span>
+            </div>
+            <div style="height:10px;background:var(--border);border-radius:5px;overflow:hidden">
+              <div id="el-bar" style="height:100%;border-radius:5px;background:linear-gradient(90deg,#10b981,#f59e0b);transition:width .5s;width:0%"></div>
+            </div>
+          </div>
+          <div style="font-size:.8rem;color:var(--muted);margin-top:10px" id="el-reset-date"></div>
+          <p style="font-size:.75rem;color:var(--muted);margin-top:8px;opacity:.7">Each One Shot generation uses approximately 20–80 characters. 10,000 character free tier = ~125–500 one shots per month.</p>
+        </div>
+        <div id="el-credits-error" style="display:none;color:var(--danger);font-size:.88rem"></div>
+      </div>
+    </div>
+
   </div>
 </main>
 <style>
@@ -8086,7 +8183,7 @@ function adminPage(user: User) {
 })();
 
 // ── Tab switcher ───────────────────────────────────────────
-const adminTabs = ['analytics','revenue','users','promos'];
+const adminTabs = ['analytics','revenue','users','promos','elevenlabs'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(t=>t.classList.remove('admin-tab--active'));
   const btn = document.querySelector(\`[data-tab="\${tab}"]\`);
@@ -8096,10 +8193,46 @@ function adminTab(tab){
   if(tab==='revenue' && !window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users' && !window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
   if(tab==='promos' && !window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
+  if(tab==='elevenlabs'){ loadElevenLabsCredits(); }
 }
 
 // Auto-load analytics on page open (it's the default tab)
 loadAnalytics(); window._analyticsLoaded = true;
+
+async function loadElevenLabsCredits(){
+  const loadingEl = document.getElementById('el-credits-loading');
+  const dataEl    = document.getElementById('el-credits-data');
+  const errorEl   = document.getElementById('el-credits-error');
+  if(loadingEl) loadingEl.style.display='block';
+  if(dataEl) dataEl.style.display='none';
+  if(errorEl) errorEl.style.display='none';
+  try {
+    const res = await fetch('/api/admin/elevenlabs-credits');
+    const data = await res.json();
+    if(loadingEl) loadingEl.style.display='none';
+    if(data.error && !data.ok){
+      if(errorEl){ errorEl.style.display='block'; errorEl.textContent='Error: '+data.error; }
+      return;
+    }
+    const remaining = data.remaining || 0;
+    const used      = data.character_count || 0;
+    const limit     = data.character_limit || 10000;
+    const pct       = limit > 0 ? Math.round((used/limit)*100) : 0;
+    const barColor  = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981';
+    if(document.getElementById('el-remaining')) document.getElementById('el-remaining').textContent = remaining.toLocaleString();
+    if(document.getElementById('el-used'))      document.getElementById('el-used').textContent      = used.toLocaleString();
+    if(document.getElementById('el-limit'))     document.getElementById('el-limit').textContent     = limit.toLocaleString();
+    if(document.getElementById('el-pct'))       document.getElementById('el-pct').textContent       = pct+'%';
+    const bar = document.getElementById('el-bar');
+    if(bar){ bar.style.width=pct+'%'; bar.style.background=pct>80?'#ef4444':pct>50?'linear-gradient(90deg,#10b981,#f59e0b)':'#10b981'; }
+    const resetEl = document.getElementById('el-reset-date');
+    if(resetEl && data.next_reset) resetEl.textContent = 'Resets on: '+data.next_reset;
+    if(dataEl) dataEl.style.display='block';
+  } catch(e){
+    if(loadingEl) loadingEl.style.display='none';
+    if(errorEl){ errorEl.style.display='block'; errorEl.textContent='Failed to load: '+(e.message||'unknown error'); }
+  }
+}
 
 // ── ANALYTICS TAB ──────────────────────────────────────────
 const SOCIAL_ICONS = {
