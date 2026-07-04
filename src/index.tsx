@@ -5,6 +5,7 @@ import { serveStatic } from 'hono/cloudflare-workers'
 type Bindings = {
   OPENAI_API_KEY: string
   MUREKA_API_KEY: string
+  ELEVENLABS_API_KEY: string  // ElevenLabs SFX API for One Shot Creator
   DB: D1Database             // Cloudflare D1 for persistent job storage
   IMAGES: R2Bucket           // Cloudflare R2 for permanent cover art storage
   // Auth + Payments (set via gsk hosted deploy or wrangler secret put)
@@ -4402,6 +4403,100 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
   return c.json({ status: 'pending' })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ElevenLabs SFX ONE SHOT CREATOR
+// POST /api/generate-oneshot-sfx — generate a one-shot using ElevenLabs sound FX API
+// Available to ALL plans (free, creator, pro) — deducts 5 pts per generation
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/generate-oneshot-sfx', async (c) => {
+  if (!c.env.ELEVENLABS_API_KEY) return c.json({ error: 'ElevenLabs not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+
+  // Deduct 5 pts before generation (refunded on hard error)
+  const SFX_COST = 5
+  if (c.env.DB) {
+    const fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number}>()
+    if (!fresh || fresh.gens_used + SFX_COST > fresh.gens_limit) {
+      return c.json({ error: `Not enough points. One Shot generation costs ${SFX_COST} points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+    }
+    await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
+  }
+
+  const { prompt, duration_seconds } = await c.req.json<{ prompt: string; duration_seconds?: number }>()
+  if (!prompt?.trim()) return c.json({ error: 'prompt is required' }, 400)
+
+  // Clamp duration: ElevenLabs accepts 0.5 – 22 seconds
+  const dur = Math.min(22, Math.max(0.5, duration_seconds || 2))
+
+  const res = await fetch('https://api.elevenlabs.io/v1/sound-generation', {
+    method: 'POST',
+    headers: {
+      'xi-api-key': c.env.ELEVENLABS_API_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      text: prompt,
+      duration_seconds: dur,
+      prompt_influence: 0.3
+    })
+  })
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => 'unknown error')
+    // Refund pts if ElevenLabs hard-failed
+    if (c.env.DB) {
+      await c.env.DB.prepare('UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?').bind(SFX_COST, user.id).run()
+    }
+    return c.json({ error: `ElevenLabs error ${res.status}: ${errText}` }, 502)
+  }
+
+  // ElevenLabs /v1/sound-generation returns audio bytes directly
+  const audioBytes = await res.arrayBuffer()
+
+  // Store in R2 so we can serve it later
+  const sfxId = 'sfx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
+  const r2Key = `oneshots/${sfxId}.mp3`
+  if (c.env.IMAGES) {
+    await c.env.IMAGES.put(r2Key, audioBytes, { httpMetadata: { contentType: 'audio/mpeg' } })
+  }
+
+  // Save to jobs table with is_oneshot=1
+  if (c.env.DB) {
+    try {
+      await ensureTable(c.env.DB)
+      const jobData = {
+        id: sfxId, status: 'ready', created_at: Date.now(),
+        sound_type: 'one-shot', audio_url: `/api/oneshot-audio/${sfxId}`,
+        title: prompt.slice(0, 60), prompt,
+        thumbnail_seed: Math.floor(Math.random() * 360),
+        is_sfx: true
+      }
+      await c.env.DB.prepare(
+        `INSERT OR IGNORE INTO jobs (id, data, created_at, user_id, is_oneshot) VALUES (?, ?, ?, ?, 1)`
+      ).bind(sfxId, JSON.stringify(jobData), jobData.created_at, user.id).run()
+    } catch { /* ignore save errors */ }
+  }
+
+  return c.json({ ok: true, sfx_id: sfxId, audio_url: `/api/oneshot-audio/${sfxId}` })
+})
+
+// GET /api/oneshot-audio/:id — serve one-shot audio from R2
+app.get('/api/oneshot-audio/:id', async (c) => {
+  const id = c.req.param('id')
+  if (!c.env.IMAGES) return c.json({ error: 'Storage not configured' }, 500)
+  const obj = await c.env.IMAGES.get(`oneshots/${id}.mp3`)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': 'audio/mpeg',
+      'Cache-Control': 'public, max-age=31536000',
+      'Content-Disposition': `attachment; filename="${id}.mp3"`
+    }
+  })
+})
+
 // GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
@@ -4615,7 +4710,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-8'
+const ASSET_VER = '20260704-9'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5665,9 +5760,9 @@ function generatorPage() {
         data-tooltip="Continue any track from your library or upload from where it ends.\n2 points per extend.">
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
-      <button class="creator-tab-btn" id="ctab-blank" onclick="openCreatorPopup('blank')"
-        data-tooltip="More creative tools coming soon — stay tuned!">
-        <i class="fas fa-plus"></i> Coming Soon
+      <button class="creator-tab-btn" id="ctab-oneshot" onclick="openCreatorPopup('oneshot')"
+        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more. 5 pts per shot.">
+        <i class="fas fa-bolt"></i> One Shot Creator
       </button>
     </div>
 
@@ -6131,18 +6226,73 @@ function generatorPage() {
   </div>
 </div>
 
-<!-- Blank (3rd) Popup -->
-<div id="creator-popup-blank" class="creator-popup" style="display:none">
-  <div class="creator-popup__header" id="creator-popup-blank-header">
-    <span class="creator-popup__title"><i class="fas fa-plus"></i> Coming Soon</span>
-    <button class="creator-popup__close" onclick="closeCreatorPopup('blank')"><i class="fas fa-times"></i></button>
+<!-- One Shot Creator Popup -->
+<div id="creator-popup-oneshot" class="creator-popup" style="display:none">
+  <div class="creator-popup__header" id="creator-popup-oneshot-header">
+    <span class="creator-popup__title"><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator</span>
+    <button class="creator-popup__close" onclick="closeCreatorPopup('oneshot')"><i class="fas fa-times"></i></button>
   </div>
   <div class="creator-popup__body">
-    <div style="text-align:center;padding:32px 16px">
-      <i class="fas fa-magic" style="font-size:2.5rem;color:var(--primary);opacity:.5;margin-bottom:16px"></i>
-      <h3 style="margin:0 0 8px;color:var(--text)">Something New is Coming</h3>
-      <p style="color:var(--muted);font-size:.9rem;margin:0">This feature is being designed. Check back soon!</p>
+
+    <!-- Quick-pick sound types -->
+    <div style="margin-bottom:14px">
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:8px">Sound Type</label>
+      <div id="oneshot-type-pills" style="display:flex;flex-wrap:wrap;gap:6px">
+        <button class="oneshot-type-btn oneshot-type-btn--active" data-sound="kick drum" onclick="selectOneshotSfxType(this)">Kick</button>
+        <button class="oneshot-type-btn" data-sound="snare drum" onclick="selectOneshotSfxType(this)">Snare</button>
+        <button class="oneshot-type-btn" data-sound="hi-hat" onclick="selectOneshotSfxType(this)">Hi-Hat</button>
+        <button class="oneshot-type-btn" data-sound="808 bass hit" onclick="selectOneshotSfxType(this)">808</button>
+        <button class="oneshot-type-btn" data-sound="clap" onclick="selectOneshotSfxType(this)">Clap</button>
+        <button class="oneshot-type-btn" data-sound="crash cymbal" onclick="selectOneshotSfxType(this)">Crash</button>
+        <button class="oneshot-type-btn" data-sound="percussion hit" onclick="selectOneshotSfxType(this)">Perc</button>
+        <button class="oneshot-type-btn" data-sound="fx riser" onclick="selectOneshotSfxType(this)">FX Riser</button>
+      </div>
     </div>
+
+    <!-- Describe the sound -->
+    <div style="margin-bottom:14px">
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">Describe the sound</label>
+      <textarea id="oneshot-sfx-desc" rows="3"
+        placeholder="e.g. punchy 808 bass hit with deep sub, distorted tail, trap style"
+        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.5"></textarea>
+    </div>
+
+    <!-- Duration slider -->
+    <div style="margin-bottom:16px">
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">
+        Duration: <span id="oneshot-sfx-dur-label" style="color:var(--primary);font-weight:700">2.0s</span>
+        <span style="color:var(--muted);font-size:.72rem;margin-left:6px">(0.5 – 8s)</span>
+      </label>
+      <input type="range" id="oneshot-sfx-dur" min="0.5" max="8" step="0.5" value="2"
+        style="width:100%;accent-color:var(--primary)"
+        oninput="document.getElementById('oneshot-sfx-dur-label').textContent=parseFloat(this.value).toFixed(1)+'s'"/>
+    </div>
+
+    <!-- Generate button -->
+    <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
+      <i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>
+    </button>
+
+    <!-- Status -->
+    <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:10px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
+      <i class="fas fa-spinner fa-spin" style="color:var(--primary);margin-right:6px"></i>
+      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">Generating…</span>
+    </div>
+
+    <!-- Result -->
+    <div id="oneshot-sfx-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <i class="fas fa-check-circle" style="color:#10b981;font-size:1.1rem"></i>
+        <span id="oneshot-sfx-result-title" style="font-weight:700;font-size:.9rem">One Shot Ready</span>
+      </div>
+      <audio id="oneshot-sfx-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
+      <div style="display:flex;gap:8px">
+        <a id="oneshot-sfx-dl-mp3" href="#" class="btn btn--outline btn--sm" style="flex:1;text-align:center" download>
+          <i class="fas fa-download"></i> MP3
+        </a>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -8043,11 +8193,11 @@ async function loadUsers(){
   const data = await res.json();
   const el = document.getElementById('admin-users-list');
   if(!data.users?.length){el.innerHTML='<p style="color:var(--muted)">No users yet.</p>';return;}
-  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Used/Limit</th><th>Actions</th></tr></thead><tbody>'+
-    data.users.map(u=>\`<tr><td>\${u.email}</td><td>\${u.name}</td><td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td><td>\${u.gens_used}/\${u.gens_limit}</td><td>
+  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Points (used / limit)</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>'+
+    data.users.map(u=>{const rem=Math.max(0,u.gens_limit-u.gens_used);const remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981';return \`<tr><td>\${u.email}</td><td>\${u.name}</td><td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td><td>\${u.gens_used} / \${u.gens_limit}</td><td style="font-weight:700;color:\${remColor}">\${rem}</td><td>
     <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">Edit Plan</button>
     <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">+Credits</button>
-    </td></tr>\`).join('')+'</tbody></table>';
+    </td></tr>\`;}).join('')+'</tbody></table>';
   window._usersLoaded = true;
 }
 

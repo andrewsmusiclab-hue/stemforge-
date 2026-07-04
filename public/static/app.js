@@ -413,13 +413,14 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      // All tiers show points used / limit directly
+      // Show remaining points clearly: "X pts remaining" with used/limit below
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
       const limitMap = { free: 50, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
-      if (creditsLabel) creditsLabel.textContent = 'Points';
-      if (gsGensVal) gsGensVal.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
+      const remaining = Math.max(0, displayLimit - user.gens_used);
+      if (creditsLabel) creditsLabel.textContent = 'Points Remaining';
+      if (gsGensVal) gsGensVal.innerHTML = `${remaining} <small>/ ${displayLimit}</small>`;
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         gsGensBar.style.width = pct + '%';
@@ -539,7 +540,8 @@ document.addEventListener('DOMContentLoaded', () => {
         dashPlanBadge.textContent = planMap2[user.plan] || 'Free';
         if (classMap2[user.plan]) dashPlanBadge.classList.add(classMap2[user.plan]);
       }
-      if (dashGensVal) dashGensVal.innerHTML = `${user.gens_used} <small>/ ${user.gens_limit} gen</small>`;
+      const dashRemaining = Math.max(0, user.gens_limit - user.gens_used);
+      if (dashGensVal) dashGensVal.innerHTML = `${dashRemaining} <small>/ ${user.gens_limit} pts left</small>`;
       if (dashGensBar) {
         const pct2 = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         dashGensBar.style.width = pct2 + '%';
@@ -1958,11 +1960,12 @@ document.addEventListener('DOMContentLoaded', () => {
               const gv = document.getElementById('gs-gens-val');
               const gb = document.getElementById('gs-gens-bar');
               const cl = document.getElementById('gs-credits-label');
-              if (cl) cl.textContent = 'Points';
-              // Always show points used / limit directly
+              // Show remaining points clearly
               const limitMap = { free: 50, creator: 600, pro: 2000 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
-              if (gv) gv.innerHTML = `${user.gens_used} <small>/ ${displayLimit}</small>`;
+              const remaining = Math.max(0, displayLimit - user.gens_used);
+              if (cl) cl.textContent = 'Points Remaining';
+              if (gv) gv.innerHTML = `${remaining} <small>/ ${displayLimit}</small>`;
               if (gb) {
                 const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
                 gb.style.width = pct + '%';
@@ -3058,101 +3061,116 @@ function showUpgradeToast(msg) {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  ONE SHOT CREATOR (Pro Artist)
+//  ONE SHOT CREATOR — ElevenLabs SFX (all plans, 5 pts)
 // ═══════════════════════════════════════════════════════════
 
-window.selectOneshotType = function(btn) {
-  oneshotSelectedType = btn.dataset.sound || '808 bass hit';
+var _oneshotSfxSelectedType = 'kick drum';
+
+window.selectOneshotSfxType = function(btn) {
+  _oneshotSfxSelectedType = btn.dataset.sound || 'kick drum';
   document.querySelectorAll('.oneshot-type-btn').forEach(b => b.classList.remove('oneshot-type-btn--active'));
   btn.classList.add('oneshot-type-btn--active');
+  // Pre-fill description textarea with the chosen type as a hint
+  const desc = document.getElementById('oneshot-sfx-desc');
+  if (desc && !desc.value.trim()) {
+    const hints = {
+      'kick drum':       'deep punchy kick drum, sub bass rumble, tight attack',
+      'snare drum':      'cracking snare with crisp attack and short snappy tail',
+      'hi-hat':          'tight closed hi-hat, crisp metallic sheen',
+      '808 bass hit':    'deep 808 bass hit with heavy sub, long pitched tail',
+      'clap':            'sharp studio clap, layered crack and slap',
+      'crash cymbal':    'wide crash cymbal wash, bright metallic shimmer',
+      'percussion hit':  'dry percussive hit, wooden or metallic texture',
+      'fx riser':        'sweeping fx riser building tension, whoosh and swell'
+    };
+    if (hints[_oneshotSfxSelectedType]) desc.value = hints[_oneshotSfxSelectedType];
+  }
 };
 
-window.generateOneShot = async function() {
-  const btn = document.getElementById('oneshot-gen-btn');
-  const statusEl = document.getElementById('oneshot-status');
-  const statusMsg = document.getElementById('oneshot-status-msg');
-  const resultEl = document.getElementById('oneshot-result');
+// Legacy alias — kept so any old references don't throw
+window.selectOneshotType = window.selectOneshotSfxType;
 
-  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
-  if (statusEl) { statusEl.style.display = 'block'; }
-  if (statusMsg) statusMsg.textContent = 'Submitting to AI…';
-  if (resultEl) resultEl.style.display = 'none';
+window.generateOneshotSfx = async function() {
+  const btn = document.getElementById('oneshot-sfx-gen-btn');
+  const statusEl = document.getElementById('oneshot-sfx-status');
+  const statusMsg = document.getElementById('oneshot-sfx-status-msg');
+  const resultEl = document.getElementById('oneshot-sfx-result');
 
-  const description = document.getElementById('oneshot-desc')?.value?.trim() || '';
-  const pitch = document.getElementById('oneshot-pitch')?.value || '';
-  const texture = document.getElementById('oneshot-texture')?.value || '';
+  const description = document.getElementById('oneshot-sfx-desc')?.value?.trim() || '';
+  const durInput = document.getElementById('oneshot-sfx-dur');
+  const duration_seconds = durInput ? parseFloat(durInput.value) : 2;
 
-  // Description is now required (no type tabs)
   if (!description) {
-    const descEl = document.getElementById('oneshot-desc');
-    if (descEl) { descEl.focus(); descEl.style.borderColor = 'var(--danger,#ef4444)'; setTimeout(() => descEl.style.borderColor = '', 2000); }
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
-    if (statusEl) statusEl.style.display = 'none';
-    alert('Please describe the one-shot you want to generate.');
+    const descEl = document.getElementById('oneshot-sfx-desc');
+    if (descEl) {
+      descEl.focus();
+      descEl.style.borderColor = 'var(--danger,#ef4444)';
+      setTimeout(() => { descEl.style.borderColor = ''; }, 2000);
+    }
+    alert('Please describe the sound you want to generate.');
     return;
   }
 
-  // Use the description directly as the sound type (no preset tabs)
-  const soundType = description;
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
+  if (statusEl) statusEl.style.display = 'block';
+  if (statusMsg) statusMsg.textContent = 'Sending to ElevenLabs SFX…';
+  if (resultEl) resultEl.style.display = 'none';
 
   try {
-    const res = await fetch('/api/generate-oneshot', {
+    const res = await fetch('/api/generate-oneshot-sfx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sound_type: soundType, description, pitch, texture })
+      body: JSON.stringify({ prompt: description, duration_seconds })
     });
     const data = await res.json();
 
     if (!res.ok) {
-      if (data.upgrade) { showUpgradeToast('One Shot Creator requires the Pro Artist plan.'); }
-      else { alert('Error: ' + (data.error || 'Generation failed')); }
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+      if (data.limit_reached) {
+        alert('Not enough points. ' + (data.error || ''));
+      } else {
+        alert('Error: ' + (data.error || 'Generation failed'));
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; }
       if (statusEl) statusEl.style.display = 'none';
       return;
     }
 
-    const taskId = data.task_id;
-    if (statusMsg) statusMsg.textContent = 'AI is crafting your one-shot…';
+    // ElevenLabs returns audio directly — no polling needed
+    if (statusEl) statusEl.style.display = 'none';
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; }
 
-    // Poll for result
-    if (oneshotPollInterval) clearInterval(oneshotPollInterval);
-    oneshotPollInterval = setInterval(async () => {
-      try {
-        const pr = await fetch('/api/poll-oneshot/' + taskId, { method: 'POST' });
-        const pd = await pr.json();
+    const audioUrl = data.audio_url;
+    const safeName = description.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(0, 40);
 
-        if (pd.status === 'ready') {
-          clearInterval(oneshotPollInterval);
-          if (statusEl) statusEl.style.display = 'none';
-          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+    const audio = document.getElementById('oneshot-sfx-audio');
+    const titleEl = document.getElementById('oneshot-sfx-result-title');
+    const dlMp3 = document.getElementById('oneshot-sfx-dl-mp3');
 
-          // Show result
-          const audio = document.getElementById('oneshot-audio');
-          const titleEl = document.getElementById('oneshot-result-title');
-          const dlMp3 = document.getElementById('oneshot-dl-mp3');
-          const dlWav = document.getElementById('oneshot-dl-wav');
+    if (audio) { audio.src = audioUrl; audio.load(); audio.play().catch(() => {}); }
+    if (titleEl) titleEl.textContent = description.charAt(0).toUpperCase() + description.slice(1, 60) + ' — Ready';
+    if (dlMp3) { dlMp3.href = audioUrl; dlMp3.setAttribute('download', safeName + '.mp3'); }
+    if (resultEl) resultEl.style.display = 'block';
 
-          if (audio) audio.src = pd.audio_url;
-          const safeName = oneshotSelectedType.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-          if (titleEl) titleEl.textContent = oneshotSelectedType.charAt(0).toUpperCase() + oneshotSelectedType.slice(1) + ' — Ready';
-          if (dlMp3) { dlMp3.href = pd.audio_url; dlMp3.setAttribute('download', safeName + '.mp3'); }
-          if (dlWav) { dlWav.href = '/api/download-wav-url?url=' + encodeURIComponent(pd.audio_url) + '&name=' + encodeURIComponent(safeName); dlWav.setAttribute('download', safeName + '.wav'); }
-          if (resultEl) resultEl.style.display = 'block';
+    // Invalidate oneshots library tab cache
+    if (window._libLoaded) window._libLoaded.oneshots = false;
 
-          if (audio) audio.play().catch(() => {});
-
-        } else if (pd.status === 'error') {
-          clearInterval(oneshotPollInterval);
-          if (statusEl) statusEl.style.display = 'none';
-          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
-          alert('Generation failed. Please try again.');
-        }
-        // else still pending — keep polling
-      } catch {}
-    }, 4000);
+    // Refresh sidebar points
+    fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
+      if (!user) return;
+      if (window._sfUser) { window._sfUser.gens_used = user.gens_used; window._sfUser.gens_limit = user.gens_limit; }
+      const gv = document.getElementById('gs-gens-val');
+      const gb = document.getElementById('gs-gens-bar');
+      const cl = document.getElementById('gs-credits-label');
+      const limitMap = { free: 50, creator: 600, pro: 2000 };
+      const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
+      const remaining = Math.max(0, displayLimit - user.gens_used);
+      if (cl) cl.textContent = 'Points Remaining';
+      if (gv) gv.innerHTML = `${remaining} <small>/ ${displayLimit}</small>`;
+      if (gb) { const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0; gb.style.width = pct + '%'; }
+    }).catch(() => {});
 
   } catch(err) {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; }
     if (statusEl) statusEl.style.display = 'none';
     alert('Network error: ' + err.message);
   }
