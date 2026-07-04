@@ -1311,6 +1311,22 @@ document.addEventListener('DOMContentLoaded', () => {
       tab.classList.add('active');
       const panel = document.getElementById('tab-' + target);
       if (panel) panel.classList.add('active');
+
+      // Auto-toggle instrumental switch when Instrumental tab is clicked
+      const instrCheckbox = document.getElementById('gen-instrumental');
+      const instrNote = document.getElementById('instrumental-note');
+      if (target === 'instrumental') {
+        if (instrCheckbox && !instrCheckbox.checked) {
+          instrCheckbox.checked = true;
+          if (instrNote) instrNote.style.display = 'block';
+        }
+      } else {
+        // Switching away from instrumental tab — turn the toggle off
+        if (instrCheckbox && instrCheckbox.checked) {
+          instrCheckbox.checked = false;
+          if (instrNote) instrNote.style.display = 'none';
+        }
+      }
     });
   });
 

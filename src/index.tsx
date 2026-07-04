@@ -565,6 +565,194 @@ interface Instrument {
 }
 
 
+// ═══════════════════════════════════════════════════════════════
+//  STEP 1 — OPENAI BLUEPRINT GENERATION
+// ═══════════════════════════════════════════════════════════════
+
+const ALL_KEYS = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B']
+function pickRandomKey(): string {
+  return ALL_KEYS[Math.floor(Math.random() * ALL_KEYS.length)]
+}
+
+async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string, userPlan?: string, userDurationSec?: number): Promise<Blueprint & { suggested_title?: string }> {
+  const suggestedKey = pickRandomKey()
+
+  const genreMatch = prompt.match(/^([^.,]+?)[.,]/)
+  const detectedGenre = genreMatch ? genreMatch[1].trim() : ''
+
+  const systemPrompt = `You are a professional music producer AI that creates beat blueprints.
+You STRICTLY follow the user's genre, mood, and style — you NEVER substitute or drift.
+
+ABSOLUTE RULES — violating any rule is a failure:
+1. GENRE LOCK: The genre field MUST exactly match whatever genre/style the user wrote. If user says "hip hop" → genre = "hip hop". If user says "pop" → genre = "pop". If user says "drill" → genre = "drill". NEVER change it to jazz, R&B, soul, or anything else unless that is what the user wrote.
+2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, mureka_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops or piano. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. NEVER add jazz piano, walking bass, brushed snares, ride cymbal, swing feel, or laid-back jazz elements to hip hop, trap, drill, or R&B unless the user explicitly asked for jazz.
+3. ANTI-JAZZ RULE FOR HIP HOP/TRAP/DRILL: These genres must use 808 bass (NOT walking bass), punchy kicks (NOT brush kit), trap hi-hats or boom bap snares (NOT ride cymbal), and straight or swung hip hop timing (NOT jazz swing). Any jazz reference in a hip hop/trap/drill beat is an automatic failure.
+4. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
+5. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
+6. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
+7. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", or "ride cymbal".
+8. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : (userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be between 180 and 240 seconds (3–4 min). Prefer 210 or 240 seconds for epic, expansive arrangements. Maximum is 240 (4:00).' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.')}
+Output valid JSON only — no markdown, no explanation.`
+
+  const userPrompt = `Generate a beat blueprint for: "${prompt}"
+${titleHint ? `Track title provided by user: "${titleHint}"` : 'No title given — create a creative genre-fitting title in suggested_title.'}
+Suggested key: ${suggestedKey}
+
+GENRE DETECTED FROM INPUT: "${detectedGenre || 'use whatever genre the user specified in the prompt above'}"
+→ The entire blueprint MUST sound like this genre. Do not drift.
+
+Genre-to-sound mapping examples (follow these exactly for the detected genre):
+- "hip hop" → BPM 85–100, 808 bass, punchy kick, snappy snare, trap hi-hats, sampled chops or Rhodes, aggressive/confident mood
+- "trap" → BPM 130–145, sliding 808s, rapid triplet hi-hats, heavy kick, dark melody, energy=high
+- "drill" → BPM 140–145, sliding 808 glide, rolling hi-hats, dark minor piano, cold/menacing mood
+- "pop" → BPM 100–128, bright lead synth, 4-on-the-floor kick, punchy snare, catchy melodic hook, energy=high
+- "R&B" → BPM 65–95, silky pad, soft snare, soulful chords, intimate/smooth mood
+- "lo-fi" → BPM 70–90, mellow piano, dusty vinyl crackle, boom-bap kit, nostalgic/chill mood
+- "afrobeats" → BPM 100–115, talking drum pattern, afrobeats percussion, melodic guitar, energetic
+- "reggaeton" → BPM 95–105, dembow rhythm, heavy bass, brass stabs, perreo energy
+- "jazz" → BPM 90–140, swing feel, walking bass, ride cymbal, chord voicings
+- "cinematic" → BPM 60–100, orchestral strings, dramatic brass, epic pads, swelling dynamics
+
+Return ONLY this JSON:
+{
+  "bpm": <correct BPM for the genre>,
+  "key": <${suggestedKey} unless user specified otherwise>,
+  "scale": <choose based on genre mood — hip hop/trap/drill = minor, pop = major, R&B = minor/major pentatonic>,
+  "genre": <EXACT genre string from user input — do not change>,
+  "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
+  "energy": <"low" | "medium" | "high">,
+  "duration_seconds": <${userDurationSec ? userDurationSec : (userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180')}>,
+  "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
+  "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
+  "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
+  "mureka_prompt": <MUST start with exact genre name, then describe sound: instruments, energy, feel. Example: "hip hop beat, punchy 808 bass, trap hi-hats, sampled Rhodes chops, aggressive energy, dark mood" — max 200 chars>,
+  "instruments": [
+    {
+      "name": <genre-appropriate instrument name>,
+      "family": <"drums" | "bass" | "keys" | "guitar" | "strings" | "brass" | "woodwind" | "synth" | "fx">,
+      "role": <"rhythmic" | "harmonic" | "melodic" | "textural" | "transitional">,
+      "mureka_track_type": <"vocals" | "accompaniment" | "bass" | "drums">
+    }
+  ]
+}
+
+Instrument rules:
+- 6–10 instruments, always include kick + snare/hi-hats + bass at minimum
+- All instruments MUST be genre-appropriate (no jazz brushes in hip hop, no 808s in jazz, no grand piano in drill unless specified)
+- NAMING: instrument "name" MUST be the EXACT specific instrument name — e.g. "Trumpet" NOT "brass", "Flute" NOT "woodwind", "Violin" NOT "strings", "Rhodes Piano" NOT "keys", "808 Bass" NOT "bass", "Acoustic Guitar" NOT "guitar". Be as specific as possible.
+- mureka_track_type: kick/snare/hats → "drums", 808/bass → "bass", keys/guitar/pad/strings → "accompaniment", fx/vox → "vocals"`
+
+  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.85,
+      max_tokens: 1200,
+      response_format: { type: 'json_object' }
+    })
+  })
+
+  if (!res.ok) {
+    const err = await res.json() as any
+    throw new Error(`OpenAI error: ${err?.error?.message || res.status}`)
+  }
+
+  const data = await res.json() as any
+  const content = data.choices?.[0]?.message?.content
+  if (!content) throw new Error('OpenAI returned empty response')
+
+  try {
+    return JSON.parse(content) as Blueprint
+  } catch {
+    throw new Error('OpenAI returned invalid JSON')
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STEP 2 — MUREKA INSTRUMENTAL GENERATION
+// ═══════════════════════════════════════════════════════════════
+
+async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number, refMode?: string, refPrompt?: string): Promise<string> {
+  let murekaPrompt = blueprint.mureka_prompt
+  if (!refFileId) {
+    murekaPrompt = murekaPrompt
+      .replace(/\bwith vocals?\b/gi, '')
+      .replace(/\bvocal chops?\b/gi, '')
+      .replace(/\bchops?\b/gi, '')
+      .replace(/\bsinging\b/gi, '')
+      .replace(/\blyrics\b/gi, '')
+      .trim()
+    if (!murekaPrompt.includes('no vocals')) {
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental, no vocal chops'
+    }
+  }
+  if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
+
+  const body: Record<string, any> = {
+    prompt: murekaPrompt,
+    model: 'auto'
+  }
+  const durationSec = userDurationSec || blueprint.duration_seconds
+  if (durationSec && durationSec > 0) {
+    body.duration = durationSec
+    const durMin = Math.floor(durationSec / 60)
+    const durSec = durationSec % 60
+    const durStr = `${durMin}:${String(durSec).padStart(2,'0')}`
+    if (!murekaPrompt.includes('minute') && !murekaPrompt.includes('second') && !murekaPrompt.includes(':')) {
+      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + `, duration ${durStr}`
+      body.prompt = murekaPrompt
+    }
+  }
+  if (refFileId) {
+    body.reference_audio = refFileId
+    const genre  = blueprint.genre  || ''
+    const bpm    = blueprint.bpm    || ''
+    const energy = blueprint.energy || ''
+    const contextParts: string[] = []
+    if (genre)  contextParts.push(genre)
+    if (bpm)    contextParts.push(`${bpm} BPM`)
+    if (energy) contextParts.push(`${energy} energy`)
+    const context = contextParts.join(', ')
+    let modeDirective: string
+    if (refMode === 'inspire') {
+      modeDirective = 'inspired by the reference track — take creative liberties with arrangement and sound design, but match its tempo and rhythmic feel'
+    } else {
+      modeDirective = 'closely match the style, energy, sonic texture, BPM, groove, and overall vibe of the reference track'
+    }
+    const parts: string[] = [modeDirective]
+    if (context) parts.push(context)
+    if (refPrompt && refPrompt.trim()) parts.push(refPrompt.trim())
+    murekaPrompt = parts.join(', ')
+    if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
+    body.prompt = murekaPrompt
+  }
+
+  const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  })
+
+  if (!res.ok) {
+    const err = await res.json() as any
+    throw new Error(`Mureka instrumental error: ${err?.error?.message || res.status}`)
+  }
+
+  const data = await res.json() as any
+  return data.id as string
+}
+
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
 async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number, refMode?: string, refPrompt?: string) {
   const db = env.DB
@@ -4349,7 +4537,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260630-8'
+const ASSET_VER = '20260704-1'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
