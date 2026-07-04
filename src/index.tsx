@@ -24,6 +24,14 @@ type Bindings = {
 
 const app = new Hono<{ Bindings: Bindings }>()
 
+// ── Global error handler — ensures ALL unhandled errors return JSON ──────────
+// Without this, Cloudflare returns plain-text "Internal Server Error" which
+// makes the frontend crash with "Unexpected token 'I' is not valid JSON".
+app.onError((err, c) => {
+  console.error('[StemForge Error]', err?.message || err)
+  return c.json({ error: err?.message || 'Internal server error' }, 500)
+})
+
 // ── Middleware ─────────────────────────────────────────────────
 app.use('/api/*', cors())
 
@@ -4537,7 +4545,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-1'
+const ASSET_VER = '20260704-2'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

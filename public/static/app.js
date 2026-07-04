@@ -3,6 +3,20 @@
    Real pipeline: GPT-4o blueprint → Mureka generation → track extraction
 ═══════════════════════════════════════════════════════════════ */
 
+/**
+ * safeJson(res) — safely parse a fetch Response as JSON.
+ * If the body is not valid JSON (e.g. Cloudflare "Internal Server Error" plain text),
+ * returns { error: <status text>, _raw: <body text> } instead of throwing.
+ */
+async function safeJson(res) {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: res.ok ? 'Unexpected server response' : `Server error (${res.status})`, _raw: text };
+  }
+}
+
 /* ── Global tooltip system ──────────────────────────────────────────────────
    Single <div id="sf-tooltip"> appended to <body> — completely outside all
    overflow/stacking-context containers. Triggered by any [data-tooltip] element.
@@ -1617,7 +1631,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       if (!res.ok) {
-        const err = await res.json();
+        const err = await safeJson(res);
         if (err.limit_reached) {
           // Show upgrade prompt instead of generic error
           genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
@@ -1637,7 +1651,7 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.error || 'Failed to start generation');
       }
 
-      const { job_id } = await res.json();
+      const { job_id } = await safeJson(res);
       currentJobId = job_id;
 
       genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
@@ -1653,7 +1667,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ? await fetch('/api/poll/' + job_id, { method: 'POST' })
             : await fetch('/api/job/' + job_id);
           if (!pollRes.ok) return;
-          const job = await pollRes.json();
+          const job = await safeJson(pollRes);
 
           // Update pipeline steps
           // Update spinner message based on status
