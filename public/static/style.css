@@ -3873,3 +3873,279 @@ body {
   .stems-vi-btn { padding: 8px 12px; font-size: .78rem; }
   .adv-split-new-badge { display: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   MOBILE OVERFLOW FIX — prevents everything from bleeding off-screen
+   Covers: html/body, generator layout, all cards, players, toggles,
+   reference panel, blueprint pills, result section, track rows,
+   vocal/beat toggles, style chips, modals, and inner content.
+═══════════════════════════════════════════════════════════════ */
+
+/* ── Base: hard-stop horizontal overflow on every device ── */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+*, *::before, *::after {
+  box-sizing: border-box;
+  min-width: 0;   /* prevents flex/grid children from overflowing */
+}
+
+@media (max-width: 768px) {
+
+  /* ── Global page wrapper ─────────────────────────────────── */
+  .gs-page-wrap, .gs-content, .gs-content--gen {
+    overflow-x: hidden;
+    max-width: 100vw;
+    width: 100%;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .gs-content {
+    padding: 16px 12px;
+  }
+
+  /* ── Generator layout ────────────────────────────────────── */
+  .suno-gen-page {
+    grid-template-columns: 1fr;
+    width: 100%;
+    overflow-x: hidden;
+  }
+  .suno-left {
+    padding: 12px 12px;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+  .suno-right {
+    padding: 12px 12px;
+    width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  /* ── All cards ───────────────────────────────────────────── */
+  .suno-card, .suno-card--slim {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .suno-card__header {
+    padding: 12px 12px 12px 10px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .suno-card__title {
+    font-size: .85rem;
+  }
+
+  /* ── Tab group (Write / Instrumental) ───────────────────── */
+  .suno-tab-group {
+    flex-shrink: 0;
+  }
+  .suno-tab {
+    padding: 5px 10px;
+    font-size: .72rem;
+  }
+
+  /* ── Textareas ───────────────────────────────────────────── */
+  .suno-textarea {
+    width: 100%;
+    min-width: 0;
+    font-size: .85rem;
+  }
+  .suno-textarea-actions {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* ── Style chips row ─────────────────────────────────────── */
+  .suno-style-chips-row {
+    padding: 8px 8px 12px;
+    gap: 4px;
+    overflow: hidden;
+  }
+  .suno-style-chips {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex: 1;
+    min-width: 0;
+  }
+  .suno-style-input {
+    font-size: .85rem;
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* ── Creator tabs row (Reference / Extend / Blueprint) ───── */
+  .creator-tabs-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .creator-tab-btn {
+    flex: 1 1 calc(50% - 6px);
+    min-width: 0;
+    font-size: .7rem;
+    padding: 8px 6px;
+  }
+
+  /* ── Reference panel ─────────────────────────────────────── */
+  #ref-inline-panel {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    padding: 12px;
+  }
+  .ref-mode-group {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ref-mode-btn {
+    width: 100%;
+    min-width: 0;
+  }
+  .ref-mode-btn__sub {
+    display: none;
+  }
+
+  /* ── Vocal toggle ────────────────────────────────────────── */
+  .vocal-toggle-group {
+    gap: 4px;
+  }
+  .vocal-toggle-btn {
+    padding: 6px 6px;
+    font-size: .75rem;
+    gap: 3px;
+  }
+
+  /* ── Beat count toggle ───────────────────────────────────── */
+  .beat-count-group {
+    gap: 4px;
+  }
+  .beat-count-btn {
+    padding: 6px 6px;
+    font-size: .75rem;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  .beat-count-credit-badge {
+    display: none;  /* hide the pts badge on small screens to save space */
+  }
+
+  /* ── Blueprint pills ─────────────────────────────────────── */
+  .blueprint-pills {
+    gap: 6px;
+  }
+  .blueprint-pill {
+    font-size: .72rem;
+    padding: 3px 10px;
+  }
+
+  /* ── Stereo player ───────────────────────────────────────── */
+  .stereo-player {
+    padding: 12px;
+    overflow: hidden;
+  }
+  .stereo-player audio {
+    width: 100%;
+  }
+
+  /* ── Gen result card ─────────────────────────────────────── */
+  .gen-result {
+    overflow: hidden;
+    min-width: 0;
+  }
+  .gen-result__header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* ── Track rows (stem player) ────────────────────────────── */
+  .track-row {
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .track-row__wave {
+    display: none;  /* hide waveform bars on mobile — save space */
+  }
+  .track-row__actions {
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .track-row__dl {
+    padding: 5px 8px;
+    font-size: .72rem;
+  }
+
+  /* ── Slim card (Vocals / Beats rows) ─────────────────────── */
+  .suno-card--slim .suno-card__header,
+  .suno-card--slim > div {
+    padding: 10px 12px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+
+  /* ── Modals — make sure they don't overflow ──────────────── */
+  .modal-content, .sf-modal__content {
+    width: calc(100vw - 24px) !important;
+    max-width: calc(100vw - 24px) !important;
+    min-width: 0 !important;
+    overflow-x: hidden;
+    padding: 20px 16px;
+  }
+
+  /* ── Pipeline status ─────────────────────────────────────── */
+  .pipeline-status {
+    padding: 16px;
+    overflow: hidden;
+  }
+
+  /* ── Create button ───────────────────────────────────────── */
+  .suno-create-btn, .suno-create-inline {
+    width: 100%;
+    border-radius: 12px;
+  }
+
+  /* ── Cover art / result thumb ────────────────────────────── */
+  .gen-result__thumb {
+    width: 80px;
+    height: 80px;
+    flex-shrink: 0;
+  }
+
+  /* ── Duration slider row ─────────────────────────────────── */
+  .sf-range-wrap {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* ── More options / advanced panels ─────────────────────── */
+  #more-body {
+    overflow: hidden;
+  }
+}
+
+/* ── Extra-small screens (≤ 390px — iPhone SE, etc.) ────────── */
+@media (max-width: 390px) {
+  .suno-left, .suno-right {
+    padding: 10px 10px;
+  }
+  .creator-tab-btn {
+    font-size: .65rem;
+    padding: 7px 4px;
+  }
+  .suno-tab {
+    padding: 4px 7px;
+    font-size: .68rem;
+  }
+  .vocal-toggle-btn, .beat-count-btn {
+    font-size: .7rem;
+    padding: 5px 4px;
+  }
+  .gs-sidebar__nav-item {
+    padding: 7px 7px;
+    font-size: .6rem;
+  }
+}
