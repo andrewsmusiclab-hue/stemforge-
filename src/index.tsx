@@ -577,6 +577,10 @@ interface Instrument {
 //  STEP 1 — OPENAI BLUEPRINT GENERATION
 // ═══════════════════════════════════════════════════════════════
 
+function makeJobId(): string {
+  return 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
+}
+
 const ALL_KEYS = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B']
 function pickRandomKey(): string {
   return ALL_KEYS[Math.floor(Math.random() * ALL_KEYS.length)]
