@@ -1130,7 +1130,14 @@ app.post('/api/generate', async (c) => {
         ;(job2 as any).user_lyrics = lyrics.trim()
       }
       await setJob(c.env.DB, job2, userId)
-      c.executionCtx.waitUntil(startPipeline(job2Id, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined))
+      // Delay job2 pipeline by 8 s so job1's Mureka submission completes first,
+      // avoiding concurrent-submission errors from Mureka's per-account job queue.
+      const job2IdCopy = job2Id
+      c.executionCtx.waitUntil(
+        new Promise<void>(resolve => setTimeout(resolve, 8000)).then(() =>
+          startPipeline(job2IdCopy, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined)
+        )
+      )
     } catch {}
   }
 
@@ -4641,7 +4648,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-6'
+const ASSET_VER = '20260704-7'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

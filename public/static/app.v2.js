@@ -936,7 +936,10 @@ document.addEventListener('DOMContentLoaded', () => {
           gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your uploads. <a href="/login">Log in</a></div>';
           return;
         }
-        throw new Error('HTTP ' + res.status);
+        // Try to get error body for better diagnostics
+        let errBody = '';
+        try { const j = await res.json(); errBody = j.error || ''; } catch {}
+        throw new Error('HTTP ' + res.status + (errBody ? ': ' + errBody : ''));
       }
       const { uploads } = await res.json();
       _libData.uploads = uploads || [];
@@ -944,9 +947,12 @@ document.addEventListener('DOMContentLoaded', () => {
       updateTabCount('uploads', _libData.uploads.length);
       renderUploadsGrid(gridEl, _libData.uploads);
     } catch(e) {
-      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
+      console.error('[fetchUploadsTab] error:', e);
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-exclamation-circle"></i> Could not load uploads' + (e && e.message ? ' (' + e.message + ')' : '') + '. <button onclick="window.fetchUploadsTab()" style="background:none;border:none;color:var(--primary);cursor:pointer;text-decoration:underline;font-size:inherit">Retry</button></div>';
     }
   }
+  // Expose so override + retry button can call it
+  window.fetchUploadsTab = fetchUploadsTab;
 
   // ── Render uploads grid ─────────────────────────────────────
   function renderUploadsGrid(gridEl, uploads) {
@@ -2033,7 +2039,12 @@ document.addEventListener('DOMContentLoaded', () => {
           if (tab2Btn) { tab2Btn.style.border = '1px solid var(--border)'; tab2Btn.style.color = 'var(--text)'; }
         } else if (j2.status === 'error') {
           clearInterval(poll2);
-          if (tab2Btn) tab2Btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Song 2 — failed';
+          var errMsg2 = j2.error ? j2.error.slice(0, 120) : 'unknown error';
+          console.error('[Song2] failed:', j2.error);
+          if (tab2Btn) {
+            tab2Btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Song 2 — failed';
+            tab2Btn.title = errMsg2; // hover tooltip shows actual error
+          }
         }
       } catch(e) {}
     }, 5000);
@@ -5700,17 +5711,17 @@ window.renderEditInstrumentPills = function (bp) {
 
         } else if (tab === 'uploads') {
           manualSwitchUI('uploads');
-          var gridEl = document.getElementById('project-grid-uploads');
-          if (!gridEl) return;
-          gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-          fetch('/api/reference-uploads')
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-              if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, d.uploads || []);
-            })
-            .catch(function() {
-              gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load uploads.</div>';
-            });
+          // Delegate to the IIFE's exposed fetchUploadsTab — single source of truth for
+          // fetch + error handling + rendering. It always resets _libLoaded.uploads = false
+          // so it always refetches regardless of cache state.
+          if (window.fetchUploadsTab) {
+            window.fetchUploadsTab();
+          } else {
+            // Safety fallback in case IIFE hasn't exposed it yet
+            var gridEl2 = document.getElementById('project-grid-uploads');
+            if (gridEl2) gridEl2.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+            setTimeout(function() { if (window.fetchUploadsTab) window.fetchUploadsTab(); }, 200);
+          }
 
         } else {
           if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
