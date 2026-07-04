@@ -575,6 +575,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Track which tabs have been fetched so we only fetch once per session
   const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false };
+  // Expose on window so external code (generator, extend) can invalidate cache
+  window._libLoaded = _libLoaded;
   // Cached project arrays per tab (for client-side search)
   const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [] };
   let   _libActive  = 'beats';
@@ -924,7 +926,8 @@ document.addEventListener('DOMContentLoaded', () => {
   async function fetchUploadsTab() {
     const gridEl = document.getElementById('project-grid-uploads');
     if (!gridEl) return;
-    if (_libLoaded.uploads) { renderUploadsGrid(gridEl, _libData.uploads); return; }
+    // Always refetch uploads — never cache, list changes after each upload/delete
+    _libLoaded.uploads = false;
     gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
     try {
       const res = await fetch('/api/reference-uploads');
@@ -1679,7 +1682,7 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.error || 'Failed to start generation');
       }
 
-      const { job_id } = await safeJson(res);
+      const { job_id, job2_id } = await safeJson(res);
       currentJobId = job_id;
 
       genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
@@ -1936,6 +1939,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (genResult) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
+            // Invalidate library cache so new beat appears immediately when user navigates to library
+            if (window._libLoaded) { window._libLoaded.beats = false; }
+            // If a second song was generated, start polling it and show Song 1/Song 2 tabs
+            if (job2_id) {
+              _pollSecondSong(job2_id, job);
+            }
             // Refresh sidebar points counter to reflect the new usage
             fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
               if (!user) return;
@@ -1986,6 +1995,72 @@ document.addEventListener('DOMContentLoaded', () => {
       showError(err.message || 'Failed to start generation. Please try again.');
     }
   }
+
+  // ── Poll second song (beat_count=2) and inject Song 1/Song 2 tabs ──────────
+  function _pollSecondSong(job2Id, job1) {
+    var resultArea = document.getElementById('gen-result');
+    if (!resultArea) return;
+    // Build tab switcher if not already present
+    var tabBar = document.getElementById('gen-result-tab-bar');
+    if (!tabBar) {
+      tabBar = document.createElement('div');
+      tabBar.id = 'gen-result-tab-bar';
+      tabBar.style.cssText = 'display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:10px';
+      tabBar.innerHTML =
+        '<button id="gen-tab-s1" onclick="window._switchSongTab(1)" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--primary);background:var(--primary);color:#fff;font-weight:700;cursor:pointer;font-size:.85rem"><i class="fas fa-music"></i> Song 1</button>' +
+        '<button id="gen-tab-s2" onclick="window._switchSongTab(2)" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-weight:600;cursor:pointer;font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Song 2 — generating…</button>';
+      resultArea.insertBefore(tabBar, resultArea.firstChild);
+    }
+    // Store both jobs globally for tab switching
+    window._song1Job = job1;
+    window._song2Job = null;
+    window._activeSongTab = 1;
+    // Poll song 2
+    var lastStatus2 = '';
+    var poll2 = setInterval(async function() {
+      try {
+        var usePost = (lastStatus2 === 'generating' || lastStatus2 === 'pending' || lastStatus2 === 'blueprint' || lastStatus2 === '');
+        var r = usePost ? await fetch('/api/poll/' + job2Id, { method: 'POST' }) : await fetch('/api/job/' + job2Id);
+        if (!r.ok) return;
+        var j2 = await r.json();
+        lastStatus2 = j2.status;
+        var tab2Btn = document.getElementById('gen-tab-s2');
+        if (j2.status === 'ready') {
+          clearInterval(poll2);
+          window._song2Job = j2;
+          if (window._libLoaded) window._libLoaded.beats = false;
+          if (tab2Btn) tab2Btn.innerHTML = '<i class="fas fa-music"></i> Song 2';
+          if (tab2Btn) { tab2Btn.style.border = '1px solid var(--border)'; tab2Btn.style.color = 'var(--text)'; }
+        } else if (j2.status === 'error') {
+          clearInterval(poll2);
+          if (tab2Btn) tab2Btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Song 2 — failed';
+        }
+      } catch(e) {}
+    }, 5000);
+  }
+
+  // ── Switch between Song 1 and Song 2 results ───────────────────────────────
+  window._switchSongTab = function(n) {
+    var job = n === 1 ? window._song1Job : window._song2Job;
+    if (!job || !job.stereo_url) return;
+    window._activeSongTab = n;
+    // Update tab button styles
+    var t1 = document.getElementById('gen-tab-s1'), t2 = document.getElementById('gen-tab-s2');
+    if (t1) { t1.style.background = n===1 ? 'var(--primary)' : 'transparent'; t1.style.color = n===1 ? '#fff' : 'var(--muted)'; t1.style.border = n===1 ? '1px solid var(--primary)' : '1px solid var(--border)'; }
+    if (t2) { t2.style.background = n===2 ? 'var(--primary)' : 'transparent'; t2.style.color = n===2 ? '#fff' : 'var(--muted)'; t2.style.border = n===2 ? '1px solid var(--primary)' : '1px solid var(--border)'; }
+    // Swap audio
+    var audio = document.getElementById('stereo-audio');
+    if (audio) { audio.src = job.stereo_url; audio.play().catch(function(){}); }
+    // Update title/sub
+    var titleEl = document.getElementById('gen-result-title');
+    var subEl   = document.getElementById('gen-result-sub');
+    var finalTitle = job.title || (job.blueprint ? (job.blueprint.genre + ' — ' + job.blueprint.key + ' ' + job.blueprint.scale) : 'Beat Ready');
+    if (titleEl) titleEl.textContent = finalTitle;
+    if (subEl && job.blueprint) subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
+    // Update dots button
+    var dotsBtn = document.getElementById('gen-result-dots');
+    if (dotsBtn) dotsBtn.onclick = function() { openSongEditModal(job, null); };
+  };
 
   // ── Generate Lyrics with AI ──────────────────────────────────────
   const genLyricsBtn = document.getElementById('gen-lyrics-btn');
@@ -2175,8 +2250,24 @@ window.openSongEditModal = function(jobData, jobId) {
       document.getElementById('edit-info-key').textContent = (jobData.blueprint.key || '—') + ' ' + (jobData.blueprint.scale || '');
       document.getElementById('edit-info-scale').textContent = jobData.blueprint.scale || '—';
       document.getElementById('edit-info-mood').textContent = jobData.blueprint.mood || '—';
-      const dur = jobData.blueprint.duration_seconds;
-      document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+      // Use actual audio duration from stereo_url if available, fallback to blueprint estimate
+      var durEl = document.getElementById('edit-info-duration');
+      durEl.textContent = '…';
+      if (jobData.stereo_url) {
+        var _a = new Audio(); _a.preload = 'metadata';
+        _a.onloadedmetadata = function() {
+          var s = Math.round(_a.duration);
+          durEl.textContent = Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+        };
+        _a.onerror = function() {
+          var dur = jobData.blueprint.duration_seconds;
+          durEl.textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+        };
+        _a.src = jobData.stereo_url;
+      } else {
+        var dur = jobData.blueprint.duration_seconds;
+        durEl.textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+      }
     }
     // Render instrument pills
     renderEditInstrumentPills(jobData.blueprint);
@@ -2196,8 +2287,24 @@ window.openSongEditModal = function(jobData, jobId) {
         document.getElementById('edit-info-key').textContent = (job.blueprint.key || '—') + ' ' + (job.blueprint.scale || '');
         document.getElementById('edit-info-scale').textContent = job.blueprint.scale || '—';
         document.getElementById('edit-info-mood').textContent = job.blueprint.mood || '—';
-        const dur = job.blueprint.duration_seconds;
-        document.getElementById('edit-info-duration').textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+        // Use actual audio duration from stereo_url if available, fallback to blueprint estimate
+        var durEl2 = document.getElementById('edit-info-duration');
+        durEl2.textContent = '…';
+        if (job.stereo_url) {
+          var _a2 = new Audio(); _a2.preload = 'metadata';
+          _a2.onloadedmetadata = function() {
+            var s = Math.round(_a2.duration);
+            durEl2.textContent = Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+          };
+          _a2.onerror = function() {
+            var dur = job.blueprint.duration_seconds;
+            durEl2.textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+          };
+          _a2.src = job.stereo_url;
+        } else {
+          var dur = job.blueprint.duration_seconds;
+          durEl2.textContent = dur ? Math.floor(dur/60)+':'+String(dur%60).padStart(2,'0') : '—';
+        }
       }
       // Render instrument pills
       renderEditInstrumentPills(job.blueprint);

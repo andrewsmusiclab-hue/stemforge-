@@ -1092,16 +1092,6 @@ app.post('/api/generate', async (c) => {
   }
   await setJob(c.env.DB, job, userId)
 
-  // If beat_count = 2 (Creator+), deduct 10 more pts and kick off a second generation
-  if (beat_count === 2 && (userPlan === 'pro' || userPlan === 'creator' || userPlan === 'developer') && userId) {
-    try {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 10 WHERE id = ?`).bind(userId).run()
-    } catch {}
-  }
-
-  // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
-  // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-
   // Parse user_duration. If the user provided lyrics, auto-calculate duration from word count
   // (avg rap: ~130 words/min, avg pop: ~110 words/min — use 120 wpm as a safe middle ground)
   let userDurationSec: number | undefined
@@ -1115,9 +1105,36 @@ app.post('/api/generate', async (c) => {
     userDurationSec = Math.max(30, Math.min(300, parseInt(String(user_duration), 10) || 0)) || undefined
   }
 
+  // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
+  // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
   c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined))
 
-  return c.json({ job_id: jobId, status: 'pending' })
+  // If beat_count = 2 (Creator+), deduct 10 more pts and kick off a second independent generation
+  let job2Id: string | null = null
+  if (beat_count === 2 && (userPlan === 'pro' || userPlan === 'creator' || userPlan === 'developer') && userId) {
+    try {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 10 WHERE id = ?`).bind(userId).run()
+      // Create second job with same params but fresh ID + slightly different seed
+      job2Id = makeJobId()
+      const job2: Job = {
+        id: job2Id,
+        status: 'pending',
+        created_at: Date.now(),
+        prompt: fullPrompt,
+        title: title ? title + ' (v2)' : undefined,
+        thumbnail_seed: Math.floor(Math.random() * 360)
+      }
+      ;(job2 as any).vocal_gender = vocal_gender || 'off'
+      ;(job2 as any).beat_count = 1
+      if (lyrics && lyrics.trim()) {
+        ;(job2 as any).user_lyrics = lyrics.trim()
+      }
+      await setJob(c.env.DB, job2, userId)
+      c.executionCtx.waitUntil(startPipeline(job2Id, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined))
+    } catch {}
+  }
+
+  return c.json({ job_id: jobId, job2_id: job2Id, status: 'pending' })
 })
 
 // POST /api/poll/:id — called by frontend every ~5s while status=generating
@@ -4624,7 +4641,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-5'
+const ASSET_VER = '20260704-6'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
