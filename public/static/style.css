@@ -1730,33 +1730,75 @@ p  { color: var(--sub); }
 .suno-chips-arrow:disabled { opacity: 0.2; cursor: default; pointer-events: none; }
 .suno-style-chips {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   overflow-x: auto;
   scrollbar-width: none;
   flex: 1;
-  padding-bottom: 2px;
+  padding-bottom: 4px;
   scroll-behavior: smooth;
 }
 .suno-style-chips::-webkit-scrollbar { display: none; }
 
-/* ── Chips */
+/* ── Chips — base */
 .suno-chip {
   background: rgba(255,255,255,.07);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255,255,255,.12);
   border-radius: 99px;
-  padding: 5px 14px;
+  padding: 6px 14px;
   font-size: .78rem;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--text);
   cursor: pointer;
   white-space: nowrap;
+  flex-shrink: 0;        /* never squish — scroll instead */
   transition: all .15s;
   font-family: inherit;
+  letter-spacing: .01em;
 }
-.suno-chip:hover { background: rgba(255,255,255,.12); color: var(--text); }
+.suno-chip:hover { filter: brightness(1.2); transform: translateY(-1px); }
+
+/* ── Per-genre chip colours (bg + border + text) */
+.suno-chip[data-style="trap"] {
+  background: rgba(139,92,246,.18); border-color: rgba(139,92,246,.45); color: #c4b5fd;
+}
+.suno-chip[data-style="drill"] {
+  background: rgba(239,68,68,.15); border-color: rgba(239,68,68,.4); color: #fca5a5;
+}
+.suno-chip[data-style="R&B"] {
+  background: rgba(236,72,153,.16); border-color: rgba(236,72,153,.42); color: #f9a8d4;
+}
+.suno-chip[data-style="lo-fi"] {
+  background: rgba(16,185,129,.15); border-color: rgba(16,185,129,.4); color: #6ee7b7;
+}
+.suno-chip[data-style="boom bap"] {
+  background: rgba(245,158,11,.15); border-color: rgba(245,158,11,.4); color: #fcd34d;
+}
+.suno-chip[data-style="afrobeats"] {
+  background: rgba(249,115,22,.16); border-color: rgba(249,115,22,.42); color: #fdba74;
+}
+.suno-chip[data-style="cinematic"] {
+  background: rgba(6,182,212,.15); border-color: rgba(6,182,212,.4); color: #67e8f9;
+}
+.suno-chip[data-style="reggaeton"] {
+  background: rgba(20,184,166,.15); border-color: rgba(20,184,166,.4); color: #5eead4;
+}
+.suno-chip[data-style="house"] {
+  background: rgba(99,102,241,.18); border-color: rgba(99,102,241,.45); color: #a5b4fc;
+}
+.suno-chip[data-style="gospel"] {
+  background: rgba(234,179,8,.15); border-color: rgba(234,179,8,.4); color: #fef08a;
+}
+.suno-chip[data-style="jazz"] {
+  background: rgba(168,85,247,.16); border-color: rgba(168,85,247,.42); color: #d8b4fe;
+}
+.suno-chip[data-style="soul"] {
+  background: rgba(244,63,94,.15); border-color: rgba(244,63,94,.4); color: #fda4af;
+}
+
+/* Active state — brighter version of the chip's own colour */
 .suno-chip.active {
-  background: rgba(78,159,255,.15);
-  border-color: rgba(78,159,255,.4);
-  color: var(--primary);
+  filter: brightness(1.35) saturate(1.2);
+  box-shadow: 0 0 0 2px currentColor;
 }
 .suno-chip--sm { padding: 4px 10px; font-size: .74rem; }
 
@@ -3962,15 +4004,30 @@ html, body {
 
   /* ── Style chips row ─────────────────────────────────────── */
   .suno-style-chips-row {
-    padding: 8px 8px 12px;
-    gap: 4px;
-    overflow: hidden;
+    padding: 8px 10px 14px;
+    gap: 0;
+    overflow: visible;     /* must NOT be hidden — chips need to scroll */
+    flex-wrap: nowrap;
+  }
+  /* Hide desktop arrow buttons — touch swipe handles scrolling on mobile */
+  .suno-chips-arrow {
+    display: none;
   }
   .suno-style-chips {
     overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
+    -webkit-overflow-scrolling: touch; /* momentum scrolling on iOS */
     flex: 1;
     min-width: 0;
+    gap: 8px;
+    padding: 4px 2px 6px;
+    scroll-snap-type: x proximity;
+  }
+  /* Each chip snaps slightly for tactile feel */
+  .suno-chip {
+    scroll-snap-align: start;
+    flex-shrink: 0;
+    padding: 6px 14px;
+    font-size: .8rem;
   }
   .suno-style-input {
     font-size: .85rem;
