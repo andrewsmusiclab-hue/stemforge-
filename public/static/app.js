@@ -1103,6 +1103,8 @@ document.addEventListener('DOMContentLoaded', () => {
     menu.style.cssText = 'position:fixed;z-index:99999;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);min-width:200px;overflow:hidden;padding:4px 0';
 
     const isOneshot = cardTab === 'oneshots';
+    const _plan = (window._sfUser && window._sfUser.plan) || 'free';
+    const isFree = _plan === 'free';
 
     const items = [];
 
@@ -1110,21 +1112,30 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
       items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song — 2 Credits', action: () => {
-        // Navigate to the generator page with ?extend=jobId — the page will auto-open the popup
         window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
       }});
     }
 
     if (stereoUrl) {
-      items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
-        action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
+      if (isFree) {
+        // Show locked download item for free users — clicking opens upgrade prompt
+        items.push({ icon: 'fa-lock', label: isOneshot ? 'Download (upgrade to unlock)' : 'Download Track (upgrade to unlock)',
+          action: () => {
+            const upgradeModal = document.getElementById('sf-dash-upgrade');
+            if (upgradeModal) upgradeModal.style.display = 'flex';
+            else window.location.href = '/pricing';
+          }
+        });
+      } else {
+        items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
+          action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
+      }
     }
 
-    // Get Stems — for full beats (not oneshots)
+    // Get Stems — for full beats (not oneshots), paid plans only
     if (!isOneshot && stereoUrl) {
       items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
         if (typeof window.openStemsPanel === 'function') {
-          const _plan = (window._sfUser && window._sfUser.plan) || 'free';
           window.openStemsPanel(jobId, stereoUrl, safeTitle, _plan);
         }
       }});
@@ -1189,7 +1200,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download Full Track</h3>
         <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your format:</p>
         <div style="display:flex;flex-direction:column;gap:10px">
-          <a href="${stereoUrl}" download="${title}.mp3"
+          <a href="/api/download-mp3/${jobId}" download="${title}.mp3"
              onclick="document.getElementById('sf-download-modal').remove()"
              style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,var(--primary),#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
             <i class="fas fa-file-audio"></i> Download MP3
@@ -3091,14 +3102,23 @@ window.selectOneshotSfxType = function(btn) {
 window.selectOneshotType = window.selectOneshotSfxType;
 
 window.generateOneshotSfx = async function() {
+  // Pro Artist only gate
+  const _plan = (window._sfUser && window._sfUser.plan) || 'free';
+  if (_plan !== 'pro' && _plan !== 'developer') {
+    if (typeof showUpgradeToast === 'function') {
+      showUpgradeToast('One Shot Creator is a Pro Artist feature. Upgrade to unlock.');
+    } else {
+      alert('One Shot Creator requires the Pro Artist plan. Upgrade to unlock.');
+    }
+    return;
+  }
+
   const btn = document.getElementById('oneshot-sfx-gen-btn');
   const statusEl = document.getElementById('oneshot-sfx-status');
   const statusMsg = document.getElementById('oneshot-sfx-status-msg');
   const resultEl = document.getElementById('oneshot-sfx-result');
 
   const description = document.getElementById('oneshot-sfx-desc')?.value?.trim() || '';
-  const durInput = document.getElementById('oneshot-sfx-dur');
-  const duration_seconds = durInput ? parseFloat(durInput.value) : 2;
 
   if (!description) {
     const descEl = document.getElementById('oneshot-sfx-desc');
@@ -3111,47 +3131,57 @@ window.generateOneshotSfx = async function() {
     return;
   }
 
+  const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; } };
+
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
   if (statusEl) statusEl.style.display = 'block';
-  if (statusMsg) statusMsg.textContent = 'Sending to ElevenLabs SFX…';
+  if (statusMsg) statusMsg.textContent = 'ElevenLabs AI is crafting your sound…';
   if (resultEl) resultEl.style.display = 'none';
 
   try {
     const res = await fetch('/api/generate-oneshot-sfx', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: description, duration_seconds })
+      body: JSON.stringify({ prompt: description })
     });
     const data = await res.json();
 
     if (!res.ok) {
-      if (data.limit_reached) {
+      resetBtn();
+      if (statusEl) statusEl.style.display = 'none';
+      if (data.upgrade) {
+        if (typeof showUpgradeToast === 'function') showUpgradeToast('One Shot Creator requires the Pro Artist plan.');
+        else alert('One Shot Creator requires the Pro Artist plan.');
+      } else if (data.limit_reached) {
         alert('Not enough points. ' + (data.error || ''));
       } else {
         alert('Error: ' + (data.error || 'Generation failed'));
       }
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; }
-      if (statusEl) statusEl.style.display = 'none';
       return;
     }
 
-    // ElevenLabs returns audio directly — no polling needed
+    resetBtn();
     if (statusEl) statusEl.style.display = 'none';
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; }
 
-    const audioUrl = data.audio_url;
-    const safeName = description.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(0, 40);
+    // Backend returns base64-encoded MP3 bytes — build a data URI for instant playback
+    const dataUri = 'data:audio/mpeg;base64,' + data.audio_b64;
+    const displayTitle = data.title || description;
+    const safeName = displayTitle.replace(/[^a-z0-9]/gi, '_').toLowerCase().slice(0, 50) || 'oneshot';
 
     const audio = document.getElementById('oneshot-sfx-audio');
     const titleEl = document.getElementById('oneshot-sfx-result-title');
     const dlMp3 = document.getElementById('oneshot-sfx-dl-mp3');
 
-    if (audio) { audio.src = audioUrl; audio.load(); audio.play().catch(() => {}); }
-    if (titleEl) titleEl.textContent = description.charAt(0).toUpperCase() + description.slice(1, 60) + ' — Ready';
-    if (dlMp3) { dlMp3.href = audioUrl; dlMp3.setAttribute('download', safeName + '.mp3'); }
+    if (audio) {
+      audio.src = dataUri;
+      audio.load();
+      audio.play().catch(() => {});
+    }
+    if (titleEl) titleEl.textContent = displayTitle.charAt(0).toUpperCase() + displayTitle.slice(1) + ' — Ready';
+    if (dlMp3) { dlMp3.href = dataUri; dlMp3.setAttribute('download', safeName + '.mp3'); }
     if (resultEl) resultEl.style.display = 'block';
 
-    // Invalidate oneshots library tab cache
+    // Invalidate oneshots library tab cache so new shot appears
     if (window._libLoaded) window._libLoaded.oneshots = false;
 
     // Refresh sidebar points
@@ -3170,7 +3200,7 @@ window.generateOneshotSfx = async function() {
     }).catch(() => {});
 
   } catch(err) {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(5 pts)</span>'; }
+    resetBtn();
     if (statusEl) statusEl.style.display = 'none';
     alert('Network error: ' + err.message);
   }

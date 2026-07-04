@@ -2938,11 +2938,13 @@ app.get('/api/projects', async (c) => {
       rows = res.results || []
     } else {
       // beats tab: regular beats (not one-shots, not extended), not deleted
+      // Note: song_generate ext_type is a relic of the old two-song feature — those are valid beats
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
          AND json_extract(data,'$.status') = 'ready'
-         AND json_extract(data,'$.extend_task_type') IS NULL
+         AND (json_extract(data,'$.extend_task_type') IS NULL
+              OR json_extract(data,'$.extend_task_type') = 'song_generate')
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
@@ -4312,8 +4314,7 @@ app.post('/api/upload-reference', async (c) => {
   })
 })
 
-// POST /api/generate-oneshot — generate a one-shot percussive sound (Pro Artist only)
-// Uses Mureka instrumental with a very short, percussive prompt
+// POST /api/generate-oneshot — legacy Mureka endpoint (kept for backward compat, now requires pro)
 app.post('/api/generate-oneshot', async (c) => {
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -4405,8 +4406,9 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ElevenLabs SFX ONE SHOT CREATOR
-// POST /api/generate-oneshot-sfx — generate a one-shot using ElevenLabs sound FX API
-// Available to ALL plans (free, creator, pro) — deducts 5 pts per generation
+// POST /api/generate-oneshot-sfx — Pro Artist only, 5 pts, returns audio as base64
+// ElevenLabs AI generates completely original audio from the text prompt.
+// Duration is omitted — ElevenLabs auto-determines the natural length.
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/generate-oneshot-sfx', async (c) => {
   if (!c.env.ELEVENLABS_API_KEY) return c.json({ error: 'ElevenLabs not configured' }, 500)
@@ -4414,22 +4416,25 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
 
-  // Deduct 5 pts before generation (refunded on hard error)
+  // Pro Artist only
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'One Shot Creator requires the Pro Artist plan.', upgrade: true }, 403)
+  }
+
+  // Deduct 5 pts before generation (refunded on hard API error)
   const SFX_COST = 5
   if (c.env.DB) {
     const fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number}>()
     if (!fresh || fresh.gens_used + SFX_COST > fresh.gens_limit) {
-      return c.json({ error: `Not enough points. One Shot generation costs ${SFX_COST} points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+      return c.json({ error: `Not enough points. One Shot costs ${SFX_COST} points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
     }
     await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
   }
 
-  const { prompt, duration_seconds } = await c.req.json<{ prompt: string; duration_seconds?: number }>()
+  const { prompt } = await c.req.json<{ prompt: string }>()
   if (!prompt?.trim()) return c.json({ error: 'prompt is required' }, 400)
 
-  // Clamp duration: ElevenLabs accepts 0.5 – 22 seconds
-  const dur = Math.min(22, Math.max(0.5, duration_seconds || 2))
-
+  // Call ElevenLabs — omit duration_seconds so AI auto-determines natural length
   const res = await fetch('https://api.elevenlabs.io/v1/sound-generation', {
     method: 'POST',
     headers: {
@@ -4437,39 +4442,47 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      text: prompt,
-      duration_seconds: dur,
+      text: prompt.trim(),
       prompt_influence: 0.3
     })
   })
 
   if (!res.ok) {
     const errText = await res.text().catch(() => 'unknown error')
-    // Refund pts if ElevenLabs hard-failed
+    // Refund pts on hard API failure
     if (c.env.DB) {
       await c.env.DB.prepare('UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?').bind(SFX_COST, user.id).run()
     }
     return c.json({ error: `ElevenLabs error ${res.status}: ${errText}` }, 502)
   }
 
-  // ElevenLabs /v1/sound-generation returns audio bytes directly
+  // ElevenLabs returns raw audio bytes (MP3)
   const audioBytes = await res.arrayBuffer()
 
-  // Store in R2 so we can serve it later
+  // Convert to base64 so the browser can play it directly without a separate fetch
+  const base64Audio = btoa(String.fromCharCode(...new Uint8Array(audioBytes)))
+
+  // Build a safe display title from the prompt
+  const displayTitle = prompt.trim().slice(0, 60)
   const sfxId = 'sfx_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8)
-  const r2Key = `oneshots/${sfxId}.mp3`
+
+  // Try storing in R2 for library playback later (optional — graceful fail)
   if (c.env.IMAGES) {
-    await c.env.IMAGES.put(r2Key, audioBytes, { httpMetadata: { contentType: 'audio/mpeg' } })
+    try {
+      await c.env.IMAGES.put(`oneshots/${sfxId}.mp3`, audioBytes, { httpMetadata: { contentType: 'audio/mpeg' } })
+    } catch { /* R2 not bound or failed — skip */ }
   }
 
-  // Save to jobs table with is_oneshot=1
+  // Save to jobs table with is_oneshot=1 so it appears in the One Shots library tab
   if (c.env.DB) {
     try {
       await ensureTable(c.env.DB)
+      // audio_url: prefer R2 path if available, fall back to base64 data URI stored in DB
+      const audioUrl = c.env.IMAGES ? `/api/oneshot-audio/${sfxId}` : `data:audio/mpeg;base64,${base64Audio}`
       const jobData = {
         id: sfxId, status: 'ready', created_at: Date.now(),
-        sound_type: 'one-shot', audio_url: `/api/oneshot-audio/${sfxId}`,
-        title: prompt.slice(0, 60), prompt,
+        sound_type: displayTitle, audio_url: audioUrl,
+        title: displayTitle, prompt: prompt.trim(),
         thumbnail_seed: Math.floor(Math.random() * 360),
         is_sfx: true
       }
@@ -4479,20 +4492,41 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     } catch { /* ignore save errors */ }
   }
 
-  return c.json({ ok: true, sfx_id: sfxId, audio_url: `/api/oneshot-audio/${sfxId}` })
+  // Return base64 audio so browser plays it immediately (no second round-trip needed)
+  return c.json({
+    ok: true,
+    sfx_id: sfxId,
+    audio_b64: base64Audio,
+    title: displayTitle
+  })
 })
 
-// GET /api/oneshot-audio/:id — serve one-shot audio from R2
+// GET /api/oneshot-audio/:id — serve one-shot audio from R2 (for library playback)
 app.get('/api/oneshot-audio/:id', async (c) => {
   const id = c.req.param('id')
-  if (!c.env.IMAGES) return c.json({ error: 'Storage not configured' }, 500)
+  if (!c.env.IMAGES) {
+    // R2 not bound — look up the base64 data URI stored in the job record
+    if (c.env.DB) {
+      const row = await c.env.DB.prepare(`SELECT data FROM jobs WHERE id=?`).bind(id).first<{data:string}>()
+      if (row) {
+        const job = JSON.parse(row.data) as any
+        if (job.audio_url?.startsWith('data:audio/mpeg;base64,')) {
+          const b64 = job.audio_url.split(',')[1]
+          const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+          return new Response(bytes, { headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'no-store' } })
+        }
+      }
+    }
+    return c.json({ error: 'Audio not available' }, 404)
+  }
   const obj = await c.env.IMAGES.get(`oneshots/${id}.mp3`)
   if (!obj) return c.json({ error: 'Not found' }, 404)
+  const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_')
   return new Response(obj.body, {
     headers: {
       'Content-Type': 'audio/mpeg',
       'Cache-Control': 'public, max-age=31536000',
-      'Content-Disposition': `attachment; filename="${id}.mp3"`
+      'Content-Disposition': `inline; filename="${safeFilename}.mp3"`
     }
   })
 })
@@ -4519,6 +4553,31 @@ app.get('/api/download-wav/:id', async (c) => {
     headers: {
       'Content-Type': 'audio/wav',
       'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+      'Cache-Control': 'no-store'
+    }
+  })
+})
+
+// GET /api/download-mp3/:id — proxy stereo URL as MP3 with proper track title filename
+app.get('/api/download-mp3/:id', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  if (user.plan === 'free') {
+    return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan.', locked: true, upgrade: true }, 403)
+  }
+  const jobId = c.req.param('id')
+  const job = await getJob(c.env.DB, jobId)
+  if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
+  const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
+    .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
+  const upstream = await fetch(job.stereo_url)
+  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  return new Response(upstream.body, {
+    headers: {
+      'Content-Type': 'audio/mpeg',
+      'Content-Disposition': `attachment; filename="${safeTitle}.mp3"`,
       'Cache-Control': 'no-store'
     }
   })
@@ -4710,7 +4769,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-9'
+const ASSET_VER = '20260704-10'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6226,46 +6285,26 @@ function generatorPage() {
   </div>
 </div>
 
-<!-- One Shot Creator Popup -->
+<!-- One Shot Creator Popup (Pro Artist only) -->
 <div id="creator-popup-oneshot" class="creator-popup" style="display:none">
   <div class="creator-popup__header" id="creator-popup-oneshot-header">
-    <span class="creator-popup__title"><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator</span>
+    <span class="creator-popup__title"><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator <span style="font-size:.7rem;opacity:.6;font-weight:400;margin-left:4px">Pro Artist</span></span>
     <button class="creator-popup__close" onclick="closeCreatorPopup('oneshot')"><i class="fas fa-times"></i></button>
   </div>
   <div class="creator-popup__body">
 
-    <!-- Quick-pick sound types -->
-    <div style="margin-bottom:14px">
-      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:8px">Sound Type</label>
-      <div id="oneshot-type-pills" style="display:flex;flex-wrap:wrap;gap:6px">
-        <button class="oneshot-type-btn oneshot-type-btn--active" data-sound="kick drum" onclick="selectOneshotSfxType(this)">Kick</button>
-        <button class="oneshot-type-btn" data-sound="snare drum" onclick="selectOneshotSfxType(this)">Snare</button>
-        <button class="oneshot-type-btn" data-sound="hi-hat" onclick="selectOneshotSfxType(this)">Hi-Hat</button>
-        <button class="oneshot-type-btn" data-sound="808 bass hit" onclick="selectOneshotSfxType(this)">808</button>
-        <button class="oneshot-type-btn" data-sound="clap" onclick="selectOneshotSfxType(this)">Clap</button>
-        <button class="oneshot-type-btn" data-sound="crash cymbal" onclick="selectOneshotSfxType(this)">Crash</button>
-        <button class="oneshot-type-btn" data-sound="percussion hit" onclick="selectOneshotSfxType(this)">Perc</button>
-        <button class="oneshot-type-btn" data-sound="fx riser" onclick="selectOneshotSfxType(this)">FX Riser</button>
-      </div>
-    </div>
+    <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px;line-height:1.5">
+      <i class="fas fa-info-circle" style="color:var(--primary);margin-right:5px"></i>
+      Describe any sound — AI will generate it from scratch using ElevenLabs. Duration is chosen automatically based on what you request.
+    </p>
 
-    <!-- Describe the sound -->
-    <div style="margin-bottom:14px">
-      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">Describe the sound</label>
-      <textarea id="oneshot-sfx-desc" rows="3"
-        placeholder="e.g. punchy 808 bass hit with deep sub, distorted tail, trap style"
-        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.5"></textarea>
-    </div>
-
-    <!-- Duration slider -->
+    <!-- Prompt textarea — the only input needed -->
     <div style="margin-bottom:16px">
-      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">
-        Duration: <span id="oneshot-sfx-dur-label" style="color:var(--primary);font-weight:700">2.0s</span>
-        <span style="color:var(--muted);font-size:.72rem;margin-left:6px">(0.5 – 8s)</span>
-      </label>
-      <input type="range" id="oneshot-sfx-dur" min="0.5" max="8" step="0.5" value="2"
-        style="width:100%;accent-color:var(--primary)"
-        oninput="document.getElementById('oneshot-sfx-dur-label').textContent=parseFloat(this.value).toFixed(1)+'s'"/>
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">Describe your sound</label>
+      <textarea id="oneshot-sfx-desc" rows="4"
+        placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
+        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55"></textarea>
+      <p style="color:var(--muted);font-size:.74rem;margin:5px 0 0">The more detail you give, the better the result. AI determines the natural duration automatically.</p>
     </div>
 
     <!-- Generate button -->
@@ -6274,9 +6313,9 @@ function generatorPage() {
     </button>
 
     <!-- Status -->
-    <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:10px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
+    <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
       <i class="fas fa-spinner fa-spin" style="color:var(--primary);margin-right:6px"></i>
-      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">Generating…</span>
+      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">ElevenLabs AI is crafting your sound…</span>
     </div>
 
     <!-- Result -->
@@ -6288,7 +6327,7 @@ function generatorPage() {
       <audio id="oneshot-sfx-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
       <div style="display:flex;gap:8px">
         <a id="oneshot-sfx-dl-mp3" href="#" class="btn btn--outline btn--sm" style="flex:1;text-align:center" download>
-          <i class="fas fa-download"></i> MP3
+          <i class="fas fa-download"></i> Download MP3
         </a>
       </div>
     </div>
