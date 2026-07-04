@@ -1404,8 +1404,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ── Card collapses (Lyrics / Styles) ─────────────────────────
-  ['lyrics', 'styles'].forEach(id => {
+  // ── Card collapses (Prompt / Lyrics / Styles) ────────────────
+  ['prompt', 'lyrics', 'styles'].forEach(id => {
     const btn  = document.getElementById(id + '-collapse-btn');
     const body = document.getElementById(id + '-body');
     const icon = document.getElementById(id + '-collapse-icon');
@@ -1484,7 +1484,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Build the combined prompt — genre/style MUST come first so GPT honours it
     const parts = [];
     if (style) parts.push(style);  // genre first
-    if (activeTab === 'write' && lyrics) parts.push('lyrics: ' + lyrics);
     if (prompt) parts.push(prompt);
     if (instrumental) parts.push('instrumental only, no vocals');
     if (instruments) parts.push('include instruments: ' + instruments);
@@ -1492,12 +1491,40 @@ document.addEventListener('DOMContentLoaded', () => {
     return {
       genre: style || '',
       prompt: parts.join('. '),
+      // lyrics are passed separately — backend routes to song/generate when present
+      lyrics: (activeTab === 'write' && lyrics) ? lyrics : '',
       vocal_space: instrumental ? 'none' : 'high',
       instruments_include: instruments ? instruments.split(',').map(s=>s.trim()).filter(Boolean) : [],
       instruments_exclude: [],
       title,
       instrumental
     };
+  }
+
+  // ── Live duration estimate from lyrics ───────────────────────
+  function estimateLyricsDuration(text) {
+    if (!text || !text.trim()) return null;
+    const wordCount = text.trim().split(/\s+/).length;
+    const estimatedSec = Math.round((wordCount / 120) * 60);
+    const clamped = Math.max(60, Math.min(300, estimatedSec));
+    return Math.ceil(clamped / 15) * 15;
+  }
+  function fmtDuration(sec) {
+    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+  }
+  const lyricsTextarea = document.getElementById('gen-lyrics');
+  const lyricsDurationHint = document.getElementById('lyrics-duration-hint');
+  const lyricsDurationText = document.getElementById('lyrics-duration-text');
+  if (lyricsTextarea) {
+    lyricsTextarea.addEventListener('input', () => {
+      const dur = estimateLyricsDuration(lyricsTextarea.value);
+      if (dur && lyricsTextarea.value.trim()) {
+        if (lyricsDurationHint) lyricsDurationHint.style.display = 'flex';
+        if (lyricsDurationText) lyricsDurationText.textContent = 'Estimated duration: ~' + fmtDuration(dur);
+      } else {
+        if (lyricsDurationHint) lyricsDurationHint.style.display = 'none';
+      }
+    });
   }
 
   function setStep(step, state) {
@@ -1619,6 +1646,7 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify({
           prompt: inputs.prompt,
           genre: inputs.genre,
+          lyrics: inputs.lyrics || '',
           vocal_space: inputs.vocal_space,
           energy: inputs.energy,
           instruments_include: inputs.instruments_include,

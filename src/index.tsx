@@ -765,8 +765,56 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
   return data.id as string
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  STEP 2b — MUREKA SONG GENERATION (with user lyrics)
+//  Uses /v1/song/generate — respects lyrics text and duration
+// ═══════════════════════════════════════════════════════════════
+
+async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyrics: string, vocalGender?: string, userDurationSec?: number): Promise<string> {
+  const durationSec = userDurationSec || blueprint.duration_seconds || 180
+
+  // Build a clean style prompt (no lyrics or vocal refs — those go in the lyrics field)
+  let stylePrompt = blueprint.mureka_prompt
+    .replace(/\bno vocals?\b/gi, '')
+    .replace(/\bpurely instrumental\b/gi, '')
+    .replace(/\bno vocal chops?\b/gi, '')
+    .replace(/\binstrumental only\b/gi, '')
+    .trim()
+    .replace(/,\s*,/g, ',')
+    .replace(/,\s*$/, '')
+  if (vocalGender && vocalGender !== 'off') {
+    stylePrompt = stylePrompt.replace(/,?\s*$/, '') + `, ${vocalGender} vocalist`
+  }
+  if (stylePrompt.length > 200) stylePrompt = stylePrompt.slice(0, 197) + '...'
+
+  const body: Record<string, any> = {
+    prompt: stylePrompt,
+    lyrics: userLyrics,
+    duration: durationSec,
+    model: 'auto'
+  }
+
+  const res = await fetch(`${MUREKA_BASE}/song/generate`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  })
+
+  if (!res.ok) {
+    const err = await res.json() as any
+    throw new Error(`Mureka song error: ${err?.error?.message || err?.message || res.status}`)
+  }
+
+  const data = await res.json() as any
+  // song/generate returns { id: "task_id" }
+  return data.id as string
+}
+
 // Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
-async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number, refMode?: string, refPrompt?: string) {
+async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number, refMode?: string, refPrompt?: string, userLyrics?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -789,11 +837,20 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
 
     job.blueprint = blueprint
 
-    // Step 2 — kick off Mureka instrumental (instant — just submits the job)
+    // Step 2 — kick off Mureka (instant — just submits the job)
     job.status = 'generating'
     await setJob(db, { ...job })
 
-    const stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender, userDurationSec, refMode, refPrompt)
+    // If user provided lyrics → route to Mureka song/generate (respects lyrics + duration)
+    // Otherwise → instrumental/generate (no vocals)
+    let stereoTaskId: string
+    if (userLyrics) {
+      stereoTaskId = await startSongGeneration(blueprint, env.MUREKA_API_KEY, userLyrics, (job as any).vocal_gender, userDurationSec)
+      ;(job as any).extend_task_type = 'song_generate'  // tells advancePipeline to use song/query
+    } else {
+      stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender, userDurationSec, refMode, refPrompt)
+    }
+
     job.stereo_task_id = stereoTaskId
     await setJob(db, { ...job })
 
@@ -848,9 +905,12 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   if (job.status !== 'generating' || !job.stereo_task_id) return job
 
   try {
-    // Route polling based on task type
-    const isSongExtend = (job as any).extend_task_type === 'song_extend'
-    const stereoUrl = isSongExtend
+    // Route polling based on task type:
+    // - song_extend and song_generate both use Mureka song/query endpoint
+    // - instrumental/generate uses Mureka instrumental/query endpoint
+    const taskType = (job as any).extend_task_type
+    const useSongQuery = taskType === 'song_extend' || taskType === 'song_generate'
+    const stereoUrl = useSongQuery
       ? await pollSongExtendStatus(job.stereo_task_id, env.MUREKA_API_KEY)
       : await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
 
@@ -966,7 +1026,7 @@ async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, ref_mode, ref_prompt, vocal_gender, beat_count } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, ref_mode, ref_prompt, vocal_gender, beat_count, lyrics } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -1024,9 +1084,12 @@ app.post('/api/generate', async (c) => {
     title: title || undefined,
     thumbnail_seed: Math.floor(Math.random() * 360)
   }
-  // Store vocal_gender and beat_count as extended job properties
+  // Store vocal_gender, beat_count, and lyrics as extended job properties
   ;(job as any).vocal_gender = vocal_gender || 'off'
   ;(job as any).beat_count = beat_count || 1
+  if (lyrics && lyrics.trim()) {
+    ;(job as any).user_lyrics = lyrics.trim()
+  }
   await setJob(c.env.DB, job, userId)
 
   // If beat_count = 2 (Creator+), deduct 10 more pts and kick off a second generation
@@ -1038,9 +1101,21 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-  // Parse user_duration: expect seconds as number (60, 90, 120, etc.)
-  const userDurationSec = user_duration ? Math.max(30, Math.min(300, parseInt(String(user_duration), 10) || 0)) || undefined : undefined
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined))
+
+  // Parse user_duration. If the user provided lyrics, auto-calculate duration from word count
+  // (avg rap: ~130 words/min, avg pop: ~110 words/min — use 120 wpm as a safe middle ground)
+  let userDurationSec: number | undefined
+  if (lyrics && lyrics.trim()) {
+    const wordCount = lyrics.trim().split(/\s+/).length
+    const estimatedSec = Math.round((wordCount / 120) * 60)
+    // Clamp to 60–300 s, round up to nearest 15 s so Mureka gets a clean number
+    const clamped = Math.max(60, Math.min(300, estimatedSec))
+    userDurationSec = Math.ceil(clamped / 15) * 15
+  } else if (user_duration) {
+    userDurationSec = Math.max(30, Math.min(300, parseInt(String(user_duration), 10) || 0)) || undefined
+  }
+
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -4549,7 +4624,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-2'
+const ASSET_VER = '20260704-3'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5690,7 +5765,25 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- SECTION 1: Lyrics / Prompt / Instrumental -->
+    <!-- SECTION 1: Prompt — sits above Lyrics/Instrumental -->
+    <div class="suno-card" id="card-prompt">
+      <div class="suno-card__header">
+        <button class="suno-card__collapse" id="prompt-collapse-btn" aria-label="Toggle">
+          <i class="fas fa-chevron-down" id="prompt-collapse-icon"></i>
+        </button>
+        <span class="suno-card__title">Prompt</span>
+      </div>
+      <div class="suno-card__body" id="prompt-body">
+        <textarea class="suno-textarea" id="gen-prompt" rows="4"
+          placeholder="Describe your beat... e.g. dark surf noir trap, moody Rhodes, open hi-hats, deep 808 bass, cinematic and emotional"></textarea>
+        <div class="suno-textarea-actions">
+          <button class="suno-icon-btn" title="Magic Wand" id="prompt-magic-btn" data-tooltip="Auto-suggest a prompt based on your style"><i class="fas fa-magic"></i></button>
+          <button class="suno-icon-btn" title="Expand" data-tooltip="Expand or collapse the text area" onclick="document.getElementById('gen-prompt').rows=document.getElementById('gen-prompt').rows===4?10:4"><i class="fas fa-expand-arrows-alt"></i></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 2: Lyrics / Instrumental -->
     <div class="suno-card" id="card-lyrics">
       <div class="suno-card__header">
         <button class="suno-card__collapse" id="lyrics-collapse-btn" aria-label="Toggle">
@@ -5699,7 +5792,6 @@ function generatorPage() {
         <span class="suno-card__title">Lyrics</span>
         <div class="suno-tab-group" id="lyrics-tabs">
           <button class="suno-tab active" data-tab="write" data-tooltip="Write your own lyrics — use [Verse], [Chorus] tags">Write</button>
-          <button class="suno-tab" data-tab="prompt" data-tooltip="Describe the vibe in plain text — let the AI interpret it">Prompt</button>
           <button class="suno-tab" data-tab="instrumental" data-tooltip="No vocals — generate a pure instrumental beat">Instrumental</button>
         </div>
       </div>
@@ -5707,11 +5799,16 @@ function generatorPage() {
         <!-- Write tab -->
         <div class="suno-tab-panel active" id="tab-write">
           <textarea class="suno-textarea" id="gen-lyrics" rows="5"
-            placeholder="[Verse]&#10;Write your lyrics here, or describe what you want...&#10;&#10;Section tags like [Chorus] help structure your track."></textarea>
+            placeholder="[Verse]&#10;Write your lyrics here...&#10;&#10;Section tags like [Chorus] help structure your track.&#10;Duration is auto-calculated from your lyrics."></textarea>
           <div class="suno-textarea-actions">
             <button class="suno-icon-btn" title="Magic Wand" id="lyrics-magic-btn" data-tooltip="Auto-suggest lyric ideas based on your style"><i class="fas fa-magic"></i></button>
             <button class="suno-icon-btn" title="Generate Lyrics with AI" id="gen-lyrics-btn" data-tooltip="Let AI write full lyrics for you based on your style settings" style="display:flex;align-items:center;gap:5px;padding:6px 10px;font-size:.78rem;font-weight:600;border-radius:8px;background:linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.18));border:1px solid rgba(78,159,255,.35);color:var(--primary);white-space:nowrap"><i class="fas fa-wand-magic-sparkles"></i> Generate Lyrics</button>
             <button class="suno-icon-btn" title="Expand" data-tooltip="Expand or collapse the text area" onclick="document.getElementById('gen-lyrics').rows=document.getElementById('gen-lyrics').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
+          </div>
+          <!-- Live duration estimate from lyrics -->
+          <div id="lyrics-duration-hint" style="display:none;margin-top:6px;font-size:.75rem;color:var(--muted);display:flex;align-items:center;gap:5px">
+            <i class="fas fa-clock" style="color:var(--primary)"></i>
+            <span id="lyrics-duration-text">Estimated duration: —</span>
           </div>
           <!-- Generate Lyrics panel — shown when gen-lyrics-btn is clicked -->
           <div id="gen-lyrics-panel" style="display:none;margin-top:12px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
@@ -5719,15 +5816,6 @@ function generatorPage() {
             <textarea id="gen-lyrics-desc" class="suno-textarea" rows="3" placeholder="e.g. A song about grinding late nights in the studio, chasing dreams, staying loyal to the team..."></textarea>
             <button id="gen-lyrics-submit" onclick="generateLyricsAI()" style="margin-top:10px;width:100%;padding:10px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:.88rem"><i class="fas fa-sparkles"></i> Generate Lyrics</button>
             <div id="gen-lyrics-status" style="display:none;margin-top:8px;font-size:.8rem;color:var(--muted)"></div>
-          </div>
-        </div>
-        <!-- Prompt tab -->
-        <div class="suno-tab-panel" id="tab-prompt">
-          <textarea class="suno-textarea" id="gen-prompt" rows="5"
-            placeholder="Describe your beat... e.g. dark surf noir trap, moody Rhodes, open hi-hats, deep 808 bass, cinematic and emotional"></textarea>
-          <div class="suno-textarea-actions">
-            <button class="suno-icon-btn" title="Magic Wand" id="prompt-magic-btn"><i class="fas fa-magic"></i></button>
-            <button class="suno-icon-btn" title="Expand" onclick="document.getElementById('gen-prompt').rows=document.getElementById('gen-prompt').rows===5?12:5"><i class="fas fa-expand-arrows-alt"></i></button>
           </div>
         </div>
         <!-- Instrumental tab (toggle) -->
