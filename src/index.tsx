@@ -1026,7 +1026,7 @@ async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, ref_mode, ref_prompt, vocal_gender, beat_count, lyrics } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, ref_mode, ref_prompt, vocal_gender, lyrics } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -1084,9 +1084,8 @@ app.post('/api/generate', async (c) => {
     title: title || undefined,
     thumbnail_seed: Math.floor(Math.random() * 360)
   }
-  // Store vocal_gender, beat_count, and lyrics as extended job properties
+  // Store vocal_gender and lyrics as extended job properties
   ;(job as any).vocal_gender = vocal_gender || 'off'
-  ;(job as any).beat_count = beat_count || 1
   if (lyrics && lyrics.trim()) {
     ;(job as any).user_lyrics = lyrics.trim()
   }
@@ -1109,39 +1108,7 @@ app.post('/api/generate', async (c) => {
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
   c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined))
 
-  // If beat_count = 2 (Creator+), deduct 10 more pts and kick off a second independent generation
-  let job2Id: string | null = null
-  if (beat_count === 2 && (userPlan === 'pro' || userPlan === 'creator' || userPlan === 'developer') && userId) {
-    try {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 10 WHERE id = ?`).bind(userId).run()
-      // Create second job with same params but fresh ID + slightly different seed
-      job2Id = makeJobId()
-      const job2: Job = {
-        id: job2Id,
-        status: 'pending',
-        created_at: Date.now(),
-        prompt: fullPrompt,
-        title: title ? title + ' (v2)' : undefined,
-        thumbnail_seed: Math.floor(Math.random() * 360)
-      }
-      ;(job2 as any).vocal_gender = vocal_gender || 'off'
-      ;(job2 as any).beat_count = 1
-      if (lyrics && lyrics.trim()) {
-        ;(job2 as any).user_lyrics = lyrics.trim()
-      }
-      await setJob(c.env.DB, job2, userId)
-      // Delay job2 pipeline by 8 s so job1's Mureka submission completes first,
-      // avoiding concurrent-submission errors from Mureka's per-account job queue.
-      const job2IdCopy = job2Id
-      c.executionCtx.waitUntil(
-        new Promise<void>(resolve => setTimeout(resolve, 8000)).then(() =>
-          startPipeline(job2IdCopy, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined)
-        )
-      )
-    } catch {}
-  }
-
-  return c.json({ job_id: jobId, job2_id: job2Id, status: 'pending' })
+  return c.json({ job_id: jobId, status: 'pending' })
 })
 
 // POST /api/poll/:id — called by frontend every ~5s while status=generating
@@ -4648,7 +4615,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-7'
+const ASSET_VER = '20260704-8'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5884,21 +5851,6 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- SECTION 3: Beat Count Toggle -->
-    <div class="suno-card suno-card--slim">
-      <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
-        <i class="fas fa-layer-group" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
-        <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Beats</span>
-        <div class="beat-count-group" id="beat-count-group">
-          <button class="beat-count-btn" data-count="1" id="bc-1" onclick="setBeatCount(1)">
-            <i class="fas fa-music"></i> 1 Beat
-          </button>
-          <button class="beat-count-btn beat-count-btn--active" data-count="2" id="bc-2" onclick="setBeatCount(2)">
-            <i class="fas fa-music"></i> 2 Beats <span class="beat-count-credit-badge">20 pts</span>
-          </button>
-        </div>
-      </div>
-    </div>
 
     <!-- SECTION 4: Styles -->
     <div class="suno-card" id="card-styles">
@@ -5965,7 +5917,7 @@ function generatorPage() {
     <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline">
       <button class="suno-create-btn" id="gen-full-btn"
-        data-tooltip="Generate your beat using AI — uses 1 point (or 2 if 2 beats selected)">
+        data-tooltip="Generate your beat using AI — uses 10 points">
         <i class="fas fa-music"></i> Create
       </button>
 
@@ -6247,7 +6199,6 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full AI beat generation (10 pts/beat)</li>
-          <li><i class="fas fa-check"></i> Generate 2 beats at once (20 pts)</li>
           <li><i class="fas fa-check"></i> Extend song (20 pts)</li>
           <li><i class="fas fa-check"></i> Auto-split — 5 stems (50 pts)</li>
           <li><i class="fas fa-check"></i> Vocal + Instrumental split (20 pts)</li>

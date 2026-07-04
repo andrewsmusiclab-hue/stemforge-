@@ -1662,7 +1662,6 @@ document.addEventListener('DOMContentLoaded', () => {
           instruments_exclude: inputs.instruments_exclude,
           title: inputs.title || '',
           vocal_gender: window._vocalGender || 'off',
-          beat_count: window._beatCount || 1,
           user_duration: window._userDuration || 0
         })
       });
@@ -1688,7 +1687,7 @@ document.addEventListener('DOMContentLoaded', () => {
         throw new Error(err.error || 'Failed to start generation');
       }
 
-      const { job_id, job2_id } = await safeJson(res);
+      const { job_id } = await safeJson(res);
       currentJobId = job_id;
 
       genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
@@ -1947,10 +1946,6 @@ document.addEventListener('DOMContentLoaded', () => {
             genBtn.disabled = false;
             // Invalidate library cache so new beat appears immediately when user navigates to library
             if (window._libLoaded) { window._libLoaded.beats = false; }
-            // If a second song was generated, start polling it and show Song 1/Song 2 tabs
-            if (job2_id) {
-              _pollSecondSong(job2_id, job);
-            }
             // Refresh sidebar points counter to reflect the new usage
             fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
               if (!user) return;
@@ -2001,77 +1996,6 @@ document.addEventListener('DOMContentLoaded', () => {
       showError(err.message || 'Failed to start generation. Please try again.');
     }
   }
-
-  // ── Poll second song (beat_count=2) and inject Song 1/Song 2 tabs ──────────
-  function _pollSecondSong(job2Id, job1) {
-    var resultArea = document.getElementById('gen-result');
-    if (!resultArea) return;
-    // Build tab switcher if not already present
-    var tabBar = document.getElementById('gen-result-tab-bar');
-    if (!tabBar) {
-      tabBar = document.createElement('div');
-      tabBar.id = 'gen-result-tab-bar';
-      tabBar.style.cssText = 'display:flex;gap:8px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:10px';
-      tabBar.innerHTML =
-        '<button id="gen-tab-s1" onclick="window._switchSongTab(1)" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--primary);background:var(--primary);color:#fff;font-weight:700;cursor:pointer;font-size:.85rem"><i class="fas fa-music"></i> Song 1</button>' +
-        '<button id="gen-tab-s2" onclick="window._switchSongTab(2)" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);font-weight:600;cursor:pointer;font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Song 2 — generating…</button>';
-      resultArea.insertBefore(tabBar, resultArea.firstChild);
-    }
-    // Store both jobs globally for tab switching
-    window._song1Job = job1;
-    window._song2Job = null;
-    window._activeSongTab = 1;
-    // Poll song 2
-    var lastStatus2 = '';
-    var poll2 = setInterval(async function() {
-      try {
-        var usePost = (lastStatus2 === 'generating' || lastStatus2 === 'pending' || lastStatus2 === 'blueprint' || lastStatus2 === '');
-        var r = usePost ? await fetch('/api/poll/' + job2Id, { method: 'POST' }) : await fetch('/api/job/' + job2Id);
-        if (!r.ok) return;
-        var j2 = await r.json();
-        lastStatus2 = j2.status;
-        var tab2Btn = document.getElementById('gen-tab-s2');
-        if (j2.status === 'ready') {
-          clearInterval(poll2);
-          window._song2Job = j2;
-          if (window._libLoaded) window._libLoaded.beats = false;
-          if (tab2Btn) tab2Btn.innerHTML = '<i class="fas fa-music"></i> Song 2';
-          if (tab2Btn) { tab2Btn.style.border = '1px solid var(--border)'; tab2Btn.style.color = 'var(--text)'; }
-        } else if (j2.status === 'error') {
-          clearInterval(poll2);
-          var errMsg2 = j2.error ? j2.error.slice(0, 120) : 'unknown error';
-          console.error('[Song2] failed:', j2.error);
-          if (tab2Btn) {
-            tab2Btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Song 2 — failed';
-            tab2Btn.title = errMsg2; // hover tooltip shows actual error
-          }
-        }
-      } catch(e) {}
-    }, 5000);
-  }
-
-  // ── Switch between Song 1 and Song 2 results ───────────────────────────────
-  window._switchSongTab = function(n) {
-    var job = n === 1 ? window._song1Job : window._song2Job;
-    if (!job || !job.stereo_url) return;
-    window._activeSongTab = n;
-    // Update tab button styles
-    var t1 = document.getElementById('gen-tab-s1'), t2 = document.getElementById('gen-tab-s2');
-    if (t1) { t1.style.background = n===1 ? 'var(--primary)' : 'transparent'; t1.style.color = n===1 ? '#fff' : 'var(--muted)'; t1.style.border = n===1 ? '1px solid var(--primary)' : '1px solid var(--border)'; }
-    if (t2) { t2.style.background = n===2 ? 'var(--primary)' : 'transparent'; t2.style.color = n===2 ? '#fff' : 'var(--muted)'; t2.style.border = n===2 ? '1px solid var(--primary)' : '1px solid var(--border)'; }
-    // Swap audio
-    var audio = document.getElementById('stereo-audio');
-    if (audio) { audio.src = job.stereo_url; audio.play().catch(function(){}); }
-    // Update title/sub
-    var titleEl = document.getElementById('gen-result-title');
-    var subEl   = document.getElementById('gen-result-sub');
-    var finalTitle = job.title || (job.blueprint ? (job.blueprint.genre + ' — ' + job.blueprint.key + ' ' + job.blueprint.scale) : 'Beat Ready');
-    if (titleEl) titleEl.textContent = finalTitle;
-    if (subEl && job.blueprint) subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
-    // Update dots button
-    var dotsBtn = document.getElementById('gen-result-dots');
-    if (dotsBtn) dotsBtn.onclick = function() { openSongEditModal(job, null); };
-  };
 
   // ── Generate Lyrics with AI ──────────────────────────────────────
   const genLyricsBtn = document.getElementById('gen-lyrics-btn');
@@ -3273,8 +3197,6 @@ window.setVocalToggle = function(val) {
   });
 };
 
-// ── Beat count toggle (1 or 2) — 2 beats is Pro Artist only ──
-window._beatCount = 2;
 // ── Duration picker ──────────────────────────────────────────
 window._userDuration = 0; // 0 = Auto
 window.setDuration = function(sec) {
@@ -3320,38 +3242,6 @@ window.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => tryOpen(15), 300);
   }
 })();
-
-window.setBeatCount = function(n) {
-  // 2-beat option requires Pro Artist plan
-  if (n === 2) {
-    const plan = (window._currentPlan || window.currentPlan || '').toLowerCase();
-    if (plan !== 'pro' && plan !== 'creator' && plan !== 'developer') {
-      // Show upgrade nudge
-      const bc2 = document.getElementById('bc-2');
-      if (bc2) {
-        bc2.style.animation = 'none';
-        bc2.offsetHeight; // reflow
-        bc2.style.animation = 'shake 0.4s ease';
-      }
-      // Create a temporary tooltip
-      let tip = document.getElementById('beat-count-pro-tip');
-      if (!tip) {
-        tip = document.createElement('div');
-        tip.id = 'beat-count-pro-tip';
-        tip.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e1e2e;border:1px solid rgba(168,85,247,.4);color:#c4b5fd;padding:10px 18px;border-radius:10px;font-size:.85rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5)';
-        tip.innerHTML = '<i class="fas fa-crown" style="color:#a855f7;margin-right:6px"></i>2 Beats requires <strong>Creator or Pro Artist</strong> — <a href="/pricing" style="color:#a855f7">upgrade</a>';
-        document.body.appendChild(tip);
-        setTimeout(() => tip && tip.remove(), 3500);
-      }
-      return;
-    }
-  }
-  window._beatCount = n;
-  [1, 2].forEach(c => {
-    const btn = document.getElementById('bc-' + c);
-    if (btn) btn.classList.toggle('beat-count-btn--active', c === n);
-  });
-};
 
 // ── Delete account modal handlers ─────────────────────────
 window.showDeleteAccountModal = function() {
