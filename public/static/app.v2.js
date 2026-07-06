@@ -554,6 +554,37 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) {}
   })();
 
+  // ── One Shot: Pro Artist only — show/hide tab + creator button ──
+  // Called once after user data loads; also called on plan change.
+  function applyOneShotVisibility() {
+    const plan = (window._sfUser && window._sfUser.plan) || 'free';
+    const isPro = plan === 'pro' || plan === 'developer';
+    // Library "One Shots" tab
+    const oneshotTab = document.getElementById('lib-tab-oneshots');
+    if (oneshotTab) oneshotTab.style.display = isPro ? '' : 'none';
+    // Creator toolbar button — keep it visible but locked for non-Pro so users know it exists
+    // (clicking it calls openOneShotGated which shows the upgrade prompt)
+  }
+  // Run on page load (after _sfUser resolves) and on any plan update
+  // We use a MutationObserver-free approach: just call after the async block
+  setTimeout(applyOneShotVisibility, 500);
+
+  // openOneShotGated — checks plan before opening the One Shot popup
+  window.openOneShotGated = function() {
+    const plan = (window._sfUser && window._sfUser.plan) || 'free';
+    if (plan !== 'pro' && plan !== 'developer') {
+      if (typeof showUpgradeModal === 'function') {
+        showUpgradeModal('One Shot Creator');
+      } else if (typeof showUpgradeToast === 'function') {
+        showUpgradeToast('One Shot Creator is a Pro Artist feature. Upgrade to unlock.');
+      } else {
+        alert('One Shot Creator requires the Pro Artist plan.\n\nUpgrade at stemforge.studio/pricing');
+      }
+      return;
+    }
+    if (typeof window.openCreatorPopup === 'function') window.openCreatorPopup('oneshot');
+  };
+
   // ── Subscription page: Manage dropdown ─────────────────────────
   const subManageBtn = document.getElementById('sub-manage-btn');
   const subManageDrop = document.getElementById('sub-manage-dropdown');
@@ -1699,11 +1730,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (!res.ok) {
         const err = await safeJson(res);
+        if (err.login_required) {
+          // Not logged in — redirect to login
+          genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
+          genBtn.disabled = false;
+          if (pipelineStatus) pipelineStatus.style.display = 'none';
+          const loginMsg = document.createElement('div');
+          loginMsg.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-top:16px;text-align:center';
+          loginMsg.innerHTML = `<i class="fas fa-user-lock" style="font-size:1.5rem;color:var(--accent);margin-bottom:10px;display:block"></i>
+            <strong style="display:block;margin-bottom:6px">Sign in to generate beats</strong>
+            <p style="color:var(--text-2);font-size:.9rem;margin-bottom:14px">All your beats are saved to your library when you're logged in. Sign in or create a free account to continue.</p>
+            <a href="/login" class="btn btn--primary btn--sm"><i class="fas fa-sign-in-alt"></i> Sign in / Sign up</a>`;
+          const resultArea = document.getElementById('gen-result');
+          if (resultArea) resultArea.parentNode.insertBefore(loginMsg, resultArea);
+          else document.querySelector('.gen-panel')?.appendChild(loginMsg);
+          return;
+        }
         if (err.limit_reached) {
           // Show upgrade prompt instead of generic error
           genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
           genBtn.disabled = false;
-          pipelineStatus.style.display = 'none';
+          if (pipelineStatus) pipelineStatus.style.display = 'none';
           const limitMsg = document.createElement('div');
           limitMsg.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-top:16px;text-align:center';
           limitMsg.innerHTML = `<i class="fas fa-lock" style="font-size:1.5rem;color:var(--accent);margin-bottom:10px;display:block"></i>

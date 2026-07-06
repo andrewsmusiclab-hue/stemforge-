@@ -1048,31 +1048,35 @@ app.post('/api/generate', async (c) => {
   }
 
   // ── Auth + generation limit check ────────────────────────────
-  let userId: string | undefined
-  let userPlan: string | undefined
-  if (c.env.DB && c.env.SESSION_SECRET) {
-    try {
-      const token = getSessionCookie(c.req.raw)
-      if (token) {
-        const u = await getSessionUser(c.env.DB, token)
-        if (u) {
-          // Enforce per-plan generation limit
-          if (u.gens_used + 10 > u.gens_limit) {
-            return c.json({
-              error: `Points limit reached. You have used all ${u.gens_limit} points for this month. Upgrade your plan to continue.`,
-              limit_reached: true
-            }, 403)
-          }
-          userId = u.id
-          userPlan = u.plan
-          // Deduct 10 pts for 1 beat immediately so concurrent requests can't race past the limit
-          await c.env.DB.prepare(
-            `UPDATE users SET gens_used = gens_used + 10 WHERE id = ?`
-          ).bind(u.id).run()
-        }
-      }
-    } catch { /* session lookup failed — allow generation to proceed */ }
+  // Login is REQUIRED — beats must always be tied to a user account so they appear in the library.
+  // Anonymous generation is disabled: beats generated without a user_id are invisible in the library.
+  if (!c.env.DB || !c.env.SESSION_SECRET) {
+    return c.json({ error: 'Service not configured', login_required: true }, 503)
   }
+  const token = getSessionCookie(c.req.raw)
+  if (!token) {
+    return c.json({ error: 'You must be logged in to generate beats. Your library saves all your music.', login_required: true }, 401)
+  }
+  const authUser = await getSessionUser(c.env.DB, token)
+  if (!authUser) {
+    return c.json({ error: 'Session expired — please log in again to generate beats.', login_required: true }, 401)
+  }
+
+  // Enforce per-plan generation limit
+  if (authUser.gens_used + 10 > authUser.gens_limit) {
+    return c.json({
+      error: `Points limit reached. You have used all ${authUser.gens_limit} points for this month. Upgrade your plan to continue.`,
+      limit_reached: true
+    }, 403)
+  }
+
+  const userId: string = authUser.id
+  const userPlan: string = authUser.plan
+
+  // Deduct 10 pts immediately to prevent concurrent races past the limit
+  await c.env.DB.prepare(
+    `UPDATE users SET gens_used = gens_used + 10 WHERE id = ?`
+  ).bind(authUser.id).run()
 
   // Build enriched prompt from all UI inputs
   const parts: string[] = []
@@ -4914,7 +4918,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260706-02'
+const ASSET_VER = '20260706-03'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5970,9 +5974,9 @@ function generatorPage() {
         data-tooltip="Continue any track from your library or upload from where it ends.\n2 points per extend.">
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
-      <button class="creator-tab-btn" id="ctab-oneshot" onclick="openCreatorPopup('oneshot')"
-        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more. 10 pts per shot.">
-        <i class="fas fa-bolt"></i> One Shot Creator
+      <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"
+        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more. 10 pts per shot. Pro Artist only.">
+        <i class="fas fa-bolt"></i> One Shot Creator <span style="font-size:.65rem;opacity:.6;margin-left:3px">Pro</span>
       </button>
     </div>
 
@@ -7052,7 +7056,7 @@ function dashboardPage() {
     <button class="lib-tab" data-tab="extended" onclick="switchLibTab('extended')">
       <i class="fas fa-expand-arrows-alt"></i> Extended
     </button>
-    <button class="lib-tab" data-tab="oneshots" onclick="switchLibTab('oneshots')">
+    <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')" style="display:none">
       <i class="fas fa-bolt"></i> One Shots
     </button>
     <button class="lib-tab" data-tab="uploads" onclick="switchLibTab('uploads')">
