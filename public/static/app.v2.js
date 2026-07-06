@@ -4135,6 +4135,22 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     if (el) el.innerHTML = html;
   }
 
+  // Safe JSON reader — returns parsed data or throws a clean error.
+  // Prevents "Unexpected token '<'" when server returns HTML (Worker crash / edge error).
+  async function _safeJson(res) {
+    var text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      // Server returned non-JSON (HTML error page, Cloudflare edge error, etc.)
+      var status = res.status;
+      if (text.trimStart().startsWith('<')) {
+        throw new Error('Server error ' + status + ' (try again — if it persists the beat audio may have expired)');
+      }
+      throw new Error('Bad response ' + status + ': ' + text.slice(0, 120));
+    }
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   //  ADVANCED TAB ACTIONS
   // ─────────────────────────────────────────────────────────────────────────
@@ -4164,7 +4180,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: _jobId, mode: 'auto' })
       });
-      var data = await res.json();
+      var data = await _safeJson(res);
       if (!res.ok) {
         var upgradeMsg = data.upgrade
           ? (data.error || 'Advanced requires Pro') + ' <a href="/pricing" style="color:#4e9fff;text-decoration:underline">Upgrade →</a>'
@@ -4194,7 +4210,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         var params = '?mode=auto';
         if (_curTaskId) params += '&task_id=' + encodeURIComponent(_curTaskId);
         var res  = await fetch('/api/job/stems/' + _jobId + params);
-        var data = await res.json();
+        var data = await _safeJson(res);
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
           _advStems = data.stems;
@@ -4203,7 +4219,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           clearInterval(_pollTimer); _pollTimer = null;
           _showError(data.error || 'Extraction failed');
         }
-      } catch (e) { /* keep polling */ }
+      } catch (e) { if (e && e.message && !e.message.includes('keep polling')) { /* transient — keep polling */ } }
     }, 2500);
   }
 
@@ -4258,7 +4274,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: _jobId, stem_type: targetStem })
       });
-      var data = await res.json();
+      var data = await _safeJson(res);
       if (!res.ok) {
         var msg = data.error || 'Regeneration failed';
         if (data.upgrade) {
@@ -4289,7 +4305,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       try {
         var params = '?task_id=' + encodeURIComponent(_curTaskId);
         var res  = await fetch('/api/job/regen-stem/' + _jobId + params);
-        var data = await res.json();
+        var data = await _safeJson(res);
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
           _renderStemTracks(data.stems, 'advanced');
@@ -4297,7 +4313,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           clearInterval(_pollTimer); _pollTimer = null;
           _showError(data.error || 'Regeneration failed');
         }
-      } catch (e) { /* keep polling */ }
+      } catch (e) { /* transient — keep polling */ }
     }, 3000);
   }
 
@@ -4328,7 +4344,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      var data = await res.json();
+      var data = await _safeJson(res);
 
       if (!res.ok) {
         var msg = data.error || 'Extraction failed';
@@ -4366,7 +4382,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         var params = '?mode=' + encodeURIComponent(mode);
         if (_curTaskId) params += '&task_id=' + encodeURIComponent(_curTaskId);
         var res  = await fetch('/api/job/stems/' + _jobId + params);
-        var data = await res.json();
+        var data = await _safeJson(res);
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
           _renderStemTracks(data.stems, mode);

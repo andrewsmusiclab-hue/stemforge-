@@ -960,23 +960,37 @@ async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
   const headRes = await fetch(zipUrl, { method: 'HEAD' })
   const contentLength = headRes.ok ? parseInt(headRes.headers.get('content-length') || '0', 10) : 0
 
-  let tailBuf: ArrayBuffer
-  if (contentLength > 0) {
-    const start = Math.max(0, contentLength - tailSize)
-    const rangeRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${start}-${contentLength - 1}` } })
-    if (!rangeRes.ok && rangeRes.status !== 206) throw new Error(`ZIP tail fetch failed: ${rangeRes.status}`)
-    tailBuf = await rangeRes.arrayBuffer()
-  } else {
-    // Server doesn't report content-length — fall back to full fetch
-    // This should only happen for very unusual CDN configurations
-    const fullRes = await fetch(zipUrl)
-    if (!fullRes.ok) throw new Error(`ZIP fetch failed: ${fullRes.status}`)
-    tailBuf = await fullRes.arrayBuffer()
+  if (!contentLength || contentLength <= 0) {
+    // CDN didn't return content-length — cannot safely range-fetch without risking
+    // downloading the entire ZIP into Worker memory (128MB limit exceeded on large stems).
+    // Retry the HEAD with a different approach: try a small range to probe.
+    const probeRes = await fetch(zipUrl, { headers: { 'Range': 'bytes=0-1' } })
+    if (probeRes.status === 206) {
+      // Range-request supported — fetch the tail
+      const rangeForSize = await fetch(zipUrl, { headers: { 'Range': `bytes=0-0` } })
+      const cr = rangeForSize.headers.get('content-range') // "bytes 0-0/12345"
+      const total = cr ? parseInt(cr.split('/')[1], 10) : 0
+      if (!total) throw new Error('ZIP size unknown — cannot parse stems (CDN did not return Content-Range)')
+      const start2 = Math.max(0, total - tailSize)
+      const rangeRes2 = await fetch(zipUrl, { headers: { 'Range': `bytes=${start2}-${total - 1}` } })
+      if (!rangeRes2.ok && rangeRes2.status !== 206) throw new Error(`ZIP tail fetch failed: ${rangeRes2.status}`)
+      const tailBuf2 = await rangeRes2.arrayBuffer()
+      return parseZipTailBuffer(tailBuf2, total > tailSize ? total - tailSize : 0, zipUrl)
+    }
+    throw new Error('ZIP server does not support range requests — cannot parse stem ZIP safely')
   }
 
+  const start = Math.max(0, contentLength - tailSize)
+  const rangeRes = await fetch(zipUrl, { headers: { 'Range': `bytes=${start}-${contentLength - 1}` } })
+  if (!rangeRes.ok && rangeRes.status !== 206) throw new Error(`ZIP tail fetch failed: ${rangeRes.status}`)
+  const tailBuf = await rangeRes.arrayBuffer()
+  return parseZipTailBuffer(tailBuf, contentLength > tailSize ? contentLength - tailSize : 0, zipUrl)
+}
+
+// Parse ZIP central directory from a tail buffer — shared by both code paths in parseZipStems
+function parseZipTailBuffer(tailBuf: ArrayBuffer, tailOffset: number, zipUrl = ''): StemTrack[] {
   const buf = new Uint8Array(tailBuf)
   const view = new DataView(tailBuf)
-  const tailOffset = contentLength > tailSize ? contentLength - tailSize : 0
   const tracks: StemTrack[] = []
 
   // Find End of Central Directory record (signature 0x06054b50) scanning from end of tail
@@ -4849,7 +4863,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-14'
+const ASSET_VER = '20260704-15'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
