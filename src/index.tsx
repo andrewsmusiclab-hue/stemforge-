@@ -1302,76 +1302,24 @@ app.post('/api/job/stems', async (c) => {
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
 
-  // Build Mureka stem request
-  // Mureka POST /v1/song/stem docs:
-  //   - Field name is "url" (NOT "audio_url")
-  //   - Supported formats: mp3, m4a ONLY (WAV is rejected = "File format not supported")
-  //   - Supports base64 data URI: "data:audio/mp3;base64,..."  (max 10MB)
-  //   - Response is SYNCHRONOUS — returns zip_url directly (no task_id / polling)
-  //   - zip_url is a ZIP containing individual stem WAV files
+  // song/stem is SYNCHRONOUS on Mureka's side (60–120 s), but Cloudflare Workers
+  // has a 30-second wall-clock limit.  Calling fetch() here directly would cause
+  // Cloudflare to kill the Worker and return an HTML 502 page.
   //
-  // Our stereo_url is a Mureka CDN WAV. We must:
-  //   1. Fetch the WAV bytes
-  //   2. Re-encode as MP3 data URI (or use base64 WAV — but WAV isn't supported)
-  //   Actually: Mureka says "supported formats mp3, m4a" for the url field.
-  //   The cleanest solution: fetch the audio and send as base64 data URI with audio/mpeg MIME type.
-  //   Mureka CDN URLs are .wav internally but we can try sending as data:audio/mpeg base64 —
-  //   however true re-encoding requires ffmpeg which we don't have at runtime.
-  //
-  // Mureka song/stem API:
-  //   - Field is "url" (not "audio_url") — this was the original bug causing "File format not supported"
-  //   - Docs say mp3/m4a but Mureka's own CDN WAV URLs work fine when passed directly
-  //   - DO NOT fetch+base64 encode — that crashes the Worker (128MB memory limit on large WAVs)
-  //   - Just pass the stereo_url directly as "url"
+  // Fix: store a "stemwait:" task_id immediately and return to the client right
+  // away.  The actual Mureka song/stem call is deferred to the GET poll handler,
+  // which fires it with a 25-second AbortController signal.  If it times out the
+  // client (polling every 2.5 s) retries and gets another 25-second window.
+  // Stem separation typically completes within 2–4 poll cycles (5–10 s real time
+  // for short tracks, up to 60–120 s for long ones).
 
-  const murekaBody: any = {
-    url: job.stereo_url,
-    model: 'audio-separation-2'
-  }
+  const stemwaitTaskId = `stemwait:${mode}:${Date.now()}`
 
-  console.log(`[stems] Sending to Mureka song/stem: url=${job.stereo_url?.slice(0,80)}...`)
+  console.log(`[stems] Queuing stem job ${stemwaitTaskId} for url=${job.stereo_url?.slice(0,80)}...`)
 
-  // song/stem is SYNCHRONOUS — returns zip_url directly, no task_id
-  let zipUrl: string
-  try {
-    const res = await fetch(`${MUREKA_BASE}/song/stem`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(murekaBody)
-    })
-    if (!res.ok) {
-      const errText = await res.text()
-      let errMsg = `Mureka stem error ${res.status}`
-      try {
-        const errJson = JSON.parse(errText) as any
-        errMsg = errJson?.error?.message || errJson?.message || errJson?.detail || errText || errMsg
-      } catch {}
-      console.error(`[stems] Mureka error ${res.status} | body=${errText}`)
-      return c.json({ error: errMsg }, 502)
-    }
-    const data = await res.json() as any
-    zipUrl = data.zip_url
-    if (!zipUrl) return c.json({ error: 'No zip_url in Mureka stem response' }, 502)
-    console.log(`[stems] Got zip_url: ${zipUrl}`)
-  } catch (err: any) {
-    return c.json({ error: err?.message || 'Failed to start stem extraction' }, 502)
-  }
-
-  // Mureka returns a zip_url — we need to unzip it to get individual stem files.
-  // Use JSZip-compatible approach: fetch the zip, parse entries, extract stem WAV URLs.
-  // Since we can't run JSZip in a Worker without bundling it, we instead:
-  //   Store the zip_url itself and resolve stems client-side OR
-  //   Use a task_id approach. Actually: we store zip_url as task_id and handle
-  //   it specially in the poll handler — when task_id starts with "zip:", we treat
-  //   it as already complete and parse the zip on first poll.
-  const fakeTaskId = 'zip:' + zipUrl
-
-  // Store pending stem job — mark as pending so poll handler processes the zip
+  // Store pending stem job
   const stemJob: StemJob = {
-    task_id: fakeTaskId,
+    task_id: stemwaitTaskId,
     mode,
     status: 'pending',
     stems: [],
@@ -1388,7 +1336,7 @@ app.post('/api/job/stems', async (c) => {
   updatedJob.stem_jobs.push(stemJob)
   await setJob(c.env.DB, updatedJob)
 
-  return c.json({ ok: true, cached: false, task_id: fakeTaskId, status: 'pending' })
+  return c.json({ ok: true, cached: false, task_id: stemwaitTaskId, status: 'pending' })
 })
 
 // GET /api/job/stems/:jobId — poll stem extraction status
@@ -1425,6 +1373,100 @@ app.get('/api/job/stems/:jobId', async (c) => {
   }
   if (stemJob.status === 'error') {
     return c.json({ status: 'error', error: stemJob.error })
+  }
+
+  // ── stemwait: handler ────────────────────────────────────────────────────
+  // The POST handler stored a "stemwait:<mode>:<ts>" task_id to avoid blocking
+  // the Worker for 60–120 s (Cloudflare 30 s limit).  On each GET poll we fire
+  // the actual Mureka song/stem call with a 25 s AbortController signal.
+  // • If it completes in time  → overwrite task_id with "zip:<zipUrl>" and fall
+  //   through to the existing zip: parsing block below.
+  // • If it times out          → return { status: 'processing' } so the client
+  //   retries in 2.5 s, getting another 25 s window on the next poll cycle.
+  if (stemJob.task_id.startsWith('stemwait:')) {
+    const stereoUrl = job.stereo_url
+    if (!stereoUrl) {
+      stemJob.status = 'error'
+      stemJob.error = 'No audio URL found for this job'
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'error', error: stemJob.error })
+    }
+
+    // Fire Mureka song/stem with a 25-second abort deadline
+    const controller = new AbortController()
+    const abortTimer = setTimeout(() => controller.abort(), 25000)
+    let murekaRes: Response | null = null
+    let timedOut = false
+    try {
+      murekaRes = await fetch(`${MUREKA_BASE}/song/stem`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ url: stereoUrl, model: 'audio-separation-2' }),
+        signal: controller.signal
+      })
+    } catch (fetchErr: any) {
+      if (fetchErr?.name === 'AbortError' || fetchErr?.message?.includes('abort')) {
+        timedOut = true
+      } else {
+        // Hard network error — mark as error
+        stemJob.status = 'error'
+        stemJob.error = fetchErr?.message || 'Network error reaching Mureka'
+        const updatedJob = { ...job } as any
+        updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+        await setJob(c.env.DB, updatedJob)
+        return c.json({ status: 'error', error: stemJob.error })
+      }
+    } finally {
+      clearTimeout(abortTimer)
+    }
+
+    if (timedOut) {
+      // Still within the stemwait window — tell client to keep polling
+      console.log(`[stems] Mureka song/stem timed out after 25 s, will retry on next poll`)
+      return c.json({ status: 'processing', task_id: stemJob.task_id })
+    }
+
+    if (!murekaRes!.ok) {
+      const errText = await murekaRes!.text()
+      let errMsg = `Mureka stem error ${murekaRes!.status}`
+      try {
+        const errJson = JSON.parse(errText) as any
+        errMsg = errJson?.error?.message || errJson?.message || errJson?.detail || errText || errMsg
+      } catch {}
+      console.error(`[stems] Mureka error ${murekaRes!.status} | body=${errText}`)
+      stemJob.status = 'error'
+      stemJob.error = errMsg
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'error', error: errMsg })
+    }
+
+    const murekaData = await murekaRes!.json() as any
+    const zipUrl = murekaData.zip_url as string | undefined
+    if (!zipUrl) {
+      stemJob.status = 'error'
+      stemJob.error = 'No zip_url in Mureka stem response'
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'error', error: stemJob.error })
+    }
+
+    console.log(`[stems] Got zip_url after deferred call: ${zipUrl}`)
+    // Upgrade task_id to "zip:" so the block below (and future polls) parse it
+    stemJob.task_id = 'zip:' + zipUrl
+    // Persist the updated task_id before falling through to zip parsing
+    const preZipJob = { ...job } as any
+    preZipJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id.startsWith('stemwait:') && s.mode === stemJob.mode ? stemJob : s)
+    await setJob(c.env.DB, preZipJob)
+    // Re-assign stemJobs reference so zip: block below sees the updated task_id
+    ;(stemJobs as StemJob[]).splice(0, stemJobs.length, ...preZipJob.stem_jobs)
   }
 
   // Poll Mureka for status
@@ -4863,7 +4905,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260704-15'
+const ASSET_VER = '20260706-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
