@@ -2644,6 +2644,74 @@ app.get('/terms', (c) => c.html(termsPage()))
 app.get('/privacy', (c) => c.html(privacyPage()))
 app.get('/feedback', (c) => c.html(feedbackPage()))
 
+// ─── SEO: sitemap.xml ────────────────────────────────────────────────────────
+app.get('/sitemap.xml', (c) => {
+  const base = 'https://stemforge.studio'
+  const today = new Date().toISOString().split('T')[0]
+
+  // Public pages with their priority and change frequency
+  const pages = [
+    { url: '/',         changefreq: 'weekly',  priority: '1.0' },
+    { url: '/pricing',  changefreq: 'monthly', priority: '0.9' },
+    { url: '/generator',changefreq: 'weekly',  priority: '0.9' },
+    { url: '/signup',   changefreq: 'monthly', priority: '0.8' },
+    { url: '/login',    changefreq: 'monthly', priority: '0.6' },
+    { url: '/feedback', changefreq: 'monthly', priority: '0.5' },
+    { url: '/terms',    changefreq: 'yearly',  priority: '0.3' },
+    { url: '/privacy',  changefreq: 'yearly',  priority: '0.3' },
+  ]
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${pages.map(p => `  <url>
+    <loc>${base}${p.url}</loc>
+    <lastmod>${today}</lastmod>
+    <changefreq>${p.changefreq}</changefreq>
+    <priority>${p.priority}</priority>
+  </url>`).join('\n')}
+</urlset>`
+
+  return new Response(xml, {
+    headers: {
+      'Content-Type': 'application/xml; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400', // cache 24h
+    }
+  })
+})
+
+// ─── SEO: robots.txt ─────────────────────────────────────────────────────────
+app.get('/robots.txt', (c) => {
+  const txt = `User-agent: *
+Allow: /
+Allow: /pricing
+Allow: /generator
+Allow: /signup
+Allow: /login
+Allow: /feedback
+Allow: /terms
+Allow: /privacy
+
+# Block private/auth pages
+Disallow: /dashboard
+Disallow: /account
+Disallow: /subscription
+Disallow: /profile
+Disallow: /admin
+Disallow: /checkout
+Disallow: /promos
+Disallow: /api/
+Disallow: /mureka-monitor
+
+Sitemap: https://stemforge.studio/sitemap.xml`
+
+  return new Response(txt, {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'public, max-age=86400',
+    }
+  })
+})
+
 // POST /api/analytics/pageview — called client-side on every page load
 app.post('/api/analytics/pageview', async (c) => {
   if (!c.env.DB) return c.json({ ok: false })
