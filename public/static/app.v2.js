@@ -4132,11 +4132,14 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         }
         if (_jobId !== jobId) return; // panel switched jobs
         // Merge each regen stem into _advStems (replace matching row, or append)
+        // Preserve orig_url from the auto stem for before/after comparison
         data.stems.forEach(function(regenStem) {
           var found = false;
           _advStems = _advStems.map(function(s) {
-            if (s.name.toLowerCase() === regenStem.name.toLowerCase()) { found = true; return regenStem; }
-            return s;
+            if (s.name.toLowerCase() !== regenStem.name.toLowerCase()) return s;
+            found = true;
+            var origUrl = s.orig_url || s.url; // capture original before overwriting
+            return Object.assign({}, regenStem, { orig_url: origUrl });
           });
           if (!found) _advStems.push(regenStem);
         });
@@ -4161,13 +4164,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
       btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
     });
-    _panel.addEventListener('click', function (e) {
-      var card = _panel.querySelector('#sp-card');  // FIX: query inside panel, not document
-      if (!card) return;
-      var path = e.composedPath ? e.composedPath() : [];
-      var inCard = path.indexOf(card) !== -1 || card.contains(e.target);
-      if (!inCard) closeStemsPanel();
-    });
+    // Only close via X button (onclick="closeStemsPanel()") or Escape key.
+    // Clicking outside the card / on the backdrop should NOT close the panel.
     document.addEventListener('keydown', _onKey);
   }
 
@@ -4452,12 +4450,16 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         return;
       }
       if (data.status === 'ready' && data.stems && data.stems.length) {
-        // Merge regenerated stem back into the full _advStems list
+        // Merge regenerated stem back into the full _advStems list,
+        // preserving the original URL for before/after comparison
         var regenStem = data.stems[0];
         _regenStemName = regenStem.name;
         if (_advStems.length) {
           _advStems = _advStems.map(function(s) {
-            return s.name === regenStem.name ? regenStem : s;
+            if (s.name.toLowerCase() !== regenStem.name.toLowerCase()) return s;
+            // Preserve original URL if not already set
+            var origUrl = s.orig_url || s.url;
+            return Object.assign({}, regenStem, { orig_url: origUrl });
           });
         } else {
           _advStems = data.stems;
@@ -4489,7 +4491,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           _regenStemName = regenStem.name;
           if (_advStems.length) {
             _advStems = _advStems.map(function(s) {
-              return s.name === regenStem.name ? regenStem : s;
+              if (s.name.toLowerCase() !== regenStem.name.toLowerCase()) return s;
+              var origUrl = s.orig_url || s.url;
+              return Object.assign({}, regenStem, { orig_url: origUrl });
             });
           } else {
             _advStems = data.stems;
@@ -4658,7 +4662,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       // Do NOT set crossOrigin at all — without crossOrigin the browser sends cookies
       // as a regular same-origin request. Setting crossOrigin='anonymous' blocks cookies.
       audio.preload = 'metadata';  // 'metadata' not 'auto' — less aggressive, still lets us play
-      audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
+      // If this stem was regenerated (has orig_url), use ?regen=1 to get the regen version
+      var regenFlag = (isAdv && s.orig_url && s.orig_url !== s.url) ? '?regen=1' : '';
+      audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name) + regenFlag;
       _audios.push(audio);
 
       // Log any load errors so we can diagnose the root cause
@@ -4868,7 +4874,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   function _buildTrackRow(s, i, isAdv, regenName) {
     var color = STEM_COLORS[s.name] || STEM_COLORS.default;
     var customLabel = _stemLabels[s.name] || _capFirst(s.name);
-    var isRegen = isAdv && regenName && s.name === regenName;
+    var isRegen = isAdv && regenName && s.name.toLowerCase() === regenName.toLowerCase();
+    var hasOrig = isAdv && s.orig_url && s.orig_url !== s.url;
     var dlUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
 
     // Rename pencil — inline edit on click
@@ -4890,75 +4897,172 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '</span>' +
           renameBtn +
         '</div>' +
-        (isRegen
-          ? '<span style="font-size:.58rem;font-weight:700;color:#a855f7;letter-spacing:.02em;white-space:nowrap">' +
-              '✦ Regenerated' +
-            '</span>'
-          : '') +
+        (hasOrig
+          ? '<span style="font-size:.58rem;font-weight:700;color:#a855f7;letter-spacing:.02em;white-space:nowrap">✦ AI Regen</span>'
+          : (isRegen
+              ? '<span style="font-size:.58rem;font-weight:700;color:#a855f7;letter-spacing:.02em;white-space:nowrap">✦ Regenerated</span>'
+              : '')) +
       '</div>';
 
-    return '<div style="display:flex;align-items:center;gap:7px;padding:8px 16px;' +
-        'border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s;' +
-        (isRegen ? 'background:rgba(168,85,247,0.06);border-left:2px solid rgba(168,85,247,0.5);' : '') +
-        '"' +
-        ' onmouseover="this.style.background=\'' + (isRegen ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,.02)') + '\'"' +
-        ' onmouseout="this.style.background=\'' + (isRegen ? 'rgba(168,85,247,0.06)' : 'none') + '\'">' +
+    // Main stem row (regen version if hasOrig, else original)
+    var mainRow =
+      '<div style="display:flex;align-items:center;gap:7px;padding:8px 16px;' +
+          'transition:background .15s;' +
+          (hasOrig ? 'border-left:2px solid rgba(168,85,247,0.5);background:rgba(168,85,247,0.06);' :
+            isRegen ? 'border-left:2px solid rgba(168,85,247,0.5);background:rgba(168,85,247,0.06);' : '') +
+          '"' +
+          ' onmouseover="this.style.background=\'' + (hasOrig || isRegen ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,.02)') + '\'"' +
+          ' onmouseout="this.style.background=\'' + (hasOrig || isRegen ? 'rgba(168,85,247,0.06)' : 'none') + '\'">' +
 
-      // color bar
-      '<div style="width:2.5px;height:28px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>' +
+        // color bar
+        '<div style="width:2.5px;height:28px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>' +
 
-      // name block with rename + badge
-      nameBlock +
+        // name block with rename + badge
+        nameBlock +
 
-      // S button
-      '<button id="sp-solo-' + i + '" onclick="window._spSolo(' + i + ')" title="Solo" style="' +
-          'width:22px;height:22px;flex-shrink:0;border-radius:4px;' +
-          'border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);' +
-          'color:rgba(255,255,255,0.48);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s">S</button>' +
+        // S button
+        '<button id="sp-solo-' + i + '" onclick="window._spSolo(' + i + ')" title="Solo" style="' +
+            'width:22px;height:22px;flex-shrink:0;border-radius:4px;' +
+            'border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);' +
+            'color:rgba(255,255,255,0.48);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s">S</button>' +
 
-      // M button
-      '<button id="sp-mute-' + i + '" onclick="window._spMute(' + i + ')" title="Mute" style="' +
-          'width:22px;height:22px;flex-shrink:0;border-radius:4px;' +
-          'border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);' +
-          'color:rgba(255,255,255,0.48);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s">M</button>' +
+        // M button
+        '<button id="sp-mute-' + i + '" onclick="window._spMute(' + i + ')" title="Mute" style="' +
+            'width:22px;height:22px;flex-shrink:0;border-radius:4px;' +
+            'border:1px solid rgba(255,255,255,0.13);background:rgba(255,255,255,0.04);' +
+            'color:rgba(255,255,255,0.48);font-size:.6rem;font-weight:700;cursor:pointer;transition:all .15s">M</button>' +
 
-      // waveform
-      '<div style="flex:1;position:relative;height:32px;border-radius:5px;overflow:hidden;' +
-          'cursor:pointer;background:rgba(255,255,255,0.025)" onclick="window._spSeekWave(event,this)">' +
-        '<canvas id="sp-wave-' + i + '" width="400" height="32" style="position:absolute;inset:0;width:100%;height:100%"></canvas>' +
-        '<div id="sp-wave-prog-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;' +
-            'background:rgba(255,255,255,0.07);pointer-events:none"></div>' +
-        '<div id="sp-wave-line-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;' +
-            'border-right:1.5px solid rgba(255,255,255,0.4);pointer-events:none"></div>' +
-      '</div>' +
+        // waveform
+        '<div style="flex:1;position:relative;height:32px;border-radius:5px;overflow:hidden;' +
+            'cursor:pointer;background:rgba(255,255,255,0.025)" onclick="window._spSeekWave(event,this)">' +
+          '<canvas id="sp-wave-' + i + '" width="400" height="32" style="position:absolute;inset:0;width:100%;height:100%"></canvas>' +
+          '<div id="sp-wave-prog-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;' +
+              'background:rgba(255,255,255,0.07);pointer-events:none"></div>' +
+          '<div id="sp-wave-line-' + i + '" style="position:absolute;top:0;left:0;bottom:0;width:0%;' +
+              'border-right:1.5px solid rgba(255,255,255,0.4);pointer-events:none"></div>' +
+        '</div>' +
 
-      // volume slider
-      '<input type="range" min="0" max="1" step="0.01" value="1"' +
-        ' oninput="window._spVol(' + i + ',parseFloat(this.value))"' +
-        ' title="Volume"' +
-        ' style="width:48px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
+        // volume slider
+        '<input type="range" min="0" max="1" step="0.01" value="1"' +
+          ' oninput="window._spVol(' + i + ',parseFloat(this.value))"' +
+          ' title="Volume"' +
+          ' style="width:48px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
 
-      // Advanced: per-stem Regen button instead of download icon
-      (isAdv
-        ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(customLabel) + ' clean with StemForge" style="' +
-              'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
-              'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
-              'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
-              'white-space:nowrap;transition:all .15s;letter-spacing:.01em"' +
-            ' onmouseover="this.style.background=\'rgba(168,85,247,0.25)\';this.style.borderColor=\'rgba(192,132,252,0.6)\'"' +
-            ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
-            '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Regen' +
-          '</button>'
-        : '<a href="' + dlUrl + '" download="' + _escHtml(customLabel) + '_stem.wav" title="Download ' + _escHtml(customLabel) + '" style="' +
-              'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
-              'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
-            ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
-            '<i class="fas fa-download"></i>' +
-          '</a>'
-      ) +
+        // Advanced: per-stem Regen button instead of download icon
+        (isAdv
+          ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(customLabel) + ' clean with StemForge" style="' +
+                'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
+                'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
+                'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
+                'white-space:nowrap;transition:all .15s;letter-spacing:.01em"' +
+              ' onmouseover="this.style.background=\'rgba(168,85,247,0.25)\';this.style.borderColor=\'rgba(192,132,252,0.6)\'"' +
+              ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
+              '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Regen' +
+            '</button>'
+          : '<a href="' + dlUrl + '" download="' + _escHtml(customLabel) + '_stem.wav" title="Download ' + _escHtml(customLabel) + '" style="' +
+                'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
+                'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
+              ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
+              '<i class="fas fa-download"></i>' +
+            '</a>'
+        ) +
 
-    '</div>';
+      '</div>';
+
+    // "Original" comparison sub-row — only shown when stem was regenerated
+    var origRow = '';
+    if (hasOrig) {
+      var origAudioId = 'sp-orig-audio-' + i;
+      var origBtnId   = 'sp-orig-btn-' + i;
+      // Use the stem-audio proxy (no ?regen flag) to serve the original auto-extracted stem
+      var origProxyUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
+      origRow =
+        '<div style="display:flex;align-items:center;gap:7px;padding:4px 16px 7px 16px;' +
+            'border-bottom:1px solid rgba(255,255,255,0.04);' +
+            'background:rgba(0,0,0,0.12)">' +
+
+          // indent spacer (aligns with color bar + name block above)
+          '<div style="width:2.5px;flex-shrink:0"></div>' +
+          '<div style="width:82px;flex-shrink:0;display:flex;flex-direction:column;justify-content:center">' +
+            '<span style="font-size:.6rem;color:rgba(255,255,255,0.3);font-weight:500;white-space:nowrap">' +
+              'Original' +
+            '</span>' +
+          '</div>' +
+
+          // S/M placeholders (invisible — keep layout consistent)
+          '<div style="width:22px;height:22px;flex-shrink:0"></div>' +
+          '<div style="width:22px;height:22px;flex-shrink:0"></div>' +
+
+          // Mini play/pause button + label
+          '<div style="flex:1;display:flex;align-items:center;gap:8px">' +
+            '<button id="' + origBtnId + '"' +
+              ' data-src="' + origProxyUrl + '"' +
+              ' data-audio-id="' + origAudioId + '"' +
+              ' onclick="window._spToggleOrig(this)"' +
+              ' style="flex-shrink:0;width:26px;height:26px;border-radius:50%;border:1px solid rgba(255,255,255,0.18);' +
+                'background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.55);font-size:.65rem;' +
+                'cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .15s"' +
+              ' onmouseover="this.style.background=\'rgba(255,255,255,0.12)\'"' +
+              ' onmouseout="this.style.background=\'rgba(255,255,255,0.06)\'">' +
+              '<i class="fas fa-play"></i>' +
+            '</button>' +
+            '<span style="font-size:.67rem;color:rgba(255,255,255,0.28)">Before regen — compare</span>' +
+            '<audio id="' + origAudioId + '" preload="none" style="display:none"></audio>' +
+          '</div>' +
+
+          // Volume spacer to keep layout aligned
+          '<div style="width:48px;flex-shrink:0"></div>' +
+          // Regen button spacer
+          '<div style="width:52px;flex-shrink:0"></div>' +
+
+        '</div>';
+    }
+
+    // Wrap: border-bottom on the outermost wrapper only when no orig row
+    var wrapStyle = 'border-bottom:1px solid rgba(255,255,255,0.04)';
+    return '<div style="' + (hasOrig ? '' : wrapStyle) + '">' + mainRow + origRow + '</div>';
   }
+
+  // Toggle original stem audio preview
+  window._spToggleOrig = function (btn) {
+    var audioId = btn.getAttribute('data-audio-id');
+    var src     = btn.getAttribute('data-src');
+    var audio   = document.getElementById(audioId);
+    if (!audio) return;
+
+    // Stop any other orig previews playing
+    document.querySelectorAll('[data-audio-id]').forEach(function(b) {
+      if (b === btn) return;
+      var a = document.getElementById(b.getAttribute('data-audio-id'));
+      if (a && !a.paused) {
+        a.pause();
+        a.currentTime = 0;
+        var ico = b.querySelector('i');
+        if (ico) { ico.className = 'fas fa-play'; }
+        b.style.background = 'rgba(255,255,255,0.06)';
+      }
+    });
+
+    var icon = btn.querySelector('i');
+    if (audio.paused) {
+      if (!audio.src || audio.src === window.location.href) {
+        audio.src = src;
+      }
+      audio.play().then(function() {
+        if (icon) icon.className = 'fas fa-pause';
+        btn.style.background = 'rgba(255,255,255,0.14)';
+      }).catch(function() {});
+      audio.onended = function() {
+        if (icon) icon.className = 'fas fa-play';
+        btn.style.background = 'rgba(255,255,255,0.06)';
+      };
+    } else {
+      audio.pause();
+      audio.currentTime = 0;
+      if (icon) icon.className = 'fas fa-play';
+      btn.style.background = 'rgba(255,255,255,0.06)';
+    }
+  };
 
   // Inline rename: replaces label span with a tiny input field
   window._spRenameStart = function (idx, stemName) {
@@ -5279,6 +5383,22 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _playPending = false;
     _audios.forEach(function (a) { try { a.pause(); a.src = ''; } catch (e) {} });
     _audios = [];
+    // Also stop any "Original" comparison audio previews
+    _stopOrigPreviews();
+  }
+
+  function _stopOrigPreviews() {
+    if (!_panel) return;
+    _panel.querySelectorAll('[data-audio-id]').forEach(function(btn) {
+      var a = document.getElementById(btn.getAttribute('data-audio-id'));
+      if (a && !a.paused) {
+        a.pause();
+        a.currentTime = 0;
+        var ico = btn.querySelector('i');
+        if (ico) ico.className = 'fas fa-play';
+        btn.style.background = 'rgba(255,255,255,0.06)';
+      }
+    });
   }
 
   function _cleanup() {

@@ -1602,6 +1602,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
 // NOTE: No session auth here — jobId is already a private UUID that acts as the access token.
 // Requiring session auth breaks new Audio() playback because the browser sends the request
 // as a no-CORS media fetch; if the worker returns 401 JSON, audio.play() rejects with NotSupportedError.
+// ?regen=1 — serve the regenerated version of this stem (from regen_jobs) instead of the auto extraction
 app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   if (!c.env.DB) return c.json({ error: 'Not configured' }, 500)
 
@@ -1609,25 +1610,42 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   // Hono already URL-decodes params internally — calling decodeURIComponent again is a no-op for
   // plain names (vocals, lead_vocals) but we keep it for safety with any legacy encoded URLs
   const stemName = c.req.param('stem').replace(/%20/g, ' ').replace(/%5F/g, '_')
+  const wantRegen = c.req.query('regen') === '1'
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
-  if (!stemJobs?.length) return c.json({ error: 'No stems found' }, 404)
-
-  // Find the stem URL across all stem jobs
-  // Try exact match first, then with spaces↔underscores interchanged
   const stemLower = stemName.toLowerCase()
   const stemAlt   = stemLower.includes('_') ? stemLower.replace(/_/g, ' ') : stemLower.replace(/ /g, '_')
   let stemUrl: string | undefined
-  for (const sj of stemJobs) {
-    const track = sj.stems.find((t: any) => {
-      const n = t.name?.toLowerCase()
-      return n === stemLower || n === stemAlt
-    })
-    if (track?.url) { stemUrl = track.url; break }
+
+  if (wantRegen) {
+    // ?regen=1: serve the most-recent ready regen job for this stem name
+    const regenJobs = (job as any).regen_jobs as RegenJob[] | undefined
+    if (regenJobs?.length) {
+      // Find latest ready regen whose stem_type matches (exact or alt)
+      const match = [...regenJobs].reverse().find((r: RegenJob) => {
+        const n = r.stem_type?.toLowerCase()
+        return r.status === 'ready' && r.url && (n === stemLower || n === stemAlt)
+      })
+      if (match) stemUrl = match.url
+    }
+    if (!stemUrl) return c.json({ error: `No regenerated stem "${stemName}" found` }, 404)
+  } else {
+    // Default: serve the auto-extracted stem from stem_jobs
+    const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
+    if (!stemJobs?.length) return c.json({ error: 'No stems found' }, 404)
+
+    // Find the stem URL across all stem jobs
+    // Try exact match first, then with spaces↔underscores interchanged
+    for (const sj of stemJobs) {
+      const track = sj.stems.find((t: any) => {
+        const n = t.name?.toLowerCase()
+        return n === stemLower || n === stemAlt
+      })
+      if (track?.url) { stemUrl = track.url; break }
+    }
+    if (!stemUrl) return c.json({ error: `Stem "${stemName}" not found` }, 404)
   }
-  if (!stemUrl) return c.json({ error: `Stem "${stemName}" not found` }, 404)
 
   // Proxy the audio — handle zip-entry: scheme from ZIP-parsed stems
   try {
@@ -5066,7 +5084,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260711-01'
+const ASSET_VER = '20260711-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
