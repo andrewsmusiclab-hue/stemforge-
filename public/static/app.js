@@ -5094,7 +5094,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
         // Per-stem download icon (all rows) — opens MP3/WAV picker
         (_userPlan !== 'free'
-          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'' + (isAdv ? '1' : '0') + '\',this)" ' +
+          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'' + (hasOrig ? '1' : '0') + '\',this)" ' +
               'title="Download ' + _escHtml(customLabel) + '" style="' +
               'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
               'color:rgba(255,255,255,0.28);font-size:.78rem;display:flex;align-items:center;' +
@@ -5157,6 +5157,19 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<div style="width:48px;flex-shrink:0"></div>' +
           // Regen button spacer
           '<div style="width:52px;flex-shrink:0"></div>' +
+
+          // Download button for original (no ?regen flag)
+          (_userPlan !== 'free'
+            ? '<a href="/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name) + '?dl=1&fmt=mp3"' +
+                ' download="' + s.name + '_original_stem.mp3"' +
+                ' title="Download original ' + _escHtml(customLabel) + '"' +
+                ' style="flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
+                  'color:rgba(255,255,255,0.2);font-size:.72rem;display:flex;align-items:center;' +
+                  'justify-content:center;width:20px;height:20px;text-decoration:none;transition:color .15s"' +
+                ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.2)\'">' +
+              '<i class="fas fa-download"></i>' +
+            '</a>'
+            : '') +
 
         '</div>';
     }
