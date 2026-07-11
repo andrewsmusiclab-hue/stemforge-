@@ -3928,6 +3928,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   var _rafId        = null;     // requestAnimationFrame id for timeline loop
   // Advanced tab state
   var _advStems     = [];       // stems extracted by audio-separation-2 for adv tab
+  var _origStemUrls = {};       // { stemName: proxyUrl } — original auto URLs, set once and never overwritten
   var _selectedRegen= null;     // which stem the user wants regenerated
   var _regenStemName= null;     // name of most-recently regenerated stem (for badge)
   var _stemLabels   = {};       // user-renamed stem labels: { stemName: customLabel }
@@ -4105,6 +4106,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         // Only restore if _advStems is still empty and user hasn't manually Reset
         if (!_advStems.length && !_advStemsReset && _jobId === jobId) {
           _advStems = data.stems.slice(); // copy
+          _captureOrigUrls(_advStems);    // snapshot original URLs before any regens are merged
           console.log('[StemPlayer] restore: loaded ' + _advStems.length + ' auto stems for ' + jobId);
           // Step 2: also fetch any cached regen stems and merge them in
           _mergeRestoredRegens(jobId);
@@ -4132,16 +4134,17 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         }
         if (_jobId !== jobId) return; // panel switched jobs
         // Merge each regen stem into _advStems (replace matching row, or append)
-        // Preserve orig_url from the auto stem for before/after comparison
+        // Use _origStemUrls (captured at extraction time) for before/after comparison
         data.stems.forEach(function(regenStem) {
           var found = false;
+          var key = regenStem.name.toLowerCase();
+          var origUrl = _origStemUrls[key] || null;
           _advStems = _advStems.map(function(s) {
-            if (s.name.toLowerCase() !== regenStem.name.toLowerCase()) return s;
+            if (s.name.toLowerCase() !== key) return s;
             found = true;
-            var origUrl = s.orig_url || s.url; // capture original before overwriting
-            return Object.assign({}, regenStem, { orig_url: origUrl });
+            return Object.assign({}, regenStem, { orig_url: origUrl || s.url });
           });
-          if (!found) _advStems.push(regenStem);
+          if (!found) _advStems.push(Object.assign({}, regenStem, origUrl ? { orig_url: origUrl } : {}));
         });
         console.log('[StemPlayer] restore: merged ' + data.stems.length + ' regen stem(s); total=' + _advStems.length);
         // Render the Advanced tab if it's active
@@ -4352,6 +4355,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       }
       if (data.status === 'ready' && data.stems && data.stems.length) {
         _advStems = data.stems;
+        _captureOrigUrls(_advStems);
         _renderStemTracks(_advStems, 'advanced');
         return;
       }
@@ -4376,6 +4380,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
           _advStems = data.stems;
+          _captureOrigUrls(_advStems);
           _renderStemTracks(_advStems, 'advanced');
         } else if (data.status === 'error') {
           clearInterval(_pollTimer); _pollTimer = null;
@@ -4383,6 +4388,18 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         }
       } catch (e) { if (e && e.message && !e.message.includes('keep polling')) { /* transient — keep polling */ } }
     }, 2500);
+  }
+
+  // Snapshot the proxy URL for each stem the first time extraction completes.
+  // Uses /api/stem-audio/:jobId/:stemName (no ?regen flag) = original auto extraction.
+  // _origStemUrls is NEVER overwritten after it's set — it always stores the pre-regen URLs.
+  function _captureOrigUrls(stems) {
+    stems.forEach(function(s) {
+      var key = s.name.toLowerCase();
+      if (!_origStemUrls[key]) {
+        _origStemUrls[key] = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
+      }
+    });
   }
 
   // Legacy: kept for backwards compat
@@ -4393,6 +4410,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // Reset advanced tab back to Extract button
   window._spResetAdvanced = function () {
     _advStems = [];
+    _origStemUrls = {};
     _selectedRegen = null;
     _regenStemName = null;
     _stemLabels = {};
@@ -4450,19 +4468,18 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         return;
       }
       if (data.status === 'ready' && data.stems && data.stems.length) {
-        // Merge regenerated stem back into the full _advStems list,
-        // preserving the original URL for before/after comparison
+        // Merge regenerated stem back into the full _advStems list
         var regenStem = data.stems[0];
         _regenStemName = regenStem.name;
+        var rkey = regenStem.name.toLowerCase();
+        var origUrl = _origStemUrls[rkey] || null;
         if (_advStems.length) {
           _advStems = _advStems.map(function(s) {
-            if (s.name.toLowerCase() !== regenStem.name.toLowerCase()) return s;
-            // Preserve original URL if not already set
-            var origUrl = s.orig_url || s.url;
-            return Object.assign({}, regenStem, { orig_url: origUrl });
+            if (s.name.toLowerCase() !== rkey) return s;
+            return Object.assign({}, regenStem, { orig_url: origUrl || s.url });
           });
         } else {
-          _advStems = data.stems;
+          _advStems = [Object.assign({}, regenStem, origUrl ? { orig_url: origUrl } : {})];
         }
         _renderStemTracks(_advStems, 'advanced');
         return;
@@ -4489,14 +4506,15 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           clearInterval(_pollTimer); _pollTimer = null;
           var regenStem = data.stems[0];
           _regenStemName = regenStem.name;
+          var rkey2 = regenStem.name.toLowerCase();
+          var origUrl2 = _origStemUrls[rkey2] || null;
           if (_advStems.length) {
             _advStems = _advStems.map(function(s) {
-              if (s.name.toLowerCase() !== regenStem.name.toLowerCase()) return s;
-              var origUrl = s.orig_url || s.url;
-              return Object.assign({}, regenStem, { orig_url: origUrl });
+              if (s.name.toLowerCase() !== rkey2) return s;
+              return Object.assign({}, regenStem, { orig_url: origUrl2 || s.url });
             });
           } else {
-            _advStems = data.stems;
+            _advStems = [Object.assign({}, regenStem, origUrl2 ? { orig_url: origUrl2 } : {})];
           }
           _renderStemTracks(_advStems, 'advanced');
         } else if (data.status === 'error') {
@@ -4777,43 +4795,103 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     '</button>';
   }
 
-  // Opens a centered fixed popup with MP3 / WAV options
+  // Opens the full-track download popup:
+  //   Creator plan → Mastered Mix only (MP3 or WAV)
+  //   Pro Artist  → Mastered Mix + Unmastered Mix (MP3 or WAV each)
   window._spOpenDlPopup = function () {
-    // Remove any existing popup first
     var existing = document.getElementById('sp-dl-popup-overlay');
     if (existing) { existing.remove(); return; }
 
-    var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
+    var isPro  = (_userPlan === 'pro' || _userPlan === 'developer');
+    var canWav = isPro;
+
+    // Helper: build a format card
+    function fmtCard(fmt, type, colorClass, icon, label, sublabel, extraStyle) {
+      var borderCol = colorClass === 'blue' ? 'rgba(78,159,255,.5)' : 'rgba(168,85,247,.5)';
+      var bgCol     = colorClass === 'blue' ? 'rgba(78,159,255,.12)' : 'rgba(168,85,247,.12)';
+      var bgHov     = colorClass === 'blue' ? 'rgba(78,159,255,.25)' : 'rgba(168,85,247,.25)';
+      var txtCol    = colorClass === 'blue' ? '#4e9fff' : '#c084fc';
+      return '<button onclick="window._spDownloadMix(\'' + fmt + '\',\'' + type + '\')" style="' +
+                'flex:1;padding:12px 8px;border-radius:10px;cursor:pointer;' +
+                'border:1px solid ' + borderCol + ';background:' + bgCol + ';' +
+                'color:' + txtCol + ';font-size:.78rem;display:flex;flex-direction:column;' +
+                'align-items:center;gap:5px;transition:background .15s;' + (extraStyle || '') + '"' +
+              ' onmouseover="this.style.background=\'' + bgHov + '\'"' +
+              ' onmouseout="this.style.background=\'' + bgCol + '\'">' +
+              '<i class="' + icon + '" style="font-size:1.25rem"></i>' +
+              '<span style="font-weight:700">' + fmt.toUpperCase() + '</span>' +
+              '<span style="font-size:.62rem;opacity:.7">' + sublabel + '</span>' +
+            '</button>';
+    }
+
+    // Mastered section
+    var masteredSection =
+      '<div style="margin-bottom:16px">' +
+        '<div style="display:flex;align-items:center;gap:7px;margin-bottom:8px">' +
+          '<i class="fas fa-star" style="color:#f59e0b;font-size:.75rem"></i>' +
+          '<span style="font-size:.8rem;font-weight:700;color:#f1f5f9">Mastered Mix</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px">' +
+          fmtCard('mp3', 'mastered', 'blue', 'fas fa-file-audio', 'MP3', 'Compressed') +
+          (canWav
+            ? fmtCard('wav', 'mastered', 'purple', 'fas fa-wave-square', 'WAV', 'Lossless')
+            : '<div style="flex:1;padding:12px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.06);' +
+                'background:rgba(255,255,255,.02);color:rgba(255,255,255,.22);font-size:.78rem;' +
+                'display:flex;flex-direction:column;align-items:center;gap:5px">' +
+                '<i class="fas fa-wave-square" style="font-size:1.25rem"></i>' +
+                '<span style="font-weight:700">WAV</span>' +
+                '<a href="/pricing" style="font-size:.6rem;color:#a855f6;text-decoration:none">Pro only</a>' +
+              '</div>'
+          ) +
+        '</div>' +
+      '</div>';
+
+    // Unmastered section (Pro only)
+    var unmasteredSection = isPro
+      ? '<div style="border-top:1px solid rgba(255,255,255,.07);padding-top:14px">' +
+          '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">' +
+            '<i class="fas fa-sliders-h" style="color:#10b981;font-size:.75rem"></i>' +
+            '<span style="font-size:.8rem;font-weight:700;color:#f1f5f9">Unmastered Mix</span>' +
+            '<span style="font-size:.6rem;background:rgba(16,185,129,.15);color:#10b981;' +
+              'border:1px solid rgba(16,185,129,.3);padding:1px 6px;border-radius:99px">Pro</span>' +
+          '</div>' +
+          '<p style="margin:0 0 10px;color:rgba(255,255,255,.38);font-size:.68rem;line-height:1.5">' +
+            'The raw, unprocessed stereo mix — ideal if you want to bring it into your own DAW to apply ' +
+            'your own EQ, compression, reverb, and mastering chain.' +
+          '</p>' +
+          '<div style="display:flex;gap:8px">' +
+            fmtCard('mp3', 'unmastered', 'blue', 'fas fa-file-audio', 'MP3', 'Compressed') +
+            fmtCard('wav', 'unmastered', 'purple', 'fas fa-wave-square', 'WAV', 'Lossless') +
+          '</div>' +
+        '</div>'
+      : '<div style="border-top:1px solid rgba(255,255,255,.07);padding-top:14px">' +
+          '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">' +
+            '<i class="fas fa-sliders-h" style="color:rgba(255,255,255,.2);font-size:.75rem"></i>' +
+            '<span style="font-size:.8rem;font-weight:700;color:rgba(255,255,255,.3)">Unmastered Mix</span>' +
+            '<span style="font-size:.6rem;background:rgba(168,85,247,.15);color:#c084fc;' +
+              'border:1px solid rgba(168,85,247,.3);padding:1px 6px;border-radius:99px">Pro only</span>' +
+          '</div>' +
+          '<p style="margin:0 0 8px;color:rgba(255,255,255,.28);font-size:.68rem;line-height:1.5">' +
+            'Raw unprocessed mix for your own DAW mastering — available on ' +
+            '<a href="/pricing" style="color:#a855f6;text-decoration:none">Pro Artist plan</a>.' +
+          '</p>' +
+        '</div>';
 
     var overlay = document.createElement('div');
     overlay.id = 'sp-dl-popup-overlay';
     overlay.style.cssText = [
       'position:fixed', 'inset:0', 'z-index:9999999',
       'display:flex', 'align-items:center', 'justify-content:center',
-      'background:rgba(0,0,0,0.55)', 'backdrop-filter:blur(3px)'
+      'background:rgba(0,0,0,0.6)', 'backdrop-filter:blur(4px)'
     ].join(';');
-
-    var wavBtn = canWav
-      ? '<button onclick="window._spDownloadMix(\'wav\')" style="' +
-            'flex:1;padding:14px 10px;border-radius:10px;cursor:pointer;' +
-            'border:1px solid rgba(168,85,247,.5);background:rgba(168,85,247,.12);' +
-            'color:#c084fc;font-size:.82rem;display:flex;flex-direction:column;' +
-            'align-items:center;gap:6px;transition:background .15s"' +
-          ' onmouseover="this.style.background=\'rgba(168,85,247,.25)\'"' +
-          ' onmouseout="this.style.background=\'rgba(168,85,247,.12)\'">' +
-          '<i class="fas fa-wave-square" style="font-size:1.4rem"></i>' +
-          '<span style="font-weight:600">WAV</span>' +
-          '<span style="font-size:.68rem;opacity:.7">Lossless · Pro</span>' +
-        '</button>'
-      : '';
 
     overlay.innerHTML =
       '<div style="background:#0f0f1a;border:1px solid rgba(255,255,255,.12);border-radius:16px;' +
-          'padding:24px;min-width:280px;max-width:360px;box-shadow:0 24px 60px rgba(0,0,0,.9);' +
+          'padding:22px;min-width:300px;max-width:380px;box-shadow:0 24px 60px rgba(0,0,0,.9);' +
           'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">' +
           '<h3 style="margin:0;color:#f1f5f9;font-size:.95rem;font-weight:600">' +
-            '<i class="fas fa-download" style="color:#4e9fff;margin-right:8px"></i>Download Mix' +
+            '<i class="fas fa-download" style="color:#4e9fff;margin-right:8px"></i>Download Track' +
           '</h3>' +
           '<button onclick="document.getElementById(\'sp-dl-popup-overlay\').remove()" style="' +
               'background:none;border:none;color:rgba(255,255,255,.4);font-size:1.1rem;' +
@@ -4822,50 +4900,103 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             '&times;' +
           '</button>' +
         '</div>' +
-        '<p style="margin:0 0 16px;color:rgba(255,255,255,.45);font-size:.76rem">' +
-          'Choose your download format:' +
-        '</p>' +
-        '<div style="display:flex;gap:10px">' +
-          '<button onclick="window._spDownloadMix(\'mp3\')" style="' +
-              'flex:1;padding:14px 10px;border-radius:10px;cursor:pointer;' +
-              'border:1px solid rgba(78,159,255,.5);background:rgba(78,159,255,.12);' +
-              'color:#4e9fff;font-size:.82rem;display:flex;flex-direction:column;' +
-              'align-items:center;gap:6px;transition:background .15s"' +
-            ' onmouseover="this.style.background=\'rgba(78,159,255,.25)\'"' +
-            ' onmouseout="this.style.background=\'rgba(78,159,255,.12)\'">' +
-            '<i class="fas fa-file-audio" style="font-size:1.4rem"></i>' +
-            '<span style="font-weight:600">MP3</span>' +
-            '<span style="font-size:.68rem;opacity:.7">Compressed</span>' +
-          '</button>' +
-          wavBtn +
-        '</div>' +
-        (!canWav
-          ? '<p style="margin:12px 0 0;color:rgba(255,255,255,.3);font-size:.7rem;text-align:center">' +
-              '<i class="fas fa-lock" style="margin-right:4px"></i>' +
-              'WAV available on <a href="/pricing" style="color:#a855f6;text-decoration:none">Pro plan</a>' +
-            '</p>'
-          : '') +
+        masteredSection +
+        unmasteredSection +
       '</div>';
 
-    // Click backdrop to close
-    overlay.addEventListener('click', function (ev) {
-      if (ev.target === overlay) overlay.remove();
-    });
-
+    overlay.addEventListener('click', function (ev) { if (ev.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);
   };
 
-  window._spDownloadMix = function (fmt) {
+  window._spDownloadMix = function (fmt, type) {
     // Close popup if open
     var popup = document.getElementById('sp-dl-popup-overlay');
     if (popup) popup.remove();
+    var mixType = type || 'mastered'; // 'mastered' | 'unmastered'
     // Trigger download
     var a = document.createElement('a');
-    a.href = '/api/stem-mix/' + _jobId + '?fmt=' + fmt;
-    a.download = 'stems_mix.' + fmt;
+    a.href = '/api/stem-mix/' + _jobId + '?fmt=' + fmt + '&type=' + mixType;
+    a.download = 'stems_mix_' + mixType + '.' + fmt;
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { document.body.removeChild(a); }, 500);
+  };
+
+  // Per-stem download picker — small inline popover anchored to the download button
+  window._spDownloadStemPicker = function (stemName, isAdvStr, anchorBtn) {
+    var existing = document.getElementById('sp-stem-dl-popup');
+    if (existing) { existing.remove(); if (existing._anchor === anchorBtn) return; }
+    var isAdv = isAdvStr === '1';
+    var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
+    var customLabel = _stemLabels[stemName] || _capFirst(stemName);
+    var popup = document.createElement('div');
+    popup.id = 'sp-stem-dl-popup';
+    popup._anchor = anchorBtn;
+    popup.style.cssText = [
+      'position:fixed', 'z-index:9999999',
+      'background:#0f0f1a', 'border:1px solid rgba(255,255,255,.14)',
+      'border-radius:10px', 'padding:10px 12px',
+      'box-shadow:0 12px 40px rgba(0,0,0,.85)',
+      'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+      'min-width:160px'
+    ].join(';');
+
+    var mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3' + (isAdv ? '&regen=1' : '');
+    var wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav' + (isAdv ? '&regen=1' : '');
+    var safeName = (_stemLabels[stemName] || stemName).replace(/[^a-z0-9_\-]/gi, '_');
+
+    popup.innerHTML =
+      '<div style="font-size:.68rem;color:rgba(255,255,255,.35);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">' +
+        '<i class="fas fa-download" style="margin-right:5px;color:#4e9fff"></i>Download ' + _escHtml(customLabel) +
+      '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:5px">' +
+        '<a href="' + mp3Url + '" download="' + safeName + '_stem.mp3"' +
+            ' onclick="document.getElementById(\'sp-stem-dl-popup\').remove()"' +
+            ' style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
+              'border:1px solid rgba(78,159,255,.35);background:rgba(78,159,255,.08);' +
+              'color:#4e9fff;text-decoration:none;font-size:.75rem;font-weight:600;transition:background .12s"' +
+            ' onmouseover="this.style.background=\'rgba(78,159,255,.2)\'"' +
+            ' onmouseout="this.style.background=\'rgba(78,159,255,.08)\'">' +
+          '<i class="fas fa-file-audio" style="font-size:.85rem"></i>' +
+          '<span>MP3 <span style="font-weight:400;opacity:.6;font-size:.68rem">Compressed</span></span>' +
+        '</a>' +
+        (canWav
+          ? '<a href="' + wavUrl + '" download="' + safeName + '_stem.wav"' +
+                ' onclick="document.getElementById(\'sp-stem-dl-popup\').remove()"' +
+                ' style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
+                  'border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.08);' +
+                  'color:#c084fc;text-decoration:none;font-size:.75rem;font-weight:600;transition:background .12s"' +
+                ' onmouseover="this.style.background=\'rgba(168,85,247,.2)\'"' +
+                ' onmouseout="this.style.background=\'rgba(168,85,247,.08)\'">' +
+              '<i class="fas fa-wave-square" style="font-size:.85rem"></i>' +
+              '<span>WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless · Pro</span></span>' +
+            '</a>'
+          : '<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
+                'border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);' +
+                'color:rgba(255,255,255,.25);font-size:.75rem;cursor:not-allowed">' +
+              '<i class="fas fa-wave-square" style="font-size:.85rem"></i>' +
+              '<span>WAV <a href="/pricing" style="color:#a855f6;text-decoration:none;font-size:.68rem" onclick="event.stopPropagation()">· Pro only</a></span>' +
+            '</div>'
+        ) +
+      '</div>';
+
+    // Position below anchor button
+    document.body.appendChild(popup);
+    var rect = anchorBtn.getBoundingClientRect();
+    var popW = popup.offsetWidth || 180;
+    var left = Math.min(rect.left, window.innerWidth - popW - 8);
+    popup.style.top  = (rect.bottom + 6) + 'px';
+    popup.style.left = Math.max(8, left) + 'px';
+
+    // Close on outside click
+    setTimeout(function() {
+      document.addEventListener('click', function _closeStemDl(e) {
+        if (!popup.contains(e.target) && e.target !== anchorBtn) {
+          popup.remove();
+          document.removeEventListener('click', _closeStemDl);
+        }
+      });
+    }, 10);
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -4948,9 +5079,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           ' title="Volume"' +
           ' style="width:48px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
 
-        // Advanced: per-stem Regen button instead of download icon
+        // Advanced: Regen button
         (isAdv
-          ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(customLabel) + ' clean with StemForge" style="' +
+          ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(customLabel) + ' with StemForge" style="' +
                 'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
                 'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
                 'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
@@ -4959,12 +5090,24 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
               ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
               '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Regen' +
             '</button>'
-          : '<a href="' + dlUrl + '" download="' + _escHtml(customLabel) + '_stem.wav" title="Download ' + _escHtml(customLabel) + '" style="' +
-                'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
-                'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
-              ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
-              '<i class="fas fa-download"></i>' +
-            '</a>'
+          : '') +
+
+        // Per-stem download icon (all rows) — opens MP3/WAV picker
+        (_userPlan !== 'free'
+          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'' + (isAdv ? '1' : '0') + '\',this)" ' +
+              'title="Download ' + _escHtml(customLabel) + '" style="' +
+              'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
+              'color:rgba(255,255,255,0.28);font-size:.78rem;display:flex;align-items:center;' +
+              'justify-content:center;width:20px;height:20px;transition:color .15s"' +
+            ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.28)\'">' +
+            '<i class="fas fa-download"></i>' +
+          '</button>'
+          : '<button onclick="window.location=\'/pricing\'" title="Upgrade to download" style="' +
+              'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
+              'color:rgba(255,200,0,0.3);font-size:.72rem;display:flex;align-items:center;' +
+              'justify-content:center;width:20px;height:20px">' +
+            '<i class="fas fa-lock"></i>' +
+          '</button>'
         ) +
 
       '</div>';
@@ -5406,6 +5549,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _playing = false;
     _stems = [];
     _advStems = [];
+    _origStemUrls = {};
     _selectedRegen = null;
     _regenStemName = null;
     _stemLabels = {};

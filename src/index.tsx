@@ -1611,6 +1611,9 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
   // plain names (vocals, lead_vocals) but we keep it for safety with any legacy encoded URLs
   const stemName = c.req.param('stem').replace(/%20/g, ' ').replace(/%5F/g, '_')
   const wantRegen = c.req.query('regen') === '1'
+  // ?dl=1 — serve as a download attachment instead of inline audio
+  const wantDl  = c.req.query('dl') === '1'
+  const dlFmt   = c.req.query('fmt') || 'wav'  // 'mp3' | 'wav' — only affects Content-Type + filename for dl
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
@@ -1705,25 +1708,31 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
         audioBuffer = await rangeRes.arrayBuffer()
       }
 
-      return new Response(audioBuffer, {
-        headers: {
-          'Content-Type': 'audio/wav',
-          'Content-Length': String(audioBuffer.byteLength),
-          'Access-Control-Allow-Origin': '*',
-          'Cache-Control': 'public, max-age=3600',
-        }
-      })
+      const safeStemName = stemName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
+      const dlMime = dlFmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
+      const dlExt  = dlFmt === 'mp3' ? 'mp3' : 'wav'
+      const dlHeaders: Record<string, string> = {
+        'Content-Type': wantDl ? dlMime : 'audio/wav',
+        'Content-Length': String(audioBuffer.byteLength),
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600',
+      }
+      if (wantDl) dlHeaders['Content-Disposition'] = `attachment; filename="${safeStemName}_stem.${dlExt}"`
+      return new Response(audioBuffer, { headers: dlHeaders })
     }
 
     const upstream = await fetch(stemUrl)
     if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
-    return new Response(upstream.body, {
-      headers: {
-        'Content-Type': upstream.headers.get('Content-Type') || 'audio/wav',
-        'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'public, max-age=3600'
-      }
-    })
+    const safeStemName2 = stemName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
+    const dlMime2 = dlFmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
+    const dlExt2  = dlFmt === 'mp3' ? 'mp3' : 'wav'
+    const upHeaders: Record<string, string> = {
+      'Content-Type': wantDl ? dlMime2 : (upstream.headers.get('Content-Type') || 'audio/wav'),
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'public, max-age=3600'
+    }
+    if (wantDl) upHeaders['Content-Disposition'] = `attachment; filename="${safeStemName2}_stem.${dlExt2}"`
+    return new Response(upstream.body, { headers: upHeaders })
   } catch (err: any) {
     return c.json({ error: err?.message || 'Proxy failed' }, 502)
   }
@@ -1997,11 +2006,17 @@ app.get('/api/stem-mix/:jobId', async (c) => {
   }
 
   const jobId = c.req.param('jobId')
-  const fmt = c.req.query('fmt') || 'mp3'  // 'mp3' | 'wav'
+  const fmt  = c.req.query('fmt')  || 'mp3'   // 'mp3' | 'wav'
+  const type = c.req.query('type') || 'mastered'  // 'mastered' | 'unmastered'
 
   // WAV download = Pro/developer only
   if (fmt === 'wav' && user.plan === 'creator') {
     return c.json({ error: 'WAV download requires a Pro Artist plan.', upgrade: true }, 403)
+  }
+
+  // Unmastered = Pro/developer only
+  if (type === 'unmastered' && user.plan === 'creator') {
+    return c.json({ error: 'Unmastered mix is available on the Pro Artist plan. It gives you the raw mix to process in your own DAW.', upgrade: true }, 403)
   }
 
   const job = await getJob(c.env.DB, jobId)
@@ -2012,14 +2027,15 @@ app.get('/api/stem-mix/:jobId', async (c) => {
     const upstream = await fetch(job.stereo_url)
     if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
 
-    const ext = fmt === 'wav' ? 'wav' : 'mp3'
-    const mime = fmt === 'wav' ? 'audio/wav' : 'audio/mpeg'
+    const ext      = fmt === 'wav' ? 'wav' : 'mp3'
+    const mime     = fmt === 'wav' ? 'audio/wav' : 'audio/mpeg'
     const safeName = (job.title || jobId).replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
+    const suffix   = type === 'unmastered' ? '_unmastered' : '_mastered'
 
     return new Response(upstream.body, {
       headers: {
         'Content-Type': mime,
-        'Content-Disposition': `attachment; filename="${safeName}_stems_mix.${ext}"`,
+        'Content-Disposition': `attachment; filename="${safeName}${suffix}.${ext}"`,
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'private, max-age=300'
       }
@@ -5084,7 +5100,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260711-02'
+const ASSET_VER = '20260711-03'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
