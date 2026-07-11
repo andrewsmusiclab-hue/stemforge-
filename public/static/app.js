@@ -3931,6 +3931,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   var _selectedRegen= null;     // which stem the user wants regenerated
   var _regenStemName= null;     // name of most-recently regenerated stem (for badge)
   var _stemLabels   = {};       // user-renamed stem labels: { stemName: customLabel }
+  var _advStemsReset= false;    // true after manual Reset — suppresses auto-restore
 
   // ─────────────────────────────────────────────────────────────────────────
   //  OPEN / CLOSE
@@ -3973,6 +3974,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     });
 
     _bindEvents();
+
+    // Silently restore any previously cached stems so the Advanced tab
+    // has its _advStems ready without the user needing to re-extract.
+    _restoreCachedStems();
   };
 
   window.closeStemsPanel = function () {
@@ -4080,6 +4085,29 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   //  EVENTS
   // ─────────────────────────────────────────────────────────────────────────
+  // Silently fetch cached 'auto' stems from D1 when the panel opens.
+  // Populates _advStems so the Advanced tab doesn't need a fresh extraction
+  // even after the panel is closed and reopened.
+  function _restoreCachedStems() {
+    var jobId = _jobId;
+    fetch('/api/job/stems/' + jobId + '?mode=auto')
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) {
+        if (!data || !data.stems || !data.stems.length) return;
+        if (data.status !== 'ready') return;
+        // Only restore if _advStems is still empty and user hasn't manually Reset
+        if (!_advStems.length && !_advStemsReset && _jobId === jobId) {
+          _advStems = data.stems;
+          // If the Advanced tab is already visible, re-render it now
+          if (_activeTab === 'advanced' && _panel) {
+            _regenStemName = null;
+            _renderStemTracks(_advStems, 'advanced');
+          }
+        }
+      })
+      .catch(function() { /* silent — panel works fine without restore */ });
+  }
+
   function _bindEvents() {
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
       btn.addEventListener('click', function () { _onTabClick(btn.dataset.tab); });
@@ -4248,6 +4276,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _audios = [];
     _advStems = [];
     _selectedRegen = null;
+    _advStemsReset = false;   // fresh extraction — allow future restore
     _curTaskId = null;
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 
@@ -4318,6 +4347,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _selectedRegen = null;
     _regenStemName = null;
     _stemLabels = {};
+    _advStemsReset = true;   // suppress auto-restore until user manually extracts again
     _stopAllAudio();
     _playing = false;
     _stems = [];
@@ -5206,6 +5236,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _stems = [];
     _advStems = [];
     _selectedRegen = null;
+    _regenStemName = null;
+    _stemLabels = {};
+    _advStemsReset = false;
     _activeTab = null;
     _curTaskId = null;
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
