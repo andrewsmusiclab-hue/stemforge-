@@ -3929,6 +3929,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // Advanced tab state
   var _advStems     = [];       // stems extracted by audio-separation-2 for adv tab
   var _selectedRegen= null;     // which stem the user wants regenerated
+  var _regenStemName= null;     // name of most-recently regenerated stem (for badge)
+  var _stemLabels   = {};       // user-renamed stem labels: { stemName: customLabel }
 
   // ─────────────────────────────────────────────────────────────────────────
   //  OPEN / CLOSE
@@ -4314,6 +4316,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   window._spResetAdvanced = function () {
     _advStems = [];
     _selectedRegen = null;
+    _regenStemName = null;
+    _stemLabels = {};
     _stopAllAudio();
     _playing = false;
     _stems = [];
@@ -4367,7 +4371,17 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         return;
       }
       if (data.status === 'ready' && data.stems && data.stems.length) {
-        _renderStemTracks(data.stems, 'advanced');
+        // Merge regenerated stem back into the full _advStems list
+        var regenStem = data.stems[0];
+        _regenStemName = regenStem.name;
+        if (_advStems.length) {
+          _advStems = _advStems.map(function(s) {
+            return s.name === regenStem.name ? regenStem : s;
+          });
+        } else {
+          _advStems = data.stems;
+        }
+        _renderStemTracks(_advStems, 'advanced');
         return;
       }
       _curTaskId = data.task_id;
@@ -4390,7 +4404,16 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         var data = await _safeJson(res);
         if (data.status === 'ready' && data.stems && data.stems.length) {
           clearInterval(_pollTimer); _pollTimer = null;
-          _renderStemTracks(data.stems, 'advanced');
+          var regenStem = data.stems[0];
+          _regenStemName = regenStem.name;
+          if (_advStems.length) {
+            _advStems = _advStems.map(function(s) {
+              return s.name === regenStem.name ? regenStem : s;
+            });
+          } else {
+            _advStems = data.stems;
+          }
+          _renderStemTracks(_advStems, 'advanced');
         } else if (data.status === 'error') {
           clearInterval(_pollTimer); _pollTimer = null;
           _showError(data.error || 'Regeneration failed');
@@ -4514,15 +4537,15 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     });
 
     var isAdv = (mode === 'advanced');
-    var regenLabel = isAdv && _selectedRegen ? _capFirst(_selectedRegen) : null;
+    var regenName = isAdv ? _regenStemName : null;   // which stem was just regenerated
 
     // Tab body: status + reset/re-extract button + stereo download button
     _setTabBody(
       '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px">' +
         '<span style="color:rgba(255,255,255,0.35);font-size:.72rem">' +
           '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
-          (isAdv && regenLabel
-            ? regenLabel + ' regenerated clean'
+          (isAdv && regenName
+            ? _capFirst(regenName) + ' regenerated — all stems updated'
             : _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted') +
           (isAdv ? '<span style="margin-left:6px;color:rgba(192,132,252,0.6);font-size:.68rem">· click Regen on any row</span>' : '') +
         '</span>' +
@@ -4543,7 +4566,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var tracksEl = _panel.querySelector('#sp-tracks');
     if (!tracksEl) return;
     tracksEl.innerHTML = _stems.map(function (s, i) {
-      return _buildTrackRow(s, i, isAdv);
+      return _buildTrackRow(s, i, isAdv, regenName);
     }).join('');
     tracksEl.style.display = 'flex';
 
@@ -4761,22 +4784,50 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   //  TRACK ROW
   // ─────────────────────────────────────────────────────────────────────────
-  function _buildTrackRow(s, i, isAdv) {
+  function _buildTrackRow(s, i, isAdv, regenName) {
     var color = STEM_COLORS[s.name] || STEM_COLORS.default;
-    var label = _capFirst(s.name);
+    var customLabel = _stemLabels[s.name] || _capFirst(s.name);
+    var isRegen = isAdv && regenName && s.name === regenName;
     var dlUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
 
+    // Rename pencil — inline edit on click
+    var renameBtn =
+      '<button onclick="window._spRenameStart(' + i + ',\'' + _escHtml(s.name) + '\')" title="Rename stem" style="' +
+        'flex-shrink:0;background:none;border:none;padding:0 2px;cursor:pointer;' +
+        'color:rgba(255,255,255,0.2);font-size:.62rem;line-height:1;transition:color .15s"' +
+        ' onmouseover="this.style.color=\'rgba(255,255,255,0.55)\'" onmouseout="this.style.color=\'rgba(255,255,255,0.2)\'">' +
+        '<i class="fas fa-pencil"></i>' +
+      '</button>';
+
+    // Name block — label + pencil + optional regen badge
+    var nameBlock =
+      '<div style="width:82px;flex-shrink:0;display:flex;flex-direction:column;gap:1px;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:3px">' +
+          '<span id="sp-label-' + i + '" style="font-size:.74rem;font-weight:600;color:#f1f5f9;' +
+              'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:56px">' +
+            _escHtml(customLabel) +
+          '</span>' +
+          renameBtn +
+        '</div>' +
+        (isRegen
+          ? '<span style="font-size:.58rem;font-weight:700;color:#a855f7;letter-spacing:.02em;white-space:nowrap">' +
+              '✦ Regenerated' +
+            '</span>'
+          : '') +
+      '</div>';
+
     return '<div style="display:flex;align-items:center;gap:7px;padding:8px 16px;' +
-        'border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s"' +
-        ' onmouseover="this.style.background=\'rgba(255,255,255,.02)\'"' +
-        ' onmouseout="this.style.background=\'none\'">' +
+        'border-bottom:1px solid rgba(255,255,255,0.04);transition:background .15s;' +
+        (isRegen ? 'background:rgba(168,85,247,0.06);border-left:2px solid rgba(168,85,247,0.5);' : '') +
+        '"' +
+        ' onmouseover="this.style.background=\'' + (isRegen ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,.02)') + '\'"' +
+        ' onmouseout="this.style.background=\'' + (isRegen ? 'rgba(168,85,247,0.06)' : 'none') + '\'">' +
 
       // color bar
       '<div style="width:2.5px;height:28px;border-radius:2px;background:' + color + ';flex-shrink:0"></div>' +
 
-      // name
-      '<div style="width:72px;flex-shrink:0;font-size:.74rem;font-weight:600;color:#f1f5f9;' +
-          'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(label) + '</div>' +
+      // name block with rename + badge
+      nameBlock +
 
       // S button
       '<button id="sp-solo-' + i + '" onclick="window._spSolo(' + i + ')" title="Solo" style="' +
@@ -4808,7 +4859,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
       // Advanced: per-stem Regen button instead of download icon
       (isAdv
-        ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(label) + ' clean with StemForge" style="' +
+        ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(customLabel) + ' clean with StemForge" style="' +
               'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
               'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
               'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
@@ -4817,7 +4868,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
             '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Regen' +
           '</button>'
-        : '<a href="' + dlUrl + '" download="' + _escHtml(label) + '_stem.wav" title="Download ' + _escHtml(label) + '" style="' +
+        : '<a href="' + dlUrl + '" download="' + _escHtml(customLabel) + '_stem.wav" title="Download ' + _escHtml(customLabel) + '" style="' +
               'color:rgba(255,255,255,0.3);font-size:.8rem;flex-shrink:0;text-decoration:none;' +
               'display:flex;align-items:center;justify-content:center;width:22px;height:22px;transition:color .15s"' +
             ' onmouseover="this.style.color=\'#4e9fff\'" onmouseout="this.style.color=\'rgba(255,255,255,0.3)\'">' +
@@ -4827,6 +4878,36 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
     '</div>';
   }
+
+  // Inline rename: replaces label span with a tiny input field
+  window._spRenameStart = function (idx, stemName) {
+    var labelEl = _panel && _panel.querySelector('#sp-label-' + idx);
+    if (!labelEl) return;
+    var current = _stemLabels[stemName] || _capFirst(stemName);
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = current;
+    input.maxLength = 24;
+    input.style.cssText = 'width:54px;font-size:.74rem;font-weight:600;color:#f1f5f9;' +
+      'background:rgba(255,255,255,0.08);border:1px solid rgba(78,159,255,0.6);' +
+      'border-radius:3px;padding:1px 4px;outline:none;';
+    function commit() {
+      var v = input.value.trim();
+      if (v) _stemLabels[stemName] = v;
+      labelEl.textContent = _stemLabels[stemName] || _capFirst(stemName);
+      labelEl.style.display = '';
+      if (input.parentNode) input.parentNode.replaceChild(labelEl, input);
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { if (input.parentNode) input.parentNode.replaceChild(labelEl, input); }
+    });
+    labelEl.style.display = 'none';
+    labelEl.parentNode.insertBefore(input, labelEl);
+    input.focus();
+    input.select();
+  };
 
   // ─────────────────────────────────────────────────────────────────────────
   //  WAVEFORM
