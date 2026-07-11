@@ -1787,7 +1787,7 @@ app.post('/api/job/regen-stem', async (c) => {
       },
       body: JSON.stringify({
         model: 'audio-separation-2',
-        audio_url: job.stereo_url,
+        url: job.stereo_url,
         stems: [murekaStem]
       })
     })
@@ -1800,19 +1800,33 @@ app.post('/api/job/regen-stem', async (c) => {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: errMsg }, 502)
     }
+    // song/stem is SYNCHRONOUS — returns zip_url directly, no task_id
     const stemData = await stemRes.json() as any
-    taskId = stemData.task_id || stemData.id
-    if (!taskId) {
+    const zipUrl = stemData.zip_url as string | undefined
+    if (!zipUrl) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No task_id from Mureka song/stem' }, 502)
+      return c.json({ error: 'No zip_url in Mureka stem response' }, 502)
     }
+    taskId = 'zip:' + zipUrl
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
     return c.json({ error: err?.message || 'Regen request failed' }, 502)
   }
 
-  // Store regen job in D1
-  const regenJob: RegenJob = { task_id: taskId, stem_type: murekaStem, status: 'pending', created_at: Date.now() }
+  // Parse the ZIP now — song/stem is synchronous, zip_url is immediately available
+  // taskId is "zip:<zipUrl>" at this point
+  const zipUrl2 = taskId.slice(4)
+  let regenJob: RegenJob
+  try {
+    const allStems = await parseZipStems(zipUrl2)
+    // Find the requested stem; fall back to first available
+    const match = allStems.find(s => s.name.toLowerCase() === murekaStem.toLowerCase()) || allStems[0]
+    if (!match) throw new Error('No stems found in ZIP')
+    regenJob = { task_id: taskId, stem_type: murekaStem, status: 'ready', url: match.url, created_at: Date.now() }
+  } catch (zipErr: any) {
+    regenJob = { task_id: taskId, stem_type: murekaStem, status: 'error', error: zipErr?.message || 'ZIP parse failed', created_at: Date.now() }
+  }
+
   const updatedJob = { ...job } as any
   if (!updatedJob.regen_jobs) updatedJob.regen_jobs = []
   // Remove old pending/error for same stem_type
@@ -1822,7 +1836,11 @@ app.post('/api/job/regen-stem', async (c) => {
   updatedJob.regen_jobs.push(regenJob)
   await setJob(c.env.DB, updatedJob)
 
-  return c.json({ ok: true, cached: false, task_id: taskId, status: 'pending' })
+  if (regenJob.status === 'ready') {
+    return c.json({ ok: true, cached: false, task_id: taskId, status: 'ready',
+      stems: [{ name: murekaStem, url: regenJob.url }] })
+  }
+  return c.json({ error: regenJob.error || 'Regen failed' }, 502)
 })
 
 // ── GET /api/job/regen-stem/:jobId — poll regen status ────────────────────
