@@ -569,6 +569,41 @@ document.addEventListener('DOMContentLoaded', () => {
   // We use a MutationObserver-free approach: just call after the async block
   setTimeout(applyOneShotVisibility, 500);
 
+  // ── Hide free-tier CTAs for users who are already signed up ─────────────
+  // Any logged-in user (even free plan) has an account — they don't need
+  // "Get started free" / "Try free" buttons. Those are for visitors only.
+  function applyFreeTierVisibility() {
+    if (!window._sfUser) return; // not logged in — show everything
+    // Hide free plan card on homepage
+    const homeFreeCard = document.getElementById('home-free-plan-btn');
+    if (homeFreeCard) {
+      const card = homeFreeCard.closest('.plan-card');
+      if (card) card.style.display = 'none';
+    }
+    // Hide free plan button on pricing page
+    const pricingFreeBtn = document.getElementById('pricing-free-btn');
+    if (pricingFreeBtn) {
+      const card = pricingFreeBtn.closest('.plan-card');
+      if (card) card.style.display = 'none';
+    }
+    // Hide "Try free (50 pts)" link on checkout page
+    const tryFreeLinks = document.querySelectorAll('a[href="/signup"]');
+    tryFreeLinks.forEach(function(el) {
+      if (el.textContent && el.textContent.trim().startsWith('Try free')) {
+        const parent = el.parentElement;
+        if (parent) parent.style.display = 'none';
+      }
+    });
+    // Hide "Start free. Upgrade when you need more depth." subtitle
+    const pricingSubtitles = document.querySelectorAll('.section-header p');
+    pricingSubtitles.forEach(function(el) {
+      if (el.textContent && el.textContent.includes('Start free')) {
+        el.style.display = 'none';
+      }
+    });
+  }
+  setTimeout(applyFreeTierVisibility, 600);
+
   // openOneShotGated — checks plan before opening the One Shot popup
   window.openOneShotGated = function() {
     const plan = (window._sfUser && window._sfUser.plan) || 'free';

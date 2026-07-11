@@ -1699,9 +1699,16 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/regen-stem
-//  Advanced Split — regenerate one stem clean via Mureka /v1/track/generate.
-//  Mureka's track/generate takes an upload_audio_id (reference song) + type
-//  (Vocals | Drums | Bass | Guitar | Piano | Strings | Brass | Synth | etc.)
+//  Advanced Split — re-extract one stem cleanly via Mureka /v1/song/stem.
+//  Uses the beat's stereo_url directly (no file upload needed).
+//  stem_type must match Mureka's model output names:
+//   vocals | bass | drums | guitar | piano | other
+//  Costs 20 pts, Pro Artist only.
+//  Flow:
+//   1. POST /v1/song/stem { model, audio_url, stems:[stem_type] }
+//   2. Returns task_id
+//   3. Poll via GET /api/job/regen-stem/:jobId?task_id=...
+// ═══════════════════════════════════════════════════════════════
 //  and AI-synthesises a new, bleed-free version of that instrument matching
 //  the timing/melody of the original. Asynchronous — poll with GET below.
 //
@@ -1758,63 +1765,59 @@ app.post('/api/job/regen-stem', async (c) => {
     }
   }
 
-  // Step 1: Upload the reference audio to Mureka (server-to-server, no memory used)
-  let uploadAudioId: string
-  try {
-    const uploadForm = new FormData()
-    uploadForm.append('url', job.stereo_url)
-    uploadForm.append('purpose', 'audio')
-    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
-      body: uploadForm
-    })
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text()
-      console.error(`[regen] upload error ${uploadRes.status}: ${errText}`)
-      return c.json({ error: `Failed to upload reference audio: ${uploadRes.status}` }, 502)
-    }
-    const uploadData = await uploadRes.json() as any
-    uploadAudioId = uploadData.id
-    if (!uploadAudioId) return c.json({ error: 'No upload_audio_id from Mureka' }, 502)
-  } catch (err: any) {
-    return c.json({ error: err?.message || 'Upload failed' }, 502)
+  // Map UI stem name → Mureka stem name (song/stem model accepts lowercase)
+  const stemMap: Record<string, string> = {
+    vocals: 'vocals', vocal: 'vocals',
+    drums: 'drums', drum: 'drums',
+    bass: 'bass',
+    guitar: 'guitar',
+    piano: 'piano',
+    other: 'other', melody: 'other', synth: 'other', strings: 'other'
   }
+  const murekaStem = stemMap[stem_type.toLowerCase()] || 'other'
 
-  // Step 2: POST /v1/track/generate — async, returns task_id
-  // type must be Title-cased: "Vocals", "Drums", "Bass", "Guitar", "Piano", etc.
-  const trackType = stem_type.charAt(0).toUpperCase() + stem_type.slice(1).toLowerCase()
+  // POST /v1/song/stem — use stereo_url directly, no upload needed
   let taskId: string
   try {
-    const genRes = await fetch(`${MUREKA_BASE}/track/generate`, {
+    const stemRes = await fetch(`${MUREKA_BASE}/song/stem`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ type: trackType, upload_audio_id: uploadAudioId })
+      body: JSON.stringify({
+        model: 'audio-separation-2',
+        audio_url: job.stereo_url,
+        stems: [murekaStem]
+      })
     })
-    if (!genRes.ok) {
-      const errText = await genRes.text()
-      let errMsg = `Mureka regen error ${genRes.status}`
-      try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || errText || errMsg } catch {}
-      console.error(`[regen] generate error ${genRes.status}: ${errText}`)
+    if (!stemRes.ok) {
+      const errText = await stemRes.text()
+      let errMsg = `Mureka stem error ${stemRes.status}`
+      try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || errMsg } catch {}
+      console.error(`[regen] song/stem error ${stemRes.status}: ${errText}`)
+      // Refund points on hard API failure
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: errMsg }, 502)
     }
-    const genData = await genRes.json() as any
-    taskId = genData.task_id || genData.id
-    if (!taskId) return c.json({ error: 'No task_id from Mureka track/generate' }, 502)
+    const stemData = await stemRes.json() as any
+    taskId = stemData.task_id || stemData.id
+    if (!taskId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'No task_id from Mureka song/stem' }, 502)
+    }
   } catch (err: any) {
-    return c.json({ error: err?.message || 'Regeneration request failed' }, 502)
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: err?.message || 'Regen request failed' }, 502)
   }
 
   // Store regen job in D1
-  const regenJob: RegenJob = { task_id: taskId, stem_type, status: 'pending', created_at: Date.now() }
+  const regenJob: RegenJob = { task_id: taskId, stem_type: murekaStem, status: 'pending', created_at: Date.now() }
   const updatedJob = { ...job } as any
   if (!updatedJob.regen_jobs) updatedJob.regen_jobs = []
   // Remove old pending/error for same stem_type
   updatedJob.regen_jobs = updatedJob.regen_jobs.filter((r: RegenJob) =>
-    r.stem_type !== stem_type || r.status === 'ready'
+    r.stem_type !== murekaStem || r.status === 'ready'
   )
   updatedJob.regen_jobs.push(regenJob)
   await setJob(c.env.DB, updatedJob)
@@ -1852,7 +1855,7 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
     return c.json({ status: 'error', error: regenJob.error })
   }
 
-  // Poll Mureka song/query for track/generate tasks
+  // Poll Mureka song/query for song/stem tasks
   try {
     const res = await fetch(`${MUREKA_BASE}/song/query/${regenJob.task_id}`, {
       headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
@@ -1861,17 +1864,21 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
     const data = await res.json() as any
 
     if (data.status === 'succeeded' || data.status === 'completed') {
-      // track/generate returns: { choices: [{ url: "...", ... }] } or { url: "..." }
+      // song/stem returns: { stems: { vocals: "url", drums: "url", ... } }
+      // also check legacy shapes: choices[0].url / audio_url
+      const stemsMap = data.stems || {}
       const stemUrl: string =
+        stemsMap[regenJob.stem_type] ||
+        Object.values(stemsMap)[0] as string ||
         data.choices?.[0]?.audio_url ||
         data.choices?.[0]?.url ||
         data.audio_url || data.url || ''
       if (!stemUrl) {
         regenJob.status = 'error'
-        regenJob.error = 'No audio URL in Mureka regen response'
+        regenJob.error = 'No audio URL in Mureka stem response'
       } else {
         regenJob.status = 'ready'
-        regenJob.url = stemUrl
+        regenJob.url = stemUrl as string
       }
       const updatedJob = { ...job } as any
       updatedJob.regen_jobs = regenJobs.map(r => r.task_id === regenJob.task_id ? regenJob : r)
@@ -2565,6 +2572,24 @@ app.post('/api/stripe/webhook', async (c) => {
           })
         } catch (mailErr) {
           console.error('[webhook] subscription email failed:', mailErr)
+        }
+      }
+    }
+
+    // ── Instant upgrade/downgrade on subscription change ────────────────────
+    if (event.type === 'customer.subscription.updated') {
+      const sub = event.data.object
+      const customerId = sub.customer
+      const priceId = sub.items?.data?.[0]?.price?.id
+      const plan = planFromPriceId(c.env, priceId)
+      const subId = sub.id
+      if (customerId && subId && plan !== 'free') {
+        // Find user by stripe_customer_id and update plan immediately
+        const dbUser = await c.env.DB.prepare(
+          `SELECT id FROM users WHERE stripe_customer_id=?`
+        ).bind(customerId).first<{id:string}>()
+        if (dbUser) {
+          await updateUserPlan(c.env.DB, dbUser.id, plan, customerId, subId)
         }
       }
     }
