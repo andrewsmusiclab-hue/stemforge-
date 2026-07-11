@@ -1362,12 +1362,26 @@ app.get('/api/job/stems/:jobId', async (c) => {
   const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
   if (!stemJobs?.length) return c.json({ status: 'not_started' })
 
-  // Find the matching stem job
-  const stemJob = taskId
+  // Find the matching stem job.
+  // IMPORTANT: waitUntil() mutates task_id from "stemwait:<mode>:<ts>" → "zip:<url>"
+  // after Mureka completes.  The client keeps sending the original stemwait task_id,
+  // so we must fall back to a mode-based lookup when exact task_id no longer matches.
+  let stemJob = taskId
     ? stemJobs.find(s => s.task_id === taskId)
-    : mode === 'auto'
+    : undefined
+
+  if (!stemJob) {
+    // Derive mode from task_id if it encodes one (e.g. "stemwait:auto:123")
+    let lookupMode = mode
+    let lookupTarget = target
+    if (taskId && taskId.startsWith('stemwait:')) {
+      const parts = taskId.split(':')
+      lookupMode = (parts[1] as StemMode) || mode
+    }
+    stemJob = lookupMode === 'auto'
       ? stemJobs.find(s => s.mode === 'auto')
-      : stemJobs.find(s => s.mode === mode && (s.target_instrument || '') === target)
+      : stemJobs.find(s => s.mode === lookupMode && (s.target_instrument || '') === lookupTarget)
+  }
 
   if (!stemJob) return c.json({ status: 'not_started' })
 
