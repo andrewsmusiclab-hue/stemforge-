@@ -1195,7 +1195,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Edit only for full beats
     if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
-      items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song — 2 Credits', action: () => {
+      items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song — 20 pts', action: () => {
         window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
       }});
     }
@@ -4090,22 +4090,71 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // even after the panel is closed and reopened.
   function _restoreCachedStems() {
     var jobId = _jobId;
+    // Step 1: fetch cached auto stems
     fetch('/api/job/stems/' + jobId + '?mode=auto')
-      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(r) {
+        if (!r.ok) { console.warn('[StemPlayer] restore: HTTP ' + r.status); return null; }
+        return r.json();
+      })
       .then(function(data) {
-        if (!data || !data.stems || !data.stems.length) return;
-        if (data.status !== 'ready') return;
+        if (!data) return;
+        if (!data.stems || !data.stems.length || data.status !== 'ready') {
+          console.log('[StemPlayer] restore: no cached auto stems yet (status=' + (data && data.status) + ')');
+          return;
+        }
         // Only restore if _advStems is still empty and user hasn't manually Reset
         if (!_advStems.length && !_advStemsReset && _jobId === jobId) {
-          _advStems = data.stems;
-          // If the Advanced tab is already visible, re-render it now
-          if (_activeTab === 'advanced' && _panel) {
+          _advStems = data.stems.slice(); // copy
+          console.log('[StemPlayer] restore: loaded ' + _advStems.length + ' auto stems for ' + jobId);
+          // Step 2: also fetch any cached regen stems and merge them in
+          _mergeRestoredRegens(jobId);
+        }
+      })
+      .catch(function(e) { console.warn('[StemPlayer] restore failed:', e); });
+  }
+
+  // Fetch all cached regen_jobs for this job and merge each one into _advStems.
+  // Called after _restoreCachedStems populates _advStems from auto extraction.
+  function _mergeRestoredRegens(jobId) {
+    fetch('/api/job/regen-stem/' + jobId + '?all=1')
+      .then(function(r) {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then(function(data) {
+        if (!data || data.status !== 'ready' || !data.stems || !data.stems.length) {
+          // No cached regens — just render whatever auto stems we have
+          if (_advStems.length && _jobId === jobId && _activeTab === 'advanced' && _panel) {
             _regenStemName = null;
             _renderStemTracks(_advStems, 'advanced');
           }
+          return;
+        }
+        if (_jobId !== jobId) return; // panel switched jobs
+        // Merge each regen stem into _advStems (replace matching row, or append)
+        data.stems.forEach(function(regenStem) {
+          var found = false;
+          _advStems = _advStems.map(function(s) {
+            if (s.name.toLowerCase() === regenStem.name.toLowerCase()) { found = true; return regenStem; }
+            return s;
+          });
+          if (!found) _advStems.push(regenStem);
+        });
+        console.log('[StemPlayer] restore: merged ' + data.stems.length + ' regen stem(s); total=' + _advStems.length);
+        // Render the Advanced tab if it's active
+        if (_activeTab === 'advanced' && _panel) {
+          _regenStemName = null; // no badge on restore
+          _renderStemTracks(_advStems, 'advanced');
         }
       })
-      .catch(function() { /* silent — panel works fine without restore */ });
+      .catch(function(e) {
+        // Regen fetch failed — still render auto stems
+        console.warn('[StemPlayer] mergeRegens failed:', e);
+        if (_advStems.length && _jobId === jobId && _activeTab === 'advanced' && _panel) {
+          _regenStemName = null;
+          _renderStemTracks(_advStems, 'advanced');
+        }
+      });
   }
 
   function _bindEvents() {
@@ -4210,7 +4259,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // row has a per-stem "Regen" button (AI regenerates that stem clean via Mureka).
   function _showAdvancedTab() {
     if (_advStems.length > 0) {
-      // Already extracted — render waveform rows (same as Auto Split) with Regen buttons
+      // Already extracted — render waveform rows with Regen buttons
+      // Clear regen badge when navigating to tab fresh (badge only shows right after a regen)
+      _regenStemName = null;
       _renderStemTracks(_advStems, 'advanced');
     } else {
       // Not yet extracted — show Extract button

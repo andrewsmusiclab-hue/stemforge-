@@ -1786,9 +1786,21 @@ app.post('/api/job/regen-stem', async (c) => {
     bass: 'bass',
     guitar: 'guitar',
     piano: 'piano',
-    other: 'other', melody: 'other', synth: 'other', strings: 'other'
+    flute: 'flute',
+    fx: 'FX',
+    strings: 'strings',
+    synth: 'synth',
+    keyboard: 'keyboard',
+    brass: 'brass_and_winds',
+    winds: 'brass_and_winds',
+    brass_and_winds: 'brass_and_winds',
+    'brass and winds': 'brass_and_winds',
+    brass_and_woodwinds: 'brass_and_winds',
+    woodwinds: 'brass_and_winds',
+    other: 'other', melody: 'other'
   }
-  const murekaStem = stemMap[stem_type.toLowerCase()] || 'other'
+  // Pass-through: if stem_type already matches a known Mureka stem name exactly, use it directly
+  const murekaStem = stemMap[stem_type.toLowerCase()] ?? stem_type.toLowerCase()
 
   // POST /v1/song/stem — use stereo_url directly, no upload needed
   let taskId: string
@@ -1873,6 +1885,17 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 
   const regenJobs = (job as any).regen_jobs as RegenJob[] | undefined
   if (!regenJobs?.length) return c.json({ status: 'not_started' })
+
+  // ?all=1 — return ALL ready regen jobs merged as stems array (used by _restoreCachedStems)
+  const allFlag = c.req.query('all') === '1'
+  if (allFlag) {
+    const readyRegens = regenJobs.filter(r => r.status === 'ready' && r.url)
+    if (!readyRegens.length) return c.json({ status: 'not_started' })
+    return c.json({
+      status: 'ready',
+      stems: readyRegens.map(r => ({ name: r.stem_type.toLowerCase(), url: r.url as string }))
+    })
+  }
 
   const regenJob = taskId
     ? regenJobs.find(r => r.task_id === taskId)
