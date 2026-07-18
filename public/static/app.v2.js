@@ -776,15 +776,20 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // ── Format a card title: strip underscores, highlight trailing "Remix" in purple neon ──
+  // ── Format a card title: strip underscores, highlight "Remix" in purple neon ──
+  var _remixSpan = '<span style="color:#c084fc;font-weight:700;text-shadow:0 0 8px rgba(192,132,252,.6)">Remix</span>';
   function formatCardTitle(raw) {
-    // Replace underscores with spaces
+    // Strip underscores → spaces
     var t = (raw || '').replace(/_/g, ' ').trim();
-    // If title ends with " Remix" (case-insensitive), colour that word purple neon
-    var remixRe = /^(.*)\s(Remix)$/i;
-    var m = t.match(remixRe);
+    // Legacy pattern: "AI Remix of X" or "Stemforge Remix of X" → rewrite to "X Remix"
+    var legacyRe = /^(?:AI|Stemforge)\s+Remix\s+of\s+(.+)$/i;
+    var lm = t.match(legacyRe);
+    if (lm) { t = lm[1].trim() + ' Remix'; }
+    // Highlight trailing " Remix" (case-insensitive) in purple neon
+    var trailingRe = /^(.*?)\s*\b(Remix)\s*$/i;
+    var m = t.match(trailingRe);
     if (m) {
-      return m[1] + ' <span style="color:#c084fc;font-weight:700;text-shadow:0 0 8px rgba(192,132,252,.6)">' + m[2] + '</span>';
+      return m[1].trim() + ' ' + _remixSpan;
     }
     return t;
   }
