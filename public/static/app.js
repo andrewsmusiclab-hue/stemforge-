@@ -1225,6 +1225,15 @@ document.addEventListener('DOMContentLoaded', () => {
       }});
     }
 
+    // AI Remix — for full beats (not oneshots), paid plans only, requires stereoUrl
+    if (!isOneshot && !isFree && stereoUrl) {
+      items.push({ icon: 'fa-wand-magic-sparkles', label: 'AI Remix — 20 pts', action: () => {
+        if (typeof window.openRemixCard === 'function') {
+          window.openRemixCard(jobId, stereoUrl, safeTitle);
+        }
+      }});
+    }
+
     // Delete — goes to trash
     items.push({ icon: 'fa-trash-alt', label: 'Move to Trash', danger: true,
       action: () => deleteLibItem(jobId) });
@@ -1255,6 +1264,95 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); }
       });
     }, 0);
+  };
+
+  // ── AI Remix from card menu ──────────────────────────────────────
+  window.openRemixCard = async function(jobId, stereoUrl, safeTitle) {
+    // Show a toast that remix is starting
+    var toast = document.createElement('div');
+    toast.id = 'sf-remix-toast';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+      'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;' +
+      'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
+      'box-shadow:0 8px 32px rgba(168,85,247,.45);display:flex;align-items:center;gap:10px;' +
+      'animation:sf-fadein .25s ease';
+    toast.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i>' +
+      '<span>AI Remix starting… check your library in a minute</span>' +
+      '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
+        'color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">✕</button>';
+    if (!document.getElementById('sf-remix-toast')) document.body.appendChild(toast);
+    setTimeout(function() { if (toast.parentNode) toast.remove(); }, 8000);
+
+    try {
+      var res = await fetch('/api/job/remix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobId, stereo_url: stereoUrl, title: safeTitle })
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        toast.remove();
+        var errDiv = document.createElement('div');
+        errDiv.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+          'background:#1a0a0a;border:1px solid rgba(239,68,68,.5);color:#f87171;' +
+          'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
+          'box-shadow:0 8px 32px rgba(0,0,0,.55);display:flex;align-items:center;gap:10px';
+        errDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i><span>' +
+          (data.error || 'AI Remix failed') + '</span>' +
+          '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
+          'color:rgba(255,255,255,.4);cursor:pointer;font-size:.9rem;padding:0">✕</button>';
+        document.body.appendChild(errDiv);
+        setTimeout(function() { if (errDiv.parentNode) errDiv.remove(); }, 6000);
+        return;
+      }
+      var newJobId = data.job_id;
+      if (!newJobId) return;
+
+      // Poll the new job every 5s until ready, then refresh the beats library
+      var pollCount = 0;
+      var maxPolls = 72; // 6 minutes max
+      var pollInterval = setInterval(async function() {
+        pollCount++;
+        if (pollCount > maxPolls) {
+          clearInterval(pollInterval);
+          return;
+        }
+        try {
+          var pollRes = await fetch('/api/poll/' + newJobId, { method: 'POST' });
+          if (!pollRes.ok) return;
+          var pollData = await pollRes.json();
+          if (pollData.status === 'ready' || pollData.status === 'error') {
+            clearInterval(pollInterval);
+            // Refresh beats library so new track appears
+            if (window._libLoaded) window._libLoaded.beats = false;
+            var libGrid = document.getElementById('lib-grid');
+            var libActive = document.querySelector('.lib-tab.active');
+            if (libActive && libActive.dataset && libActive.dataset.tab === 'beats' && typeof window._fetchLibTab === 'function') {
+              window._fetchLibTab('beats');
+            } else if (typeof fetchLibTab === 'function') {
+              window._libLoaded.beats = false;
+              fetchLibTab('beats');
+            }
+            if (pollData.status === 'ready') {
+              var doneToast = document.createElement('div');
+              doneToast.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+                'background:linear-gradient(135deg,#10b981,#059669);color:#fff;' +
+                'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
+                'box-shadow:0 8px 32px rgba(16,185,129,.35);display:flex;align-items:center;gap:10px';
+              doneToast.innerHTML = '<i class="fas fa-check-circle"></i>' +
+                '<span>AI Remix ready! Check your library.</span>' +
+                '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
+                'color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">✕</button>';
+              document.body.appendChild(doneToast);
+              setTimeout(function() { if (doneToast.parentNode) doneToast.remove(); }, 8000);
+            }
+          }
+        } catch(e) { /* transient — keep polling */ }
+      }, 5000);
+    } catch(err) {
+      toast.remove();
+      console.error('[remix] openRemixCard error:', err);
+    }
   };
 
   // ── Dashboard: Download Full Track modal (WAV / MP3) ────────────
@@ -3929,8 +4027,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // Advanced tab state
   var _advStems     = [];       // stems extracted by audio-separation-2 for adv tab
   var _origStemUrls = {};       // { stemName: proxyUrl } — original auto URLs, set once and never overwritten
-  var _selectedRegen= null;     // which stem the user wants regenerated
-  var _regenStemName= null;     // name of most-recently regenerated stem (for badge)
+  // _selectedRegen and _regenStemName removed — regen feature moved to card menu
   var _stemLabels   = {};       // user-renamed stem labels: { stemName: customLabel }
   var _advStemsReset= false;    // true after manual Reset — suppresses auto-restore
 
@@ -4110,7 +4207,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           console.log('[StemPlayer] restore: loaded ' + _advStems.length + ' auto stems for ' + jobId);
           // Render the Advanced tab if it's active (regen section always starts empty on reopen)
           if (_activeTab === 'advanced' && _panel) {
-            _regenStemName = null;
             _renderStemTracks(_advStems, 'advanced');
           }
         }
@@ -4118,53 +4214,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       .catch(function(e) { console.warn('[StemPlayer] restore failed:', e); });
   }
 
-  // Fetch all cached regen_jobs for this job and merge each one into _advStems.
-  // Called after _restoreCachedStems populates _advStems from auto extraction.
-  function _mergeRestoredRegens(jobId) {
-    fetch('/api/job/regen-stem/' + jobId + '?all=1')
-      .then(function(r) {
-        if (!r.ok) return null;
-        return r.json();
-      })
-      .then(function(data) {
-        if (!data || data.status !== 'ready' || !data.stems || !data.stems.length) {
-          // No cached regens — just render whatever auto stems we have
-          if (_advStems.length && _jobId === jobId && _activeTab === 'advanced' && _panel) {
-            _regenStemName = null;
-            _renderStemTracks(_advStems, 'advanced');
-          }
-          return;
-        }
-        if (_jobId !== jobId) return; // panel switched jobs
-        // Merge each regen stem into _advStems (replace matching row, or append)
-        // Use _origStemUrls (captured at extraction time) for before/after comparison
-        data.stems.forEach(function(regenStem) {
-          var found = false;
-          var key = regenStem.name.toLowerCase();
-          var origUrl = _origStemUrls[key] || null;
-          _advStems = _advStems.map(function(s) {
-            if (s.name.toLowerCase() !== key) return s;
-            found = true;
-            return Object.assign({}, regenStem, { orig_url: origUrl || s.url });
-          });
-          if (!found) _advStems.push(Object.assign({}, regenStem, origUrl ? { orig_url: origUrl } : {}));
-        });
-        console.log('[StemPlayer] restore: merged ' + data.stems.length + ' regen stem(s); total=' + _advStems.length);
-        // Render the Advanced tab if it's active
-        if (_activeTab === 'advanced' && _panel) {
-          _regenStemName = null; // no badge on restore
-          _renderStemTracks(_advStems, 'advanced');
-        }
-      })
-      .catch(function(e) {
-        // Regen fetch failed — still render auto stems
-        console.warn('[StemPlayer] mergeRegens failed:', e);
-        if (_advStems.length && _jobId === jobId && _activeTab === 'advanced' && _panel) {
-          _regenStemName = null;
-          _renderStemTracks(_advStems, 'advanced');
-        }
-      });
-  }
+  // _mergeRestoredRegens removed — regen feature moved to card menu
 
   function _bindEvents() {
     _panel.querySelectorAll('.sp-tab').forEach(function (btn) {
@@ -4259,13 +4309,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   // ── Advanced tab ──────────────────────────────────────────────────────────
-  // Layout: Identical to Auto Split waveform rows. The only difference is each
-  // row has a per-stem "Regen" button (AI regenerates that stem clean via Mureka).
   function _showAdvancedTab() {
     if (_advStems.length > 0) {
-      // Already extracted — render waveform rows with Regen buttons
-      // Clear regen badge when navigating to tab fresh (badge only shows right after a regen)
-      _regenStemName = null;
       _renderStemTracks(_advStems, 'advanced');
     } else {
       // Not yet extracted — show Extract button
@@ -4273,11 +4318,11 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '<div style="display:flex;align-items:flex-start;gap:12px">' +
           '<div style="flex:1;min-width:0">' +
             '<p style="color:rgba(255,255,255,0.48);font-size:.77rem;line-height:1.55;margin:0 0 4px 0">' +
-              '<span style="color:#c084fc;font-weight:600">StemForge AI Remix</span> — ' +
-              'Extracts your stems, then re-synthesizes any one stem from scratch.' +
+              '<span style="color:#c084fc;font-weight:600">Advanced Stem Extraction</span> — ' +
+              'Extracts individual stems (vocals, drums, bass, other) from your track.' +
             '</p>' +
             '<p style="color:rgba(255,255,255,0.28);font-size:.7rem;margin:0">' +
-              'Generates a fresh clean version inspired by your beat. Click <b style="color:rgba(255,255,255,0.45)">Remix</b> on any stem row after extraction.' +
+              'Each stem can be muted, soloed, and downloaded independently.' +
             '</p>' +
           '</div>' +
           '<button onclick="window._spExtractAdvanced()" style="' +
@@ -4330,7 +4375,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _stems = [];
     _audios = [];
     _advStems = [];
-    _selectedRegen = null;
     _advStemsReset = false;   // fresh extraction — allow future restore
     _curTaskId = null;
     if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
@@ -4413,17 +4457,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     });
   }
 
-  // Legacy: kept for backwards compat
-  window._spSelectRegen = function (stemName) {
-    _selectedRegen = stemName;
-  };
-
   // Reset advanced tab back to Extract button
   window._spResetAdvanced = function () {
     _advStems = [];
     _origStemUrls = {};
-    _selectedRegen = null;
-    _regenStemName = null;
     _stemLabels = {};
     _advStemsReset = true;   // suppress auto-restore until user manually extracts again
     _stopAllAudio();
@@ -4439,102 +4476,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _showAdvancedTab();
   };
 
-  // Per-stem regen button: called with the stem name (e.g. 'vocals', 'drums')
-  // Triggers Mureka /v1/track/generate for that specific stem type
-  window._spRunRegen = async function (stemName) {
-    // stemName is passed from the per-row Regen button
-    // Fall back to _selectedRegen for legacy callers
-    var targetStem = stemName || _selectedRegen;
-    if (!_jobId || !targetStem) return;
-    _selectedRegen = targetStem;
-
-    _stopAllAudio();
-    _playing = false;
-    _stems = [];
-    _audios = [];
-    _curTaskId = null;
-    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
-
-    var tracksEl = _panel && _panel.querySelector('#sp-tracks');
-    var playbar  = _panel && _panel.querySelector('#sp-playbar');
-    if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
-    if (playbar)  playbar.style.display = 'none';
-
-    _showProgress('StemForge is remixing ' + _capFirst(targetStem) + '…');
-
-    try {
-      var res = await fetch('/api/job/regen-stem', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: _jobId, stem_type: targetStem })
-      });
-      var data = await _safeJson(res);
-      if (!res.ok) {
-        var msg = data.error || 'Regeneration failed';
-        if (data.upgrade) {
-          _showError(msg + ' <a href="/pricing" style="color:#4e9fff;text-decoration:underline">Upgrade →</a>');
-        } else {
-          _showError(msg);
-        }
-        return;
-      }
-      if (data.status === 'ready' && data.stems && data.stems.length) {
-        // Merge regenerated stem back into the full _advStems list
-        var regenStem = data.stems[0];
-        _regenStemName = regenStem.name;
-        var rkey = regenStem.name.toLowerCase();
-        var origUrl = _origStemUrls[rkey] || null;
-        if (_advStems.length) {
-          _advStems = _advStems.map(function(s) {
-            if (s.name.toLowerCase() !== rkey) return s;
-            return Object.assign({}, regenStem, { orig_url: origUrl || s.url });
-          });
-        } else {
-          _advStems = [Object.assign({}, regenStem, origUrl ? { orig_url: origUrl } : {})];
-        }
-        _renderStemTracks(_advStems, 'advanced');
-        return;
-      }
-      _curTaskId = data.task_id;
-      _pollForRegen();
-    } catch (err) {
-      _showError('Network error: ' + (err.message || 'Unknown'));
-    }
-  };
-
-  function _pollForRegen() {
-    var dots = 0;
-    var stemLabel = _capFirst(_selectedRegen || 'stem');
-    _pollTimer = setInterval(async function () {
-      if (!_panel) { clearInterval(_pollTimer); return; }
-      dots = (dots + 1) % 4;
-      _showProgress('AI Remixing ' + stemLabel + '.'.repeat(dots + 1));
-      try {
-        var params = '?task_id=' + encodeURIComponent(_curTaskId) + '&stem_type=' + encodeURIComponent(_selectedRegen || 'stem');
-        var res  = await fetch('/api/job/regen-stem/' + _jobId + params);
-        var data = await _safeJson(res);
-        if (data.status === 'ready' && data.stems && data.stems.length) {
-          clearInterval(_pollTimer); _pollTimer = null;
-          var regenStem = data.stems[0];
-          _regenStemName = regenStem.name;
-          var rkey2 = regenStem.name.toLowerCase();
-          var origUrl2 = _origStemUrls[rkey2] || null;
-          if (_advStems.length) {
-            _advStems = _advStems.map(function(s) {
-              if (s.name.toLowerCase() !== rkey2) return s;
-              return Object.assign({}, regenStem, { orig_url: origUrl2 || s.url });
-            });
-          } else {
-            _advStems = [Object.assign({}, regenStem, origUrl2 ? { orig_url: origUrl2 } : {})];
-          }
-          _renderStemTracks(_advStems, 'advanced');
-        } else if (data.status === 'error') {
-          clearInterval(_pollTimer); _pollTimer = null;
-          _showError(data.error || 'Regeneration failed');
-        }
-      } catch (e) { /* transient — keep polling */ }
-    }, 3000);
-  }
+  // _spRunRegen and _pollForRegen removed — regen feature moved to card menu (openRemixCard)
 
   // ─────────────────────────────────────────────────────────────────────────
   //  EXTRACT (Auto + Split tabs)
@@ -4656,22 +4598,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
     var isAdv = (mode === 'advanced');
 
-    // For Advanced tab: split into originals and regenerated stems
-    // _stems (mixer) always plays ORIGINAL audio — clean, unmodified.
-    // Regenerated stems appear in a separate section below (like preview cards).
-    var origStems   = stems;   // all stems (originals, used for mixer)
-    var regenStems  = [];      // stems that have a regenerated version
-    if (isAdv) {
-      regenStems = stems.filter(function(s) {
-        return s.orig_url && s.orig_url !== s.url;
-      });
-    }
-
-    _stems = origStems.map(function (s) {
+    _stems = stems.map(function (s) {
       return { name: s.name, url: s.url, muted: false, solo: false, vol: 1.0 };
     });
-
-    var regenCount = regenStems.length;
 
     // Tab body: status + reset/re-extract button + stereo download button
     _setTabBody(
@@ -4679,10 +4608,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '<span style="color:rgba(255,255,255,0.35);font-size:.72rem">' +
           '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
           _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted' +
-          (isAdv && regenCount > 0
-            ? ' · <span style="color:rgba(192,132,252,0.75)">' + regenCount + ' remix' + (regenCount !== 1 ? 'es' : '') + ' below</span>'
-            : '') +
-          (isAdv ? '<span style="margin-left:6px;color:rgba(192,132,252,0.6);font-size:.68rem">· click Remix on any row</span>' : '') +
         '</span>' +
         '<div style="display:flex;align-items:center;gap:6px">' +
           _buildDownloadBtn(mode) +
@@ -4701,30 +4626,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var tracksEl = _panel.querySelector('#sp-tracks');
     if (!tracksEl) return;
 
-    // Render original stems section (always — these feed the mixer)
+    // Render stem rows
     var origHtml = _stems.map(function (s, i) {
       return _buildTrackRow(s, i, isAdv);
     }).join('');
 
-    // Render regenerated stems section (Advanced tab only, when regens exist)
-    var regenSectionHtml = '';
-    if (isAdv && regenStems.length > 0) {
-      var regenRowsHtml = regenStems.map(function(s, ri) {
-        return _buildRegenSectionRow(s, ri);
-      }).join('');
-
-      regenSectionHtml =
-        '<div style="border-top:1px solid rgba(168,85,247,0.25);margin-top:6px;padding-top:2px">' +
-          '<div style="display:flex;align-items:center;gap:7px;padding:8px 16px 5px">' +
-            '<i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.7rem"></i>' +
-            '<span style="font-size:.72rem;font-weight:700;color:#c084fc;letter-spacing:.03em">AI Remixes</span>' +
-            '<span style="font-size:.62rem;color:rgba(255,255,255,.3)">' + regenStems.length + ' stem' + (regenStems.length !== 1 ? 's' : '') + '</span>' +
-          '</div>' +
-          regenRowsHtml +
-        '</div>';
-    }
-
-    tracksEl.innerHTML = origHtml + regenSectionHtml;
+    tracksEl.innerHTML = origHtml;
     tracksEl.style.display = 'flex';
 
     // Preserve playback position when re-rendering (e.g. after regen completes).
@@ -5002,12 +4909,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   };
 
   // Per-stem download picker — small inline popover anchored to the download button
-  // directUrl (optional): if provided, use this URL directly for regen downloads
-  //   instead of constructing /api/stem-audio?regen=1 (which requires D1 persistence)
-  window._spDownloadStemPicker = function (stemName, isAdvStr, anchorBtn, directUrl) {
+  window._spDownloadStemPicker = function (stemName, isAdvStr, anchorBtn) {
     var existing = document.getElementById('sp-stem-dl-popup');
     if (existing) { existing.remove(); if (existing._anchor === anchorBtn) return; }
-    var isAdv = isAdvStr === '1';
     var canWav = (_userPlan === 'pro' || _userPlan === 'developer');
     var customLabel = _stemLabels[stemName] || _capFirst(stemName);
     var popup = document.createElement('div');
@@ -5022,33 +4926,13 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       'min-width:160px'
     ].join(';');
 
-    // For regen (AI Remix) stems: directUrl is encodeURIComponent-encoded Mureka CDN URL.
-    // We route through /api/remix-dl (Worker proxy) so:
-    //   1. Content-Disposition: attachment; filename="<stemName>_ai_remix.wav" is set server-side
-    //   2. Cross-origin <a download> is no longer needed — same-origin proxy serves the file
-    //   3. WAV is served as WAV (Mureka returns WAV natively); MP3 label just changes the Content-Type hint
-    // For original stems: use the /api/stem-audio proxy route.
-    var mp3Url, wavUrl;
-    var resolvedUrl = directUrl ? decodeURIComponent(directUrl) : null;
-    if (isAdv && resolvedUrl) {
-      // Route through Worker proxy so filename + Content-Disposition are correct
-      var encName = encodeURIComponent(stemName);
-      var encCdn  = encodeURIComponent(resolvedUrl);
-      mp3Url = '/api/remix-dl?name=' + encName + '&fmt=mp3&url=' + encCdn;
-      wavUrl = '/api/remix-dl?name=' + encName + '&fmt=wav&url=' + encCdn;
-    } else {
-      mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3' + (isAdv ? '&regen=1' : '');
-      wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav' + (isAdv ? '&regen=1' : '');
-    }
+    // Stem download always uses the /api/stem-audio proxy route
+    var mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3';
+    var wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav';
     var safeName = (_stemLabels[stemName] || stemName).replace(/[^a-z0-9_\-]/gi, '_');
-    // AI Remix files use _ai_remix suffix; original stems use _stem suffix
-    var mp3DlName = isAdv ? (safeName + '_ai_remix.mp3') : (safeName + '_stem.mp3');
-    var wavDlName = isAdv ? (safeName + '_ai_remix.wav') : (safeName + '_stem.wav');
-    // AI Remix: Mureka natively returns WAV — WAV button is always the real thing
-    // MP3 button for remix uses same proxy route with fmt=mp3 (Content-Type header changes)
-    var wavLabel  = isAdv
-      ? 'WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">AI Remix · Pro</span>'
-      : 'WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless · Pro</span>';
+    var mp3DlName = safeName + '_stem.mp3';
+    var wavDlName = safeName + '_stem.wav';
+    var wavLabel  = 'WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless · Pro</span>';
 
     popup.innerHTML =
       '<div style="font-size:.68rem;color:rgba(255,255,255,.35);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">' +
@@ -5107,9 +4991,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   //  TRACK ROW
   // ─────────────────────────────────────────────────────────────────────────
-  // Build a single original-stem track row (mixer row).
-  // For the Advanced tab these always play the ORIGINAL audio.
-  // Regenerated versions appear in the separate section below (_buildRegenSectionRow).
+  // Build a single stem track row (mixer row).
   function _buildTrackRow(s, i, isAdv) {
     var color = STEM_COLORS[s.name] || STEM_COLORS.default;
     var customLabel = _stemLabels[s.name] || _capFirst(s.name);
@@ -5175,20 +5057,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           ' title="Volume"' +
           ' style="width:48px;flex-shrink:0;accent-color:' + color + ';cursor:pointer">' +
 
-        // Advanced: Regen button
-        (isAdv
-          ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="AI Remix ' + _escHtml(customLabel) + ' — generates a clean inspired version" style="' +
-                'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
-                'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
-                'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
-                'white-space:nowrap;transition:all .15s;letter-spacing:.01em"' +
-              ' onmouseover="this.style.background=\'rgba(168,85,247,0.25)\';this.style.borderColor=\'rgba(192,132,252,0.6)\'"' +
-              ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
-              '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Remix' +
-            '</button>'
-          : '') +
-
-        // Per-stem download icon — ORIGINAL audio (no ?regen=1 needed)
+        // Per-stem download icon — ORIGINAL audio
         (_userPlan !== 'free'
           ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'0\',this)" ' +
               'title="Download ' + _escHtml(customLabel) + '" style="' +
@@ -5211,138 +5080,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     return row;
   }
 
-  // Build a regen-section row — shown in the "Regenerated Stems" section below the originals.
-  // Has: play (regen audio), stem label, "compare orig" play button, download (regen), download (orig).
-  function _buildRegenSectionRow(s, ri) {
-    var color = STEM_COLORS[s.name] || STEM_COLORS.default;
-    var customLabel = _stemLabels[s.name] || _capFirst(s.name);
-
-    // IDs for the regen player elements
-    var regenAudioId = 'sp-regen-audio-' + ri;
-    var regenBtnId   = 'sp-regen-btn-' + ri;
-    // IDs for the orig comparison player
-    var origAudioId  = 'sp-orig-audio-' + ri;
-    var origBtnId    = 'sp-orig-btn-' + ri;
-
-    var regenProxyUrl = s.url;  // use Mureka CDN URL directly — no D1 persistence
-    var origProxyUrl  = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
-
-    return (
-      '<div style="display:flex;align-items:center;gap:8px;padding:9px 16px;' +
-          'border-bottom:1px solid rgba(168,85,247,0.1);' +
-          'background:rgba(168,85,247,0.04);transition:background .15s"' +
-          ' onmouseover="this.style.background=\'rgba(168,85,247,0.09)\'"' +
-          ' onmouseout="this.style.background=\'rgba(168,85,247,0.04)\'">' +
-
-        // color bar (purple tint for regen)
-        '<div style="width:2.5px;height:28px;border-radius:2px;' +
-            'background:linear-gradient(' + color + ',#a855f7);flex-shrink:0"></div>' +
-
-        // stem name + ✦ badge
-        '<div style="width:88px;flex-shrink:0;display:flex;flex-direction:column;gap:2px;min-width:0">' +
-          '<span style="font-size:.74rem;font-weight:600;color:#f1f5f9;' +
-              'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
-            _escHtml(customLabel) +
-          '</span>' +
-          '<span style="font-size:.58rem;font-weight:700;color:#a855f7;letter-spacing:.02em;white-space:nowrap">' +
-            '✦ AI Remix' +
-          '</span>' +
-        '</div>' +
-
-        // ── Play regen button ──
-        '<button id="' + regenBtnId + '"' +
-          ' data-src="' + regenProxyUrl + '"' +
-          ' data-audio-id="' + regenAudioId + '"' +
-          ' onclick="window._spToggleOrig(this)"' +
-          ' title="Play AI Remix of ' + _escHtml(customLabel) + '"' +
-          ' style="flex-shrink:0;width:30px;height:30px;border-radius:50%;' +
-            'border:1.5px solid rgba(168,85,247,0.5);background:rgba(168,85,247,0.15);' +
-            'color:#c084fc;font-size:.7rem;cursor:pointer;' +
-            'display:flex;align-items:center;justify-content:center;transition:all .15s"' +
-          ' onmouseover="this.style.background=\'rgba(168,85,247,0.3)\'"' +
-          ' onmouseout="this.style.background=\'rgba(168,85,247,0.15)\'">' +
-          '<i class="fas fa-play"></i>' +
-        '</button>' +
-        '<audio id="' + regenAudioId + '" preload="none" style="display:none"></audio>' +
-
-        // label
-        '<span style="flex:1;font-size:.67rem;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
-          'AI Remix — inspired by your beat' +
-        '</span>' +
-
-        // ── Compare: play original ──
-        '<button id="' + origBtnId + '"' +
-          ' data-src="' + origProxyUrl + '"' +
-          ' data-audio-id="' + origAudioId + '"' +
-          ' onclick="window._spToggleOrig(this)"' +
-          ' title="Compare with original"' +
-          ' style="flex-shrink:0;display:flex;align-items:center;gap:5px;' +
-            'padding:3px 8px;border-radius:5px;cursor:pointer;' +
-            'border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.04);' +
-            'color:rgba(255,255,255,0.45);font-size:.62rem;font-weight:600;transition:all .15s"' +
-          ' onmouseover="this.style.background=\'rgba(255,255,255,0.1)\'"' +
-          ' onmouseout="this.style.background=\'rgba(255,255,255,0.04)\'">' +
-          '<i class="fas fa-play" style="font-size:.55rem"></i>' +
-          'Original' +
-        '</button>' +
-        '<audio id="' + origAudioId + '" preload="none" style="display:none"></audio>' +
-
-        // ── Download regen ──
-        (_userPlan !== 'free'
-          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'1\',this,\'' + encodeURIComponent(s.url || '') + '\')" ' +
-              'title="Download AI Remix of ' + _escHtml(customLabel) + '" style="' +
-              'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
-              'color:rgba(168,85,247,0.5);font-size:.78rem;display:flex;align-items:center;' +
-              'justify-content:center;width:20px;height:20px;transition:color .15s"' +
-            ' onmouseover="this.style.color=\'#a855f7\'" onmouseout="this.style.color=\'rgba(168,85,247,0.5)\'">' +
-            '<i class="fas fa-download"></i>' +
-          '</button>'
-          : '') +
-
-      '</div>'
-    );
-  }
-
-  // Toggle original stem audio preview
-  window._spToggleOrig = function (btn) {
-    var audioId = btn.getAttribute('data-audio-id');
-    var src     = btn.getAttribute('data-src');
-    var audio   = document.getElementById(audioId);
-    if (!audio) return;
-
-    // Stop any other orig previews playing
-    document.querySelectorAll('[data-audio-id]').forEach(function(b) {
-      if (b === btn) return;
-      var a = document.getElementById(b.getAttribute('data-audio-id'));
-      if (a && !a.paused) {
-        a.pause();
-        a.currentTime = 0;
-        var ico = b.querySelector('i');
-        if (ico) { ico.className = 'fas fa-play'; }
-        b.style.background = 'rgba(255,255,255,0.06)';
-      }
-    });
-
-    var icon = btn.querySelector('i');
-    if (audio.paused) {
-      if (!audio.src || audio.src === window.location.href) {
-        audio.src = src;
-      }
-      audio.play().then(function() {
-        if (icon) icon.className = 'fas fa-pause';
-        btn.style.background = 'rgba(255,255,255,0.14)';
-      }).catch(function() {});
-      audio.onended = function() {
-        if (icon) icon.className = 'fas fa-play';
-        btn.style.background = 'rgba(255,255,255,0.06)';
-      };
-    } else {
-      audio.pause();
-      audio.currentTime = 0;
-      if (icon) icon.className = 'fas fa-play';
-      btn.style.background = 'rgba(255,255,255,0.06)';
-    }
-  };
+  // _buildRegenSectionRow and _spToggleOrig removed — regen feature moved to card menu
 
   // Inline rename: replaces label span with a tiny input field
   window._spRenameStart = function (idx, stemName) {
@@ -5619,12 +5357,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var playbar  = _panel && _panel.querySelector('#sp-playbar');
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
-    if (mode === 'advanced') {
-      // Re-run regen with same stem selection
-      window._spRunRegen();
-    } else {
-      _onTabClick(mode || _activeTab || 'auto');
-    }
+    _onTabClick(mode || _activeTab || 'auto');
   };
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -5689,8 +5422,6 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _stems = [];
     _advStems = [];
     _origStemUrls = {};
-    _selectedRegen = null;
-    _regenStemName = null;
     _stemLabels = {};
     _advStemsReset = false;
     _activeTab = null;

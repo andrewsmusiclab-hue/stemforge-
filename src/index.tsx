@@ -2155,6 +2155,111 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  POST /api/job/remix — AI Remix the full stereo track
+//  Uploads the beat's stereo_url to Mureka /v1/files/upload,
+//  calls /v1/instrumental/generate, creates a NEW Job in D1 so the
+//  result appears in the library exactly like a freshly generated beat.
+//  Costs 20 pts. Available to creator/pro/developer plans.
+//  Frontend polls the new job via existing POST /api/poll/:id.
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/job/remix', async (c) => {
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  // Require paid plan
+  if (user.plan === 'free') {
+    return c.json({ error: 'AI Remix requires a paid plan.', upgrade: true }, 403)
+  }
+
+  // Deduct 20 points
+  const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
+  if (!fresh || fresh.gens_used + 20 > fresh.gens_limit) {
+    return c.json({ error: `Not enough points. AI Remix costs 20 points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+  }
+  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
+
+  const body = await c.req.json<{ job_id: string; stereo_url: string; title?: string }>()
+  const { job_id, stereo_url, title } = body
+  if (!job_id || !stereo_url) return c.json({ error: 'job_id and stereo_url required' }, 400)
+
+  // Upload stereo to Mureka as instrumental reference
+  let fileId: string
+  try {
+    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ url: stereo_url, purpose: 'instrumental' })
+    })
+    if (!uploadRes.ok) {
+      const t = await uploadRes.text()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: `Mureka upload error ${uploadRes.status}: ${t.slice(0,200)}` }, 502)
+    }
+    const uploadData = await uploadRes.json() as any
+    fileId = uploadData.id || uploadData.instrumental_id || uploadData.file_id
+    if (!fileId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'No file_id returned from Mureka upload' }, 502)
+    }
+  } catch (err: any) {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: err?.message || 'Upload failed' }, 502)
+  }
+
+  // Call instrumental/generate with the uploaded file as reference
+  let murekTaskId: string
+  try {
+    const genRes = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model: 'auto', instrumental_id: fileId, n: 1 })
+    })
+    if (!genRes.ok) {
+      const t = await genRes.text()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: `Mureka generate error ${genRes.status}: ${t.slice(0,200)}` }, 502)
+    }
+    const genData = await genRes.json() as any
+    murekTaskId = genData.id as string
+    if (!murekTaskId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'No task id from Mureka generate' }, 502)
+    }
+  } catch (err: any) {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: err?.message || 'Generate request failed' }, 502)
+  }
+
+  // Create new library job — status 'generating' so /api/poll/:id can advance it
+  const newJobId = makeJobId()
+  const remixTitle = title ? `AI Remix of ${title}` : 'AI Remix'
+  const newJob: Job = {
+    id: newJobId,
+    status: 'generating',
+    created_at: Date.now(),
+    prompt: `AI Remix of job ${job_id}`,
+    title: remixTitle,
+    thumbnail_seed: Math.floor(Math.random() * 360),
+    stereo_task_id: murekTaskId
+  }
+  // Mark as instrumental/generate type so advancePipeline uses instrumental/query
+  ;(newJob as any).extend_task_type = undefined  // not song_extend — uses instrumental/query path
+  await setJob(c.env.DB, newJob, user.id)
+
+  console.log(`[remix] New job ${newJobId} created, murekTaskId=${murekTaskId}, source=${job_id}`)
+  return c.json({ ok: true, job_id: newJobId, status: 'generating' })
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  GET /api/stem-mix/:jobId
 //  Download the stereo mix (original beat audio) as mp3 or wav.
 //  Plan gating: free → 403, creator → mp3 only, pro/developer → mp3 + wav
@@ -5267,7 +5372,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-02'
+const ASSET_VER = '20260718-03'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
