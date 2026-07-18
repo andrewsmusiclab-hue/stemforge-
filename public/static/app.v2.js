@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
       creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'Mastered stereo mix download', 'Commercial use rights'] },
-      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
+      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix (20 pts)', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -776,6 +776,19 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // ── Format a card title: strip underscores, highlight trailing "Remix" in purple neon ──
+  function formatCardTitle(raw) {
+    // Replace underscores with spaces
+    var t = (raw || '').replace(/_/g, ' ').trim();
+    // If title ends with " Remix" (case-insensitive), colour that word purple neon
+    var remixRe = /^(.*)\s(Remix)$/i;
+    var m = t.match(remixRe);
+    if (m) {
+      return m[1] + ' <span style="color:#c084fc;font-weight:700;text-shadow:0 0 8px rgba(192,132,252,.6)">' + m[2] + '</span>';
+    }
+    return t;
+  }
+
   // ── Render a single beats/songs card ───────────────────────
   function renderBeatCard(p, i) {
     const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
@@ -802,7 +815,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <div class="project-card__body">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
-            <h4 style="margin:0;flex:1">${rawTitle}</h4>
+            <h4 style="margin:0;flex:1">${formatCardTitle(rawTitle)}</h4>
             <button class="song-dots-btn" title="More options"
               onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
               style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
@@ -1194,7 +1207,7 @@ document.addEventListener('DOMContentLoaded', () => {
           '<i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:1.1rem;animation:sf-pulse 1.5s ease-in-out infinite"></i>' +
           '<span style="font-weight:700;font-size:.9rem;color:#c084fc">Remixing…</span>' +
         '</div>' +
-        '<p style="margin:0;font-size:.75rem;color:rgba(255,255,255,.45);line-height:1.4">AI is generating a new beat<br>inspired by <b style="color:rgba(255,255,255,.65)">' + (safeTitle || 'your track') + '</b></p>' +
+        '<p style="margin:0;font-size:.75rem;color:rgba(255,255,255,.45);line-height:1.4">Stemforge is generating a new beat<br>inspired by <b style="color:rgba(255,255,255,.65)">' + (safeTitle || 'your track') + '</b></p>' +
         '<div style="width:100%;height:3px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;margin-top:4px">' +
           '<div id="' + placeholderId + '-bar" style="height:100%;width:10%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:3px;transition:width 2s ease;animation:sf-progress-bar 90s linear forwards"></div>' +
         '</div>' +
@@ -1328,7 +1341,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Remix — for full beats (not oneshots), paid plans only, requires stereoUrl
     if (!isOneshot && !isFree && stereoUrl) {
-      items.push({ icon: 'fa-wand-magic-sparkles', label: 'Remix', tooltip: 'Generate a new beat inspired by this track using AI', action: () => {
+      items.push({ icon: 'fa-wand-magic-sparkles', label: 'Remix', tooltip: 'Remix your beat inspired by this track', action: () => {
         window.openRemixCard(jobId, stereoUrl, safeTitle);
       }});
     }
@@ -2143,10 +2156,10 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // Update result header with AI-generated or user title
+            // Update result header with title — strip underscores for display
             const titleEl = document.getElementById('gen-result-title');
             const subEl   = document.getElementById('gen-result-sub');
-            if (titleEl) titleEl.textContent = finalTitle;
+            if (titleEl) titleEl.textContent = finalTitle.replace(/_/g, ' ');
             if (subEl && job.blueprint) {
               const dur = Math.floor((job.blueprint.duration_seconds||120)/60) + ':' + String((job.blueprint.duration_seconds||120)%60).padStart(2,'0');
               subEl.textContent = job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale;
@@ -4127,7 +4140,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '</div>' +
         '<div style="flex:1;min-width:0">' +
           '<div id="sp-title" style="font-weight:700;font-size:.9rem;color:#f8fafc;' +
-              'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + _escHtml(_title) + '</div>' +
+              'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + formatCardTitle(_title) + '</div>' +
           '<div style="font-size:.68rem;color:rgba(255,255,255,0.32);margin-top:1px">Stem Extractor</div>' +
         '</div>' +
         '<button onclick="closeStemsPanel()" aria-label="Close" style="' +
@@ -6002,7 +6015,7 @@ window.renderEditInstrumentPills = function (bp) {
       '</div>' +
       '<div class="project-card__body">' +
         '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
-          '<h4 style="margin:0;flex:1">' + title + '</h4>' +
+          '<h4 style="margin:0;flex:1">' + formatCardTitle(title) + '</h4>' +
           '<button class="song-dots-btn" title="More options"' +
             ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + stereoUrl + '\',\'\',\'' + safeTitle + '\',\'extended\')"' +
             ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +

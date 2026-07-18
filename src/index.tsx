@@ -2171,13 +2171,13 @@ app.post('/api/job/remix', async (c) => {
 
   // Require paid plan
   if (user.plan === 'free') {
-    return c.json({ error: 'AI Remix requires a paid plan.', upgrade: true }, 403)
+    return c.json({ error: 'Stemforge Remix requires a paid plan.', upgrade: true }, 403)
   }
 
   // Deduct 20 points
   const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
   if (!fresh || fresh.gens_used + 20 > fresh.gens_limit) {
-    return c.json({ error: `Not enough points. AI Remix costs 20 points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+    return c.json({ error: `Not enough points. Stemforge Remix costs 20 points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
 
@@ -2222,12 +2222,14 @@ app.post('/api/job/remix', async (c) => {
 
   // Create new library job — status 'generating' so /api/poll/:id can advance it
   const newJobId = makeJobId()
-  const remixTitle = title ? `AI Remix of ${title}` : 'AI Remix'
+  // Clean underscores from title for display
+  const cleanTitle = title ? title.replace(/_/g, ' ') : ''
+  const remixTitle = cleanTitle ? `${cleanTitle} Remix` : 'Stemforge Remix'
   const newJob: Job = {
     id: newJobId,
     status: 'generating',
     created_at: Date.now(),
-    prompt: `AI Remix of job ${job_id}`,
+    prompt: `Stemforge Remix of job ${job_id}`,
     title: remixTitle,
     thumbnail_seed: Math.floor(Math.random() * 360),
     stereo_task_id: murekTaskId
@@ -5353,7 +5355,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-05'
+const ASSET_VER = '20260718-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5840,6 +5842,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX (10 pts)</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
@@ -7026,6 +7029,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Song Extend (20 pts)</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem (20 pts)</li>
           <li><i class="fas fa-check"></i> Stem regeneration (20 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
           <li><i class="fas fa-check"></i> WAV + MP3 download (mastered &amp; unmastered)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
@@ -7058,6 +7062,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> MP3 / WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (StemForge SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -8047,6 +8052,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> (20 pts)</li>
           </ul>
           ${user.plan === 'pro'
             ? `<div class="sub-action-wrap" id="sub-pro-action-wrap">
@@ -9193,15 +9199,15 @@ function termsPage() {
 
 <section>
   <h2>2. The Service</h2>
-  <p>StemForge is an AI-powered music beat generation platform that allows users to create original instrumental beats and audio tracks using artificial intelligence. The Service includes:</p>
+  <p>StemForge is a music beat generation platform that allows users to create original instrumental beats and audio tracks. The Service includes:</p>
   <ul>
-    <li>AI-powered beat generation using text prompts, style descriptors, and musical parameters</li>
+    <li>StemForge beat generation using text prompts, style descriptors, and musical parameters</li>
     <li>Stereo mix downloads (MP3 and WAV)</li>
-    
+    <li>Stemforge Remix — reinvent any existing beat in your library (Pro Artist &amp; higher)</li>
     <li>Project storage, dashboard, and playback functionality</li>
     <li>Account management including profile, subscription, and billing tools</li>
   </ul>
-  <p>We use third-party AI providers to power our generation pipeline. Output quality and availability depend on these services and may vary.</p>
+  <p>We use third-party providers to power our generation pipeline. Output quality and availability depend on these services and may vary.</p>
 </section>
 
 <section>
@@ -9226,7 +9232,7 @@ function termsPage() {
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
     <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, auto-split, vocal+instrumental, MP3 download, commercial use rights</li>
-    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, MP3 + WAV download, commercial use rights, priority queue</li>
+    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, MP3 + WAV download, commercial use rights, priority queue, Stemforge Remix (reinvent any beat, 20 pts)</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
@@ -9276,14 +9282,14 @@ function termsPage() {
 </section>
 
 <section>
-  <h2>7. AI-Generated Content Disclaimer</h2>
-  <p>StemForge uses AI to generate audio content. While we strive to produce high-quality, original output, we make no guarantees regarding:</p>
+  <h2>7. StemForge-Generated Content Disclaimer</h2>
+  <p>StemForge uses its generation engine (powered by third-party audio models) to produce audio content. While we strive to produce high-quality, original output, we make no guarantees regarding:</p>
   <ul>
     <li>The uniqueness or originality of generated beats</li>
     <li>The absence of similarity to existing copyrighted works</li>
     <li>The suitability of generated content for any particular commercial or artistic purpose</li>
   </ul>
-  <p>You are solely responsible for reviewing generated content before use and for ensuring your use complies with applicable copyright law. StemForge is not liable for any third-party claims arising from your use of AI-generated content.</p>
+  <p>You are solely responsible for reviewing generated content before use and for ensuring your use complies with applicable copyright law. StemForge is not liable for any third-party claims arising from your use of StemForge-generated content.</p>
 </section>
 
 <section>
