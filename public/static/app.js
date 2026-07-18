@@ -1181,22 +1181,38 @@ document.addEventListener('DOMContentLoaded', () => {
   window.openRemixCard = async function(jobId, stereoUrl, safeTitle) {
     if (!stereoUrl) { alert('No audio available for this track yet.'); return; }
 
-    // Purple toast
-    var oldToast = document.getElementById('sf-remix-toast');
-    if (oldToast) oldToast.remove();
-    var toast = document.createElement('div');
-    toast.id = 'sf-remix-toast';
-    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
-      'background:linear-gradient(135deg,#a855f6,#ec4899);color:#fff;' +
-      'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
-      'box-shadow:0 8px 32px rgba(168,85,247,.45);display:flex;align-items:center;gap:10px';
-    toast.innerHTML = '<i class="fas fa-wand-magic-sparkles"></i>' +
-      '<span>Remix starting\u2026 check your library in a minute</span>' +
-      '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
-        'color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">\u2715</button>';
-    document.body.appendChild(toast);
-    setTimeout(function() { if (toast.parentNode) toast.remove(); }, 8000);
+    // ── 1. Inject a "Remixing…" placeholder card at the top of the beats grid ──
+    var gridEl = document.getElementById('project-grid-beats');
+    var placeholderId = 'remix-placeholder-' + Date.now();
+    var placeholder = document.createElement('div');
+    placeholder.id = placeholderId;
+    placeholder.className = 'project-card';
+    placeholder.style.cssText = 'position:relative;overflow:hidden;opacity:.9;border:1px solid rgba(168,85,247,.35);background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(236,72,153,.05))';
+    placeholder.innerHTML =
+      '<div style="padding:16px;display:flex;flex-direction:column;gap:10px;min-height:120px;justify-content:center;align-items:center;text-align:center">' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:1.1rem;animation:sf-pulse 1.5s ease-in-out infinite"></i>' +
+          '<span style="font-weight:700;font-size:.9rem;color:#c084fc">Remixing…</span>' +
+        '</div>' +
+        '<p style="margin:0;font-size:.75rem;color:rgba(255,255,255,.45);line-height:1.4">AI is generating a new beat<br>inspired by <b style="color:rgba(255,255,255,.65)">' + (safeTitle || 'your track') + '</b></p>' +
+        '<div style="width:100%;height:3px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;margin-top:4px">' +
+          '<div id="' + placeholderId + '-bar" style="height:100%;width:10%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:3px;transition:width 2s ease;animation:sf-progress-bar 90s linear forwards"></div>' +
+        '</div>' +
+      '</div>';
+    // Add pulse animation if not already in page
+    if (!document.getElementById('sf-remix-styles')) {
+      var styleEl = document.createElement('style');
+      styleEl.id = 'sf-remix-styles';
+      styleEl.textContent = '@keyframes sf-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(1.2)}}' +
+        '@keyframes sf-progress-bar{0%{width:10%}50%{width:75%}90%{width:90%}100%{width:92%}}';
+      document.head.appendChild(styleEl);
+    }
+    // Navigate to beats tab and prepend card
+    var beatsTab = document.querySelector('.lib-tab[data-tab="beats"]');
+    if (beatsTab && !beatsTab.classList.contains('active')) beatsTab.click();
+    if (gridEl) gridEl.insertBefore(placeholder, gridEl.firstChild);
 
+    // ── 2. POST to backend ──
     try {
       var res = await fetch('/api/job/remix', {
         method: 'POST',
@@ -1205,7 +1221,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       var data = await res.json();
       if (!res.ok) {
-        toast.remove();
+        placeholder.remove();
         var errDiv = document.createElement('div');
         errDiv.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
           'background:#1a0a0a;border:1px solid rgba(239,68,68,.5);color:#f87171;' +
@@ -1216,43 +1232,48 @@ document.addEventListener('DOMContentLoaded', () => {
           '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
           'color:rgba(255,255,255,.4);cursor:pointer;font-size:.9rem;padding:0">\u2715</button>';
         document.body.appendChild(errDiv);
-        setTimeout(function() { if (errDiv.parentNode) errDiv.remove(); }, 6000);
+        setTimeout(function() { if (errDiv.parentNode) errDiv.remove(); }, 8000);
         return;
       }
       var newJobId = data.job_id;
-      if (!newJobId) return;
+      if (!newJobId) { placeholder.remove(); return; }
 
-      // Poll until ready then refresh library
+      // ── 3. Poll until ready, then replace placeholder with real card ──
       var pollCount = 0;
       var pollInterval = setInterval(async function() {
-        if (++pollCount > 72) { clearInterval(pollInterval); return; }
+        if (++pollCount > 84) { // 7 min max
+          clearInterval(pollInterval);
+          placeholder.remove();
+          return;
+        }
         try {
           var pr = await fetch('/api/poll/' + newJobId, { method: 'POST' });
           if (!pr.ok) return;
           var pd = await pr.json();
           if (pd.status === 'ready' || pd.status === 'error') {
             clearInterval(pollInterval);
-            // Refresh library
+            placeholder.remove();
+            // Refresh library so the real card appears
             if (window._libLoaded) window._libLoaded.beats = false;
             if (typeof fetchLibTab === 'function') fetchLibTab('beats');
             if (pd.status === 'ready') {
+              // Green toast
               var done = document.createElement('div');
               done.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
                 'background:linear-gradient(135deg,#10b981,#059669);color:#fff;' +
                 'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
                 'box-shadow:0 8px 32px rgba(16,185,129,.35);display:flex;align-items:center;gap:10px';
-              done.innerHTML = '<i class="fas fa-check-circle"></i>' +
-                '<span>Remix ready! Check your library.</span>' +
+              done.innerHTML = '<i class="fas fa-check-circle"></i><span>Remix ready!</span>' +
                 '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
                 'color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">\u2715</button>';
               document.body.appendChild(done);
-              setTimeout(function() { if (done.parentNode) done.remove(); }, 8000);
+              setTimeout(function() { if (done.parentNode) done.remove(); }, 6000);
             }
           }
-        } catch(e) {}
+        } catch(e) { /* transient */ }
       }, 5000);
     } catch(err) {
-      toast.remove();
+      placeholder.remove();
       console.error('[remix]', err);
     }
   };
@@ -1307,7 +1328,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Remix — for full beats (not oneshots), paid plans only, requires stereoUrl
     if (!isOneshot && !isFree && stereoUrl) {
-      items.push({ icon: 'fa-wand-magic-sparkles', label: 'Remix', action: () => {
+      items.push({ icon: 'fa-wand-magic-sparkles', label: 'Remix', tooltip: 'Generate a new beat inspired by this track using AI', action: () => {
         window.openRemixCard(jobId, stereoUrl, safeTitle);
       }});
     }
@@ -1318,8 +1339,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     items.forEach(item => {
       const el = document.createElement('button');
-      el.style.cssText = `display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:${item.danger?'var(--danger)':'var(--text)'};cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s`;
-      el.innerHTML = `<i class="fas ${item.icon}" style="width:15px;opacity:.7;flex-shrink:0"></i>${item.label}`;
+      el.style.cssText = `display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:${item.danger?'var(--danger)':'var(--text)'};cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s;position:relative`;
+      el.innerHTML = `<i class="fas ${item.icon}" style="width:15px;opacity:.7;flex-shrink:0"></i><span style="flex:1">${item.label}</span>` +
+        (item.tooltip ? `<i class="fas fa-circle-info" style="font-size:.7rem;opacity:.35;flex-shrink:0" title="${item.tooltip}"></i>` : '');
+      if (item.tooltip) el.title = item.tooltip;
       el.onmouseover = () => el.style.background = 'rgba(255,255,255,.06)';
       el.onmouseout  = () => el.style.background = 'none';
       el.onclick = (e) => { e.stopPropagation(); menu.remove(); item.action(); };

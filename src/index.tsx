@@ -2185,34 +2185,14 @@ app.post('/api/job/remix', async (c) => {
   const { job_id, stereo_url, title } = body
   if (!job_id || !stereo_url) return c.json({ error: 'job_id and stereo_url required' }, 400)
 
-  // Upload stereo to Mureka as instrumental reference
-  let fileId: string
-  try {
-    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ url: stereo_url, purpose: 'instrumental' })
-    })
-    if (!uploadRes.ok) {
-      const t = await uploadRes.text()
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: `Mureka upload error ${uploadRes.status}: ${t.slice(0,200)}` }, 502)
-    }
-    const uploadData = await uploadRes.json() as any
-    fileId = uploadData.id || uploadData.instrumental_id || uploadData.file_id
-    if (!fileId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No file_id returned from Mureka upload' }, 502)
-    }
-  } catch (err: any) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: err?.message || 'Upload failed' }, 502)
-  }
+  // Get the original job's blueprint to build a relevant prompt
+  const srcJob = await getJob(c.env.DB, job_id)
+  const bp = srcJob?.blueprint
+  const prompt = bp
+    ? `${bp.genre || 'instrumental'} beat, ${bp.mood || ''} mood, ${bp.bpm || 120}bpm, key of ${bp.key || 'C'}`
+    : 'instrumental beat'
 
-  // Call instrumental/generate with the uploaded file as reference
+  // Call instrumental/generate directly with reference_url — no file upload needed
   let murekTaskId: string
   try {
     const genRes = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
@@ -2221,7 +2201,7 @@ app.post('/api/job/remix', async (c) => {
         'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ model: 'auto', instrumental_id: fileId, n: 1 })
+      body: JSON.stringify({ model: 'auto', prompt, reference_url: stereo_url, n: 1 })
     })
     if (!genRes.ok) {
       const t = await genRes.text()
@@ -2234,6 +2214,7 @@ app.post('/api/job/remix', async (c) => {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'No task id from Mureka generate' }, 502)
     }
+    console.log(`[remix] instrumental/generate started: task=${murekTaskId}`)
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
     return c.json({ error: err?.message || 'Generate request failed' }, 502)
@@ -5372,7 +5353,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-04'
+const ASSET_VER = '20260718-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
