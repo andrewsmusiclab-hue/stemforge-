@@ -1723,9 +1723,37 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       const safeStemName = stemName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
       const dlMime = dlFmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
       const dlExt  = dlFmt === 'mp3' ? 'mp3' : 'wav'
+      const totalBytes = audioBuffer.byteLength
+
+      // ── HTTP Range support — required for browser seeking ──
+      // Without Accept-Ranges + 206 responses, browsers treat audio as non-seekable
+      // and silently ignore a.currentTime assignments (always plays from 0).
+      const rangeHeader = c.req.header('Range')
+      if (rangeHeader && !wantDl) {
+        const m = rangeHeader.match(/bytes=(\d+)-(\d*)/)
+        if (m) {
+          const start = parseInt(m[1], 10)
+          const end   = m[2] ? parseInt(m[2], 10) : totalBytes - 1
+          const safeEnd = Math.min(end, totalBytes - 1)
+          const chunk = audioBuffer.slice(start, safeEnd + 1)
+          return new Response(chunk, {
+            status: 206,
+            headers: {
+              'Content-Type': 'audio/wav',
+              'Content-Range': `bytes ${start}-${safeEnd}/${totalBytes}`,
+              'Content-Length': String(chunk.byteLength),
+              'Accept-Ranges': 'bytes',
+              'Access-Control-Allow-Origin': '*',
+              'Cache-Control': 'public, max-age=3600',
+            }
+          })
+        }
+      }
+
       const dlHeaders: Record<string, string> = {
         'Content-Type': wantDl ? dlMime : 'audio/wav',
-        'Content-Length': String(audioBuffer.byteLength),
+        'Content-Length': String(totalBytes),
+        'Accept-Ranges': 'bytes',
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'public, max-age=3600',
       }
@@ -1733,20 +1761,84 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       return new Response(audioBuffer, { headers: dlHeaders })
     }
 
-    const upstream = await fetch(stemUrl)
-    if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
+    // ── Direct CDN URL path (non-zip-entry stems) ──
+    // Must also support Range requests so browsers can seek these stems.
+    const rangeHeader2 = c.req.header('Range')
     const safeStemName2 = stemName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
     const dlMime2 = dlFmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
     const dlExt2  = dlFmt === 'mp3' ? 'mp3' : 'wav'
+
+    // If browser is asking for a range, forward the Range header to the CDN
+    const upstreamHeaders: Record<string, string> = {}
+    if (rangeHeader2 && !wantDl) upstreamHeaders['Range'] = rangeHeader2
+
+    const upstream = await fetch(stemUrl, { headers: upstreamHeaders })
+    if (!upstream.ok && upstream.status !== 206) return c.json({ error: 'Audio fetch failed' }, 502)
+
+    const upContentLength = upstream.headers.get('Content-Length')
+    const upContentRange  = upstream.headers.get('Content-Range')
     const upHeaders: Record<string, string> = {
       'Content-Type': wantDl ? dlMime2 : (upstream.headers.get('Content-Type') || 'audio/wav'),
+      'Accept-Ranges': 'bytes',
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'public, max-age=3600'
     }
+    if (upContentLength) upHeaders['Content-Length'] = upContentLength
+    if (upContentRange)  upHeaders['Content-Range']  = upContentRange
     if (wantDl) upHeaders['Content-Disposition'] = `attachment; filename="${safeStemName2}_stem.${dlExt2}"`
-    return new Response(upstream.body, { headers: upHeaders })
+    return new Response(upstream.body, { status: upstream.status, headers: upHeaders })
   } catch (err: any) {
     return c.json({ error: err?.message || 'Proxy failed' }, 502)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  GET /api/remix-dl — proxy-download an AI Remix CDN file with a sane filename
+//  Cross-origin CDN URLs ignore the HTML <a download> attribute in most browsers,
+//  so the file gets the CDN's random hash name. This route fetches the CDN URL
+//  server-side and re-serves it with Content-Disposition: attachment + correct filename.
+//  ?url=<encodedCdnUrl>&name=<stemName>&fmt=wav|mp3
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/remix-dl', async (c) => {
+  // Auth: require a valid session (prevents abuse as an open proxy)
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const cdnUrl  = c.req.query('url')   // URL-encoded Mureka CDN URL
+  const rawName = c.req.query('name') || 'remix'  // stem name, e.g. "vocals"
+  const fmt     = c.req.query('fmt')  || 'wav'    // 'wav' or 'mp3'
+
+  if (!cdnUrl) return c.json({ error: 'url param required' }, 400)
+
+  // Validate the URL is a Mureka CDN URL (prevent open proxy abuse)
+  let decodedUrl: string
+  try { decodedUrl = decodeURIComponent(cdnUrl) } catch { return c.json({ error: 'Invalid url param' }, 400) }
+  if (!decodedUrl.startsWith('https://')) return c.json({ error: 'url must be https' }, 400)
+
+  try {
+    const upstream = await fetch(decodedUrl)
+    if (!upstream.ok) return c.json({ error: 'CDN fetch failed' }, 502)
+
+    // Build a safe filename from the stem name
+    const safeStem = rawName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
+    const ext = fmt === 'mp3' ? 'mp3' : 'wav'
+    const mime = fmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
+    const filename = `${safeStem}_ai_remix.${ext}`
+
+    const body = await upstream.arrayBuffer()
+    return new Response(body, {
+      headers: {
+        'Content-Type': mime,
+        'Content-Length': String(body.byteLength),
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store',
+      }
+    })
+  } catch (err: any) {
+    return c.json({ error: err?.message || 'Download proxy failed' }, 502)
   }
 })
 
@@ -1808,45 +1900,120 @@ app.post('/api/job/regen-stem', async (c) => {
   const stemLabel = stem_type.toLowerCase()
   const stemLabelAlt = stemLabel.includes('_') ? stemLabel.replace(/_/g, ' ') : stemLabel.replace(/ /g, '_')
 
-  // ── Find the already-extracted stem URL for this stem_type ──
+  // ── Find the already-extracted stem for this stem_type ──
   // We upload the PRE-EXTRACTED stem (not the full mix) to instrumental/generate.
   // Feeding only that instrument's audio as the reference means Mureka generates
   // a clean isolated version of just that instrument — no bleed from others.
+  //
+  // All stems in stem_jobs are stored as zip-entry: URLs (compressed in the separation ZIP).
+  // We resolve them by reading the ZIP local header + range-fetching the compressed bytes,
+  // decompressing if needed, then uploading the raw WAV bytes as a multipart file to Mureka.
+  // This is the same logic used in GET /api/stem-audio — duplicated here for the regen path.
   const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
-  let stemSourceUrl: string = job.stereo_url  // fallback to full mix if stem not found
+  let stemSourceUrl: string = job.stereo_url   // fallback — full mix
+  let stemZipEntry: string | undefined         // set when stem is a zip-entry: URL
+
   if (stemJobs?.length) {
     outer: for (const sj of stemJobs) {
       if (sj.status !== 'ready' || !sj.stems?.length) continue
       for (const t of sj.stems) {
         const n = (t.name || '').toLowerCase()
         if (n === stemLabel || n === stemLabelAlt) {
-          // Prefer direct CDN URLs; skip zip-entry:// references (can't upload those)
-          if (t.url && !t.url.startsWith('zip-entry:')) {
-            stemSourceUrl = t.url
-            console.log(`[remix] Using extracted stem URL for ${stemLabel}: ${stemSourceUrl.slice(0, 60)}...`)
+          if (t.url) {
+            if (t.url.startsWith('zip-entry:')) {
+              stemZipEntry = t.url   // will resolve to bytes below
+              console.log(`[remix] Found zip-entry stem for ${stemLabel}`)
+            } else {
+              stemSourceUrl = t.url  // direct CDN URL — can upload by URL
+              console.log(`[remix] Using direct stem URL for ${stemLabel}: ${stemSourceUrl.slice(0, 60)}...`)
+            }
             break outer
           }
         }
       }
     }
   }
-  if (stemSourceUrl === job.stereo_url) {
+  if (!stemZipEntry && stemSourceUrl === job.stereo_url) {
     console.warn(`[remix] No extracted stem found for ${stemLabel} — falling back to full mix`)
   }
 
-  // ── Step 1: Upload the stem (or full mix fallback) to Mureka as instrumental reference ──
+  // ── Step 1: Upload stem to Mureka as instrumental reference ──
   // purpose MUST be 'instrumental' so Mureka returns an instrumental_id usable
   // by /v1/instrumental/generate. Using 'reference' gives a reference_id (wrong field).
+  //
+  // If stem is zip-entry:, we resolve it to raw WAV bytes here and upload as a file blob
+  // (multipart/form-data with a `file` field).  If it's a direct URL, we upload by URL.
   let fileId: string
   try {
-    const uploadForm = new FormData()
-    uploadForm.append('purpose', 'instrumental')
-    uploadForm.append('url', stemSourceUrl)
-    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
-      body: uploadForm
-    })
+    let uploadRes: Response
+    if (stemZipEntry) {
+      // ── Resolve zip-entry: stem to raw WAV bytes ──
+      const zipRest    = stemZipEntry.slice('zip-entry:'.length)
+      const zipParts   = zipRest.split('|')
+      const zipUrlStr  = zipParts[0]
+      const localOff   = parseInt(zipParts[1], 10)
+      const compSize   = parseInt(zipParts[2], 10)
+      const compMethod = zipParts[4] !== undefined ? parseInt(zipParts[4], 10) : -1
+      // uncompSize = zipParts[5] (unused here — we decompress fully)
+
+      // Read local file header (30 bytes) to find exact data start
+      const hdrRes = await fetch(zipUrlStr, {
+        headers: { 'Range': `bytes=${localOff}-${localOff + 29}` }
+      })
+      let dataStart = localOff + 30
+      let localCompMethod = compMethod
+      if (hdrRes.ok || hdrRes.status === 206) {
+        const hdrBuf  = await hdrRes.arrayBuffer()
+        const hdrView = new DataView(hdrBuf)
+        if (hdrView.getUint32(0, true) === 0x04034b50) {
+          if (localCompMethod === -1) localCompMethod = hdrView.getUint16(6, true)
+          const localFnLen = hdrView.getUint16(26, true)
+          const localExLen = hdrView.getUint16(28, true)
+          dataStart = localOff + 30 + localFnLen + localExLen
+        }
+      }
+
+      // Fetch the compressed bytes
+      const rangeRes = await fetch(zipUrlStr, {
+        headers: { 'Range': `bytes=${dataStart}-${dataStart + compSize - 1}` }
+      })
+      if (!rangeRes.ok && rangeRes.status !== 206) {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        return c.json({ error: 'ZIP range request failed for stem extraction' }, 502)
+      }
+
+      // Decompress if deflated (method=8)
+      let stemBytes: ArrayBuffer
+      if (localCompMethod === 8) {
+        const ds = new DecompressionStream('deflate-raw')
+        const decompStream = rangeRes.body!.pipeThrough(ds)
+        stemBytes = await new Response(decompStream).arrayBuffer()
+      } else {
+        stemBytes = await rangeRes.arrayBuffer()
+      }
+      console.log(`[remix] Resolved zip-entry stem: ${stemBytes.byteLength} bytes for ${stemLabel}`)
+
+      // Upload as multipart file blob — Mureka accepts WAV bytes directly
+      const uploadForm = new FormData()
+      uploadForm.append('purpose', 'instrumental')
+      uploadForm.append('file', new Blob([stemBytes], { type: 'audio/wav' }), `${stemLabel}.wav`)
+      uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+        body: uploadForm
+      })
+    } else {
+      // Direct CDN URL — upload by URL (no file bytes needed)
+      const uploadForm = new FormData()
+      uploadForm.append('purpose', 'instrumental')
+      uploadForm.append('url', stemSourceUrl)
+      uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+        body: uploadForm
+      })
+    }
+
     if (!uploadRes.ok) {
       const errText = await uploadRes.text()
       let errMsg = `Mureka upload error ${uploadRes.status}`
@@ -5081,7 +5248,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260711-09'
+const ASSET_VER = '20260718-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

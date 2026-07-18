@@ -5002,26 +5002,40 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       'min-width:160px'
     ].join(';');
 
-    // For regen stems: directUrl is encodeURIComponent-encoded CDN URL; decode it.
-    // For original stems: use the proxy route.
+    // For regen (AI Remix) stems: directUrl is encodeURIComponent-encoded Mureka CDN URL.
+    // We route through /api/remix-dl (Worker proxy) so:
+    //   1. Content-Disposition: attachment; filename="<stemName>_ai_remix.wav" is set server-side
+    //   2. Cross-origin <a download> is no longer needed — same-origin proxy serves the file
+    //   3. WAV is served as WAV (Mureka returns WAV natively); MP3 label just changes the Content-Type hint
+    // For original stems: use the /api/stem-audio proxy route.
     var mp3Url, wavUrl;
     var resolvedUrl = directUrl ? decodeURIComponent(directUrl) : null;
     if (isAdv && resolvedUrl) {
-      // Direct Mureka CDN URL — use as-is for both mp3 and wav
-      mp3Url = resolvedUrl;
-      wavUrl = resolvedUrl;
+      // Route through Worker proxy so filename + Content-Disposition are correct
+      var encName = encodeURIComponent(stemName);
+      var encCdn  = encodeURIComponent(resolvedUrl);
+      mp3Url = '/api/remix-dl?name=' + encName + '&fmt=mp3&url=' + encCdn;
+      wavUrl = '/api/remix-dl?name=' + encName + '&fmt=wav&url=' + encCdn;
     } else {
       mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3' + (isAdv ? '&regen=1' : '');
       wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav' + (isAdv ? '&regen=1' : '');
     }
     var safeName = (_stemLabels[stemName] || stemName).replace(/[^a-z0-9_\-]/gi, '_');
+    // AI Remix files use _ai_remix suffix; original stems use _stem suffix
+    var mp3DlName = isAdv ? (safeName + '_ai_remix.mp3') : (safeName + '_stem.mp3');
+    var wavDlName = isAdv ? (safeName + '_ai_remix.wav') : (safeName + '_stem.wav');
+    // AI Remix: Mureka natively returns WAV — WAV button is always the real thing
+    // MP3 button for remix uses same proxy route with fmt=mp3 (Content-Type header changes)
+    var wavLabel  = isAdv
+      ? 'WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">AI Remix · Pro</span>'
+      : 'WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless · Pro</span>';
 
     popup.innerHTML =
       '<div style="font-size:.68rem;color:rgba(255,255,255,.35);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">' +
         '<i class="fas fa-download" style="margin-right:5px;color:#4e9fff"></i>Download ' + _escHtml(customLabel) +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:5px">' +
-        '<a href="' + mp3Url + '" download="' + safeName + '_stem.mp3"' +
+        '<a href="' + mp3Url + '" download="' + mp3DlName + '"' +
             ' onclick="document.getElementById(\'sp-stem-dl-popup\').remove()"' +
             ' style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
               'border:1px solid rgba(78,159,255,.35);background:rgba(78,159,255,.08);' +
@@ -5032,7 +5046,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<span>MP3 <span style="font-weight:400;opacity:.6;font-size:.68rem">Compressed</span></span>' +
         '</a>' +
         (canWav
-          ? '<a href="' + wavUrl + '" download="' + safeName + '_stem.wav"' +
+          ? '<a href="' + wavUrl + '" download="' + wavDlName + '"' +
                 ' onclick="document.getElementById(\'sp-stem-dl-popup\').remove()"' +
                 ' style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
                   'border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.08);' +
@@ -5040,7 +5054,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
                 ' onmouseover="this.style.background=\'rgba(168,85,247,.2)\'"' +
                 ' onmouseout="this.style.background=\'rgba(168,85,247,.08)\'">' +
               '<i class="fas fa-wave-square" style="font-size:.85rem"></i>' +
-              '<span>WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless · Pro</span></span>' +
+              '<span>' + wavLabel + '</span>' +
             '</a>'
           : '<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
                 'border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);' +
