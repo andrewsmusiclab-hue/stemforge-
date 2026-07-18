@@ -1740,31 +1740,28 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/regen-stem
-//  Advanced Split — re-extract one stem cleanly via Mureka /v1/song/stem.
-//  Uses the beat's stereo_url directly (no file upload needed).
-//  stem_type must match Mureka's model output names:
-//   vocals | bass | drums | guitar | piano | other
+//  Generative stem regen — instead of re-separating (same artifacts),
+//  uploads the beat as a reference to Mureka /v1/files/upload, then calls
+//  /v1/instrumental/generate with instrumental_id so Mureka AI generates
+//  a clean, artifact-free instrumental inspired by the original beat.
+//
+//  ⚠️  Results are NOT saved to D1 — regen is session-only.
+//       Closing & reopening the stem player clears the regen section.
+//
 //  Costs 20 pts, Pro Artist only.
 //  Flow:
-//   1. POST /v1/song/stem { model, audio_url, stems:[stem_type] }
-//   2. Returns task_id
-//   3. Poll via GET /api/job/regen-stem/:jobId?task_id=...
-// ═══════════════════════════════════════════════════════════════
-//  and AI-synthesises a new, bleed-free version of that instrument matching
-//  the timing/melody of the original. Asynchronous — poll with GET below.
-//
-//  Flow:
-//   1. Upload stereo_url to Mureka via /v1/files/upload (get upload_audio_id)
-//   2. POST /v1/track/generate { type, upload_audio_id }
-//   3. Returns task_id → store as regen_job in D1
-//   4. Poll via GET /api/job/regen-stem/:jobId?task_id=...
+//   1. POST /v1/files/upload { url: stereo_url, purpose: "reference" } → file_id
+//   2. POST /v1/instrumental/generate { model:"auto", instrumental_id: file_id }
+//   3. Returns { task_id } — async; poll with GET below
+//   4. GET /api/job/regen-stem/:jobId?task_id=... → polls /v1/instrumental/query/{task_id}
+//   5. When succeeded: return choices[0].url directly (never stored in D1)
 // ═══════════════════════════════════════════════════════════════
 
 interface RegenJob {
   task_id: string
   stem_type: string
   status: 'pending' | 'processing' | 'ready' | 'error'
-  url?: string    // URL of the regenerated stem WAV
+  url?: string    // URL of the regenerated instrumental
   error?: string
   created_at: number
 }
@@ -1796,107 +1793,85 @@ app.post('/api/job/regen-stem', async (c) => {
   if (!job) return c.json({ error: 'Job not found' }, 404)
   if (!job.stereo_url) return c.json({ error: 'Beat audio not ready' }, 400)
 
-  // Check cache: if same stem_type regen already completed, return it
-  const existingRegens = (job as any).regen_jobs as RegenJob[] | undefined
-  if (existingRegens) {
-    const cached = existingRegens.find(r => r.stem_type === stem_type && r.status === 'ready')
-    if (cached && cached.url) {
-      return c.json({ ok: true, cached: true, task_id: cached.task_id,
-        stems: [{ name: stem_type.toLowerCase(), url: cached.url }], status: 'ready' })
+  const stemLabel = stem_type.toLowerCase()
+
+  // ── Step 1: Upload the beat's stereo_url to Mureka as a reference file ──
+  // multipart/form-data with purpose="reference" and url=<stereo_url>
+  let fileId: string
+  try {
+    const uploadForm = new FormData()
+    uploadForm.append('purpose', 'reference')
+    uploadForm.append('url', job.stereo_url)
+    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+      body: uploadForm
+    })
+    if (!uploadRes.ok) {
+      const errText = await uploadRes.text()
+      let errMsg = `Mureka upload error ${uploadRes.status}`
+      try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || errMsg } catch {}
+      console.error(`[regen] files/upload error ${uploadRes.status}: ${errText}`)
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: errMsg }, 502)
     }
+    const uploadData = await uploadRes.json() as any
+    fileId = uploadData.id as string
+    if (!fileId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'No file id returned from Mureka upload' }, 502)
+    }
+  } catch (err: any) {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: err?.message || 'File upload failed' }, 502)
   }
 
-  // Map UI stem name → Mureka stem name (song/stem model accepts lowercase)
-  const stemMap: Record<string, string> = {
-    vocals: 'vocals', vocal: 'vocals',
-    drums: 'drums', drum: 'drums',
-    bass: 'bass',
-    guitar: 'guitar',
-    piano: 'piano',
-    flute: 'flute',
-    fx: 'FX',
-    strings: 'strings',
-    synth: 'synth',
-    keyboard: 'keyboard',
-    brass: 'brass_and_winds',
-    winds: 'brass_and_winds',
-    brass_and_winds: 'brass_and_winds',
-    'brass and winds': 'brass_and_winds',
-    brass_and_woodwinds: 'brass_and_winds',
-    woodwinds: 'brass_and_winds',
-    other: 'other', melody: 'other'
-  }
-  // Pass-through: if stem_type already matches a known Mureka stem name exactly, use it directly
-  const murekaStem = stemMap[stem_type.toLowerCase()] ?? stem_type.toLowerCase()
-
-  // POST /v1/song/stem — use stereo_url directly, no upload needed
+  // ── Step 2: POST /v1/instrumental/generate with instrumental_id reference ──
+  // This asks Mureka to AI-generate a clean instrumental in the same style as the beat,
+  // rather than frequency-separating the existing mix (which causes artifacts/bleed).
   let taskId: string
   try {
-    const stemRes = await fetch(`${MUREKA_BASE}/song/stem`, {
+    const genRes = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'audio-separation-2',
-        url: job.stereo_url,
-        stems: [murekaStem]
+        model: 'auto',
+        instrumental_id: fileId
       })
     })
-    if (!stemRes.ok) {
-      const errText = await stemRes.text()
-      let errMsg = `Mureka stem error ${stemRes.status}`
+    if (!genRes.ok) {
+      const errText = await genRes.text()
+      let errMsg = `Mureka generate error ${genRes.status}`
       try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || errMsg } catch {}
-      console.error(`[regen] song/stem error ${stemRes.status}: ${errText}`)
-      // Refund points on hard API failure
+      console.error(`[regen] instrumental/generate error ${genRes.status}: ${errText}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: errMsg }, 502)
     }
-    // song/stem is SYNCHRONOUS — returns zip_url directly, no task_id
-    const stemData = await stemRes.json() as any
-    const zipUrl = stemData.zip_url as string | undefined
-    if (!zipUrl) {
+    const genData = await genRes.json() as any
+    taskId = genData.id as string
+    if (!taskId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No zip_url in Mureka stem response' }, 502)
+      return c.json({ error: 'No task id returned from Mureka generate' }, 502)
     }
-    taskId = 'zip:' + zipUrl
+    console.log(`[regen] instrumental/generate started: task=${taskId} stem=${stemLabel} job=${job_id}`)
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: err?.message || 'Regen request failed' }, 502)
+    return c.json({ error: err?.message || 'Generate request failed' }, 502)
   }
 
-  // Parse the ZIP now — song/stem is synchronous, zip_url is immediately available
-  // taskId is "zip:<zipUrl>" at this point
-  const zipUrl2 = taskId.slice(4)
-  let regenJob: RegenJob
-  try {
-    const allStems = await parseZipStems(zipUrl2)
-    // Find the requested stem; fall back to first available
-    const match = allStems.find(s => s.name.toLowerCase() === murekaStem.toLowerCase()) || allStems[0]
-    if (!match) throw new Error('No stems found in ZIP')
-    regenJob = { task_id: taskId, stem_type: murekaStem, status: 'ready', url: match.url, created_at: Date.now() }
-  } catch (zipErr: any) {
-    regenJob = { task_id: taskId, stem_type: murekaStem, status: 'error', error: zipErr?.message || 'ZIP parse failed', created_at: Date.now() }
-  }
-
-  const updatedJob = { ...job } as any
-  if (!updatedJob.regen_jobs) updatedJob.regen_jobs = []
-  // Remove old pending/error for same stem_type
-  updatedJob.regen_jobs = updatedJob.regen_jobs.filter((r: RegenJob) =>
-    r.stem_type !== murekaStem || r.status === 'ready'
-  )
-  updatedJob.regen_jobs.push(regenJob)
-  await setJob(c.env.DB, updatedJob)
-
-  if (regenJob.status === 'ready') {
-    return c.json({ ok: true, cached: false, task_id: taskId, status: 'ready',
-      stems: [{ name: murekaStem, url: regenJob.url }] })
-  }
-  return c.json({ error: regenJob.error || 'Regen failed' }, 502)
+  // ⚠️  Results are NOT saved to D1 — regen is session-only.
+  //      The frontend polls GET /api/job/regen-stem/:jobId?task_id=<taskId>
+  //      which queries Mureka directly and returns the URL in the response.
+  //      No persistence means closing & reopening the stem player always starts fresh.
+  return c.json({ ok: true, task_id: taskId, status: 'processing', stem_type: stemLabel })
 })
 
 // ── GET /api/job/regen-stem/:jobId — poll regen status ────────────────────
+// Polls Mureka /v1/instrumental/query/{task_id} directly.
+// Results are NOT stored in D1 — purely pass-through to the frontend.
 app.get('/api/job/regen-stem/:jobId', async (c) => {
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
@@ -1906,82 +1881,47 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 
   const jobId = c.req.param('jobId')
   const taskId = c.req.query('task_id') || ''
+  const stemType = c.req.query('stem_type') || 'stem'
 
+  // Legacy ?all=1 — no longer needed (regens not stored in D1), return empty
+  const allFlag = c.req.query('all') === '1'
+  if (allFlag) return c.json({ status: 'not_started' })
+
+  if (!taskId) return c.json({ status: 'not_started' })
+
+  // Verify the job belongs to this user (security check)
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  const regenJobs = (job as any).regen_jobs as RegenJob[] | undefined
-  if (!regenJobs?.length) return c.json({ status: 'not_started' })
-
-  // ?all=1 — return ALL ready regen jobs merged as stems array (used by _restoreCachedStems)
-  const allFlag = c.req.query('all') === '1'
-  if (allFlag) {
-    const readyRegens = regenJobs.filter(r => r.status === 'ready' && r.url)
-    if (!readyRegens.length) return c.json({ status: 'not_started' })
-    return c.json({
-      status: 'ready',
-      stems: readyRegens.map(r => ({ name: r.stem_type.toLowerCase(), url: r.url as string }))
-    })
-  }
-
-  const regenJob = taskId
-    ? regenJobs.find(r => r.task_id === taskId)
-    : regenJobs[regenJobs.length - 1]
-  if (!regenJob) return c.json({ status: 'not_started' })
-
-  if (regenJob.status === 'ready') {
-    return c.json({ status: 'ready', task_id: regenJob.task_id,
-      stems: [{ name: regenJob.stem_type.toLowerCase(), url: regenJob.url }] })
-  }
-  if (regenJob.status === 'error') {
-    return c.json({ status: 'error', error: regenJob.error })
-  }
-
-  // Poll Mureka song/query for song/stem tasks
+  // Poll Mureka /v1/instrumental/query/{task_id}
   try {
-    const res = await fetch(`${MUREKA_BASE}/song/query/${regenJob.task_id}`, {
+    const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
       headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
     })
-    if (!res.ok) return c.json({ status: 'processing', task_id: regenJob.task_id })
+    if (!res.ok) return c.json({ status: 'processing', task_id: taskId })
     const data = await res.json() as any
 
-    if (data.status === 'succeeded' || data.status === 'completed') {
-      // song/stem returns: { stems: { vocals: "url", drums: "url", ... } }
-      // also check legacy shapes: choices[0].url / audio_url
-      const stemsMap = data.stems || {}
-      const stemUrl: string =
-        stemsMap[regenJob.stem_type] ||
-        Object.values(stemsMap)[0] as string ||
-        data.choices?.[0]?.audio_url ||
-        data.choices?.[0]?.url ||
-        data.audio_url || data.url || ''
-      if (!stemUrl) {
-        regenJob.status = 'error'
-        regenJob.error = 'No audio URL in Mureka stem response'
-      } else {
-        regenJob.status = 'ready'
-        regenJob.url = stemUrl as string
+    if (data.status === 'succeeded') {
+      // choices is an array of Instrumental objects with .url field
+      const url: string = data.choices?.[0]?.url || data.choices?.[0]?.flac_url || ''
+      if (!url) {
+        console.error(`[regen poll] succeeded but no url in choices for task=${taskId}`)
+        return c.json({ status: 'error', error: 'No audio URL in Mureka response' })
       }
-      const updatedJob = { ...job } as any
-      updatedJob.regen_jobs = regenJobs.map(r => r.task_id === regenJob.task_id ? regenJob : r)
-      await setJob(c.env.DB, updatedJob)
-      if (regenJob.status === 'ready') {
-        return c.json({ status: 'ready', task_id: regenJob.task_id,
-          stems: [{ name: regenJob.stem_type.toLowerCase(), url: regenJob.url }] })
-      }
-      return c.json({ status: 'error', error: regenJob.error })
+      console.log(`[regen poll] ready: task=${taskId} stem=${stemType} url=${url.slice(0,60)}...`)
+      // Return the URL directly — NOT saved to D1
+      return c.json({ status: 'ready', task_id: taskId,
+        stems: [{ name: stemType.toLowerCase(), url }] })
     }
 
-    if (data.status === 'failed' || data.status === 'error') {
-      regenJob.status = 'error'
-      regenJob.error = data.error?.message || 'Regeneration failed'
-      const updatedJob = { ...job } as any
-      updatedJob.regen_jobs = regenJobs.map(r => r.task_id === regenJob.task_id ? regenJob : r)
-      await setJob(c.env.DB, updatedJob)
-      return c.json({ status: 'error', error: regenJob.error })
+    if (data.status === 'failed' || data.status === 'timeouted' || data.status === 'cancelled') {
+      const reason = data.failed_reason || data.error?.message || 'Regeneration failed'
+      console.error(`[regen poll] failed: task=${taskId} reason=${reason}`)
+      return c.json({ status: 'error', error: reason })
     }
 
-    return c.json({ status: 'processing', task_id: regenJob.task_id })
+    // Still running: preparing | queued | running | streaming
+    return c.json({ status: 'processing', task_id: taskId })
   } catch (err: any) {
     return c.json({ status: 'error', error: err?.message || 'Poll failed' }, 500)
   }
@@ -5100,7 +5040,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260711-05'
+const ASSET_VER = '20260711-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

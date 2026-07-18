@@ -4108,8 +4108,11 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           _advStems = data.stems.slice(); // copy
           _captureOrigUrls(_advStems);    // snapshot original URLs before any regens are merged
           console.log('[StemPlayer] restore: loaded ' + _advStems.length + ' auto stems for ' + jobId);
-          // Step 2: also fetch any cached regen stems and merge them in
-          _mergeRestoredRegens(jobId);
+          // Render the Advanced tab if it's active (regen section always starts empty on reopen)
+          if (_activeTab === 'advanced' && _panel) {
+            _regenStemName = null;
+            _renderStemTracks(_advStems, 'advanced');
+          }
         }
       })
       .catch(function(e) { console.warn('[StemPlayer] restore failed:', e); });
@@ -4499,7 +4502,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       dots = (dots + 1) % 4;
       _showProgress('Regenerating ' + stemLabel + '.'.repeat(dots + 1));
       try {
-        var params = '?task_id=' + encodeURIComponent(_curTaskId);
+        var params = '?task_id=' + encodeURIComponent(_curTaskId) + '&stem_type=' + encodeURIComponent(_selectedRegen || 'stem');
         var res  = await fetch('/api/job/regen-stem/' + _jobId + params);
         var data = await _safeJson(res);
         if (data.status === 'ready' && data.stems && data.stems.length) {
@@ -4951,7 +4954,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   };
 
   // Per-stem download picker — small inline popover anchored to the download button
-  window._spDownloadStemPicker = function (stemName, isAdvStr, anchorBtn) {
+  // directUrl (optional): if provided, use this URL directly for regen downloads
+  //   instead of constructing /api/stem-audio?regen=1 (which requires D1 persistence)
+  window._spDownloadStemPicker = function (stemName, isAdvStr, anchorBtn, directUrl) {
     var existing = document.getElementById('sp-stem-dl-popup');
     if (existing) { existing.remove(); if (existing._anchor === anchorBtn) return; }
     var isAdv = isAdvStr === '1';
@@ -4969,8 +4974,17 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       'min-width:160px'
     ].join(';');
 
-    var mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3' + (isAdv ? '&regen=1' : '');
-    var wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav' + (isAdv ? '&regen=1' : '');
+    // For regen stems: use the direct Mureka CDN URL (avoids D1 lookup)
+    // For original stems: use the proxy route
+    var mp3Url, wavUrl;
+    if (isAdv && directUrl) {
+      // Direct Mureka URL — use as-is for both mp3 and wav (Mureka serves WAV natively)
+      mp3Url = directUrl;
+      wavUrl = directUrl;
+    } else {
+      mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3' + (isAdv ? '&regen=1' : '');
+      wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav' + (isAdv ? '&regen=1' : '');
+    }
     var safeName = (_stemLabels[stemName] || stemName).replace(/[^a-z0-9_\-]/gi, '_');
 
     popup.innerHTML =
@@ -5147,7 +5161,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     var origAudioId  = 'sp-orig-audio-' + ri;
     var origBtnId    = 'sp-orig-btn-' + ri;
 
-    var regenProxyUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name) + '?regen=1';
+    var regenProxyUrl = s.url;  // use Mureka CDN URL directly — no D1 persistence
     var origProxyUrl  = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
 
     return (
@@ -5212,7 +5226,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
         // ── Download regen ──
         (_userPlan !== 'free'
-          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'1\',this)" ' +
+          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'1\',this,' + JSON.stringify(s.url) + ')" ' +
               'title="Download regenerated ' + _escHtml(customLabel) + '" style="' +
               'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
               'color:rgba(168,85,247,0.5);font-size:.78rem;display:flex;align-items:center;' +
