@@ -4273,11 +4273,11 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '<div style="display:flex;align-items:flex-start;gap:12px">' +
           '<div style="flex:1;min-width:0">' +
             '<p style="color:rgba(255,255,255,0.48);font-size:.77rem;line-height:1.55;margin:0 0 4px 0">' +
-              '<span style="color:#c084fc;font-weight:600">StemForge Regeneration</span> — ' +
+              '<span style="color:#c084fc;font-weight:600">StemForge AI Remix</span> — ' +
               'Extracts your stems, then re-synthesizes any one stem from scratch.' +
             '</p>' +
             '<p style="color:rgba(255,255,255,0.28);font-size:.7rem;margin:0">' +
-              'No bleed. No artefacts. Click <b style="color:rgba(255,255,255,0.45)">Regen</b> on any stem row after extraction.' +
+              'Generates a fresh clean version inspired by your beat. Click <b style="color:rgba(255,255,255,0.45)">Remix</b> on any stem row after extraction.' +
             '</p>' +
           '</div>' +
           '<button onclick="window._spExtractAdvanced()" style="' +
@@ -4452,7 +4452,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     if (tracksEl) { tracksEl.style.display = 'none'; tracksEl.innerHTML = ''; }
     if (playbar)  playbar.style.display = 'none';
 
-    _showProgress('StemForge is regenerating ' + _capFirst(targetStem) + '…');
+    _showProgress('StemForge is remixing ' + _capFirst(targetStem) + '…');
 
     try {
       var res = await fetch('/api/job/regen-stem', {
@@ -4500,7 +4500,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _pollTimer = setInterval(async function () {
       if (!_panel) { clearInterval(_pollTimer); return; }
       dots = (dots + 1) % 4;
-      _showProgress('Regenerating ' + stemLabel + '.'.repeat(dots + 1));
+      _showProgress('AI Remixing ' + stemLabel + '.'.repeat(dots + 1));
       try {
         var params = '?task_id=' + encodeURIComponent(_curTaskId) + '&stem_type=' + encodeURIComponent(_selectedRegen || 'stem');
         var res  = await fetch('/api/job/regen-stem/' + _jobId + params);
@@ -4665,9 +4665,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<i class="fas fa-check-circle" style="color:#10b981;margin-right:4px"></i>' +
           _stems.length + ' stem' + (_stems.length !== 1 ? 's' : '') + ' extracted' +
           (isAdv && regenCount > 0
-            ? ' · <span style="color:rgba(192,132,252,0.75)">' + regenCount + ' regen' + (regenCount !== 1 ? 's' : '') + ' below</span>'
+            ? ' · <span style="color:rgba(192,132,252,0.75)">' + regenCount + ' remix' + (regenCount !== 1 ? 'es' : '') + ' below</span>'
             : '') +
-          (isAdv ? '<span style="margin-left:6px;color:rgba(192,132,252,0.6);font-size:.68rem">· click Regen on any row</span>' : '') +
+          (isAdv ? '<span style="margin-left:6px;color:rgba(192,132,252,0.6);font-size:.68rem">· click Remix on any row</span>' : '') +
         '</span>' +
         '<div style="display:flex;align-items:center;gap:6px">' +
           _buildDownloadBtn(mode) +
@@ -4702,7 +4702,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '<div style="border-top:1px solid rgba(168,85,247,0.25);margin-top:6px;padding-top:2px">' +
           '<div style="display:flex;align-items:center;gap:7px;padding:8px 16px 5px">' +
             '<i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.7rem"></i>' +
-            '<span style="font-size:.72rem;font-weight:700;color:#c084fc;letter-spacing:.03em">Regenerated Stems</span>' +
+            '<span style="font-size:.72rem;font-weight:700;color:#c084fc;letter-spacing:.03em">AI Remixes</span>' +
             '<span style="font-size:.62rem;color:rgba(255,255,255,.3)">' + regenStems.length + ' stem' + (regenStems.length !== 1 ? 's' : '') + '</span>' +
           '</div>' +
           regenRowsHtml +
@@ -5114,14 +5114,14 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
         // Advanced: Regen button
         (isAdv
-          ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="Regenerate ' + _escHtml(customLabel) + ' with StemForge" style="' +
+          ? '<button onclick="window._spRunRegen(\'' + _escHtml(s.name) + '\')" title="AI Remix ' + _escHtml(customLabel) + ' — generates a clean inspired version" style="' +
                 'flex-shrink:0;padding:2px 8px;border-radius:5px;' +
                 'border:1px solid rgba(192,132,252,0.35);background:rgba(168,85,247,0.1);' +
                 'color:#c084fc;font-size:.62rem;font-weight:700;cursor:pointer;' +
                 'white-space:nowrap;transition:all .15s;letter-spacing:.01em"' +
               ' onmouseover="this.style.background=\'rgba(168,85,247,0.25)\';this.style.borderColor=\'rgba(192,132,252,0.6)\'"' +
               ' onmouseout="this.style.background=\'rgba(168,85,247,0.1)\';this.style.borderColor=\'rgba(192,132,252,0.35)\'">' +
-              '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Regen' +
+              '<i class="fas fa-wand-magic-sparkles" style="margin-right:3px;font-size:.58rem"></i>Remix' +
             '</button>'
           : '') +
 
@@ -5182,7 +5182,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             _escHtml(customLabel) +
           '</span>' +
           '<span style="font-size:.58rem;font-weight:700;color:#a855f7;letter-spacing:.02em;white-space:nowrap">' +
-            '✦ AI Regen' +
+            '✦ AI Remix' +
           '</span>' +
         '</div>' +
 
@@ -5191,7 +5191,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           ' data-src="' + regenProxyUrl + '"' +
           ' data-audio-id="' + regenAudioId + '"' +
           ' onclick="window._spToggleOrig(this)"' +
-          ' title="Play regenerated ' + _escHtml(customLabel) + '"' +
+          ' title="Play AI Remix of ' + _escHtml(customLabel) + '"' +
           ' style="flex-shrink:0;width:30px;height:30px;border-radius:50%;' +
             'border:1.5px solid rgba(168,85,247,0.5);background:rgba(168,85,247,0.15);' +
             'color:#c084fc;font-size:.7rem;cursor:pointer;' +
@@ -5204,7 +5204,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
         // label
         '<span style="flex:1;font-size:.67rem;color:rgba(255,255,255,0.4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
-          'AI regenerated version' +
+          'AI Remix — inspired by your beat' +
         '</span>' +
 
         // ── Compare: play original ──
@@ -5227,7 +5227,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         // ── Download regen ──
         (_userPlan !== 'free'
           ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'1\',this,' + JSON.stringify(s.url) + ')" ' +
-              'title="Download regenerated ' + _escHtml(customLabel) + '" style="' +
+              'title="Download AI Remix of ' + _escHtml(customLabel) + '" style="' +
               'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
               'color:rgba(168,85,247,0.5);font-size:.78rem;display:flex;align-items:center;' +
               'justify-content:center;width:20px;height:20px;transition:color .15s"' +
