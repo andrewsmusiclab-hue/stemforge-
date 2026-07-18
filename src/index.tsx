@@ -600,11 +600,12 @@ ABSOLUTE RULES — violating any rule is a failure:
 1. GENRE LOCK: The genre field MUST exactly match whatever genre/style the user wrote. If user says "hip hop" → genre = "hip hop". If user says "pop" → genre = "pop". If user says "drill" → genre = "drill". NEVER change it to jazz, R&B, soul, or anything else unless that is what the user wrote.
 2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, mureka_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops or piano. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. NEVER add jazz piano, walking bass, brushed snares, ride cymbal, swing feel, or laid-back jazz elements to hip hop, trap, drill, or R&B unless the user explicitly asked for jazz.
 3. ANTI-JAZZ RULE FOR HIP HOP/TRAP/DRILL: These genres must use 808 bass (NOT walking bass), punchy kicks (NOT brush kit), trap hi-hats or boom bap snares (NOT ride cymbal), and straight or swung hip hop timing (NOT jazz swing). Any jazz reference in a hip hop/trap/drill beat is an automatic failure.
-4. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
-5. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
-6. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
-7. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", or "ride cymbal".
-8. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : (userPlan === 'pro' || userPlan === 'developer' ? 'Pro Artist plan — beats MUST be between 180 and 240 seconds (3–4 min). Prefer 210 or 240 seconds for epic, expansive arrangements. Maximum is 240 (4:00).' : 'Beats should be 90–180 seconds. Default to 150–180 for complex genres.')}
+4. NO TRUMPET / SAXOPHONE IN HIP HOP/TRAP/DRILL/R&B UNLESS USER ASKED: Do NOT include trumpet, saxophone, trombone, flugelhorn, cornet, or any brass/woodwind jazz instrument in hip hop, trap, drill, or R&B beats. These genres NEVER use those instruments unless the user explicitly wrote "jazz" or "trumpet" or "sax" in their prompt. This rule overrides all other defaults.
+5. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
+6. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
+7. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
+8. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", "ride cymbal", "trumpet", or "saxophone".
+9. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : 'All beats MUST be exactly 180 seconds (3:00) unless user specifies a different duration. Do not deviate.'}
 Output valid JSON only — no markdown, no explanation.`
 
   const userPrompt = `Generate a beat blueprint for: "${prompt}"
@@ -615,15 +616,15 @@ GENRE DETECTED FROM INPUT: "${detectedGenre || 'use whatever genre the user spec
 → The entire blueprint MUST sound like this genre. Do not drift.
 
 Genre-to-sound mapping examples (follow these exactly for the detected genre):
-- "hip hop" → BPM 85–100, 808 bass, punchy kick, snappy snare, trap hi-hats, sampled chops or Rhodes, aggressive/confident mood
-- "trap" → BPM 130–145, sliding 808s, rapid triplet hi-hats, heavy kick, dark melody, energy=high
-- "drill" → BPM 140–145, sliding 808 glide, rolling hi-hats, dark minor piano, cold/menacing mood
+- "hip hop" → BPM 85–100, 808 bass, punchy kick, snappy snare, trap hi-hats, sampled chops or Rhodes, aggressive/confident mood. NO trumpet, NO saxophone, NO brass.
+- "trap" → BPM 130–145, sliding 808s, rapid triplet hi-hats, heavy kick, dark melody, energy=high. NO trumpet, NO saxophone, NO brass.
+- "drill" → BPM 140–145, sliding 808 glide, rolling hi-hats, dark minor piano, cold/menacing mood. NO trumpet, NO saxophone, NO brass.
 - "pop" → BPM 100–128, bright lead synth, 4-on-the-floor kick, punchy snare, catchy melodic hook, energy=high
-- "R&B" → BPM 65–95, silky pad, soft snare, soulful chords, intimate/smooth mood
+- "R&B" → BPM 65–95, silky pad, soft snare, soulful chords, intimate/smooth mood. NO trumpet, NO saxophone unless user asked.
 - "lo-fi" → BPM 70–90, mellow piano, dusty vinyl crackle, boom-bap kit, nostalgic/chill mood
 - "afrobeats" → BPM 100–115, talking drum pattern, afrobeats percussion, melodic guitar, energetic
-- "reggaeton" → BPM 95–105, dembow rhythm, heavy bass, brass stabs, perreo energy
-- "jazz" → BPM 90–140, swing feel, walking bass, ride cymbal, chord voicings
+- "reggaeton" → BPM 95–105, dembow rhythm, heavy bass, perreo energy
+- "jazz" → BPM 90–140, swing feel, walking bass, ride cymbal, trumpet, saxophone, chord voicings
 - "cinematic" → BPM 60–100, orchestral strings, dramatic brass, epic pads, swelling dynamics
 
 Return ONLY this JSON:
@@ -634,7 +635,7 @@ Return ONLY this JSON:
   "genre": <EXACT genre string from user input — do not change>,
   "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
   "energy": <"low" | "medium" | "high">,
-  "duration_seconds": <${userDurationSec ? userDurationSec : (userPlan === 'pro' || userPlan === 'developer' ? '180 | 210 | 240' : '90 | 120 | 150 | 180')}>,
+  "duration_seconds": <${userDurationSec ? userDurationSec : '180'}>,  // default is always 180 (3:00) unless user specified otherwise
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
   "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
@@ -707,13 +708,24 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
       murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental, no vocal chops'
     }
   }
+
+  // Anti-jazz injection: for hip hop / trap / drill / R&B, explicitly forbid trumpet,
+  // saxophone, and jazz elements so Mureka's model doesn't drift into jazz territory.
+  const genreLower = (blueprint.genre || '').toLowerCase()
+  const isHipHopFamily = /hip.?hop|trap|drill|r.?b|rnb|rap|boom.?bap|grime/.test(genreLower)
+  if (isHipHopFamily && !/(jazz|trumpet|sax|brass)/.test(blueprint.mureka_prompt.toLowerCase())) {
+    murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') +
+      ', no trumpet, no saxophone, no jazz, no brass winds, no swing'
+  }
+
   if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
 
   const body: Record<string, any> = {
     prompt: murekaPrompt,
     model: 'auto'
   }
-  const durationSec = userDurationSec || blueprint.duration_seconds
+  // Default duration is always 180s (3:00) — user can override via userDurationSec
+  const durationSec = userDurationSec || blueprint.duration_seconds || 180
   if (durationSec && durationSec > 0) {
     body.duration = durationSec
     const durMin = Math.floor(durationSec / 60)
@@ -1795,12 +1807,13 @@ app.post('/api/job/regen-stem', async (c) => {
 
   const stemLabel = stem_type.toLowerCase()
 
-  // ── Step 1: Upload the beat's stereo_url to Mureka as a reference file ──
-  // multipart/form-data with purpose="reference" and url=<stereo_url>
+  // ── Step 1: Upload the beat's stereo_url to Mureka as an instrumental reference ──
+  // purpose MUST be 'instrumental' so Mureka returns an instrumental_id usable
+  // by /v1/instrumental/generate. Using 'reference' gives a reference_id (wrong field).
   let fileId: string
   try {
     const uploadForm = new FormData()
-    uploadForm.append('purpose', 'reference')
+    uploadForm.append('purpose', 'instrumental')
     uploadForm.append('url', job.stereo_url)
     const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
       method: 'POST',
@@ -1839,7 +1852,8 @@ app.post('/api/job/regen-stem', async (c) => {
       },
       body: JSON.stringify({
         model: 'auto',
-        instrumental_id: fileId
+        instrumental_id: fileId,
+        n: 1
       })
     })
     if (!genRes.ok) {
@@ -5040,7 +5054,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260711-07'
+const ASSET_VER = '20260711-08'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
