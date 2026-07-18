@@ -4712,12 +4712,20 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     tracksEl.innerHTML = origHtml + regenSectionHtml;
     tracksEl.style.display = 'flex';
 
-    // Build Audio objects — always the original audio (never ?regen=1 for mixer)
+    // Preserve playback position when re-rendering (e.g. after regen completes).
+    // Capture current time from the first active audio before rebuilding _audios.
+    var savedTime    = (_audios[0] && !isNaN(_audios[0].currentTime)) ? _audios[0].currentTime : 0;
+    var wasPlaying   = _playing;
+
+    // Pause all old audio objects cleanly before discarding them
+    _audios.forEach(function(a) { try { a.pause(); } catch(e){} });
+
+    // Build Audio objects — always the original audio (never remix for mixer)
     _audios = [];
     _stems.forEach(function (s, i) {
       var audio = new Audio();
       audio.preload = 'metadata';
-      // Always use ORIGINAL audio for the mixer — regen versions live in the separate section
+      // Always use ORIGINAL audio for the mixer — remix versions live in the separate section
       audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
       _audios.push(audio);
 
@@ -4743,6 +4751,26 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         });
       }
     });
+
+    // Restore playback position after audio objects are ready.
+    // Use loadedmetadata on the first track to seek accurately, then resume if playing.
+    if (savedTime > 0 && _audios.length) {
+      var firstAudio = _audios[0];
+      var doRestore = function() {
+        _audios.forEach(function(a) { try { a.currentTime = savedTime; } catch(e){} });
+        _updateTimeline(savedTime, firstAudio.duration || 0);
+        if (wasPlaying) {
+          // Small delay so all audio elements have had a chance to seek
+          setTimeout(function() { window._spPlay && _spPlay(); }, 80);
+        }
+      };
+      if (firstAudio.readyState >= 1) {
+        // Metadata already known — restore immediately
+        doRestore();
+      } else {
+        firstAudio.addEventListener('loadedmetadata', doRestore, { once: true });
+      }
+    }
 
     requestAnimationFrame(function () {
       _stems.forEach(function (s, i) {
@@ -4974,13 +5002,14 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       'min-width:160px'
     ].join(';');
 
-    // For regen stems: use the direct Mureka CDN URL (avoids D1 lookup)
-    // For original stems: use the proxy route
+    // For regen stems: directUrl is encodeURIComponent-encoded CDN URL; decode it.
+    // For original stems: use the proxy route.
     var mp3Url, wavUrl;
-    if (isAdv && directUrl) {
-      // Direct Mureka URL — use as-is for both mp3 and wav (Mureka serves WAV natively)
-      mp3Url = directUrl;
-      wavUrl = directUrl;
+    var resolvedUrl = directUrl ? decodeURIComponent(directUrl) : null;
+    if (isAdv && resolvedUrl) {
+      // Direct Mureka CDN URL — use as-is for both mp3 and wav
+      mp3Url = resolvedUrl;
+      wavUrl = resolvedUrl;
     } else {
       mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3' + (isAdv ? '&regen=1' : '');
       wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav' + (isAdv ? '&regen=1' : '');
@@ -5226,7 +5255,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
         // ── Download regen ──
         (_userPlan !== 'free'
-          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'1\',this,' + JSON.stringify(s.url) + ')" ' +
+          ? '<button onclick="window._spDownloadStemPicker(\'' + _escHtml(s.name) + '\',\'1\',this,\'' + encodeURIComponent(s.url || '') + '\')" ' +
               'title="Download AI Remix of ' + _escHtml(customLabel) + '" style="' +
               'flex-shrink:0;background:none;border:none;padding:0 3px;cursor:pointer;' +
               'color:rgba(168,85,247,0.5);font-size:.78rem;display:flex;align-items:center;' +

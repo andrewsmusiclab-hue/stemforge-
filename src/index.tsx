@@ -1806,15 +1806,42 @@ app.post('/api/job/regen-stem', async (c) => {
   if (!job.stereo_url) return c.json({ error: 'Beat audio not ready' }, 400)
 
   const stemLabel = stem_type.toLowerCase()
+  const stemLabelAlt = stemLabel.includes('_') ? stemLabel.replace(/_/g, ' ') : stemLabel.replace(/ /g, '_')
 
-  // ── Step 1: Upload the beat's stereo_url to Mureka as an instrumental reference ──
+  // ── Find the already-extracted stem URL for this stem_type ──
+  // We upload the PRE-EXTRACTED stem (not the full mix) to instrumental/generate.
+  // Feeding only that instrument's audio as the reference means Mureka generates
+  // a clean isolated version of just that instrument — no bleed from others.
+  const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
+  let stemSourceUrl: string = job.stereo_url  // fallback to full mix if stem not found
+  if (stemJobs?.length) {
+    outer: for (const sj of stemJobs) {
+      if (sj.status !== 'ready' || !sj.stems?.length) continue
+      for (const t of sj.stems) {
+        const n = (t.name || '').toLowerCase()
+        if (n === stemLabel || n === stemLabelAlt) {
+          // Prefer direct CDN URLs; skip zip-entry:// references (can't upload those)
+          if (t.url && !t.url.startsWith('zip-entry:')) {
+            stemSourceUrl = t.url
+            console.log(`[remix] Using extracted stem URL for ${stemLabel}: ${stemSourceUrl.slice(0, 60)}...`)
+            break outer
+          }
+        }
+      }
+    }
+  }
+  if (stemSourceUrl === job.stereo_url) {
+    console.warn(`[remix] No extracted stem found for ${stemLabel} — falling back to full mix`)
+  }
+
+  // ── Step 1: Upload the stem (or full mix fallback) to Mureka as instrumental reference ──
   // purpose MUST be 'instrumental' so Mureka returns an instrumental_id usable
   // by /v1/instrumental/generate. Using 'reference' gives a reference_id (wrong field).
   let fileId: string
   try {
     const uploadForm = new FormData()
     uploadForm.append('purpose', 'instrumental')
-    uploadForm.append('url', job.stereo_url)
+    uploadForm.append('url', stemSourceUrl)
     const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
@@ -5054,7 +5081,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260711-08'
+const ASSET_VER = '20260711-09'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
