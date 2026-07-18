@@ -4371,8 +4371,16 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
   function _pollForAdvancedStems() {
     var dots = 0;
+    var pollStart = Date.now();
+    var MAX_POLL_MS = 5 * 60 * 1000; // 5 minutes
     _pollTimer = setInterval(async function () {
       if (!_panel) { clearInterval(_pollTimer); return; }
+      // Timeout guard: if polling for > 5 min, show error so user can retry
+      if (Date.now() - pollStart > MAX_POLL_MS) {
+        clearInterval(_pollTimer); _pollTimer = null;
+        _showError('Stem extraction timed out. Please try again.');
+        return;
+      }
       dots = (dots + 1) % 4;
       _showProgress('Detecting stems' + '.'.repeat(dots + 1));
       try {
@@ -4585,8 +4593,15 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   // ─────────────────────────────────────────────────────────────────────────
   function _pollForStems(mode) {
     var dots = 0;
+    var pollStart = Date.now();
+    var MAX_POLL_MS = 5 * 60 * 1000; // 5 minutes
     _pollTimer = setInterval(async function () {
       if (!_panel) { clearInterval(_pollTimer); return; }
+      if (Date.now() - pollStart > MAX_POLL_MS) {
+        clearInterval(_pollTimer); _pollTimer = null;
+        _showError('Stem extraction timed out. Please try again.');
+        return;
+      }
       dots = (dots + 1) % 4;
       _showProgress('Extracting stems' + '.'.repeat(dots + 1));
       try {
@@ -4724,7 +4739,12 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     _audios = [];
     _stems.forEach(function (s, i) {
       var audio = new Audio();
-      audio.preload = 'metadata';
+      // preload='auto': buffers the full audio so pause/resume and seek work correctly
+      // without depending on the browser keeping the HTTP connection alive.
+      // With preload='metadata' the browser drops the connection on pause, then on
+      // resume some browsers reset currentTime to 0 before re-fetching — causing the
+      // "always plays from beginning" bug even with Range support on the server.
+      audio.preload = 'auto';
       // Always use ORIGINAL audio for the mixer — remix versions live in the separate section
       audio.src = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(s.name);
       _audios.push(audio);
@@ -5399,11 +5419,13 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     // Guard: if a play() is still resolving, ignore rapid re-clicks
     if (_playPending) return;
     _playPending = true;
-    // Sync all tracks to track 0 time before playing
+    // Sync all tracks to track 0 time before playing.
+    // Read currentTime BEFORE touching any element — some browsers update it asynchronously.
     var refTime = (_audios[0] && !isNaN(_audios[0].currentTime)) ? _audios[0].currentTime : 0;
-    _audios.forEach(function (a, i) {
-      if (i > 0) { try { a.currentTime = refTime; } catch(e){} }
-    });
+    // Set ALL audio elements (including index 0) to refTime so they're in sync.
+    // Skipping index 0 was a bug — if the browser dropped its buffer on pause the
+    // element could silently reset to 0; re-asserting ensures it starts at the right position.
+    _audios.forEach(function (a) { try { a.currentTime = refTime; } catch(e){} });
     // Collect all play() promises
     var promises = [];
     _audios.forEach(function (a) {

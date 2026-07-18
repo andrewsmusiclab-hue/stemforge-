@@ -605,7 +605,7 @@ ABSOLUTE RULES — violating any rule is a failure:
 6. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
 7. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
 8. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", "ride cymbal", "trumpet", or "saxophone".
-9. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : 'All beats MUST be exactly 180 seconds (3:00) unless user specifies a different duration. Do not deviate.'}
+9. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : 'All beats MUST be exactly 240 seconds (4:00) unless user specifies a different duration. Do not deviate.'}
 Output valid JSON only — no markdown, no explanation.`
 
   const userPrompt = `Generate a beat blueprint for: "${prompt}"
@@ -635,7 +635,7 @@ Return ONLY this JSON:
   "genre": <EXACT genre string from user input — do not change>,
   "mood": <specific mood word matching the genre e.g. "aggressive", "smooth", "dark", "uplifting">,
   "energy": <"low" | "medium" | "high">,
-  "duration_seconds": <${userDurationSec ? userDurationSec : '180'}>,  // default is always 180 (3:00) unless user specified otherwise
+  "duration_seconds": <${userDurationSec ? userDurationSec : '240'}>,  // default is always 240 (4:00) unless user specified otherwise
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
   "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
@@ -724,8 +724,8 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
     prompt: murekaPrompt,
     model: 'auto'
   }
-  // Default duration is always 180s (3:00) — user can override via userDurationSec
-  const durationSec = userDurationSec || blueprint.duration_seconds || 180
+  // Default duration is always 240s (4:00) — user can override via userDurationSec
+  const durationSec = userDurationSec || blueprint.duration_seconds || 240
   if (durationSec && durationSec > 0) {
     body.duration = durationSec
     const durMin = Math.floor(durationSec / 60)
@@ -784,7 +784,7 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
 // ═══════════════════════════════════════════════════════════════
 
 async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyrics: string, vocalGender?: string, userDurationSec?: number): Promise<string> {
-  const durationSec = userDurationSec || blueprint.duration_seconds || 180
+  const durationSec = userDurationSec || blueprint.duration_seconds || 240
 
   // Build a clean style prompt (no lyrics or vocal refs — those go in the lyrics field)
   let stylePrompt = blueprint.mureka_prompt
@@ -1421,6 +1421,25 @@ app.get('/api/job/stems/:jobId', async (c) => {
       updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
       await setJob(c.env.DB, updatedJob)
       return c.json({ status: 'error', error: stemJob.error })
+    }
+
+    // ── Stuck-in-processing recovery ──────────────────────────────────────
+    // waitUntil() on Genspark-hosted Workers may be terminated early if the
+    // Mureka song/stem call exceeds the platform's wall-clock budget (~30 s).
+    // When that happens the job stays 'processing' forever.
+    // Detect: status===processing AND created_at older than 90 s → reset to
+    // 'pending' so this poll re-fires waitUntil() and gets another 30-second window.
+    // Mureka song/stem is idempotent (same URL → same separation); retrying is safe.
+    if (stemJob.status === 'processing') {
+      const ageMs = Date.now() - (stemJob.created_at || 0)
+      if (ageMs > 90_000) {
+        console.warn(`[stems] job ${stemJob.task_id} stuck in processing for ${Math.round(ageMs/1000)}s — resetting to pending`)
+        stemJob.status = 'pending'
+        const resetJob = { ...job } as any
+        resetJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+        await setJob(c.env.DB, resetJob)
+        // fall through to the if(stemJob.status === 'pending') block below
+      }
     }
 
     if (stemJob.status === 'pending') {
@@ -5248,7 +5267,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-01'
+const ASSET_VER = '20260718-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
