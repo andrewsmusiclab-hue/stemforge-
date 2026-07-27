@@ -3587,6 +3587,8 @@ app.post('/api/job/extend-upload', async (c) => {
     } else {
       extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
     }
+    // No blueprint available for external uploads — but if caller ever passes a
+    // style hint in a future revision, it can be threaded through here.
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -3734,7 +3736,24 @@ app.post('/api/job/extend', async (c) => {
       extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
     }
 
-    console.log(`[job/extend] upload_audio_id=${uploadAudioId} extend_at=${safeExtendAt} instrumental=${make_instrumental}`)
+    // Pass the blueprint's style descriptor so Mureka continues with the same
+    // genre, tempo, instruments and mood — improves sonic continuity.
+    const bp = sourceJob.blueprint as Blueprint | undefined
+    if (bp?.mureka_prompt) {
+      extendBody.style = bp.mureka_prompt
+    } else if (bp) {
+      // Build a concise style string from individual blueprint fields as fallback
+      const parts: string[] = []
+      if (bp.genre)  parts.push(bp.genre)
+      if (bp.bpm)    parts.push(`${bp.bpm} BPM`)
+      if (bp.key && bp.scale) parts.push(`${bp.key} ${bp.scale}`)
+      if (bp.mood)   parts.push(`${bp.mood} mood`)
+      if (bp.energy) parts.push(`${bp.energy} energy`)
+      if (parts.length) extendBody.style = parts.join(', ')
+    }
+
+    console.log(`[job/extend] upload_audio_id=${uploadAudioId} extend_at=${safeExtendAt} instrumental=${make_instrumental} style="${extendBody.style || 'none'}"`)
+
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -5379,7 +5398,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-08'
+const ASSET_VER = '20260718-09'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6794,11 +6813,11 @@ function generatorPage() {
     <div id="ext-step-pick" style="display:block">
       <label class="suno-option-label" style="margin-bottom:10px">Upload a track to extend</label>
       <div class="ref-upload-zone" id="ext-upload-zone" onclick="document.getElementById('ext-audio-file').click()" style="cursor:pointer">
-        <input type="file" id="ext-audio-file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/flac,audio/*" style="display:none" onchange="extHandleFileSelect(this)"/>
+        <input type="file" id="ext-audio-file" accept="audio/mpeg,audio/mp3,.mp3" style="display:none" onchange="extHandleFileSelect(this)"/>
         <div id="ext-upload-idle" style="display:flex;flex-direction:column;align-items:center">
           <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
           <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Extend</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — MP3, WAV, FLAC supported</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — MP3 only (best results)</p>
         </div>
         <div id="ext-upload-loading" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>

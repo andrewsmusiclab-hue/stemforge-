@@ -5685,7 +5685,19 @@ window.renderEditInstrumentPills = function (bp) {
       zone.style.borderColor = '';
       zone.style.background  = '';
       var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file) extUploadFile(file);
+      if (!file) return;
+      var ext = (file.name || '').split('.').pop().toLowerCase();
+      var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3';
+      var extOk  = ext === 'mp3';
+      if (!mimeOk && !extOk) {
+        var errEl = document.getElementById('ext-upload-error');
+        if (errEl) {
+          errEl.textContent = 'Only MP3 files are supported. Please convert your file to MP3 first.';
+          errEl.style.display = 'block';
+        }
+        return;
+      }
+      extUploadFile(file);
     });
 
     // Scrubber: mouse/touch drag on the scrubber wrap
@@ -5707,7 +5719,22 @@ window.renderEditInstrumentPills = function (bp) {
   // ── Called by file input onchange ─────────────────────────────────────────
   window.extHandleFileSelect = function(input) {
     var file = input && input.files && input.files[0];
-    if (file) extUploadFile(file);
+    if (!file) return;
+    // Validate MP3 only — WAV/FLAC are not supported by Mureka's audio upload endpoint
+    var ext = (file.name || '').split('.').pop().toLowerCase();
+    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3';
+    var extOk  = ext === 'mp3';
+    if (!mimeOk && !extOk) {
+      var errEl = document.getElementById('ext-upload-error');
+      if (errEl) {
+        errEl.textContent = 'Only MP3 files are supported. Please convert your file to MP3 first.';
+        errEl.style.display = 'block';
+      }
+      // Reset the input so user can try again
+      if (input) input.value = '';
+      return;
+    }
+    extUploadFile(file);
   };
 
   // ── State helpers ─────────────────────────────────────────────────────────
