@@ -6064,8 +6064,23 @@ window.renderEditInstrumentPills = function (bp) {
     if (!gridEl) return;
     gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
     fetch('/api/projects?tab=extended')
-      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (!r.ok && r.status !== 200) {
+          // Non-200 — read as text first so a gateway HTML page doesn't crash .json()
+          return r.text().then(function(txt) {
+            var msg = txt;
+            try { msg = JSON.parse(txt).error || msg; } catch(_) {}
+            throw new Error('HTTP ' + r.status + ': ' + msg);
+          });
+        }
+        return r.json();
+      })
       .then(function(d) {
+        if (d.error && !d.projects) {
+          // Authenticated error (e.g. DB issue)
+          gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load extended tracks: ' + d.error + '</div>';
+          return;
+        }
         var projects = d.projects || [];
         if (!projects.length) {
           gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-expand-arrows-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No extended tracks yet. Use the <strong>Extend</strong> tab in the Creator to extend any track.</p></div>';
@@ -6073,17 +6088,23 @@ window.renderEditInstrumentPills = function (bp) {
         }
         // Render cards directly — never touch the IIFE cache (_libLoaded/_libData)
         var html = '';
-        projects.forEach(function(p, i) { html += renderExtendedCard(p, i); });
+        // Only count ready tracks for the badge
+        var readyCount = 0;
+        projects.forEach(function(p, i) {
+          html += renderExtendedCard(p, i);
+          if (p.status === 'ready' || p.stereo_url) readyCount++;
+        });
         gridEl.innerHTML = html;
-        // Update the tab badge count
+        // Update the tab badge count (show total including in-progress)
         var badge = document.querySelector('.lib-tab[data-tab="extended"] .lib-tab-count');
         if (badge) badge.textContent = projects.length;
         // Make sure the extended panel is visible
         var panel = document.getElementById('lib-panel-extended');
         if (panel && panel.style.display === 'none') panel.style.display = '';
       })
-      .catch(function() {
-        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load extended tracks.</div>';
+      .catch(function(err) {
+        console.error('[reloadExtendedTab] fetch error:', err);
+        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load extended tracks. Please refresh the page.</div>';
       });
   }
   // Expose globally so other code can call it (e.g. after extend from library card menu)

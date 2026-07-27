@@ -3433,12 +3433,13 @@ app.get('/api/projects', async (c) => {
       ).bind(user.id).all<any>()
       rows = res.results || []
     } else if (tab === 'extended') {
-      // Extended tracks: jobs with extend_task_type = 'song_extend', ready, not deleted
+      // Extended tracks: jobs with extend_task_type = 'song_extend', not deleted.
+      // Include both 'ready' AND 'generating' so in-progress extends show as spinner cards.
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
          AND json_extract(data,'$.extend_task_type') = 'song_extend'
-         AND json_extract(data,'$.status') = 'ready'
+         AND json_extract(data,'$.status') IN ('ready','generating','error')
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
@@ -5398,7 +5399,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-09'
+const ASSET_VER = '20260718-10'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
