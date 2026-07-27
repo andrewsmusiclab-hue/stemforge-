@@ -2988,12 +2988,8 @@ window.selectBarPreset = function(btn, bars) {
     window.setExtVocalMode && window.setExtVocalMode('instrumental');
     window._extActiveTab = 'upload';
     _extLibLoaded = false; // Allow re-fetch next open
-    // Reset tabs back to Upload
-    var uploadBtn = document.getElementById('ext-tab-upload');
-    var libBtn    = document.getElementById('ext-tab-library');
+    // Reset tabs back to Upload (use extSwitchTab so loop panel is also hidden)
     var stepLib   = document.getElementById('ext-step-library');
-    if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
-    if (libBtn)    { libBtn.style.borderBottom = '2px solid transparent'; libBtn.style.color = 'var(--muted)'; libBtn.style.fontWeight = '600'; }
     if (stepLib)   stepLib.style.display = 'none';
     // Restore submit btn to upload mode
     var submitBtn = document.getElementById('ext-submit-btn');
@@ -3019,22 +3015,32 @@ window.selectBarPreset = function(btn, bars) {
     window._extActiveTab = tab;
     var uploadBtn  = document.getElementById('ext-tab-upload');
     var libBtn     = document.getElementById('ext-tab-library');
+    var loopBtn    = document.getElementById('ext-tab-loop');
     var stepPick   = document.getElementById('ext-step-pick');
     var stepLib    = document.getElementById('ext-step-library');
     var stepOpts   = document.getElementById('ext-step-options');
+    var stepLoop   = document.getElementById('ext-step-loop');
 
-    // Hide options (step 2) when switching tabs
+    // Reset all tab styles
+    var allBtns = [uploadBtn, libBtn, loopBtn];
+    allBtns.forEach(function(b) {
+      if (b) { b.style.borderBottom = '2px solid transparent'; b.style.color = 'var(--muted)'; b.style.fontWeight = '600'; }
+    });
+    // Hide all panels
     if (stepOpts) stepOpts.style.display = 'none';
+    if (stepPick) stepPick.style.display = 'none';
+    if (stepLib)  stepLib.style.display  = 'none';
+    if (stepLoop) stepLoop.style.display = 'none';
 
     if (tab === 'upload') {
       if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
-      if (libBtn)    { libBtn.style.borderBottom = '2px solid transparent';   libBtn.style.color = 'var(--muted)'; libBtn.style.fontWeight = '600'; }
       if (stepPick)  stepPick.style.display = 'block';
-      if (stepLib)   stepLib.style.display = 'none';
+    } else if (tab === 'loop') {
+      if (loopBtn) { loopBtn.style.borderBottom = '2px solid var(--primary)'; loopBtn.style.color = 'var(--primary)'; loopBtn.style.fontWeight = '700'; }
+      if (stepLoop) stepLoop.style.display = 'block';
     } else {
+      // library
       if (libBtn)    { libBtn.style.borderBottom = '2px solid var(--primary)'; libBtn.style.color = 'var(--primary)'; libBtn.style.fontWeight = '700'; }
-      if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid transparent'; uploadBtn.style.color = 'var(--muted)'; uploadBtn.style.fontWeight = '600'; }
-      if (stepPick)  stepPick.style.display = 'none';
       if (stepLib)   stepLib.style.display = 'block';
       extLoadLibraryPicker();
     }
@@ -6419,6 +6425,374 @@ window.renderEditInstrumentPills = function (bp) {
   };
 
 })();
+
+// ══ Loop Extend Engine ════════════════════════════════════════════════════════
+// True loop extension: decodes audio in-browser, analyses BPM + boundary
+// quality, auto-picks crossfade, stitches repeats to add ~60s, encodes MP3.
+// No server call, no points charged.
+(function initLoopExtend() {
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  var _loopFile        = null;   // original File object
+  var _loopAudioBuffer = null;   // decoded Web Audio AudioBuffer
+  var _loopBpm         = 0;
+  var _loopCrossfadeMs = 40;     // auto-determined, ms
+  var _loopReps        = 1;      // number of extra full-loop repetitions
+  var _loopAddedSec    = 0;      // seconds being added
+
+  // ── File input handler ─────────────────────────────────────────────────────
+  window.loopHandleFileSelect = function(input) {
+    var file = input && input.files && input.files[0];
+    if (!file) return;
+    _loopFile = file;
+    _loopAudioBuffer = null;
+    loopSetZoneState('loading');
+    var errEl = document.getElementById('loop-upload-error');
+    if (errEl) errEl.style.display = 'none';
+
+    // Decode with Web Audio API
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx.decodeAudioData(e.target.result, function(buf) {
+        ctx.close();
+        _loopAudioBuffer = buf;
+        loopAnalyse(buf, file.name);
+      }, function(err) {
+        loopSetZoneState('idle');
+        if (errEl) { errEl.textContent = 'Could not decode audio: ' + (err && err.message || 'unsupported format'); errEl.style.display = 'block'; }
+      });
+    };
+    reader.onerror = function() {
+      loopSetZoneState('idle');
+      if (errEl) { errEl.textContent = 'Could not read file.'; errEl.style.display = 'block'; }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // Drag-and-drop support
+  document.addEventListener('DOMContentLoaded', function() {
+    var zone = document.getElementById('loop-upload-zone');
+    if (!zone) return;
+    zone.addEventListener('dragover',  function(e) { e.preventDefault(); zone.style.borderColor = 'rgba(78,159,255,.7)'; zone.style.background = 'rgba(78,159,255,.1)'; });
+    zone.addEventListener('dragleave', function()  { zone.style.borderColor = ''; zone.style.background = ''; });
+    zone.addEventListener('drop', function(e) {
+      e.preventDefault(); zone.style.borderColor = ''; zone.style.background = '';
+      var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) { document.getElementById('loop-audio-file').value = ''; _loopFile = file; _loopAudioBuffer = null; loopSetZoneState('loading'); var errEl = document.getElementById('loop-upload-error'); if (errEl) errEl.style.display = 'none'; var reader = new FileReader(); reader.onload = function(ev) { var ctx = new (window.AudioContext || window.webkitAudioContext)(); ctx.decodeAudioData(ev.target.result, function(buf) { ctx.close(); _loopAudioBuffer = buf; loopAnalyse(buf, file.name); }, function() { loopSetZoneState('idle'); }); }; reader.readAsArrayBuffer(file); }
+    });
+  });
+
+  // ── Zone state helper ──────────────────────────────────────────────────────
+  function loopSetZoneState(state, filename) {
+    var idle    = document.getElementById('loop-upload-idle');
+    var loading = document.getElementById('loop-upload-loading');
+    var done    = document.getElementById('loop-upload-done');
+    var nameEl  = document.getElementById('loop-upload-name');
+    if (idle)    idle.style.display    = state === 'idle'    ? 'flex' : 'none';
+    if (loading) loading.style.display = state === 'loading' ? 'flex' : 'none';
+    if (done)    done.style.display    = state === 'done'    ? 'flex' : 'none';
+    if (nameEl && filename) nameEl.textContent = filename;
+  }
+
+  // ── Analysis: BPM + boundary RMS + transient density → crossfade ──────────
+  function loopAnalyse(buf, filename) {
+    var sr       = buf.sampleRate;
+    var ch0      = buf.getChannelData(0);
+    var durSec   = buf.duration;
+
+    // ── 1. Estimate BPM via autocorrelation on RMS envelope ──────────────────
+    // Downsample envelope: RMS in 10ms windows
+    var winSamples = Math.floor(sr * 0.010);
+    var envLen = Math.floor(ch0.length / winSamples);
+    var env = new Float32Array(envLen);
+    for (var i = 0; i < envLen; i++) {
+      var sum = 0;
+      var off = i * winSamples;
+      for (var j = 0; j < winSamples; j++) sum += ch0[off + j] * ch0[off + j];
+      env[i] = Math.sqrt(sum / winSamples);
+    }
+    // Autocorrelate env in BPM range 60–180 → period 333ms–1000ms
+    var minPeriodFrames = Math.floor(0.333 / 0.010);
+    var maxPeriodFrames = Math.floor(1.000 / 0.010);
+    var bestPeriod = minPeriodFrames, bestCorr = -Infinity;
+    for (var p = minPeriodFrames; p <= maxPeriodFrames; p++) {
+      var corr = 0, n = envLen - p;
+      for (var k = 0; k < n; k++) corr += env[k] * env[k + p];
+      corr /= n;
+      if (corr > bestCorr) { bestCorr = corr; bestPeriod = p; }
+    }
+    var beatDurationSec = bestPeriod * 0.010;
+    var bpm = Math.round(60 / beatDurationSec);
+    // Clamp to sane range
+    if (bpm < 60)  bpm = Math.round(bpm  * 2);
+    if (bpm > 200) bpm = Math.round(bpm  / 2);
+    _loopBpm = bpm;
+
+    // ── 2. Measure boundary energy at start & end (first/last 2048 samples) ──
+    var boundaryLen = Math.min(2048, Math.floor(sr * 0.05));
+    var rmsStart = 0, rmsEnd = 0;
+    for (var i = 0; i < boundaryLen; i++) {
+      rmsStart += ch0[i] * ch0[i];
+      rmsEnd   += ch0[ch0.length - boundaryLen + i] * ch0[ch0.length - boundaryLen + i];
+    }
+    rmsStart = Math.sqrt(rmsStart / boundaryLen);
+    rmsEnd   = Math.sqrt(rmsEnd   / boundaryLen);
+    var boundaryDelta = Math.abs(rmsStart - rmsEnd) / (Math.max(rmsStart, rmsEnd) + 1e-9);
+
+    // ── 3. Count transients (fast onset proxy: samples where RMS env spikes >2×) ──
+    var transients = 0;
+    for (var i = 1; i < envLen - 1; i++) {
+      if (env[i] > env[i-1] * 2.0 && env[i] > 0.05) transients++;
+    }
+    var transientDensity = transients / durSec; // per second
+
+    // ── 4. Auto-pick crossfade ────────────────────────────────────────────────
+    // Rule: punchy/percussive = short; mismatched boundaries = longer
+    var xfadeMs;
+    if (transientDensity > 6) {
+      // Dense percussive content — short crossfade to preserve transient attacks
+      xfadeMs = boundaryDelta < 0.3 ? 20 : 40;
+    } else if (boundaryDelta > 0.4) {
+      // Boundaries are very different energy — blend them
+      xfadeMs = 120;
+    } else {
+      // Mid-range: melodic, pads, moderate percussion
+      xfadeMs = 60;
+    }
+    // Never exceed half a beat at the estimated BPM
+    var halfBeatMs = (60000 / bpm) / 2;
+    xfadeMs = Math.min(xfadeMs, Math.floor(halfBeatMs));
+    xfadeMs = Math.max(xfadeMs, 10); // floor 10ms
+    _loopCrossfadeMs = xfadeMs;
+
+    // ── 5. Calculate how many reps to add ~60s ───────────────────────────────
+    var targetAddSec = 60;
+    var reps = Math.max(1, Math.round(targetAddSec / durSec));
+    // Check we're not undershooting too badly — prefer rounding up if < 70% of target
+    if (reps * durSec < targetAddSec * 0.7 && reps < 16) reps++;
+    _loopReps    = reps;
+    _loopAddedSec = Math.round(reps * durSec);
+
+    // ── 6. Update UI ─────────────────────────────────────────────────────────
+    var name = filename || 'track';
+    loopSetZoneState('done', name);
+    var metaEl   = document.getElementById('loop-upload-meta');
+    var cardEl   = document.getElementById('loop-analysis-card');
+    var bpmEl    = document.getElementById('loop-info-bpm');
+    var durEl    = document.getElementById('loop-info-dur');
+    var addEl    = document.getElementById('loop-info-add');
+    var xfEl     = document.getElementById('loop-info-xfade');
+    var genBtn   = document.getElementById('loop-generate-btn');
+    var resultEl = document.getElementById('loop-result');
+    if (metaEl)   metaEl.textContent = bpm + ' BPM · ' + durSec.toFixed(1) + 's';
+    if (cardEl)   cardEl.style.display = 'block';
+    if (bpmEl)    bpmEl.textContent = bpm + ' BPM';
+    if (durEl)    durEl.textContent = durSec.toFixed(1) + 's';
+    if (addEl)    addEl.textContent = '+' + _loopAddedSec + 's (' + reps + '× loop)';
+    if (xfEl)     xfEl.textContent = xfadeMs + 'ms';
+    if (genBtn)   genBtn.style.display = 'block';
+    if (resultEl) resultEl.style.display = 'none';
+    var prog = document.getElementById('loop-progress');
+    if (prog) prog.style.display = 'none';
+  }
+
+  // ── Generate: stitch buffer + encode MP3 ──────────────────────────────────
+  window.loopGenerate = function() {
+    if (!_loopAudioBuffer || !_loopFile) return;
+    var genBtn   = document.getElementById('loop-generate-btn');
+    var prog     = document.getElementById('loop-progress');
+    var progBar  = document.getElementById('loop-progress-bar');
+    var progMsg  = document.getElementById('loop-progress-msg');
+    var resultEl = document.getElementById('loop-result');
+    var errEl    = document.getElementById('loop-upload-error');
+
+    if (genBtn)  { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Working…'; }
+    if (prog)    prog.style.display = 'block';
+    if (progBar) progBar.style.width = '0%';
+    if (progMsg) progMsg.textContent = 'Stitching loops…';
+    if (errEl)   errEl.style.display = 'none';
+
+    // Use setTimeout to yield to the browser before heavy work
+    setTimeout(function() {
+      try {
+        var buf    = _loopAudioBuffer;
+        var sr     = buf.sampleRate;
+        var xfSamp = Math.floor(_loopCrossfadeMs * sr / 1000);
+        var nCh    = Math.min(buf.numberOfChannels, 2);
+
+        // ── 1. Build total output: original + N reps stitched with crossfade ──
+        // Each stitch point blends last xfSamp of previous with first xfSamp of loop
+        // Output length = (1 + reps) * loopSamples - reps * xfSamp
+        var loopSamples = buf.length;
+        var totalSamples = loopSamples + _loopReps * (loopSamples - xfSamp);
+
+        // Allocate output channels
+        var out = [];
+        for (var c = 0; c < nCh; c++) out.push(new Float32Array(totalSamples));
+
+        if (progMsg) progMsg.textContent = 'Building loop buffer…';
+        if (progBar) progBar.style.width = '15%';
+
+        for (var c = 0; c < nCh; c++) {
+          var src = buf.getChannelData(c);
+          var dst = out[c];
+          // Copy original loop
+          for (var i = 0; i < loopSamples; i++) dst[i] = src[i];
+          // Append reps with crossfade overlap
+          var writePos = loopSamples;
+          for (var r = 0; r < _loopReps; r++) {
+            // Crossfade region: blend tail of previous content with head of new loop
+            for (var x = 0; x < xfSamp; x++) {
+              var fadeOut = 1 - (x / xfSamp); // previous content fades out
+              var fadeIn  =     (x / xfSamp); // new loop fades in
+              // writePos - xfSamp + x is the blend position
+              var blendPos = writePos - xfSamp + x;
+              // dst already has the previous tail — blend with loop start
+              dst[blendPos] = dst[blendPos] * fadeOut + src[x] * fadeIn;
+            }
+            // Copy remainder of loop after the crossfade region
+            var copyStart = xfSamp;
+            var copyLen   = loopSamples - xfSamp;
+            for (var i = 0; i < copyLen; i++) dst[writePos + i] = src[copyStart + i];
+            writePos += copyLen;
+          }
+        }
+
+        if (progMsg) progMsg.textContent = 'Encoding MP3…';
+        if (progBar) progBar.style.width = '40%';
+
+        // ── 2. Encode to MP3 via lamejs (loaded from CDN) ─────────────────────
+        // lamejs is loaded lazily here on first use
+        function encodeAndFinish() {
+          var lame = new lamejs.Mp3Encoder(nCh, sr, 192);
+          var blockSize = 1152;
+          var mp3Chunks = [];
+          var totalBlocks = Math.ceil(totalSamples / blockSize);
+          var blocksDone  = 0;
+
+          function encodeBlock(startSample) {
+            if (startSample >= totalSamples) {
+              // Flush
+              var last = lame.flush();
+              if (last && last.length) mp3Chunks.push(new Int8Array(last));
+              // Done — assemble blob
+              var totalBytes = 0;
+              for (var i = 0; i < mp3Chunks.length; i++) totalBytes += mp3Chunks[i].length;
+              var mp3Data = new Uint8Array(totalBytes);
+              var offset = 0;
+              for (var i = 0; i < mp3Chunks.length; i++) {
+                mp3Data.set(new Uint8Array(mp3Chunks[i].buffer), offset);
+                offset += mp3Chunks[i].length;
+              }
+              var blob = new Blob([mp3Data], { type: 'audio/mpeg' });
+              var url  = URL.createObjectURL(blob);
+
+              if (progBar) progBar.style.width = '100%';
+              if (progMsg) progMsg.textContent = 'Done!';
+
+              // Populate result
+              var audioEl  = document.getElementById('loop-result-audio');
+              var dlBtn    = document.getElementById('loop-dl-btn');
+              var metaEl   = document.getElementById('loop-result-meta');
+              var origName = (_loopFile.name || 'track').replace(/\.[^.]+$/, '');
+              var dlName   = origName + '_loop_extended.mp3';
+              if (audioEl) { audioEl.src = url; }
+              if (dlBtn)   { dlBtn.href = url; dlBtn.setAttribute('download', dlName); }
+              if (metaEl)  { metaEl.textContent = (totalSamples / sr).toFixed(1) + 's total · ' + _loopAddedSec + 's added'; }
+              if (resultEl) resultEl.style.display = 'block';
+              if (genBtn)  { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+              setTimeout(function() { if (prog) prog.style.display = 'none'; }, 800);
+              return;
+            }
+
+            var end = Math.min(startSample + blockSize, totalSamples);
+            var len = end - startSample;
+
+            // lamejs expects Int16Array
+            function toInt16(floatArr, start, length) {
+              var buf16 = new Int16Array(length);
+              for (var i = 0; i < length; i++) {
+                var s = Math.max(-1, Math.min(1, floatArr[start + i]));
+                buf16[i] = s < 0 ? s * 32768 : s * 32767;
+              }
+              return buf16;
+            }
+
+            var encoded;
+            if (nCh === 2) {
+              encoded = lame.encodeBuffer(
+                toInt16(out[0], startSample, len),
+                toInt16(out[1], startSample, len)
+              );
+            } else {
+              var mono = toInt16(out[0], startSample, len);
+              encoded = lame.encodeBuffer(mono, mono);
+            }
+            if (encoded && encoded.length) mp3Chunks.push(new Int8Array(encoded));
+
+            blocksDone++;
+            if (progBar) progBar.style.width = (40 + Math.floor(blocksDone / totalBlocks * 55)) + '%';
+
+            // Yield every 50 blocks so the UI can update
+            if (blocksDone % 50 === 0) {
+              setTimeout(function() { encodeBlock(startSample + blockSize); }, 0);
+            } else {
+              encodeBlock(startSample + blockSize);
+            }
+          }
+
+          encodeBlock(0);
+        }
+
+        // Load lamejs from CDN if not already present, then encode
+        if (window.lamejs) {
+          encodeAndFinish();
+        } else {
+          if (progMsg) progMsg.textContent = 'Loading encoder…';
+          var script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+          script.onload = function() { if (progMsg) progMsg.textContent = 'Encoding MP3…'; encodeAndFinish(); };
+          script.onerror = function() {
+            if (errEl) { errEl.textContent = 'Could not load MP3 encoder. Please check your connection and try again.'; errEl.style.display = 'block'; }
+            if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+            if (prog)   prog.style.display = 'none';
+          };
+          document.head.appendChild(script);
+        }
+
+      } catch(e) {
+        if (errEl) { errEl.textContent = 'Error: ' + (e.message || 'Unknown error'); errEl.style.display = 'block'; }
+        if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+        if (prog)   prog.style.display = 'none';
+      }
+    }, 30); // 30ms yield so spinner renders first
+  };
+
+  // ── Reset ──────────────────────────────────────────────────────────────────
+  window.loopReset = function() {
+    _loopFile        = null;
+    _loopAudioBuffer = null;
+    _loopBpm         = 0;
+    _loopCrossfadeMs = 40;
+    _loopReps        = 1;
+    _loopAddedSec    = 0;
+    loopSetZoneState('idle');
+    var cardEl   = document.getElementById('loop-analysis-card');
+    var genBtn   = document.getElementById('loop-generate-btn');
+    var resultEl = document.getElementById('loop-result');
+    var prog     = document.getElementById('loop-progress');
+    var errEl    = document.getElementById('loop-upload-error');
+    var fileIn   = document.getElementById('loop-audio-file');
+    if (cardEl)   cardEl.style.display   = 'none';
+    if (genBtn)   { genBtn.style.display = 'none'; genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+    if (resultEl) resultEl.style.display = 'none';
+    if (prog)     prog.style.display     = 'none';
+    if (errEl)    errEl.style.display    = 'none';
+    if (fileIn)   fileIn.value           = '';
+  };
+
+})(); // end Loop Extend Engine
 
 // ── Override renderUploadsGrid with card-style layout matching beats/oneshots ─
 // Cards have three-dot menu (Use as reference, Delete), no arrow badge.

@@ -5399,7 +5399,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-11'
+const ASSET_VER = '20260718-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6800,13 +6800,16 @@ function generatorPage() {
   </div>
   <div class="creator-popup__body">
 
-    <!-- Source tabs: Upload vs Library -->
+    <!-- Source tabs: Upload / Library / Loop Extend -->
     <div id="ext-source-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px">
-      <button id="ext-tab-upload" onclick="extSwitchTab('upload')" style="flex:1;background:none;border:none;border-bottom:2px solid var(--primary);color:var(--primary);font-weight:700;padding:9px 0;font-size:.84rem;cursor:pointer;transition:all .2s">
-        <i class="fas fa-cloud-upload-alt" style="margin-right:6px"></i>Upload Track
+      <button id="ext-tab-upload" onclick="extSwitchTab('upload')" style="flex:1;background:none;border:none;border-bottom:2px solid var(--primary);color:var(--primary);font-weight:700;padding:9px 0;font-size:.82rem;cursor:pointer;transition:all .2s">
+        <i class="fas fa-cloud-upload-alt" style="margin-right:5px"></i>Upload
       </button>
-      <button id="ext-tab-library" onclick="extSwitchTab('library')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:9px 0;font-size:.84rem;cursor:pointer;transition:all .2s">
-        <i class="fas fa-music" style="margin-right:6px"></i>From Library
+      <button id="ext-tab-library" onclick="extSwitchTab('library')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:9px 0;font-size:.82rem;cursor:pointer;transition:all .2s">
+        <i class="fas fa-music" style="margin-right:5px"></i>Library
+      </button>
+      <button id="ext-tab-loop" onclick="extSwitchTab('loop')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:9px 0;font-size:.82rem;cursor:pointer;transition:all .2s">
+        <i class="fas fa-redo" style="margin-right:5px"></i>Loop Extend
       </button>
     </div>
 
@@ -6918,6 +6921,79 @@ function generatorPage() {
       </button>
       <div id="ext-submit-status" style="display:none;margin-top:10px;text-align:center;font-size:.82rem;color:var(--muted)"></div>
     </div>
+
+    <!-- ══ Loop Extend panel ══════════════════════════════════════════ -->
+    <div id="ext-step-loop" style="display:none">
+
+      <!-- Info banner -->
+      <div style="margin-bottom:14px;padding:10px 13px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-radius:10px;font-size:.8rem;line-height:1.55;color:#c4b5fd">
+        <i class="fas fa-redo" style="margin-right:6px;opacity:.8"></i>
+        <strong>True Loop Extension</strong> — repeats your exact beat to add ~60 seconds. Same drums, same bass, same groove. <strong>Free — no points used.</strong>
+      </div>
+
+      <!-- Upload zone -->
+      <div class="ref-upload-zone" id="loop-upload-zone" onclick="document.getElementById('loop-audio-file').click()" style="cursor:pointer;margin-bottom:10px">
+        <input type="file" id="loop-audio-file" accept="audio/mpeg,audio/mp3,.mp3,audio/wav,.wav,audio/flac,.flac,audio/*" style="display:none" onchange="loopHandleFileSelect(this)"/>
+        <div id="loop-upload-idle" style="display:flex;flex-direction:column;align-items:center">
+          <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
+          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Loop-Extend</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3, WAV, FLAC — any format works</p>
+        </div>
+        <div id="loop-upload-loading" style="display:none;flex-direction:column;align-items:center">
+          <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
+          <p style="margin:0;font-size:.85rem;color:var(--muted)">Analysing…</p>
+        </div>
+        <div id="loop-upload-done" style="display:none;flex-direction:column;align-items:center">
+          <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
+          <p style="margin:0;font-weight:600;font-size:.85rem" id="loop-upload-name">track.mp3</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem" id="loop-upload-meta">Ready</p>
+        </div>
+      </div>
+      <div id="loop-upload-error" style="display:none;margin-bottom:10px;padding:8px 12px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:.8rem;color:#f87171;text-align:center"></div>
+
+      <!-- Analysis result card (shown after file loaded) -->
+      <div id="loop-analysis-card" style="display:none;margin-bottom:14px;padding:11px 14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px;font-size:.82rem;line-height:1.7">
+        <div style="display:flex;flex-wrap:wrap;gap:6px 18px">
+          <span><i class="fas fa-stopwatch" style="color:var(--primary);margin-right:5px"></i>BPM: <strong id="loop-info-bpm">—</strong></span>
+          <span><i class="fas fa-clock" style="color:var(--primary);margin-right:5px"></i>Duration: <strong id="loop-info-dur">—</strong></span>
+          <span><i class="fas fa-plus-circle" style="color:#10b981;margin-right:5px"></i>Adding: <strong id="loop-info-add">~60s</strong></span>
+          <span><i class="fas fa-blender" style="color:#a78bfa;margin-right:5px"></i>Crossfade: <strong id="loop-info-xfade">—</strong></span>
+        </div>
+      </div>
+
+      <!-- Generate button -->
+      <button id="loop-generate-btn" onclick="loopGenerate()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;display:none">
+        <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>
+      </button>
+
+      <!-- Progress -->
+      <div id="loop-progress" style="display:none;margin-top:12px">
+        <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:8px">
+          <div id="loop-progress-bar" style="height:100%;background:var(--primary);border-radius:2px;width:0%;transition:width .3s ease"></div>
+        </div>
+        <p id="loop-progress-msg" style="text-align:center;font-size:.82rem;color:var(--muted);margin:0"></p>
+      </div>
+
+      <!-- Result -->
+      <div id="loop-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <i class="fas fa-check-circle" style="color:#10b981;font-size:1.1rem"></i>
+          <span style="font-weight:700;font-size:.9rem">Loop Extension Ready</span>
+          <span id="loop-result-meta" style="margin-left:auto;font-size:.75rem;color:var(--muted)"></span>
+        </div>
+        <audio id="loop-result-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
+        <div style="display:flex;gap:8px">
+          <a id="loop-dl-btn" href="#" class="btn btn--primary" style="flex:1;text-align:center" download>
+            <i class="fas fa-download"></i> Download
+          </a>
+          <button onclick="loopReset()" class="btn btn--outline btn--sm" style="flex-shrink:0">
+            <i class="fas fa-redo"></i> New
+          </button>
+        </div>
+      </div>
+
+    </div>
+    <!-- ══ /Loop Extend panel ════════════════════════════════════════ -->
 
   </div>
 </div>
