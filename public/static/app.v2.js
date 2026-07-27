@@ -945,6 +945,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Fetch one tab's data from API ───────────────────────────
   async function fetchLibTab(tab) {
+    // Extended tab is fully handled by reloadExtendedTab — route there directly
+    // so there is no dependency on override timing or _libLoaded cache.
+    if (tab === 'extended') {
+      if (window.reloadExtendedTab) window.reloadExtendedTab();
+      return;
+    }
     const gridEl = document.getElementById('project-grid-' + tab);
     if (!gridEl) return;
     if (_libLoaded[tab]) { populateGrid(gridEl, tab, _libData[tab]); return; }
@@ -990,9 +996,16 @@ document.addEventListener('DOMContentLoaded', () => {
       searchInput.value = '';
       filterLibrary('');
     }
-    // Load data if not yet loaded
+    // Load data — extended and uploads have their own dedicated loaders
     if (tab === 'uploads') {
       fetchUploadsTab();
+    } else if (tab === 'extended') {
+      // Always hard-reload extended tab — bypasses stale _libLoaded cache
+      if (window.reloadExtendedTab) {
+        window.reloadExtendedTab();
+      } else {
+        fetchLibTab(tab); // fallback in case IIFE hasn't run yet (calls reloadExtendedTab internally)
+      }
     } else {
       fetchLibTab(tab);
     }
