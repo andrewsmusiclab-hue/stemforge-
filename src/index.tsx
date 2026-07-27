@@ -891,16 +891,21 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<s
 }
 
 // Poll Mureka song/query/:taskId — used for song/extend results
-// Mureka song/extend uses the same song/query endpoint, returns choices[0].url
-async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<string | null> {
+// Mureka song/extend uses the same song/query endpoint, returns choices[0].url + duration
+async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ url: string; durationMs: number } | null> {
   const res = await fetch(`${MUREKA_BASE}/song/query/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
   if (!res.ok) return null
   const data = await res.json() as any
   if (data.status === 'succeeded' || data.status === 'completed') {
-    // song/extend returns: { choices: [{ url: "...", audio_url: "..." }] }
-    return data.choices?.[0]?.url || data.choices?.[0]?.audio_url || null
+    // song/extend returns: { choices: [{ url: "...", audio_url: "...", duration: <ms> }] }
+    const choice = data.choices?.[0]
+    const url = choice?.url || choice?.audio_url || null
+    if (!url) return null
+    // duration field is in milliseconds when present; fall back to 0 (unknown)
+    const durationMs: number = typeof choice?.duration === 'number' ? choice.duration : 0
+    return { url, durationMs }
   }
   if (data.status === 'failed') throw new Error(data.error?.message || 'Mureka song extend failed')
   return null // still processing
@@ -908,6 +913,70 @@ async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<str
 
 // Step 2b+3: called on each POST /api/poll/:id from the frontend.
 // Stems are NEVER auto-generated on beat creation (all plans).
+// For song_extend jobs with chain_target_ms set, automatically chains multiple
+// Mureka extend calls until total duration reaches the target.
+
+// ── Song extend chain helper ───────────────────────────────────────────────────
+// Fires the next Mureka song/extend call from the given audio URL.
+// Returns { taskId } on success, throws on failure.
+async function fireNextChainExtend(
+  currentUrl: string,
+  currentDurationMs: number,
+  job: any,
+  env: Bindings
+): Promise<string> {
+  // Upload current result to Mureka files API
+  const uploadForm = new FormData()
+  uploadForm.append('purpose', 'audio')
+  uploadForm.append('url', currentUrl)
+  const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${env.MUREKA_API_KEY}` },
+    body: uploadForm
+  })
+  if (!uploadRes.ok) {
+    const t = await uploadRes.text()
+    throw new Error(`Chain upload failed: ${uploadRes.status} ${t.slice(0, 200)}`)
+  }
+  const uploadData = await uploadRes.json() as any
+  const uploadAudioId = uploadData.id as string
+  if (!uploadAudioId) throw new Error('Chain upload returned no file ID')
+
+  // extend_at = full current duration so Mureka generates as much new content as possible
+  const safeExtendAt = Math.max(8000, Math.min(currentDurationMs, 420000))
+
+  const extendBody: Record<string, any> = {
+    upload_audio_id: uploadAudioId,
+    extend_at: safeExtendAt
+  }
+  if (job.chain_instrumental) {
+    extendBody.lyrics = '[Instrumental]'
+  } else {
+    extendBody.lyrics = (job.chain_lyrics && job.chain_lyrics.trim()) ? job.chain_lyrics.trim() : '[Verse]'
+  }
+  if (job.chain_style) {
+    extendBody.style = job.chain_style
+  }
+
+  const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.MUREKA_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(extendBody)
+  })
+  if (!extRes.ok) {
+    const t = await extRes.text()
+    let msg = `${extRes.status}`
+    try { msg = (JSON.parse(t) as any)?.error?.message || msg } catch (_) {}
+    throw new Error(`Chain extend failed: ${msg}`)
+  }
+  const extData = await extRes.json() as any
+  const taskId = extData.id || extData.task_id || extData.taskId
+  if (!taskId) throw new Error(`Chain extend returned no task ID: ${JSON.stringify(extData).slice(0, 200)}`)
+  return taskId
+}
 
 async function advancePipeline(jobId: string, env: Bindings, skipStems = true): Promise<Job | null> {
   const db = env.DB
@@ -923,29 +992,96 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     // - instrumental/generate uses Mureka instrumental/query endpoint
     const taskType = (job as any).extend_task_type
     const useSongQuery = taskType === 'song_extend' || taskType === 'song_generate'
-    const stereoUrl = useSongQuery
-      ? await pollSongExtendStatus(job.stereo_task_id, env.MUREKA_API_KEY)
-      : await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
 
-    if (!stereoUrl) {
-      // Not ready yet — check timeout (10 min max)
+    if (!useSongQuery) {
+      // Instrumental path — no chaining
+      const stereoUrl = await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+      if (!stereoUrl) {
+        const ageMs = Date.now() - job.created_at
+        if (ageMs > 10 * 60 * 1000) {
+          job.status = 'error'
+          job.error = 'Mureka generation timed out after 10 minutes'
+          await setJob(db, { ...job })
+        }
+        return job
+      }
+      job.stereo_url = stereoUrl
+      job.status = 'ready'
+      await setJob(db, { ...job })
+      return job
+    }
+
+    // ── Song query path (song_extend / song_generate) ──────────────────────────
+    const result = await pollSongExtendStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+
+    if (!result) {
+      // Not ready yet — check timeout (15 min max for chained extends)
       const ageMs = Date.now() - job.created_at
-      if (ageMs > 10 * 60 * 1000) {
+      const timeoutMs = (job as any).chain_target_ms ? 15 * 60 * 1000 : 10 * 60 * 1000
+      if (ageMs > timeoutMs) {
         job.status = 'error'
-        job.error = 'Mureka generation timed out after 10 minutes'
+        job.error = 'Mureka generation timed out'
         await setJob(db, { ...job })
       }
       return job
     }
 
-    // Mureka instrumental is done — save stereo URL
-    job.stereo_url = stereoUrl
+    const { url: stereoUrl, durationMs: resultDurationMs } = result
 
+    // ── Chain extend logic ─────────────────────────────────────────────────────
+    // chain_target_ms: target total output duration in ms (set at job creation)
+    // chain_step: how many extend calls have completed so far (0-indexed)
+    // chain_max_steps: safety cap (default 15)
+    const chainTargetMs: number = (job as any).chain_target_ms || 0
+    const chainStep: number = (job as any).chain_step || 0
+    const chainMaxSteps: number = (job as any).chain_max_steps || 15
+
+    // Determine current track duration: prefer the Mureka-reported duration
+    // If Mureka didn't report duration (= 0), estimate from chain_step progress
+    const currentDurationMs = resultDurationMs > 0
+      ? resultDurationMs
+      : ((job as any).chain_last_duration_ms || 0)
+
+    const shouldChain = chainTargetMs > 0
+      && currentDurationMs > 0
+      && currentDurationMs < chainTargetMs
+      && chainStep < chainMaxSteps
+
+    if (shouldChain) {
+      // Fire the next extend call
+      console.log(`[chain-extend] step=${chainStep + 1} currentDuration=${currentDurationMs}ms target=${chainTargetMs}ms jobId=${jobId}`)
+      try {
+        const nextTaskId = await fireNextChainExtend(stereoUrl, currentDurationMs, job as any, env)
+        // Update job: new task ID, increment step, save last known duration
+        const updatedJob = {
+          ...(job as any),
+          stereo_task_id: nextTaskId,
+          stereo_url: null, // will be populated when next step completes
+          chain_step: chainStep + 1,
+          chain_last_duration_ms: currentDurationMs,
+          // Keep status as 'generating' so polling continues
+          status: 'generating'
+        }
+        await setJob(db, updatedJob)
+        return updatedJob as unknown as Job
+      } catch (chainErr: any) {
+        // If chaining fails, mark ready with what we have so far (don't lose the output)
+        console.error(`[chain-extend] step=${chainStep + 1} failed: ${chainErr?.message}`)
+        job.stereo_url = stereoUrl
+        ;(job as any).chain_error = chainErr?.message
+        job.status = 'ready'
+        await setJob(db, { ...job })
+        return job
+      }
+    }
+
+    // ── No more chaining needed — job is complete ─────────────────────────────
     // Do NOT pre-populate image_url here with a pollinations URL.
-    // Cover art is generated on-demand by /api/cover-image/:jobId (gpt-image-1 → R2 → D1).
-    // Storing a pollinations URL here would cause it to be re-generated on every refresh
-    // because the cover-image route rejects non-/api/cover-art/ URLs.
-
+    // Cover art is generated on-demand by /api/cover-image/:jobId.
+    job.stereo_url = stereoUrl
+    if (resultDurationMs > 0) {
+      (job as any).chain_final_duration_ms = resultDurationMs
+    }
     job.status = 'ready'
     await setJob(db, { ...job })
 
@@ -1150,6 +1286,11 @@ app.post('/api/poll/:id', async (c) => {
   const job = await advancePipeline(id, c.env) // always skipStems=true
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
+  const chainStep: number = (job as any).chain_step || 0
+  const chainTargetMs: number = (job as any).chain_target_ms || 0
+  const chainLastDurMs: number = (job as any).chain_last_duration_ms || 0
+  const chainFinalDurMs: number = (job as any).chain_final_duration_ms || 0
+
   return c.json({
     id: job.id,
     status: job.status,
@@ -1177,7 +1318,11 @@ app.post('/api/poll/:id', async (c) => {
       mureka_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
-    error: job.error || null
+    error: job.error || null,
+    // Chain extend progress fields (only present for song_extend jobs with chaining)
+    chain_step: chainStep > 0 ? chainStep : undefined,
+    chain_target_ms: chainTargetMs > 0 ? chainTargetMs : undefined,
+    chain_current_duration_ms: chainFinalDurMs > 0 ? chainFinalDurMs : (chainLastDurMs > 0 ? chainLastDurMs : undefined)
   })
 })
 
@@ -3535,7 +3680,7 @@ app.post('/api/job/purge', async (c) => {
 })
 
 // POST /api/job/extend-upload — extend using a directly uploaded audio file
-// Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string, make_instrumental?: boolean }
+// Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string, make_instrumental?: boolean, source_duration_ms?: number }
 app.post('/api/job/extend-upload', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
@@ -3546,8 +3691,8 @@ app.post('/api/job/extend-upload', async (c) => {
     return c.json({ error: 'Song Extend requires a Pro Artist plan.', upgrade: true }, 403)
   }
 
-  const { upload_audio_id, extend_at, lyrics, title, make_instrumental } = await c.req.json<{
-    upload_audio_id: string; extend_at?: number; lyrics?: string; title?: string; make_instrumental?: boolean
+  const { upload_audio_id, extend_at, lyrics, title, make_instrumental, source_duration_ms } = await c.req.json<{
+    upload_audio_id: string; extend_at?: number; lyrics?: string; title?: string; make_instrumental?: boolean; source_duration_ms?: number
   }>()
   if (!upload_audio_id) return c.json({ error: 'upload_audio_id required' }, 400)
 
@@ -3572,12 +3717,9 @@ app.post('/api/job/extend-upload', async (c) => {
   try {
     // Call Mureka song/extend using the already-uploaded audio ID
     // Mureka requires extend_at between 8000–420000ms — clamp to safe range
-    let safeExtendAt: number
-    if (!extend_at || extend_at < 8000) {
-      safeExtendAt = 30000 // default 30s
-    } else {
-      safeExtendAt = Math.min(extend_at, 420000)
-    }
+    // Use source_duration_ms as extend_at so Mureka extends from the very end
+    const sourceDurMs = source_duration_ms && source_duration_ms > 0 ? source_duration_ms : (extend_at || 30000)
+    const safeExtendAt = Math.max(8000, Math.min(sourceDurMs, 420000))
 
     const extendBody: Record<string, any> = {
       upload_audio_id: upload_audio_id,
@@ -3588,8 +3730,6 @@ app.post('/api/job/extend-upload', async (c) => {
     } else {
       extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
     }
-    // No blueprint available for external uploads — but if caller ever passes a
-    // style hint in a future revision, it can be threaded through here.
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
       method: 'POST',
@@ -3614,10 +3754,13 @@ app.post('/api/job/extend-upload', async (c) => {
       return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
     }
 
+    // chain_target_ms: aim for 240 seconds (4 minutes) total output
+    const CHAIN_TARGET_MS = 240000
+    const trackTitle = title || 'Uploaded Track'
+
     // Create a new job record to track the extend result
     const newJobId = crypto.randomUUID()
     const now = Date.now()
-    const trackTitle = title || 'Uploaded Track'
     const newJob = {
       id: newJobId,
       user_id: user.id,
@@ -3628,7 +3771,14 @@ app.post('/api/job/extend-upload', async (c) => {
       stereo_task_id: extTaskId,
       stereo_url: null,
       created_at: now,
-      extend_task_type: 'song_extend'
+      extend_task_type: 'song_extend',
+      // ── Chain extend metadata ────────────────────────────────────────────
+      chain_target_ms: CHAIN_TARGET_MS,
+      chain_step: 0,
+      chain_max_steps: 15,
+      chain_lyrics: make_instrumental ? '[Instrumental]' : (lyrics || '[Verse]'),
+      chain_instrumental: make_instrumental === true,
+      chain_style: null // no blueprint for uploaded tracks
     }
     await c.env.DB.prepare(
       `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
@@ -3777,6 +3927,9 @@ app.post('/api/job/extend', async (c) => {
       return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
     }
 
+    // chain_target_ms: aim for 240 seconds (4 minutes) total output
+    const CHAIN_TARGET_MS = 240000
+
     // Step 3: Create a new job record in D1 to track the extend result
     const newJobId = crypto.randomUUID()
     const now = Date.now()
@@ -3791,7 +3944,14 @@ app.post('/api/job/extend', async (c) => {
       stereo_url: null,
       created_at: now,
       source_job_id: source_job_id,
-      extend_task_type: 'song_extend'
+      extend_task_type: 'song_extend',
+      // ── Chain extend metadata ────────────────────────────────────────────
+      chain_target_ms: CHAIN_TARGET_MS,
+      chain_step: 0,
+      chain_max_steps: 15,
+      chain_lyrics: make_instrumental ? '[Instrumental]' : (lyrics || '[Verse]'),
+      chain_instrumental: make_instrumental === true,
+      chain_style: extendBody.style || null
     }
     await c.env.DB.prepare(
       `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
@@ -5399,7 +5559,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-12'
+const ASSET_VER = '20260718-13'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

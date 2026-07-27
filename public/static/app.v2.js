@@ -6254,7 +6254,7 @@ window.renderEditInstrumentPills = function (bp) {
   })();
 
   function _extPollJob(jobId, ui) {
-    var maxAttempts = 72; // 6 min max (~360s)
+    var maxAttempts = 180; // 15 min max (~900s) — chaining can take up to 15 min
     var attempts    = 0;
     ui = ui || {};
 
@@ -6274,9 +6274,21 @@ window.renderEditInstrumentPills = function (bp) {
       fetch('/api/poll/' + jobId, { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(job) {
-          // Update spinner message
+          // Update spinner message — show chain progress if available
           if (ui.spinnerMsg && ui.pipelineStatus) {
-            if (job.status === 'generating') ui.spinnerMsg.textContent = 'Composing your extended track… this may take 1–3 min';
+            if (job.status === 'generating') {
+              var chainStep = job.chain_step || 0;
+              var chainTargetMs = job.chain_target_ms || 0;
+              var chainCurrentMs = job.chain_current_duration_ms || 0;
+              if (chainStep > 0 && chainTargetMs > 0) {
+                var doneSec = Math.round(chainCurrentMs / 1000);
+                var targetSec = Math.round(chainTargetMs / 1000);
+                var pct = chainTargetMs > 0 ? Math.min(99, Math.round((chainCurrentMs / chainTargetMs) * 100)) : 0;
+                ui.spinnerMsg.textContent = 'Building your track… ' + doneSec + 's / ' + targetSec + 's (' + pct + '%) — step ' + chainStep;
+              } else {
+                ui.spinnerMsg.textContent = 'Extending your track to maximum length… this may take a few minutes';
+              }
+            }
           }
 
           if (job.status === 'ready') {
@@ -6363,6 +6375,8 @@ window.renderEditInstrumentPills = function (bp) {
         title: extUploadTitle || 'Uploaded Track',
         make_instrumental: makeInstrumental
       };
+      // Always pass source_duration_ms — backend uses it as extend_at to maximize new content
+      if (extAudioDuration > 0) body.source_duration_ms = Math.round(extAudioDuration * 1000);
       if (effectiveExtendAt > 0) body.extend_at = effectiveExtendAt;
       // Only pass lyrics if vocal mode and user typed something
       if (!makeInstrumental && lyrics.trim()) body.lyrics = lyrics.trim();
@@ -6402,7 +6416,7 @@ window.renderEditInstrumentPills = function (bp) {
         if (genResult) genResult.style.display = 'none';
         pipelineStatus.style.display = 'block';
         pipelineStatus.style.opacity = '1';
-        if (spinnerMsg) spinnerMsg.textContent = 'Generating your extended track… (1–3 min)';
+        if (spinnerMsg) spinnerMsg.textContent = 'Extending your track to maximum length… (this may take a few minutes)';
         if (genBtn) { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
       }
 
