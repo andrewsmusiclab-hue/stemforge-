@@ -3223,11 +3223,11 @@ window.selectBarPreset = function(btn, bars) {
     if (status) { status.style.display = 'block'; status.textContent = 'Submitting extend job…'; }
 
     try {
-      var makeInstrumental = (window._extVocalMode !== 'vocal');
+      // Vocal toggle removed — always instrumental; backend uses [Instrumental] lyrics tag
       const res = await fetch('/api/job/extend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics, make_instrumental: makeInstrumental })
+        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics, make_instrumental: true })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -6369,17 +6369,17 @@ window.renderEditInstrumentPills = function (bp) {
       // If the user set a scrubber position, use that instead.
       var effectiveExtendAt = extExtendAtMs > 0 ? extExtendAtMs
         : (extAudioDuration > 0 ? Math.round(extAudioDuration * 1000) : 0);
-      var makeInstrumental = (window._extVocalMode !== 'vocal');
+      // Vocal toggle removed — always instrumental; backend will use [Instrumental] lyrics tag
       var body = {
         upload_audio_id: extUploadAudioId,
         title: extUploadTitle || 'Uploaded Track',
-        make_instrumental: makeInstrumental
+        make_instrumental: true
       };
       // Always pass source_duration_ms — backend uses it as extend_at to maximize new content
       if (extAudioDuration > 0) body.source_duration_ms = Math.round(extAudioDuration * 1000);
       if (effectiveExtendAt > 0) body.extend_at = effectiveExtendAt;
-      // Only pass lyrics if vocal mode and user typed something
-      if (!makeInstrumental && lyrics.trim()) body.lyrics = lyrics.trim();
+      // Pass lyrics if user typed something (backend ignores [Verse] / empty, defaults to [Instrumental])
+      if (lyrics.trim()) body.lyrics = lyrics.trim();
 
       var res = await fetch('/api/job/extend-upload', {
         method: 'POST',
@@ -6750,8 +6750,10 @@ window.renderEditInstrumentPills = function (bp) {
                   })
                   .then(function(saveData) {
                     if (saveData.error) {
-                      // insufficient_credits — show friendly message but don't break playback
-                      if (saveData.code === 'insufficient_credits') {
+                      if (saveData.upgrade) {
+                        // Free plan — Loop Extend is Creator+ only
+                        if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 Loop Extend requires Creator or Pro plan';
+                      } else if (saveData.code === 'insufficient_credits') {
                         if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added \xb7 Not saved (no points)';
                       }
                       return;

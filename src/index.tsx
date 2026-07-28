@@ -949,10 +949,13 @@ async function fireNextChainExtend(
     upload_audio_id: uploadAudioId,
     extend_at: safeExtendAt
   }
-  if (job.chain_instrumental) {
-    extendBody.lyrics = '[Instrumental]'
+  // Always default to [Instrumental] unless user explicitly typed lyrics.
+  // Using [Verse] on an instrumental causes Mureka to add vocal artifacts / sound effects.
+  const chainLyrics = job.chain_lyrics && job.chain_lyrics.trim()
+  if (chainLyrics && chainLyrics !== '[Verse]' && chainLyrics !== '[Instrumental]') {
+    extendBody.lyrics = chainLyrics   // user typed actual lyrics
   } else {
-    extendBody.lyrics = (job.chain_lyrics && job.chain_lyrics.trim()) ? job.chain_lyrics.trim() : '[Verse]'
+    extendBody.lyrics = '[Instrumental]'  // always safe default
   }
   if (job.chain_style) {
     extendBody.style = job.chain_style
@@ -3622,6 +3625,8 @@ app.get('/api/projects', async (c) => {
           duration_seconds: d.blueprint.duration_seconds,
           arrangement: d.blueprint.arrangement || null
         } : null,
+        // Status field — required by renderExtendedCard and other card renderers
+        status: d.status || 'ready',
         // One-shot specific fields
         sound_type: d.sound_type || null,
         audio_url: d.audio_url || null,
@@ -3725,10 +3730,15 @@ app.post('/api/job/extend-upload', async (c) => {
       upload_audio_id: upload_audio_id,
       extend_at: safeExtendAt
     }
-    if (make_instrumental === true) {
-      extendBody.lyrics = '[Instrumental]'
-    } else {
-      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
+    // Default to [Instrumental] — [Verse] on an instrumental causes Mureka to inject
+    // vocal artifacts/sound effects into the extension, ruining the track.
+    {
+      const typedLyrics = lyrics && lyrics.trim()
+      if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
+        extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
+      } else {
+        extendBody.lyrics = '[Instrumental]'  // safe default
+      }
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
@@ -3776,8 +3786,8 @@ app.post('/api/job/extend-upload', async (c) => {
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: make_instrumental ? '[Instrumental]' : (lyrics || '[Verse]'),
-      chain_instrumental: make_instrumental === true,
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]') ? lyrics.trim() : '[Instrumental]',
+      chain_instrumental: true,  // always instrumental for uploaded tracks (no vocal toggle)
       chain_style: null // no blueprint for uploaded tracks
     }
     await c.env.DB.prepare(
@@ -3881,10 +3891,14 @@ app.post('/api/job/extend', async (c) => {
       upload_audio_id: uploadAudioId,
       extend_at: safeExtendAt
     }
-    if (make_instrumental === true) {
-      extendBody.lyrics = '[Instrumental]'
-    } else {
-      extendBody.lyrics = (lyrics && lyrics.trim()) ? lyrics.trim() : '[Verse]'
+    // Default to [Instrumental] — [Verse] on an instrumental injects vocals/sound effects.
+    {
+      const typedLyrics = lyrics && lyrics.trim()
+      if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
+        extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
+      } else {
+        extendBody.lyrics = '[Instrumental]'  // safe default
+      }
     }
 
     // Pass the blueprint's style descriptor so Mureka continues with the same
@@ -3949,8 +3963,8 @@ app.post('/api/job/extend', async (c) => {
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: make_instrumental ? '[Instrumental]' : (lyrics || '[Verse]'),
-      chain_instrumental: make_instrumental === true,
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]') ? lyrics.trim() : '[Instrumental]',
+      chain_instrumental: true,  // always instrumental (vocal toggle removed from UI)
       chain_style: extendBody.style || null
     }
     await c.env.DB.prepare(
@@ -3979,6 +3993,10 @@ app.post('/api/job/loop-save', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  // Loop Extend is Creator and Pro Artist only
+  if (user.plan === 'free') {
+    return c.json({ error: 'Loop Extend requires a Creator or Pro Artist plan.', upgrade: true }, 403)
+  }
 
   const { audio_url, title, duration_seconds, bpm } = await c.req.json<{
     audio_url: string; title: string; duration_seconds: number; bpm?: number
@@ -5626,7 +5644,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-14'
+const ASSET_VER = '20260718-15'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7298,7 +7316,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
           <li class="muted"><i class="fas fa-times"></i> MP3 / WAV downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use rights</li>
-          <li><i class="fas fa-check"></i> Loop Extend (10 pts)</li>
+          <li class="muted"><i class="fas fa-times"></i> Loop Extend</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
           <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
@@ -7386,7 +7404,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
