@@ -3220,7 +3220,7 @@ window.selectBarPreset = function(btn, bars) {
     }
 
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
-    if (status) { status.style.display = 'block'; status.textContent = 'Submitting extend job…'; }
+    if (status) { status.style.display = 'block'; var _stxt2 = document.getElementById('ext-submit-status-text'); if (_stxt2) _stxt2.textContent = 'Stemforge is forging your track…'; }
 
     try {
       // Vocal toggle removed — always instrumental; backend uses [Instrumental] lyrics tag
@@ -3231,7 +3231,7 @@ window.selectBarPreset = function(btn, bars) {
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      if (status) status.textContent = 'Extend job started! Check your library for the result.';
+      if (status) { var _stxt3 = document.getElementById('ext-submit-status-text'); if (_stxt3) _stxt3.textContent = 'Extend job started! Check your library.'; }
       // Close popup after short delay
       setTimeout(() => {
         closeCreatorPopup('extend');
@@ -3242,7 +3242,7 @@ window.selectBarPreset = function(btn, bars) {
         if (window.navigate) window.navigate('library');
       }, 1800);
     } catch(e) {
-      if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
+      if (status) { status.style.display = 'block'; var _stxtE = document.getElementById('ext-submit-status-text'); if (_stxtE) { _stxtE.textContent = 'Error: ' + (e.message || 'Unknown error'); _stxtE.style.color = '#f87171'; } }
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
     }
   };
@@ -6362,7 +6362,7 @@ window.renderEditInstrumentPills = function (bp) {
     var lyrics  = (document.getElementById('ext-lyrics') || {}).value || '';
 
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
-    if (status) { status.style.display = 'block'; status.style.color = 'var(--muted)'; status.textContent = 'Submitting extend job…'; }
+    if (status) { status.style.display = 'block'; var _stxt = document.getElementById('ext-submit-status-text'); if (_stxt) _stxt.textContent = 'Submitting extend job…'; }
 
     try {
       // Default extend_at to end of track (in ms) so Mureka appends after the track ends.
@@ -6433,7 +6433,7 @@ window.renderEditInstrumentPills = function (bp) {
       });
 
     } catch(e) {
-      if (status) { status.style.display = 'block'; status.style.color = '#f87171'; status.textContent = 'Error: ' + (e.message || 'Unknown error'); }
+      if (status) { status.style.display = 'block'; var _stxtE2 = document.getElementById('ext-submit-status-text'); if (_stxtE2) { _stxtE2.textContent = 'Error: ' + (e.message || 'Unknown error'); _stxtE2.style.color = '#f87171'; } }
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
     }
   };

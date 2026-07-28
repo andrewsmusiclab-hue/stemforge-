@@ -3993,9 +3993,9 @@ app.post('/api/job/loop-save', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  // Loop Extend is Creator and Pro Artist only
-  if (user.plan === 'free') {
-    return c.json({ error: 'Loop Extend requires a Creator or Pro Artist plan.', upgrade: true }, 403)
+  // Loop Extend is Pro Artist only
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'Loop Extend requires a Pro Artist plan.', upgrade: true }, 403)
   }
 
   const { audio_url, title, duration_seconds, bpm } = await c.req.json<{
@@ -5644,7 +5644,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-15'
+const ASSET_VER = '20260718-16'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6125,8 +6125,8 @@ function homePage() {
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
+          <li><i class="fas fa-check"></i> Loop Extend + Song Extend</li>
           <li><i class="fas fa-check"></i> Reference track uploads</li>
-          <li><i class="fas fa-check"></i> Song Extend</li>
           <li><i class="fas fa-check"></i> All split modes + advanced</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -6967,6 +6967,8 @@ function generatorPage() {
     <!-- Pipeline status - simple spinner, no step details shown -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
       <div class="pipeline-spinner-wrap">
+        <video class="forge-video-bg" autoplay loop muted playsinline preload="auto"
+          src="/static/forge-bg.mp4"></video>
         <div class="pipeline-spinner"></div>
         <p class="pipeline-spinner-msg" id="pipeline-spinner-msg">Stemforge is forging your beat…</p>
       </div>
@@ -7147,7 +7149,11 @@ function generatorPage() {
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
       </button>
-      <div id="ext-submit-status" style="display:none;margin-top:10px;text-align:center;font-size:.82rem;color:var(--muted)"></div>
+      <div id="ext-submit-status" style="display:none;margin-top:10px;position:relative;border-radius:12px;overflow:hidden;background:#0d0d1a;min-height:70px;padding:16px 14px;text-align:center">
+        <video class="forge-video-bg" autoplay loop muted playsinline preload="auto" src="/static/forge-bg.mp4" style="opacity:.7"></video>
+        <div style="position:absolute;inset:0;background:rgba(5,5,20,.5);border-radius:inherit"></div>
+        <span id="ext-submit-status-text" style="position:relative;z-index:2;font-size:.88rem;color:#fff;font-weight:700;text-shadow:0 1px 6px rgba(0,0,0,.8)"></span>
+      </div>
     </div>
 
     <!-- ══ Loop Extend panel ══════════════════════════════════════════ -->
@@ -7188,12 +7194,16 @@ function generatorPage() {
         <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>
       </button>
 
-      <!-- Progress -->
-      <div id="loop-progress" style="display:none;margin-top:12px">
-        <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:8px">
-          <div id="loop-progress-bar" style="height:100%;background:var(--primary);border-radius:2px;width:0%;transition:width .3s ease"></div>
+      <!-- Progress — forge video background shown while encoding -->
+      <div id="loop-progress" style="display:none;margin-top:12px;position:relative;border-radius:14px;overflow:hidden;background:#0d0d1a;min-height:90px;padding:18px 16px">
+        <video class="forge-video-bg" autoplay loop muted playsinline preload="auto" src="/static/forge-bg.mp4" style="opacity:.75"></video>
+        <div style="position:absolute;inset:0;background:rgba(5,5,20,.5);border-radius:inherit"></div>
+        <div style="position:relative;z-index:2">
+          <div style="height:5px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden;margin-bottom:12px">
+            <div id="loop-progress-bar" style="height:100%;background:linear-gradient(90deg,#a78bfa,#4e9fff);border-radius:3px;width:0%;transition:width .3s ease"></div>
+          </div>
+          <p id="loop-progress-msg" style="text-align:center;font-size:.88rem;color:#fff;font-weight:700;margin:0;text-shadow:0 1px 6px rgba(0,0,0,.8)"></p>
         </div>
-        <p id="loop-progress-msg" style="text-align:center;font-size:.82rem;color:var(--muted);margin:0"></p>
       </div>
 
       <!-- Result -->
@@ -7340,12 +7350,12 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation (10 pts/beat)</li>
-          <li><i class="fas fa-check"></i> Loop Extend (10 pts)</li>
-          <li><i class="fas fa-check"></i> Extend song (20 pts)</li>
           <li><i class="fas fa-check"></i> Auto-split — 5 stems (50 pts)</li>
           <li><i class="fas fa-check"></i> Vocal + Instrumental split (20 pts)</li>
           <li><i class="fas fa-check"></i> MP3 download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
+          <li class="muted"><i class="fas fa-times"></i> Loop Extend</li>
+          <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> WAV / mastered downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
           <li class="muted"><i class="fas fa-times"></i> Advanced per-stem split</li>
@@ -7369,8 +7379,9 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 2,000 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-redo" style="font-size:.75rem;opacity:.8"></i> Loop Extend (10 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend (20 pts)</li>
           <li><i class="fas fa-check"></i> Reference track uploads (20 pts)</li>
-          <li><i class="fas fa-check"></i> Song Extend (20 pts)</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem (20 pts)</li>
           <li><i class="fas fa-check"></i> Stem regeneration (20 pts)</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
@@ -7404,7 +7415,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
