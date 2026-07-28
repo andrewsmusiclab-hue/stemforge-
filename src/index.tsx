@@ -3754,8 +3754,8 @@ app.post('/api/job/extend-upload', async (c) => {
       return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
     }
 
-    // chain_target_ms: aim for 240 seconds (4 minutes) total output
-    const CHAIN_TARGET_MS = 240000
+    // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
+    const CHAIN_TARGET_MS = 80000
     const trackTitle = title || 'Uploaded Track'
 
     // Create a new job record to track the extend result
@@ -3775,7 +3775,7 @@ app.post('/api/job/extend-upload', async (c) => {
       // ── Chain extend metadata ────────────────────────────────────────────
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
-      chain_max_steps: 15,
+      chain_max_steps: 5,
       chain_lyrics: make_instrumental ? '[Instrumental]' : (lyrics || '[Verse]'),
       chain_instrumental: make_instrumental === true,
       chain_style: null // no blueprint for uploaded tracks
@@ -3927,8 +3927,8 @@ app.post('/api/job/extend', async (c) => {
       return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
     }
 
-    // chain_target_ms: aim for 240 seconds (4 minutes) total output
-    const CHAIN_TARGET_MS = 240000
+    // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
+    const CHAIN_TARGET_MS = 80000
 
     // Step 3: Create a new job record in D1 to track the extend result
     const newJobId = crypto.randomUUID()
@@ -3948,7 +3948,7 @@ app.post('/api/job/extend', async (c) => {
       // ── Chain extend metadata ────────────────────────────────────────────
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
-      chain_max_steps: 15,
+      chain_max_steps: 5,
       chain_lyrics: make_instrumental ? '[Instrumental]' : (lyrics || '[Verse]'),
       chain_instrumental: make_instrumental === true,
       chain_style: extendBody.style || null
@@ -3966,6 +3966,73 @@ app.post('/api/job/extend', async (c) => {
       ).bind(EXTEND_COST, user.id).run()
     } catch (_) { /* ignore refund failure */ }
     return c.json({ error: e.message || 'Extend failed' }, 500)
+  }
+})
+
+// POST /api/job/loop-save — save a browser-generated loop extension to D1 so it
+// appears in the Extended library tab. The MP3 blob URL is ephemeral (object URL),
+// so the client uploads the actual audio to Mureka files API first, then calls this
+// route with the resulting Mureka CDN URL.
+// Body: { audio_url: string, title: string, duration_seconds: number, bpm?: number }
+app.post('/api/job/loop-save', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const { audio_url, title, duration_seconds, bpm } = await c.req.json<{
+    audio_url: string; title: string; duration_seconds: number; bpm?: number
+  }>()
+  if (!audio_url) return c.json({ error: 'audio_url required' }, 400)
+  if (!title)     return c.json({ error: 'title required' }, 400)
+
+  // Deduct 10 points for Loop Extend
+  const LOOP_COST = 10
+  await ensureTable(c.env.DB)
+  const freshUser = await c.env.DB.prepare(
+    `SELECT gens_used, gens_limit FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
+  if (!freshUser) return c.json({ error: 'User not found' }, 401)
+  if (freshUser.gens_used + LOOP_COST > freshUser.gens_limit) {
+    return c.json({
+      error: `Not enough points. Loop Extend costs ${LOOP_COST} points and you only have ${freshUser.gens_limit - freshUser.gens_used} remaining.`,
+      code: 'insufficient_credits'
+    }, 402)
+  }
+  await c.env.DB.prepare(
+    `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
+  ).bind(LOOP_COST, user.id).run()
+
+  try {
+    const newJobId = crypto.randomUUID()
+    const now = Date.now()
+    const newJob = {
+      id: newJobId,
+      user_id: user.id,
+      status: 'ready',
+      prompt: `[Loop Extension: ${title}]`,
+      title: title,
+      blueprint: bpm ? { bpm } : {},
+      stereo_task_id: null,
+      stereo_url: audio_url,
+      created_at: now,
+      extend_task_type: 'song_extend',   // shows in extended library tab
+      loop_extend: true,
+      duration_seconds: duration_seconds || null
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
+    ).bind(newJobId, user.id, JSON.stringify(newJob), now).run()
+
+    return c.json({ ok: true, job_id: newJobId })
+  } catch (e: any) {
+    // Refund on failure
+    try {
+      await c.env.DB.prepare(
+        `UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`
+      ).bind(LOOP_COST, user.id).run()
+    } catch (_) {}
+    return c.json({ error: e.message || 'Loop save failed' }, 500)
   }
 })
 
@@ -5011,7 +5078,7 @@ app.post('/api/upload-extend-audio', async (c) => {
   }
 
   const data = await res.json() as any
-  return c.json({ ok: true, file_id: data.id, filename: file.name, duration: data.duration || null })
+  return c.json({ ok: true, file_id: data.id, audio_url: data.url || null, filename: file.name, duration: data.duration || null })
 })
 
 // POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
@@ -5559,7 +5626,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-13'
+const ASSET_VER = '20260718-14'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6883,7 +6950,7 @@ function generatorPage() {
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
       <div class="pipeline-spinner-wrap">
         <div class="pipeline-spinner"></div>
-        <p class="pipeline-spinner-msg" id="pipeline-spinner-msg">Crafting your beat...</p>
+        <p class="pipeline-spinner-msg" id="pipeline-spinner-msg">Stemforge is forging your beat…</p>
       </div>
       <!-- hidden step trackers for JS logic only (not shown to user) -->
       <div style="display:none" id="step-blueprint"><div id="ind-blueprint"></div></div>
@@ -7055,26 +7122,9 @@ function generatorPage() {
         <span id="ext-duration-label" style="margin-left:auto;font-size:.78rem;color:var(--muted);white-space:nowrap">—</span>
       </div>
 
-      <!-- Vocal / Instrumental Toggle -->
-      <div style="margin-bottom:14px">
-        <label class="suno-option-label" style="margin-bottom:8px">Track type</label>
-        <div style="display:flex;gap:8px">
-          <button id="ext-vocal-instrumental-btn" onclick="setExtVocalMode('instrumental')" class="beat-count-btn beat-count-btn--active" style="flex:1;padding:9px 12px;font-size:.82rem;display:flex;align-items:center;justify-content:center;gap:7px">
-            <i class="fas fa-music"></i> Instrumental only
-          </button>
-          <button id="ext-vocal-vocal-btn" onclick="setExtVocalMode('vocal')" class="beat-count-btn" style="flex:1;padding:9px 12px;font-size:.82rem;display:flex;align-items:center;justify-content:center;gap:7px">
-            <i class="fas fa-microphone"></i> Has vocals
-          </button>
-        </div>
-        <p style="margin:6px 0 0;font-size:.73rem;color:var(--muted)"><i class="fas fa-info-circle" style="margin-right:4px"></i><strong>Instrumental only</strong> — extends as a pure beat. <strong>Has vocals</strong> — matches and continues the vocal track.</p>
-      </div>
-
       <!-- Lyrics -->
       <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional — leave blank to auto-generate)</span></label>
-      <div style="margin-bottom:8px;padding:9px 12px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-radius:8px;font-size:.78rem;line-height:1.55;color:#c4b5fd">
-        <i class="fas fa-drum" style="margin-right:6px;opacity:.8"></i><strong>Extending an instrumental?</strong> Type <code style="background:rgba(255,255,255,.08);border-radius:4px;padding:1px 5px;font-size:.8em">(instrumental)</code> — include the brackets — in the lyrics field below. If left blank, vocals will be added to the new section.
-      </div>
-      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse]&#10;Leave blank to auto-generate matching continuation lyrics…&#10;For instrumentals type: (instrumental)" style="margin-bottom:12px"></textarea>
+      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse]&#10;Your next verse or hook here…&#10;Leave blank to auto-generate" style="margin-bottom:12px"></textarea>
 
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
@@ -7084,12 +7134,6 @@ function generatorPage() {
 
     <!-- ══ Loop Extend panel ══════════════════════════════════════════ -->
     <div id="ext-step-loop" style="display:none">
-
-      <!-- Info banner -->
-      <div style="margin-bottom:14px;padding:10px 13px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.25);border-radius:10px;font-size:.8rem;line-height:1.55;color:#c4b5fd">
-        <i class="fas fa-redo" style="margin-right:6px;opacity:.8"></i>
-        <strong>True Loop Extension</strong> — repeats your exact beat to add ~60 seconds. Same drums, same bass, same groove. <strong>Free — no points used.</strong>
-      </div>
 
       <!-- Upload zone -->
       <div class="ref-upload-zone" id="loop-upload-zone" onclick="document.getElementById('loop-audio-file').click()" style="cursor:pointer;margin-bottom:10px">
@@ -7123,7 +7167,7 @@ function generatorPage() {
 
       <!-- Generate button -->
       <button id="loop-generate-btn" onclick="loopGenerate()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;display:none">
-        <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>
+        <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>
       </button>
 
       <!-- Progress -->
@@ -7254,6 +7298,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
           <li class="muted"><i class="fas fa-times"></i> MP3 / WAV downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use rights</li>
+          <li><i class="fas fa-check"></i> Loop Extend (10 pts)</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
           <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
@@ -7277,6 +7322,7 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation (10 pts/beat)</li>
+          <li><i class="fas fa-check"></i> Loop Extend (10 pts)</li>
           <li><i class="fas fa-check"></i> Extend song (20 pts)</li>
           <li><i class="fas fa-check"></i> Auto-split — 5 stems (50 pts)</li>
           <li><i class="fas fa-check"></i> Vocal + Instrumental split (20 pts)</li>
@@ -7340,6 +7386,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>

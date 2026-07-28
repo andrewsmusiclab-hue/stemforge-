@@ -1964,13 +1964,13 @@ document.addEventListener('DOMContentLoaded', () => {
           const spinnerMsg = document.getElementById('pipeline-spinner-msg');
           if (job.status === 'blueprint' && lastStatus !== 'blueprint') {
             setStep('blueprint', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Analyzing your prompt...';
+            if (spinnerMsg) spinnerMsg.textContent = 'Stemforge is forging your beat…';
             lastStatus = 'blueprint';
           }
           if (job.status === 'generating' && lastStatus !== 'generating') {
             setStep('blueprint', 'done');
             setStep('generating', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Composing your beat...';
+            if (spinnerMsg) spinnerMsg.textContent = 'Stemforge is forging your beat…';
             if (job.blueprint) showBlueprint(job.blueprint);
             lastStatus = 'generating';
           }
@@ -6286,7 +6286,7 @@ window.renderEditInstrumentPills = function (bp) {
                 var pct = chainTargetMs > 0 ? Math.min(99, Math.round((chainCurrentMs / chainTargetMs) * 100)) : 0;
                 ui.spinnerMsg.textContent = 'Building your track… ' + doneSec + 's / ' + targetSec + 's (' + pct + '%) — step ' + chainStep;
               } else {
-                ui.spinnerMsg.textContent = 'Extending your track to maximum length… this may take a few minutes';
+                ui.spinnerMsg.textContent = 'Stemforge is forging your track…';
               }
             }
           }
@@ -6416,7 +6416,7 @@ window.renderEditInstrumentPills = function (bp) {
         if (genResult) genResult.style.display = 'none';
         pipelineStatus.style.display = 'block';
         pipelineStatus.style.opacity = '1';
-        if (spinnerMsg) spinnerMsg.textContent = 'Extending your track to maximum length… (this may take a few minutes)';
+        if (spinnerMsg) spinnerMsg.textContent = 'Stemforge is forging your track…';
         if (genBtn) { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
       }
 
@@ -6621,7 +6621,7 @@ window.renderEditInstrumentPills = function (bp) {
     var resultEl = document.getElementById('loop-result');
     var errEl    = document.getElementById('loop-upload-error');
 
-    if (genBtn)  { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Working…'; }
+    if (genBtn)  { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Stemforge is forging your loop\u2026'; }
     if (prog)    prog.style.display = 'block';
     if (progBar) progBar.style.width = '0%';
     if (progMsg) progMsg.textContent = 'Stitching loops…';
@@ -6700,23 +6700,72 @@ window.renderEditInstrumentPills = function (bp) {
                 offset += mp3Chunks[i].length;
               }
               var blob = new Blob([mp3Data], { type: 'audio/mpeg' });
-              var url  = URL.createObjectURL(blob);
+              var blobUrl = URL.createObjectURL(blob);
 
               if (progBar) progBar.style.width = '100%';
-              if (progMsg) progMsg.textContent = 'Done!';
+              if (progMsg) progMsg.textContent = 'Stemforge is saving your loop\u2026';
 
-              // Populate result
+              // Populate result immediately (local playback + download)
               var audioEl  = document.getElementById('loop-result-audio');
               var dlBtn    = document.getElementById('loop-dl-btn');
               var metaEl   = document.getElementById('loop-result-meta');
               var origName = (_loopFile.name || 'track').replace(/\.[^.]+$/, '');
               var dlName   = origName + '_loop_extended.mp3';
-              if (audioEl) { audioEl.src = url; }
-              if (dlBtn)   { dlBtn.href = url; dlBtn.setAttribute('download', dlName); }
-              if (metaEl)  { metaEl.textContent = (totalSamples / sr).toFixed(1) + 's total · ' + _loopAddedSec + 's added'; }
+              var totalDurSec = parseFloat((totalSamples / sr).toFixed(1));
+              if (audioEl) { audioEl.src = blobUrl; }
+              if (dlBtn)   { dlBtn.href = blobUrl; dlBtn.setAttribute('download', dlName); }
+              if (metaEl)  { metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added'; }
               if (resultEl) resultEl.style.display = 'block';
-              if (genBtn)  { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+              if (genBtn)  { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>'; }
               setTimeout(function() { if (prog) prog.style.display = 'none'; }, 800);
+
+              // ── Upload to Mureka + save to D1 library (background, non-blocking) ──
+              (function saveLoopToLibrary() {
+                var saveTitle = origName + ' (Loop Extended)';
+                var saveForm = new FormData();
+                // Build a File from the blob so the server receives a proper filename
+                var loopFile = new File([blob], dlName, { type: 'audio/mpeg' });
+                saveForm.append('file', loopFile);
+
+                if (progMsg) progMsg.textContent = 'Saving to your library\u2026';
+
+                fetch('/api/upload-extend-audio', { method: 'POST', body: saveForm })
+                  .then(function(r) { return r.json(); })
+                  .then(function(uploadData) {
+                    if (uploadData.error) throw new Error(uploadData.error);
+                    var audioUrl = uploadData.audio_url;
+                    if (!audioUrl) throw new Error('No audio URL returned from upload');
+
+                    // Now save job to D1 via loop-save endpoint
+                    return fetch('/api/job/loop-save', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        audio_url: audioUrl,
+                        title: saveTitle,
+                        duration_seconds: totalDurSec,
+                        bpm: _loopBpm || undefined
+                      })
+                    }).then(function(r) { return r.json(); });
+                  })
+                  .then(function(saveData) {
+                    if (saveData.error) {
+                      // insufficient_credits — show friendly message but don't break playback
+                      if (saveData.code === 'insufficient_credits') {
+                        if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added \xb7 Not saved (no points)';
+                      }
+                      return;
+                    }
+                    // Success — reload extended tab so the new card appears
+                    if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added \xb7 Saved to library';
+                    if (window.reloadExtendedTab) window.reloadExtendedTab();
+                  })
+                  .catch(function(err) {
+                    // Save failed silently — track still plays and can be downloaded
+                    console.warn('[loop-save] Could not save to library:', err && err.message);
+                  });
+              })();
+
               return;
             }
 
@@ -6769,7 +6818,7 @@ window.renderEditInstrumentPills = function (bp) {
           script.onload = function() { if (progMsg) progMsg.textContent = 'Encoding MP3…'; encodeAndFinish(); };
           script.onerror = function() {
             if (errEl) { errEl.textContent = 'Could not load MP3 encoder. Please check your connection and try again.'; errEl.style.display = 'block'; }
-            if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+            if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>'; }
             if (prog)   prog.style.display = 'none';
           };
           document.head.appendChild(script);
@@ -6777,7 +6826,7 @@ window.renderEditInstrumentPills = function (bp) {
 
       } catch(e) {
         if (errEl) { errEl.textContent = 'Error: ' + (e.message || 'Unknown error'); errEl.style.display = 'block'; }
-        if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+        if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>'; }
         if (prog)   prog.style.display = 'none';
       }
     }, 30); // 30ms yield so spinner renders first
@@ -6799,7 +6848,7 @@ window.renderEditInstrumentPills = function (bp) {
     var errEl    = document.getElementById('loop-upload-error');
     var fileIn   = document.getElementById('loop-audio-file');
     if (cardEl)   cardEl.style.display   = 'none';
-    if (genBtn)   { genBtn.style.display = 'none'; genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">free</span>'; }
+    if (genBtn)   { genBtn.style.display = 'none'; genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>'; }
     if (resultEl) resultEl.style.display = 'none';
     if (prog)     prog.style.display     = 'none';
     if (errEl)    errEl.style.display    = 'none';
