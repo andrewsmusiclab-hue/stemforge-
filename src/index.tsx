@@ -5644,7 +5644,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260718-16'
+const ASSET_VER = '20260728-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7149,7 +7149,7 @@ function generatorPage() {
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
       </button>
-      <div id="ext-submit-status" style="display:none;margin-top:10px;position:relative;border-radius:12px;overflow:hidden;background:#0d0d1a;min-height:70px;padding:16px 14px;text-align:center">
+      <div id="ext-submit-status" style="display:none;margin-top:10px;position:relative;border-radius:10px;overflow:hidden;background:#0d0d1a;padding:12px 14px;text-align:center">
         <video class="forge-video-bg" autoplay loop muted playsinline preload="auto" src="/static/forge-bg.mp4" style="opacity:.7"></video>
         <div style="position:absolute;inset:0;background:rgba(5,5,20,.5);border-radius:inherit"></div>
         <span id="ext-submit-status-text" style="position:relative;z-index:2;font-size:.88rem;color:#fff;font-weight:700;text-shadow:0 1px 6px rgba(0,0,0,.8)"></span>
@@ -7195,7 +7195,7 @@ function generatorPage() {
       </button>
 
       <!-- Progress — forge video background shown while encoding -->
-      <div id="loop-progress" style="display:none;margin-top:12px;position:relative;border-radius:14px;overflow:hidden;background:#0d0d1a;min-height:90px;padding:18px 16px">
+      <div id="loop-progress" style="display:none;margin-top:12px;position:relative;border-radius:12px;overflow:hidden;background:#0d0d1a;padding:14px 16px">
         <video class="forge-video-bg" autoplay loop muted playsinline preload="auto" src="/static/forge-bg.mp4" style="opacity:.75"></video>
         <div style="position:absolute;inset:0;background:rgba(5,5,20,.5);border-radius:inherit"></div>
         <div style="position:relative;z-index:2">

@@ -6045,9 +6045,26 @@ window.renderEditInstrumentPills = function (bp) {
   // ui = optional object with creator-page pipeline elements to drive
   // ── Render one extended-track card (mirrors renderBeatCard style) ──────────
   function renderExtendedCard(p, i) {
-    var hue      = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
+    // Inline hue calculation — no dependency on out-of-scope hueFromIndex/hueFromId
+    var hue;
+    if (p.thumbnail_seed != null) {
+      hue = p.thumbnail_seed;
+    } else {
+      // Golden-angle hash from index, fallback to id string hash
+      if (i != null) {
+        hue = ((Math.round(i) * 137) % 360 + 360) % 360;
+      } else {
+        var h = 0; var s = String(p.id || '0');
+        for (var k = 0; k < s.length; k++) { h = (Math.imul(31, h) + s.charCodeAt(k)) | 0; }
+        hue = ((Math.abs(h) * 137) % 360);
+      }
+    }
     var hue2     = (hue + 60) % 360;
     var title    = p.title || 'Extended Track';
+    // Inline formatCardTitle — strip underscores, handle legacy remix pattern
+    var displayTitle = title.replace(/_/g, ' ').trim();
+    var legacyM = displayTitle.match(/^(?:AI|Stemforge)\s+Remix\s+of\s+(.+)$/i);
+    if (legacyM) displayTitle = legacyM[1].trim() + ' Remix';
     var safeTitle = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
     var stereoUrl = p.stereo_url || '';
     var date     = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
@@ -6066,7 +6083,7 @@ window.renderEditInstrumentPills = function (bp) {
       '</div>' +
       '<div class="project-card__body">' +
         '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
-          '<h4 style="margin:0;flex:1">' + formatCardTitle(title) + '</h4>' +
+          '<h4 style="margin:0;flex:1">' + displayTitle + '</h4>' +
           '<button class="song-dots-btn" title="More options"' +
             ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + stereoUrl + '\',\'\',\'' + safeTitle + '\',\'extended\')"' +
             ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +

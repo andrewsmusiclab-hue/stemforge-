@@ -2456,10 +2456,9 @@ body.light .legal-body td {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 24px 56px;
-  gap: 18px;
-  min-height: 220px;
-  border-radius: 18px;
+  padding: 28px 24px;
+  gap: 14px;
+  border-radius: 14px;
   overflow: hidden;
   background: #0d0d1a;
 }
