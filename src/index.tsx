@@ -949,14 +949,13 @@ async function fireNextChainExtend(
     upload_audio_id: uploadAudioId,
     extend_at: safeExtendAt
   }
-  // Always default to [Instrumental] unless user explicitly typed lyrics.
-  // Using [Verse] on an instrumental causes Mureka to add vocal artifacts / sound effects.
+  // Pass through any explicit user lyrics; otherwise omit the lyrics field
+  // entirely so Mureka can add natural vocal content to the extension.
   const chainLyrics = job.chain_lyrics && job.chain_lyrics.trim()
   if (chainLyrics && chainLyrics !== '[Verse]' && chainLyrics !== '[Instrumental]') {
     extendBody.lyrics = chainLyrics   // user typed actual lyrics
-  } else {
-    extendBody.lyrics = '[Instrumental]'  // always safe default
   }
+  // No lyrics field → Mureka decides (adds vocals naturally)
   if (job.chain_style) {
     extendBody.style = job.chain_style
   }
@@ -3730,15 +3729,14 @@ app.post('/api/job/extend-upload', async (c) => {
       upload_audio_id: upload_audio_id,
       extend_at: safeExtendAt
     }
-    // Default to [Instrumental] — [Verse] on an instrumental causes Mureka to inject
-    // vocal artifacts/sound effects into the extension, ruining the track.
+    // Pass through any explicit user lyrics; otherwise omit lyrics field
+    // so Mureka can add natural vocal content to the extension.
     {
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
         extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
-      } else {
-        extendBody.lyrics = '[Instrumental]'  // safe default
       }
+      // No lyrics field → Mureka decides (adds vocals naturally)
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
@@ -3786,8 +3784,7 @@ app.post('/api/job/extend-upload', async (c) => {
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]') ? lyrics.trim() : '[Instrumental]',
-      chain_instrumental: true,  // always instrumental for uploaded tracks (no vocal toggle)
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
       chain_style: null // no blueprint for uploaded tracks
     }
     await c.env.DB.prepare(
@@ -3891,14 +3888,14 @@ app.post('/api/job/extend', async (c) => {
       upload_audio_id: uploadAudioId,
       extend_at: safeExtendAt
     }
-    // Default to [Instrumental] — [Verse] on an instrumental injects vocals/sound effects.
+    // Pass through any explicit user lyrics; otherwise omit lyrics field
+    // so Mureka can add natural vocal content to the extension.
     {
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
         extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
-      } else {
-        extendBody.lyrics = '[Instrumental]'  // safe default
       }
+      // No lyrics field → Mureka decides (adds vocals naturally)
     }
 
     // Pass the blueprint's style descriptor so Mureka continues with the same
@@ -3963,8 +3960,7 @@ app.post('/api/job/extend', async (c) => {
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]') ? lyrics.trim() : '[Instrumental]',
-      chain_instrumental: true,  // always instrumental (vocal toggle removed from UI)
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
       chain_style: extendBody.style || null
     }
     await c.env.DB.prepare(
@@ -5644,7 +5640,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260728-01'
+const ASSET_VER = '20260728-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6698,7 +6694,7 @@ function generatorPage() {
         <i class="fas fa-chevron-down" id="ctab-ref-chevron" style="margin-left:4px;font-size:.6rem;transition:transform .2s"></i>
       </button>
       <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
-        data-tooltip="Continue any track from your library or upload from where it ends.\n2 points per extend.">
+        data-tooltip="Continue any track from your library or upload a file to extend it seamlessly.">
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
       <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"

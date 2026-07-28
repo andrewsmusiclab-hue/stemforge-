@@ -803,6 +803,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : (p.blueprint ? p.blueprint.genre : 'Beat'));
     const sub  = bpm || '';
     const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
+    const dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
     return `
       <div class="project-card"
            data-stereo="${p.stereo_url||''}" data-zip="${p.zip_url||''}"
@@ -825,7 +826,7 @@ document.addEventListener('DOMContentLoaded', () => {
               onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
               style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
           </div>
-          <p>${sub||genre||label}</p>
+          <p style="margin-bottom:4px">${sub||genre||'Beat'}${dateStr ? ' · ' + dateStr : ''}</p>
           <div class="project-card__tags">
             ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
           </div>
