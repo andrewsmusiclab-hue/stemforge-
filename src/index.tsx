@@ -949,13 +949,14 @@ async function fireNextChainExtend(
     upload_audio_id: uploadAudioId,
     extend_at: safeExtendAt
   }
-  // Pass through any explicit user lyrics; otherwise omit the lyrics field
-  // entirely so Mureka can add natural vocal content to the extension.
+  // Send [Verse] so Mureka adds natural vocal content to the extension.
+  // User-supplied lyrics override this; [Instrumental] is never used.
   const chainLyrics = job.chain_lyrics && job.chain_lyrics.trim()
   if (chainLyrics && chainLyrics !== '[Verse]' && chainLyrics !== '[Instrumental]') {
     extendBody.lyrics = chainLyrics   // user typed actual lyrics
+  } else {
+    extendBody.lyrics = '[Verse]'     // natural vocal continuation
   }
-  // No lyrics field → Mureka decides (adds vocals naturally)
   if (job.chain_style) {
     extendBody.style = job.chain_style
   }
@@ -3729,14 +3730,15 @@ app.post('/api/job/extend-upload', async (c) => {
       upload_audio_id: upload_audio_id,
       extend_at: safeExtendAt
     }
-    // Pass through any explicit user lyrics; otherwise omit lyrics field
-    // so Mureka can add natural vocal content to the extension.
+    // Send [Verse] so Mureka adds natural vocal content to the extension.
+    // User-supplied lyrics override this; [Instrumental] is never used.
     {
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
         extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
+      } else {
+        extendBody.lyrics = '[Verse]'    // natural vocal continuation
       }
-      // No lyrics field → Mureka decides (adds vocals naturally)
     }
 
     const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
@@ -3751,7 +3753,7 @@ app.post('/api/job/extend-upload', async (c) => {
       const errText = await extRes.text()
       let errMsg = `${extRes.status}`
       try { errMsg = (JSON.parse(errText) as any)?.error?.message || errMsg } catch (_) {}
-      return c.json({ error: `Mureka extend error: ${errMsg}` }, 502)
+      return c.json({ error: `Mureka extend error: ${errMsg}` }, 500)
     }
     const extData = await extRes.json() as any
     // Mureka song/extend returns { id: "task_id", status: "...", ... }
@@ -3759,7 +3761,7 @@ app.post('/api/job/extend-upload', async (c) => {
     const extTaskId = extData.id || extData.task_id || extData.taskId
     if (!extTaskId) {
       console.error('[extend-upload] Mureka extend response missing id:', JSON.stringify(extData).slice(0, 500))
-      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
+      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 500)
     }
 
     // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
@@ -3784,7 +3786,7 @@ app.post('/api/job/extend-upload', async (c) => {
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '[Verse]',
       chain_style: null // no blueprint for uploaded tracks
     }
     await c.env.DB.prepare(
@@ -3862,11 +3864,11 @@ app.post('/api/job/extend', async (c) => {
       const errText = await uploadRes.text()
       let errMsg = `${uploadRes.status}`
       try { errMsg = (JSON.parse(errText) as any)?.error?.message || errMsg } catch (_) {}
-      return c.json({ error: `Mureka upload error: ${errMsg}` }, 502)
+      return c.json({ error: `Mureka upload error: ${errMsg}` }, 500)
     }
     const uploadData = await uploadRes.json() as any
     const uploadAudioId = uploadData.id as string
-    if (!uploadAudioId) return c.json({ error: 'Mureka upload returned no file ID' }, 502)
+    if (!uploadAudioId) return c.json({ error: 'Mureka upload returned no file ID' }, 500)
 
     // Step 2: Call Mureka song/extend
     // Mureka requires extend_at between 8000–420000 ms.
@@ -3888,14 +3890,15 @@ app.post('/api/job/extend', async (c) => {
       upload_audio_id: uploadAudioId,
       extend_at: safeExtendAt
     }
-    // Pass through any explicit user lyrics; otherwise omit lyrics field
-    // so Mureka can add natural vocal content to the extension.
+    // Send [Verse] so Mureka adds natural vocal content to the extension.
+    // User-supplied lyrics override this; [Instrumental] is never used.
     {
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
         extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
+      } else {
+        extendBody.lyrics = '[Verse]'    // natural vocal continuation
       }
-      // No lyrics field → Mureka decides (adds vocals naturally)
     }
 
     // Pass the blueprint's style descriptor so Mureka continues with the same
@@ -3929,13 +3932,13 @@ app.post('/api/job/extend', async (c) => {
       const errText = await extRes.text()
       let errMsg = `${extRes.status}`
       try { errMsg = (JSON.parse(errText) as any)?.error?.message || errMsg } catch (_) {}
-      return c.json({ error: `Mureka extend error: ${errMsg}` }, 502)
+      return c.json({ error: `Mureka extend error: ${errMsg}` }, 500)
     }
     const extData = await extRes.json() as any
     const extTaskId = extData.id || extData.task_id || extData.taskId
     if (!extTaskId) {
       console.error('[job/extend] Mureka extend response missing id:', JSON.stringify(extData).slice(0, 500))
-      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 502)
+      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 500)
     }
 
     // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
@@ -3960,7 +3963,7 @@ app.post('/api/job/extend', async (c) => {
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '[Verse]',
       chain_style: extendBody.style || null
     }
     await c.env.DB.prepare(
@@ -5640,7 +5643,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260728-02'
+const ASSET_VER = '20260728-04'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
