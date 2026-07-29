@@ -1416,6 +1416,9 @@ app.post('/api/poll/:id', async (c) => {
       style_prompt: job.blueprint.style_prompt
     } : null,
     stereo_url: job.stereo_url || null,
+    stereo_url_alt: (job as any).stereo_url_alt || null,
+    clip_id: (job as any).clip_id || null,
+    clip_id_alt: (job as any).clip_id_alt || null,
     error: job.error || null,
     // Chain extend progress fields (only present for song_extend jobs with chaining)
     chain_step: chainStep > 0 ? chainStep : undefined,
@@ -1457,6 +1460,9 @@ app.get('/api/job/:id', async (c) => {
       style_prompt: job.blueprint.style_prompt
     } : null,
     stereo_url: job.stereo_url || null,
+    stereo_url_alt: (job as any).stereo_url_alt || null,
+    clip_id: (job as any).clip_id || null,
+    clip_id_alt: (job as any).clip_id_alt || null,
     error: job.error || null
   })
 })
@@ -4096,10 +4102,47 @@ app.post('/api/job/extend', async (c) => {
   }
 })
 
+// POST /api/upload-loop-audio — upload a loop audio blob to R2 and return a permanent URL
+// Used by Loop Extend to store the generated MP3 before saving to D1 library
+app.post('/api/upload-loop-audio', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+
+  const formData = await c.req.formData()
+  const file = formData.get('file') as File | null
+  if (!file) return c.json({ error: 'No file provided' }, 400)
+
+  const safeFilename = (file.name || 'loop.mp3').replace(/[^a-zA-Z0-9._-]/g, '_')
+  const r2Key = `loop-audio/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
+  await c.env.IMAGES.put(r2Key, await file.arrayBuffer(), {
+    httpMetadata: { contentType: file.type || 'audio/mpeg' }
+  })
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+  const audioUrl = `${siteUrl}/api/loop-audio-proxy/${encodeURIComponent(r2Key)}`
+  return c.json({ ok: true, audio_url: audioUrl })
+})
+
+// GET /api/loop-audio-proxy/:key — serve R2-stored loop audio files
+app.get('/api/loop-audio-proxy/:key', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const key = decodeURIComponent(c.req.param('key'))
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*'
+    }
+  })
+})
+
 // POST /api/job/loop-save — save a browser-generated loop extension to D1 so it
 // appears in the Extended library tab. The MP3 blob URL is ephemeral (object URL),
-// so the client uploads the actual audio to Mureka files API first, then calls this
-// route with the resulting Mureka CDN URL.
+// so the client uploads the actual audio to /api/upload-loop-audio first, then calls this
+// route with the resulting permanent URL.
 // Body: { audio_url: string, title: string, duration_seconds: number, bpm?: number }
 app.post('/api/job/loop-save', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
@@ -5194,9 +5237,27 @@ app.post('/api/generate-lyrics', async (c) => {
   return c.json({ lyrics })
 })
 
+// GET /api/extend-audio-proxy/:key — serve R2-stored extend audio files
+// Used by the upload-extend-audio route to give MusicAPI a public URL for file blobs
+app.get('/api/extend-audio-proxy/:key', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const key = `extend-uploads/${c.req.param('key')}`
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*'
+    }
+  })
+})
+
 // POST /api/upload-extend-audio — upload audio for Song Extend
-// MusicAPI: POST /sonic/upload { audio_url } → task_id → poll for clip_id
-// Client provides either a URL (preferred) or a file blob.
+// Accepts: JSON { audio_url } or multipart { url } or multipart { file }
+// For file blobs: stores in R2 (IMAGES binding) and generates a public proxy URL,
+// then passes that URL to MusicAPI Sonic /upload → returns { task_id, upload_task_id }
+// Client polls GET /api/poll-upload-task/:taskId to get clip_id, then calls /api/job/extend-upload
 app.post('/api/upload-extend-audio', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5213,23 +5274,28 @@ app.post('/api/upload-extend-audio', async (c) => {
     const formData = await c.req.formData()
     const urlField = formData.get('url') as string | null
     audioUrl = urlField || null
-    // File blob upload: store in R2 first to get a URL, then upload by URL to MusicAPI
+    // File blob upload: store in R2 IMAGES bucket and create a public proxy URL
     if (!audioUrl) {
       const file = formData.get('file') as File | null
       if (!file) return c.json({ error: 'No file or url provided' }, 400)
-      // Upload file bytes directly to MusicAPI via R2-less path:
-      // MusicAPI /sonic/upload supports { audio_url } only — we need a URL.
-      // Store in R2 temporarily if available, else reject.
-      if (!c.env.R2) return c.json({ error: 'File upload requires a URL. Please pass audio_url instead.' }, 400)
-      const key = `uploads/${Date.now()}-${file.name}`
-      await c.env.R2.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type || 'audio/mpeg' } })
-      // We can't generate a public URL from R2 without a custom domain — return error guidance
-      return c.json({ error: 'File upload not supported in this deployment. Pass an audio_url (CDN/public URL) instead.' }, 400)
+      if (!c.env.IMAGES) {
+        return c.json({ error: 'File upload unavailable — storage not configured. Please provide an audio_url instead.' }, 400)
+      }
+      // Store file in R2 under extend-uploads/ with a unique key
+      const safeFilename = (file.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '_')
+      const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
+      await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
+        httpMetadata: { contentType: file.type || 'audio/mpeg' }
+      })
+      // Build public URL via our proxy route (uses SITE_URL so MusicAPI can reach it)
+      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+      audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
+      console.log(`[upload-extend] Stored file in R2, proxy URL: ${audioUrl}`)
     }
   }
   if (!audioUrl) return c.json({ error: 'audio_url required' }, 400)
 
-  // Upload to MusicAPI Sonic
+  // Upload to MusicAPI Sonic — returns { task_id }
   const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -5247,6 +5313,42 @@ app.post('/api/upload-extend-audio', async (c) => {
   const taskId = data.task_id || data.data?.task_id
   if (!taskId) return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
   return c.json({ ok: true, task_id: taskId, upload_task_id: taskId })
+})
+
+// GET /api/poll-upload-task/:taskId — poll MusicAPI Sonic for uploaded clip's clip_id
+// After POST /api/upload-extend-audio returns task_id, client polls here until clip_id is ready
+app.get('/api/poll-upload-task/:taskId', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+
+  const taskId = c.req.param('taskId')
+  const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+  })
+
+  if (!res.ok) {
+    const txt = await res.text()
+    if (txt.includes('not_ready') || res.status === 404) {
+      return c.json({ status: 'pending' })
+    }
+    return c.json({ error: `Poll error ${res.status}` }, 500)
+  }
+
+  const data = await res.json() as any
+  // Sonic task response: { data: [{ id, state, ... }] } or direct array
+  const clips = Array.isArray(data) ? data : (data.data || [])
+  if (!clips.length) return c.json({ status: 'pending' })
+
+  const clip = clips[0]
+  if (clip.state === 'failed') return c.json({ status: 'failed', error: clip.error_message || 'Upload processing failed' }, 500)
+  if (clip.state !== 'succeeded' && clip.state !== 'complete' && clip.state !== 'done') {
+    return c.json({ status: 'pending' })
+  }
+  // clip_id is what extend-upload route expects as upload_audio_id
+  const clipId = clip.clip_id || clip.id || ''
+  return c.json({ status: 'ready', clip_id: clipId, audio_url: clip.audio_url || null })
 })
 
 // POST /api/upload-reference — upload reference audio for AI generation (Pro Artist only)
@@ -5783,7 +5885,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-01'
+const ASSET_VER = '20260729-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7103,17 +7205,26 @@ function generatorPage() {
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
   <div class="suno-right">
 
-    <!-- Pipeline status - simple spinner, no step details shown -->
+    <!-- Pipeline status - dual compact spinners -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
-      <div class="pipeline-spinner-wrap">
-        <video class="forge-video-bg" autoplay loop muted playsinline preload="auto"
-          src="/static/forge-bg.mp4"></video>
-        <div class="pipeline-spinner"></div>
-        <p class="pipeline-spinner-msg" id="pipeline-spinner-msg">Stemforge is forging your beat…</p>
-        <button id="gen-cancel-btn" onclick="cancelGeneration()" style="margin-top:14px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);color:rgba(255,255,255,.7);border-radius:8px;padding:7px 20px;font-size:.82rem;cursor:pointer;transition:all .15s" onmouseover="this.style.background='rgba(239,68,68,.18)';this.style.borderColor='rgba(239,68,68,.5)';this.style.color='#ef4444'" onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.borderColor='rgba(255,255,255,.18)';this.style.color='rgba(255,255,255,.7)'">
-          <i class="fas fa-times" style="margin-right:6px"></i>Cancel
-        </button>
+      <!-- Two side-by-side beat cards shown during generation -->
+      <div class="pipeline-dual-row">
+        <div class="pipeline-dual-card">
+          <div class="pipeline-dual-label">Beat 1</div>
+          <div class="pipeline-spinner" style="width:36px;height:36px"></div>
+          <p class="pipeline-spinner-msg" style="font-size:.8rem;margin:0" id="pipeline-spinner-msg">Generating…</p>
+        </div>
+        <div class="pipeline-dual-card">
+          <div class="pipeline-dual-label">Beat 2</div>
+          <div class="pipeline-spinner" style="width:36px;height:36px"></div>
+          <p class="pipeline-spinner-msg" style="font-size:.8rem;margin:0">Generating…</p>
+        </div>
       </div>
+      <!-- Status line below both cards -->
+      <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin:4px 0 0;text-align:center" id="pipeline-status-sub">Stemforge is forging your beats…</p>
+      <button id="gen-cancel-btn" onclick="cancelGeneration()" style="margin-top:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);color:rgba(255,255,255,.6);border-radius:8px;padding:5px 16px;font-size:.78rem;cursor:pointer;transition:all .15s" onmouseover="this.style.background='rgba(239,68,68,.18)';this.style.borderColor='rgba(239,68,68,.5)';this.style.color='#ef4444'" onmouseout="this.style.background='rgba(255,255,255,.06)';this.style.borderColor='rgba(255,255,255,.15)';this.style.color='rgba(255,255,255,.6)'">
+        <i class="fas fa-times" style="margin-right:5px"></i>Cancel
+      </button>
       <!-- hidden step trackers for JS logic only (not shown to user) -->
       <div style="display:none" id="step-blueprint"><div id="ind-blueprint"></div></div>
       <div style="display:none" id="step-generating"><div id="ind-generating"></div></div>

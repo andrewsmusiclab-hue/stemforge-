@@ -2456,11 +2456,42 @@ body.light .legal-body td {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 28px 24px;
-  gap: 14px;
+  padding: 18px 16px;
+  gap: 10px;
   border-radius: 14px;
   overflow: hidden;
   background: #0d0d1a;
+  max-width: 320px;
+  width: 100%;
+  margin: 0 auto;
+}
+/* Dual spinner row: two compact cards side by side */
+.pipeline-dual-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.pipeline-dual-card {
+  flex: 1;
+  min-width: 120px;
+  max-width: 200px;
+  background: rgba(167,139,250,.08);
+  border: 1px solid rgba(167,139,250,.2);
+  border-radius: 12px;
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.pipeline-dual-label {
+  font-size: .75rem;
+  color: rgba(255,255,255,.6);
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
 }
 /* Dark gradient overlay so text stays readable over the colorful video */
 .pipeline-spinner-wrap::before {

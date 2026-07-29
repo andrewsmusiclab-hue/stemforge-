@@ -1977,15 +1977,18 @@ document.addEventListener('DOMContentLoaded', () => {
           // Update pipeline steps
           // Update spinner message based on status
           const spinnerMsg = document.getElementById('pipeline-spinner-msg');
+          const statusSub = document.getElementById('pipeline-status-sub');
           if (job.status === 'blueprint' && lastStatus !== 'blueprint') {
             setStep('blueprint', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Stemforge is forging your beat…';
+            if (spinnerMsg) spinnerMsg.textContent = 'Designing…';
+            if (statusSub) statusSub.textContent = 'Designing your beat blueprint…';
             lastStatus = 'blueprint';
           }
           if (job.status === 'generating' && lastStatus !== 'generating') {
             setStep('blueprint', 'done');
             setStep('generating', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Stemforge is forging your beat…';
+            if (spinnerMsg) spinnerMsg.textContent = 'Generating…';
+            if (statusSub) statusSub.textContent = 'Stemforge is forging both beats…';
             if (job.blueprint) showBlueprint(job.blueprint);
             lastStatus = 'generating';
           }
@@ -5840,7 +5843,7 @@ window.renderEditInstrumentPills = function (bp) {
     if (nextBtn) nextBtn.style.display = (state === 'done') ? 'block' : 'none';
   }
 
-  // ── Upload file to /api/upload-extend-audio (purpose=audio) ──────────────
+  // ── Upload file to /api/upload-extend-audio (file blob → R2 → MusicAPI) ──
   function extUploadFile(file) {
     var errEl = document.getElementById('ext-upload-error');
     if (errEl) errEl.style.display = 'none';
@@ -5848,6 +5851,22 @@ window.renderEditInstrumentPills = function (bp) {
     var name = file.name || 'track';
     extUploadTitle = name.replace(/\.[^.]+$/, '');
 
+    // Load file into local audio element for scrubbing (happens regardless of upload result)
+    var audio = document.getElementById('ext-preview-audio');
+    if (audio) {
+      var localUrl = URL.createObjectURL(file);
+      audio.src = localUrl;
+      audio.onloadedmetadata = function() {
+        extAudioDuration = audio.duration;
+        extExtendAtMs = 0;
+        var durLabel = document.getElementById('ext-duration-label');
+        if (durLabel) durLabel.textContent = extFmtTime(extAudioDuration);
+        extUpdateScrubberUI(1.0);
+        extDrawWaveform(file);
+      };
+    }
+
+    // Send file as multipart — backend stores it in R2 and passes the proxy URL to MusicAPI
     var fd = new FormData();
     fd.append('file', file);
 
@@ -5855,24 +5874,12 @@ window.renderEditInstrumentPills = function (bp) {
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) throw new Error(data.error);
-        extUploadAudioId = data.file_id;
-        setExtZoneState('done', name);
-        // Load the local file into the hidden audio element for scrubbing
-        var audio = document.getElementById('ext-preview-audio');
-        if (audio) {
-          var url = URL.createObjectURL(file);
-          audio.src = url;
-          audio.onloadedmetadata = function() {
-            extAudioDuration = audio.duration;
-            // Default extend point = end of track (pct=1.0), user can drag left to choose earlier
-            extExtendAtMs = 0; // 0 means "use end of track" in submitSongExtendUpload
-            var durLabel = document.getElementById('ext-duration-label');
-            if (durLabel) durLabel.textContent = extFmtTime(extAudioDuration);
-            // Position scrubber visually at the end
-            extUpdateScrubberUI(1.0);
-            extDrawWaveform(file);
-          };
-        }
+        // Backend returns { task_id } — we must poll until clip_id is ready
+        var taskId = data.task_id || data.upload_task_id;
+        if (!taskId) throw new Error('No task_id returned from upload');
+        // Show "processing" state while we wait for MusicAPI to process the upload
+        setExtZoneState('loading');
+        _extPollUploadTask(taskId, name, 0);
       })
       .catch(function(err) {
         setExtZoneState('idle');
@@ -5881,6 +5888,37 @@ window.renderEditInstrumentPills = function (bp) {
           errEl.style.display = 'block';
         }
       });
+  }
+
+  // Poll /api/poll-upload-task/:taskId until clip_id is ready
+  function _extPollUploadTask(taskId, name, attempt) {
+    var errEl = document.getElementById('ext-upload-error');
+    if (attempt > 40) { // ~3.3 minutes max
+      setExtZoneState('idle');
+      if (errEl) { errEl.textContent = 'Upload timed out — please try again.'; errEl.style.display = 'block'; }
+      return;
+    }
+    setTimeout(function() {
+      fetch('/api/poll-upload-task/' + encodeURIComponent(taskId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) throw new Error(data.error);
+          if (data.status === 'ready') {
+            // Got clip_id — store it and mark zone as done
+            extUploadAudioId = data.clip_id;
+            setExtZoneState('done', name);
+          } else if (data.status === 'failed') {
+            throw new Error(data.error || 'Upload processing failed');
+          } else {
+            // Still pending — keep polling
+            _extPollUploadTask(taskId, name, attempt + 1);
+          }
+        })
+        .catch(function(err) {
+          setExtZoneState('idle');
+          if (errEl) { errEl.textContent = 'Upload failed: ' + (err.message || 'Unknown error'); errEl.style.display = 'block'; }
+        });
+    }, attempt === 0 ? 3000 : 5000); // first poll after 3s, then every 5s
   }
 
   // ── Draw waveform on canvas using Web Audio API ───────────────────────────
@@ -6804,7 +6842,7 @@ window.renderEditInstrumentPills = function (bp) {
               if (genBtn)  { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>'; }
               setTimeout(function() { if (prog) prog.style.display = 'none'; }, 800);
 
-              // ── Upload to Mureka + save to D1 library (background, non-blocking) ──
+              // ── Upload to R2 + save to D1 library (background, non-blocking) ──
               (function saveLoopToLibrary() {
                 var saveTitle = origName + ' (Loop Extended)';
                 var saveForm = new FormData();
@@ -6814,7 +6852,7 @@ window.renderEditInstrumentPills = function (bp) {
 
                 if (progMsg) progMsg.textContent = 'Saving to your library\u2026';
 
-                fetch('/api/upload-extend-audio', { method: 'POST', body: saveForm })
+                fetch('/api/upload-loop-audio', { method: 'POST', body: saveForm })
                   .then(function(r) { return r.json(); })
                   .then(function(uploadData) {
                     if (uploadData.error) throw new Error(uploadData.error);
