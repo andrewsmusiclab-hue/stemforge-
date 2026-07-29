@@ -1918,40 +1918,54 @@ document.addEventListener('DOMContentLoaded', () => {
     // Show scrubber panel
     if (scrubber) scrubber.style.display = 'block';
 
+    // Range is always 0-100 (percentage). Never change max.
+    range.min = 0; range.max = 100; range.step = 0.1;
+
+    function _setFill(pct) {
+      range.style.background = 'linear-gradient(to right, #a78bfa 0%, #a78bfa ' + pct + '%, rgba(255,255,255,.15) ' + pct + '%, rgba(255,255,255,.15) 100%)';
+    }
+
     // Duration: set once metadata loads
     audio.addEventListener('loadedmetadata', function() {
       if (durEl) durEl.textContent = _pipelineFmtTime(audio.duration);
-      range.max = audio.duration || 100;
     });
 
-    // Tick: update position while playing
+    // Tick: update position while playing (skip if user is scrubbing)
     audio.addEventListener('timeupdate', function() {
-      if (!range._seeking) {
-        var pct = audio.duration > 0 ? (audio.currentTime / audio.duration) * 100 : 0;
-        range.value = pct;
-        if (curEl) curEl.textContent = _pipelineFmtTime(audio.currentTime);
-        // Fill track progress via CSS gradient
-        range.style.background = 'linear-gradient(to right, #a78bfa 0%, #a78bfa ' + pct + '%, rgba(255,255,255,.15) ' + pct + '%, rgba(255,255,255,.15) 100%)';
-      }
+      if (range._seeking) return;
+      var pct = audio.duration > 0 ? (audio.currentTime / audio.duration) * 100 : 0;
+      range.value = pct;
+      if (curEl) curEl.textContent = _pipelineFmtTime(audio.currentTime);
+      _setFill(pct);
     });
 
-    // Seek: user drags the range
+    // While dragging: preview time display + fill only, do NOT seek yet
     range.addEventListener('input', function() {
       range._seeking = true;
-      var seekTo = (range.value / 100) * (audio.duration || 0);
-      if (curEl) curEl.textContent = _pipelineFmtTime(seekTo);
       var pct = parseFloat(range.value);
-      range.style.background = 'linear-gradient(to right, #a78bfa 0%, #a78bfa ' + pct + '%, rgba(255,255,255,.15) ' + pct + '%, rgba(255,255,255,.15) 100%)';
+      var previewTime = (pct / 100) * (audio.duration || 0);
+      if (curEl) curEl.textContent = _pipelineFmtTime(previewTime);
+      _setFill(pct);
     });
+
+    // On release: commit the seek
     range.addEventListener('change', function() {
-      audio.currentTime = (range.value / 100) * (audio.duration || 0);
+      var pct = parseFloat(range.value);
+      var seekTo = (pct / 100) * (audio.duration || 0);
+      audio.currentTime = seekTo;
       range._seeking = false;
     });
+
+    // Mouseup/touchend safety: ensure _seeking is cleared even if 'change' fires late
+    function _endSeek() { range._seeking = false; }
+    range.addEventListener('mouseup', _endSeek);
+    range.addEventListener('touchend', _endSeek);
 
     // Reset range on ended
     audio.addEventListener('ended', function() {
       range.value = 0;
-      range.style.background = 'rgba(255,255,255,.15)';
+      range._seeking = false;
+      _setFill(0);
       if (curEl) curEl.textContent = '0:00';
     });
   }
@@ -2268,12 +2282,37 @@ document.addEventListener('DOMContentLoaded', () => {
               // Wire scrubber
               _pipelineWireScrubber(n);
 
-              // Download button below scrubber
+              // Pills + Download button — appended to card body (scrubber's parent)
               const scrubParent = scrubberEl ? scrubberEl.parentNode : null;
               if (scrubParent) {
-                // Remove any old download button
-                const oldDl = scrubParent.querySelector('.pipeline-dl-btn');
-                if (oldDl) oldDl.remove();
+                // Remove old pills/download if re-running
+                scrubParent.querySelectorAll('.pipeline-card-pills, .pipeline-dl-btn').forEach(el => el.remove());
+
+                // ── Blueprint pills (above download) ──
+                if (job.blueprint) {
+                  const bp = job.blueprint;
+                  const pillDefs = [
+                    { icon: 'fa-drum',         label: bp.bpm ? bp.bpm + ' BPM' : null },
+                    { icon: 'fa-music',        label: (bp.key || bp.scale) ? ((bp.key||'') + ' ' + (bp.scale||'')).trim() : null },
+                    { icon: 'fa-compact-disc', label: bp.genre || null },
+                    { icon: 'fa-heart',        label: bp.mood || null },
+                  ].filter(p => p.label);
+                  if (pillDefs.length) {
+                    const pillsDiv = document.createElement('div');
+                    pillsDiv.className = 'pipeline-card-pills project-card__tags';
+                    pillsDiv.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;margin-bottom:4px';
+                    pillDefs.forEach(p => {
+                      const sp = document.createElement('span');
+                      sp.className = 'blueprint-pill';
+                      sp.style.cssText = 'font-size:.68rem;padding:2px 6px';
+                      sp.innerHTML = '<i class="fas ' + p.icon + '"></i> ' + p.label;
+                      pillsDiv.appendChild(sp);
+                    });
+                    scrubParent.appendChild(pillsDiv);
+                  }
+                }
+
+                // ── Download button ──
                 const dlBtn = document.createElement('button');
                 dlBtn.className = 'pipeline-dl-btn btn btn--sm';
                 if (isFree) {

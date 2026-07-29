@@ -3802,48 +3802,31 @@ app.post('/api/job/extend-upload', async (c) => {
   ).bind(EXTEND_COST, user.id).run()
 
   try {
-    // Route: vocal extends → MusicAPI Sonic (Suno v5.5); instrumental → Producer (Lyria 3 Pro)
-    // upload_audio_id is a MusicAPI clip_id from a prior POST /sonic/upload call
+    // All extends use MusicAPI Sonic (Suno v5.5) — the clip_id came from /sonic/upload
+    // so it is always a Suno clip_id; passing it to Producer gives a 400.
     const isInstrumental = make_instrumental === true
 
     let extTaskId: string
 
-    if (isInstrumental) {
-      // Producer (Lyria 3 Pro) — extend_music with clip_id
-      const prodBody: Record<string, any> = {
-        task_type: 'extend_music',
-        clip_id: upload_audio_id,
-        sound: 'instrumental continuation, no vocals'
-      }
-      const prodRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(prodBody)
-      })
-      if (!prodRes.ok) {
-        const errText = await prodRes.text()
-        let errMsg = `${prodRes.status}`
-        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
-        return c.json({ error: `MusicAPI Producer extend error: ${errMsg}` }, 500)
-      }
-      const prodData = await prodRes.json() as any
-      extTaskId = prodData.task_id || prodData.data?.task_id
-      if (!extTaskId) {
-        console.error('[extend-upload] Producer missing task_id:', JSON.stringify(prodData).slice(0, 500))
-        return c.json({ error: `MusicAPI Producer returned unexpected response: ${JSON.stringify(prodData).slice(0, 200)}` }, 500)
-      }
-    } else {
+    {
       // Sonic (Suno v5.5) — extend_music with continue_clip_id
       const sonicBody: Record<string, any> = {
         task_type: 'extend_music',
         continue_clip_id: upload_audio_id,
         mv: 'sonic-v5'
       }
-      // Pass user lyrics if provided
-      const typedLyrics = lyrics && lyrics.trim()
-      if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-        sonicBody.prompt = typedLyrics
+      // Instrumental: suppress vocals via make_instrumental flag + lyric tag
+      if (isInstrumental) {
+        sonicBody.make_instrumental = true
+        sonicBody.prompt = '[Instrumental]'
+      } else {
+        // Pass user lyrics if provided
+        const typedLyrics = lyrics && lyrics.trim()
+        if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
+          sonicBody.prompt = typedLyrics
+        }
       }
+      console.log(`[extend-upload] Sonic extend clip_id=${upload_audio_id} instrumental=${isInstrumental}`)
       const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -3981,63 +3964,52 @@ app.post('/api/job/extend', async (c) => {
       return c.json({ error: `MusicAPI upload error: ${errMsg}` }, 500)
     }
     const uploadData = await uploadRes.json() as any
-    // Upload returns { task_id } — poll for clip_id
-    const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
-    if (!uploadTaskId) return c.json({ error: 'MusicAPI upload returned no task_id' }, 500)
+    console.log('[job/extend] upload response:', JSON.stringify(uploadData).slice(0, 200))
 
-    // Poll for upload completion (clip_id)
-    let clipId: string | null = null
-    const uploadDeadline = Date.now() + 60_000
-    while (Date.now() < uploadDeadline) {
-      await new Promise(r => setTimeout(r, 2000))
-      const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-      })
-      if (!pollRes.ok) continue
-      const pollData = await pollRes.json() as any
-      const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
-      if (clips.length && clips[0].state === 'succeeded') {
-        clipId = clips[0].id || clips[0].clip_id || null
-        break
+    // Upload is SYNC by default — returns { clip_id } directly
+    // Only poll if an async task_id comes back instead
+    let clipId: string | null = uploadData.clip_id || uploadData.data?.clip_id || null
+    if (!clipId) {
+      const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
+      if (!uploadTaskId) return c.json({ error: 'MusicAPI upload returned no clip_id or task_id' }, 500)
+      // Poll for upload completion
+      const uploadDeadline = Date.now() + 60_000
+      while (Date.now() < uploadDeadline) {
+        await new Promise(r => setTimeout(r, 2000))
+        const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, {
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+        })
+        if (!pollRes.ok) continue
+        const pollData = await pollRes.json() as any
+        const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
+        if (clips.length && clips[0].state === 'succeeded') {
+          clipId = clips[0].id || clips[0].clip_id || null
+          break
+        }
+        if (clips.length && clips[0].state === 'failed') break
       }
-      if (clips.length && clips[0].state === 'failed') break
     }
-    if (!clipId) return c.json({ error: 'MusicAPI upload timed out or failed' }, 500)
+    if (!clipId) return c.json({ error: 'MusicAPI upload timed out or failed to return clip_id' }, 500)
 
-    // Step 2: Extend via appropriate endpoint
+    // Step 2: Extend via Sonic (Suno v5.5) — always use Sonic since clip_id is from /sonic/upload
+    // Using Producer here gives a 400 (Producer doesn't accept Suno clip IDs)
     let extTaskId: string
 
-    if (isInstrumental) {
-      // Producer (Lyria 3 Pro) — extend_music
-      const sound = styleStr ? `${styleStr}, instrumental, no vocals` : 'instrumental continuation, no vocals'
-      const prodRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_type: 'extend_music', clip_id: clipId, sound: sound.slice(0, 400) })
-      })
-      if (!prodRes.ok) {
-        const errText = await prodRes.text()
-        let errMsg = `${prodRes.status}`
-        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
-        return c.json({ error: `MusicAPI Producer extend error: ${errMsg}` }, 500)
-      }
-      const prodData = await prodRes.json() as any
-      extTaskId = prodData.task_id || prodData.data?.task_id
-      if (!extTaskId) {
-        console.error('[job/extend] Producer missing task_id:', JSON.stringify(prodData).slice(0, 500))
-        return c.json({ error: `MusicAPI Producer returned unexpected response: ${JSON.stringify(prodData).slice(0, 200)}` }, 500)
-      }
-    } else {
-      // Sonic (Suno v5.5) — extend_music with continue_clip_id
+    {
       const sonicBody: Record<string, any> = {
         task_type: 'extend_music',
         continue_clip_id: clipId,
         mv: 'sonic-v5'
       }
       if (styleStr) sonicBody.tags = styleStr.slice(0, 200)
-      const typedLyrics = lyrics && lyrics.trim()
-      if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-        sonicBody.prompt = typedLyrics
+      if (isInstrumental) {
+        sonicBody.make_instrumental = true
+        sonicBody.prompt = '[Instrumental]'
+      } else {
+        const typedLyrics = lyrics && lyrics.trim()
+        if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
+          sonicBody.prompt = typedLyrics
+        }
       }
       console.log(`[job/extend] Sonic extend clip_id=${clipId} instrumental=${isInstrumental} style="${styleStr.slice(0,60)}"`)
       const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
@@ -5908,7 +5880,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-04'
+const ASSET_VER = '20260729-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7231,10 +7203,10 @@ function generatorPage() {
     <!-- Pipeline status - dual project-card style beat cards -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
 
-      <!-- Two side-by-side beat cards (project-card structure) -->
+      <!-- Single centered beat card (project-card structure) -->
       <div class="pipeline-gen-row">
 
-        <!-- Beat 1 card -->
+        <!-- Beat card (single, centered) -->
         <div class="project-card pipeline-gen-card" id="pipeline-card-1">
           <!-- Art / Video section (top half) -->
           <div class="project-card__art pipeline-gen-card__art">
@@ -7250,7 +7222,7 @@ function generatorPage() {
           </div>
           <!-- Body section (bottom half) -->
           <div class="project-card__body pipeline-gen-card__body">
-            <h4 id="pipeline-card-1-title">Beat 1</h4>
+            <h4 id="pipeline-card-1-title">Your Beat</h4>
             <p id="pipeline-card-1-msg" class="pipeline-spinner-msg">Generating…</p>
             <!-- Scrubber (hidden until ready) -->
             <div class="pipeline-scrubber" id="pipeline-scrubber-1" style="display:none">
@@ -7263,40 +7235,22 @@ function generatorPage() {
           </div>
         </div>
 
-        <!-- Beat 2 card -->
-        <div class="project-card pipeline-gen-card" id="pipeline-card-2">
-          <!-- Art / Video section (top half) -->
-          <div class="project-card__art pipeline-gen-card__art">
-            <video class="pipeline-gen-video" src="/static/forge-beat2.mp4" autoplay muted loop playsinline></video>
-            <!-- Spinner overlay (shown during generation, display:flex by default) -->
-            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-2-overlay" style="display:flex">
-              <div class="pipeline-spinner"></div>
-            </div>
-            <!-- Play button overlay (hidden until ready) -->
-            <div class="project-card__play pipeline-gen-card__play" id="pipeline-card-2-play" style="display:none" onclick="pipelineCardPlay(2)">
-              <i class="fas fa-play"></i>
-            </div>
-          </div>
-          <!-- Body section (bottom half) -->
-          <div class="project-card__body pipeline-gen-card__body">
-            <h4 id="pipeline-card-2-title">Beat 2</h4>
-            <p id="pipeline-card-2-msg" class="pipeline-spinner-msg">Generating…</p>
-            <!-- Scrubber (hidden until ready) -->
-            <div class="pipeline-scrubber" id="pipeline-scrubber-2" style="display:none">
-              <input type="range" class="pipeline-scrubber__range" id="pipeline-scrubber-2-range" min="0" max="100" step="0.1" value="0">
-              <div class="pipeline-scrubber__times">
-                <span id="pipeline-scrubber-2-cur">0:00</span>
-                <span id="pipeline-scrubber-2-dur">0:00</span>
-              </div>
-            </div>
+        <!-- Hidden dummy card 2 (JS still refs it safely, display:none) -->
+        <div id="pipeline-card-2" style="display:none">
+          <div id="pipeline-card-2-overlay" style="display:none"></div>
+          <div id="pipeline-card-2-play" style="display:none"></div>
+          <p id="pipeline-card-2-msg"></p>
+          <h4 id="pipeline-card-2-title"></h4>
+          <div id="pipeline-scrubber-2" style="display:none">
+            <input type="range" id="pipeline-scrubber-2-range"><span id="pipeline-scrubber-2-cur"></span><span id="pipeline-scrubber-2-dur"></span>
           </div>
         </div>
+        <audio id="pipeline-audio-2" style="display:none"></audio>
 
       </div><!-- /pipeline-gen-row -->
 
-      <!-- Hidden audio players for card playback -->
+      <!-- Hidden audio player for card playback -->
       <audio id="pipeline-audio-1" style="display:none"></audio>
-      <audio id="pipeline-audio-2" style="display:none"></audio>
 
       <!-- Status line -->
       <p class="pipeline-gen-status-sub" id="pipeline-status-sub">Stemforge is forging your beats…</p>
@@ -7389,9 +7343,7 @@ function generatorPage() {
       <button id="ext-tab-library" onclick="extSwitchTab('library')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:9px 0;font-size:.82rem;cursor:pointer;transition:all .2s">
         <i class="fas fa-music" style="margin-right:5px"></i>Library
       </button>
-      <button id="ext-tab-loop" onclick="extSwitchTab('loop')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-weight:600;padding:9px 0;font-size:.82rem;cursor:pointer;transition:all .2s">
-        <i class="fas fa-redo" style="margin-right:5px"></i>Loop Extend
-      </button>
+
     </div>
 
     <!-- Step 1a: Upload tab -->
