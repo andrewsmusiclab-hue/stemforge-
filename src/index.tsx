@@ -3984,14 +3984,40 @@ app.post('/api/job/extend', async (c) => {
     {
       const typedLyricsExtend = lyrics && lyrics.trim()
       const hasCustomLyricsExtend = !isInstrumental && typedLyricsExtend && typedLyricsExtend !== '[Verse]' && typedLyricsExtend !== '[Instrumental]'
-      // continue_at IS required by /sonic/upload-extend (confirmed from MusicAPI error body)
-      // Use stereo_url duration if known, else 0 (extend from beginning of uploaded clip)
-      // continue_at must be >= 1 (confirmed from MusicAPI error)
-      // Use (track_duration - 2s) so extend joins near end; floor at 1 if unknown
+      // continue_at must be >= 1 (MusicAPI requirement)
       const srcDurationSec = (sourceJob.duration_ms ? sourceJob.duration_ms / 1000 : 0)
       const continueAt = srcDurationSec > 3 ? Math.max(1, srcDurationSec - 2) : 1
+
+      // ── Mirror audio into R2 before calling MusicAPI ──────────────────────
+      // Cloudflare Workers have a 30s wall-clock limit. Mureka CDN URLs are
+      // 4-8 MB and MusicAPI downloads them server-side which can take 30-40s,
+      // killing the Worker before a response arrives. Solution: fetch the audio
+      // into R2 ourselves first (fast — same edge), then give MusicAPI the R2
+      // proxy URL which it can download in <1s.
+      let audioUrlForMusicApi = sourceJob.stereo_url
+      if (c.env.IMAGES) {
+        try {
+          const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+          const audioFetch = await fetch(sourceJob.stereo_url)
+          if (audioFetch.ok) {
+            const audioBuffer = await audioFetch.arrayBuffer()
+            const ext = sourceJob.stereo_url.includes('.mp3') ? 'mp3' : 'm4a'
+            // proxy endpoint prepends 'extend-uploads/' so key param must NOT include it
+            const r2Filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.${ext}`
+            await c.env.IMAGES.put(`extend-uploads/${r2Filename}`, audioBuffer, {
+              httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
+            })
+            audioUrlForMusicApi = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Filename)}`
+            console.log(`[job/extend] mirrored audio to R2: extend-uploads/${r2Filename}`)
+          }
+        } catch (mirrorErr: any) {
+          // Mirror failed — fall back to original URL and hope it's fast enough
+          console.warn('[job/extend] R2 mirror failed, using original URL:', mirrorErr?.message)
+        }
+      }
+
       const uploadExtBody: Record<string, any> = {
-        url: sourceJob.stereo_url,
+        url: audioUrlForMusicApi,
         mv: 'sonic-v5',
         continue_at: continueAt
       }
@@ -5942,7 +5968,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-09'
+const ASSET_VER = '20260729-10'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
