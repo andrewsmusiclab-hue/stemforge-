@@ -564,7 +564,7 @@ interface Blueprint {
   duration_seconds: number
   instruments: Instrument[]
   arrangement: string
-  mureka_prompt: string
+  style_prompt: string
   sections: string[]
 }
 
@@ -572,7 +572,7 @@ interface Instrument {
   name: string
   family: string
   role: string
-  mureka_track_type: string
+  track_type: string
 }
 
 
@@ -600,13 +600,13 @@ You STRICTLY follow the user's genre, mood, and style — you NEVER substitute o
 
 ABSOLUTE RULES — violating any rule is a failure:
 1. GENRE LOCK: The genre field MUST exactly match whatever genre/style the user wrote. If user says "hip hop" → genre = "hip hop". If user says "pop" → genre = "pop". If user says "drill" → genre = "drill". NEVER change it to jazz, R&B, soul, or anything else unless that is what the user wrote.
-2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, mureka_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops or piano. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. NEVER add jazz piano, walking bass, brushed snares, ride cymbal, swing feel, or laid-back jazz elements to hip hop, trap, drill, or R&B unless the user explicitly asked for jazz.
+2. SOUND AUTHENTICITY: The entire blueprint — BPM, instruments, mood, style_prompt — MUST sound like the stated genre. Hip hop = punchy 808s + trap hi-hats + sampled chops or piano. Pop = bright synths + 4-on-floor kick + catchy lead. Drill = sliding 808s + rolling hi-hats + dark piano. R&B = silky pads + soft kit + groove. NEVER add jazz piano, walking bass, brushed snares, ride cymbal, swing feel, or laid-back jazz elements to hip hop, trap, drill, or R&B unless the user explicitly asked for jazz.
 3. ANTI-JAZZ RULE FOR HIP HOP/TRAP/DRILL: These genres must use 808 bass (NOT walking bass), punchy kicks (NOT brush kit), trap hi-hats or boom bap snares (NOT ride cymbal), and straight or swung hip hop timing (NOT jazz swing). Any jazz reference in a hip hop/trap/drill beat is an automatic failure.
 4. NO TRUMPET / SAXOPHONE IN HIP HOP/TRAP/DRILL/R&B UNLESS USER ASKED: Do NOT include trumpet, saxophone, trombone, flugelhorn, cornet, or any brass/woodwind jazz instrument in hip hop, trap, drill, or R&B beats. These genres NEVER use those instruments unless the user explicitly wrote "jazz" or "trumpet" or "sax" in their prompt. This rule overrides all other defaults.
 5. BPM ACCURACY: Hip hop = 85–100 BPM. Trap = 130–145 BPM. Drill = 140–145 BPM. Pop = 100–128 BPM. R&B = 65–95 BPM. Lo-fi = 70–90 BPM. Afrobeats = 100–115 BPM. Always use the correct BPM range for the genre.
 6. KEY VARIETY: Use the suggested_key provided. Never default to C minor every time.
 7. TITLE: If user left title blank, create a 2–4 word creative track name that fits the genre.
-8. mureka_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the mureka_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", "ride cymbal", "trumpet", or "saxophone".
+8. style_prompt: MUST open with the exact genre name, then describe sound in detail (energy, instruments, feel). Max 200 chars. For hip hop/trap/drill, the style_prompt MUST contain "808" or "trap" elements — never "jazz", "swing", "walking bass", "ride cymbal", "trumpet", or "saxophone".
 9. DURATION: ${userDurationSec ? `The user has requested a specific duration of approximately ${userDurationSec} seconds (${Math.floor(userDurationSec/60)}:${String(userDurationSec%60).padStart(2,'0')}). The duration_seconds field MUST be exactly ${userDurationSec}. Do not deviate from this value.` : 'All beats MUST be exactly 240 seconds (4:00) unless user specifies a different duration. Do not deviate.'}
 Output valid JSON only — no markdown, no explanation.`
 
@@ -641,13 +641,13 @@ Return ONLY this JSON:
   "sections": ["intro", "verse", "hook", "verse", "hook", "outro"],
   "arrangement": <one sentence describing how this genre sounds — be specific to the genre>,
   "suggested_title": <2–4 word track name that fits the genre, e.g. "Drip Season", "Gold Rush Pop", "Night Shift Trap">,
-  "mureka_prompt": <MUST start with exact genre name, then describe sound: instruments, energy, feel. Example: "hip hop beat, punchy 808 bass, trap hi-hats, sampled Rhodes chops, aggressive energy, dark mood" — max 200 chars>,
+  "style_prompt": <MUST start with exact genre name, then describe sound: instruments, energy, feel. Example: "hip hop beat, punchy 808 bass, trap hi-hats, sampled Rhodes chops, aggressive energy, dark mood" — max 200 chars>,
   "instruments": [
     {
       "name": <genre-appropriate instrument name>,
       "family": <"drums" | "bass" | "keys" | "guitar" | "strings" | "brass" | "woodwind" | "synth" | "fx">,
       "role": <"rhythmic" | "harmonic" | "melodic" | "textural" | "transitional">,
-      "mureka_track_type": <"vocals" | "accompaniment" | "bass" | "drums">
+      "track_type": <"vocals" | "accompaniment" | "bass" | "drums">
     }
   ]
 }
@@ -656,7 +656,7 @@ Instrument rules:
 - 6–10 instruments, always include kick + snare/hi-hats + bass at minimum
 - All instruments MUST be genre-appropriate (no jazz brushes in hip hop, no 808s in jazz, no grand piano in drill unless specified)
 - NAMING: instrument "name" MUST be the EXACT specific instrument name — e.g. "Trumpet" NOT "brass", "Flute" NOT "woodwind", "Violin" NOT "strings", "Rhodes Piano" NOT "keys", "808 Bass" NOT "bass", "Acoustic Guitar" NOT "guitar". Be as specific as possible.
-- mureka_track_type: kick/snare/hats → "drums", 808/bass → "bass", keys/guitar/pad/strings → "accompaniment", fx/vox → "vocals"`
+- track_type: kick/snare/hats → "drums", 808/bass → "bass", keys/guitar/pad/strings → "accompaniment", fx/vox → "vocals"`
 
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -699,7 +699,7 @@ Instrument rules:
 // ═══════════════════════════════════════════════════════════════
 
 async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number, refMode?: string, refPrompt?: string): Promise<string> {
-  let stylePrompt = blueprint.mureka_prompt || ''
+  let stylePrompt = blueprint.style_prompt || ''
 
   // Strip vocal references — Producer is strictly instrumental
   stylePrompt = stylePrompt
@@ -786,7 +786,7 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
   const durationSec = userDurationSec || blueprint.duration_seconds || 240
 
   // Build style/tags from blueprint — clean of instrumental-only descriptors
-  let stylePrompt = (blueprint.mureka_prompt || '')
+  let stylePrompt = (blueprint.style_prompt || '')
     .replace(/\bno vocals?\b/gi, '')
     .replace(/\bpurely instrumental\b/gi, '')
     .replace(/\bno vocal chops?\b/gi, '')
@@ -1397,7 +1397,7 @@ app.post('/api/poll/:id', async (c) => {
         name: ins.name,
         family: ins.family
       })),
-      style_prompt: job.blueprint.mureka_prompt
+      style_prompt: job.blueprint.style_prompt
     } : null,
     stereo_url: job.stereo_url || null,
     error: job.error || null,
@@ -1438,7 +1438,7 @@ app.get('/api/job/:id', async (c) => {
         name: ins.name,
         family: ins.family
       })),
-      style_prompt: job.blueprint.mureka_prompt
+      style_prompt: job.blueprint.style_prompt
     } : null,
     stereo_url: job.stereo_url || null,
     error: job.error || null
@@ -3934,8 +3934,8 @@ app.post('/api/job/extend', async (c) => {
   // Build style string from blueprint for sonic continuity
   const bp = sourceJob.blueprint as Blueprint | undefined
   let styleStr = ''
-  if (bp?.mureka_prompt) {
-    styleStr = bp.mureka_prompt
+  if (bp?.style_prompt) {
+    styleStr = bp.style_prompt
   } else if (bp) {
     const parts: string[] = []
     if (bp.genre)  parts.push(bp.genre)
@@ -4919,8 +4919,8 @@ app.get('/api/admin/elevenlabs-credits', async (c) => {
   }
 })
 
-// ─── MUREKA BALANCE MONITOR ──────────────────────────────────────────────────
-// GET /api/musicapi/balance — returns D1-based usage stats (Mureka API has no balance endpoint)
+// ─── MUSICAPI USAGE MONITOR ──────────────────────────────────────────────────
+// GET /api/musicapi/balance — returns D1-based usage stats + MusicAPI credit balance
 app.get('/api/musicapi/balance', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
@@ -4928,25 +4928,38 @@ app.get('/api/musicapi/balance', async (c) => {
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
 
   try {
-    // Mureka API does not expose a balance/credits endpoint — use D1 usage stats as proxy
+    // MusicAPI usage stats from D1 + credit check from MusicAPI
     const todayStart = new Date(); todayStart.setHours(0,0,0,0)
     const todayTs = todayStart.getTime()
 
     const totalRow = await c.env.DB.prepare(
-      `SELECT COUNT(*) as cnt FROM generations WHERE provider='mureka'`
+      `SELECT COUNT(*) as cnt FROM generations WHERE provider='musicapi' OR provider='mureka'`
     ).first<{ cnt: number }>().catch(() => null)
 
     const todayRow = await c.env.DB.prepare(
-      `SELECT COUNT(*) as cnt FROM generations WHERE provider='mureka' AND created_at >= ?`
+      `SELECT COUNT(*) as cnt FROM generations WHERE (provider='musicapi' OR provider='mureka') AND created_at >= ?`
     ).bind(todayTs).first<{ cnt: number }>().catch(() => null)
 
     const recentRows = await c.env.DB.prepare(
-      `SELECT id, title, status, created_at FROM generations WHERE provider='mureka' ORDER BY created_at DESC LIMIT 10`
+      `SELECT id, title, status, created_at FROM generations WHERE provider IN ('musicapi','mureka') ORDER BY created_at DESC LIMIT 10`
     ).all<{ id: string; title: string; status: string; created_at: number }>().catch(() => ({ results: [] }))
+
+    // Attempt to fetch MusicAPI credit balance
+    let creditBalance: number | null = null
+    try {
+      const creditRes = await fetch(`${MUSICAPI_SONIC}/credits`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (creditRes.ok) {
+        const cd = await creditRes.json() as any
+        creditBalance = cd.credits ?? cd.balance ?? cd.remaining ?? null
+      }
+    } catch {}
 
     return c.json({
       ok: true,
-      note: 'Mureka does not expose a balance API. Showing generation usage stats instead.',
+      note: 'MusicAPI usage stats from D1. Credit balance fetched live from MusicAPI.',
+      credit_balance: creditBalance,
       total_generations: totalRow?.cnt ?? 0,
       generations_today: todayRow?.cnt ?? 0,
       recent: recentRows?.results ?? []
@@ -4956,7 +4969,7 @@ app.get('/api/musicapi/balance', async (c) => {
   }
 })
 
-// GET /musicapi-monitor — Mureka balance monitor page (admin only)
+// GET /musicapi-monitor — MusicAPI usage monitor page (admin only)
 app.get('/musicapi-monitor', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -5015,15 +5028,15 @@ function musicapiMonitorPage(): string {
     <button class="btn-refresh" onclick="loadStats()"><i class="fas fa-sync-alt"></i> Refresh</button>
   </div>
 
-  <!-- Balance Notice -->
+  <!-- Credit Balance -->
   <div class="notice-box">
-    <i class="fas fa-info-circle notice-icon"></i>
+    <i class="fas fa-coins notice-icon"></i>
     <div class="notice-text">
-      <strong>Balance not available via API.</strong> The music generation service does not expose a credits/balance API endpoint.
-      To check your remaining balance, visit the platform dashboard directly.<br/>
+      <strong>MusicAPI Credit Balance: <span id="credit-balance" style="color:#4e9fff">loading…</span></strong><br/>
+      Credits are fetched live from the MusicAPI. Sonic (Suno v5.5) + Producer (Lyria 3 Pro) share the same account balance.<br/>
       <br/>
-      <a href="https://platform.mureka.ai" target="_blank" rel="noopener" class="btn-primary" style="margin-top:4px">
-        <i class="fas fa-external-link-alt"></i> Check Balance at platform.mureka.ai
+      <a href="https://musicapi.ai/dashboard" target="_blank" rel="noopener" class="btn-primary" style="margin-top:4px">
+        <i class="fas fa-external-link-alt"></i> MusicAPI Dashboard
       </a>
     </div>
   </div>
@@ -5059,6 +5072,7 @@ async function loadStats() {
 
     document.getElementById('stat-today').textContent = data.generations_today ?? '—';
     document.getElementById('stat-total').textContent = data.total_generations ?? '—';
+    document.getElementById('credit-balance').textContent = data.credit_balance != null ? data.credit_balance + ' credits' : 'unavailable';
 
     const recent = data.recent || [];
     const listEl = document.getElementById('recent-list');
@@ -5165,40 +5179,63 @@ app.post('/api/generate-lyrics', async (c) => {
   return c.json({ lyrics })
 })
 
-// POST /api/upload-extend-audio — upload audio for Song Extend (purpose: audio, full file)
-// Does NOT clip — Mureka's extend API needs the full track, not a 30s clip
+// POST /api/upload-extend-audio — upload audio for Song Extend
+// MusicAPI: POST /sonic/upload { audio_url } → task_id → poll for clip_id
+// Client provides either a URL (preferred) or a file blob.
 app.post('/api/upload-extend-audio', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
 
-  const formData = await c.req.formData()
-  const file = formData.get('file') as File | null
-  if (!file) return c.json({ error: 'No file provided' }, 400)
+  // Accept JSON { audio_url } or multipart { url } or multipart { file }
+  let audioUrl: string | null = null
+  const contentType = c.req.header('content-type') || ''
+  if (contentType.includes('application/json')) {
+    const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
+    audioUrl = body.audio_url || body.url || null
+  } else {
+    const formData = await c.req.formData()
+    const urlField = formData.get('url') as string | null
+    audioUrl = urlField || null
+    // File blob upload: store in R2 first to get a URL, then upload by URL to MusicAPI
+    if (!audioUrl) {
+      const file = formData.get('file') as File | null
+      if (!file) return c.json({ error: 'No file or url provided' }, 400)
+      // Upload file bytes directly to MusicAPI via R2-less path:
+      // MusicAPI /sonic/upload supports { audio_url } only — we need a URL.
+      // Store in R2 temporarily if available, else reject.
+      if (!c.env.R2) return c.json({ error: 'File upload requires a URL. Please pass audio_url instead.' }, 400)
+      const key = `uploads/${Date.now()}-${file.name}`
+      await c.env.R2.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type || 'audio/mpeg' } })
+      // We can't generate a public URL from R2 without a custom domain — return error guidance
+      return c.json({ error: 'File upload not supported in this deployment. Pass an audio_url (CDN/public URL) instead.' }, 400)
+    }
+  }
+  if (!audioUrl) return c.json({ error: 'audio_url required' }, 400)
 
-  const mForm = new FormData()
-  mForm.append('purpose', 'audio')   // ← must be 'audio' for song/extend
-  mForm.append('file', file)
-
-  const res = await fetch(`${MUSICAPI_SONIC}/files/upload`, {
+  // Upload to MusicAPI Sonic
+  const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
-    body: mForm
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio_url: audioUrl })
   })
 
   if (!res.ok) {
-    let errMsg = `Mureka upload error ${res.status}`
-    try { const e = await res.json() as any; errMsg = e?.error?.message || e?.message || errMsg } catch {}
-    return c.json({ error: errMsg }, 502)
+    let errMsg = `MusicAPI upload error ${res.status}`
+    try { const e = await res.json() as any; errMsg = e?.message || e?.error || errMsg } catch {}
+    return c.json({ error: errMsg }, 500)
   }
 
   const data = await res.json() as any
-  return c.json({ ok: true, file_id: data.id, audio_url: data.url || null, filename: file.name, duration: data.duration || null })
+  // Returns { task_id } — client polls /api/poll-upload-task/:taskId to get clip_id
+  const taskId = data.task_id || data.data?.task_id
+  if (!taskId) return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
+  return c.json({ ok: true, task_id: taskId, upload_task_id: taskId })
 })
 
-// POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
-// Pro Artist only
+// POST /api/upload-reference — upload reference audio for AI generation (Pro Artist only)
+// MusicAPI: POST /sonic/upload { audio_url } → task_id → poll → clip_id
 app.post('/api/upload-reference', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5215,58 +5252,50 @@ app.post('/api/upload-reference', async (c) => {
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
 
-  // Parse multipart form
-  const formData = await c.req.formData()
-  const file       = formData.get('file') as File | null
-  const url        = formData.get('url') as string | null
-  const startTimeRaw = formData.get('start_time') as string | null
-  const startTimeSec = startTimeRaw ? Math.max(0, parseInt(startTimeRaw, 10) || 0) : 0
-
-  if (!file && !url) return c.json({ error: 'Provide a file or url' }, 400)
-
-  // Cloudflare Workers has no ffmpeg — we cannot slice audio server-side.
-  // Mureka's /files/upload trims from the beginning, so we pass start_time
-  // as a query param so Mureka can seek to the right position before trimming.
-  const uploadUrl = new URL(`${MUSICAPI_SONIC}/files/upload`)
-  if (startTimeSec > 0) uploadUrl.searchParams.set('start_time', String(startTimeSec))
-
-  // Forward to Mureka as multipart
-  const mForm = new FormData()
-  mForm.append('purpose', 'reference')
-  if (file) {
-    mForm.append('file', file)
-  } else if (url) {
-    mForm.append('url', url)
+  // Accept JSON { audio_url } or multipart { url }
+  let audioUrl: string | null = null
+  const contentType = c.req.header('content-type') || ''
+  if (contentType.includes('application/json')) {
+    const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
+    audioUrl = body.audio_url || body.url || null
+  } else {
+    const formData = await c.req.formData()
+    audioUrl = (formData.get('url') as string | null) || (formData.get('audio_url') as string | null) || null
+  }
+  if (!audioUrl) {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: 'audio_url required (MusicAPI accepts URL uploads only)' }, 400)
   }
 
-  const res = await fetch(uploadUrl.toString(), {
+  // Upload to MusicAPI Sonic
+  const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
-    body: mForm
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio_url: audioUrl })
   })
 
   if (!res.ok) {
-    let errMsg = `Mureka upload error ${res.status}`
+    let errMsg = `MusicAPI upload error ${res.status}`
     try {
       const err = await res.json() as any
-      errMsg = err?.error?.message || err?.message || JSON.stringify(err) || errMsg
+      errMsg = err?.message || err?.error || errMsg
     } catch {}
-    console.error('[upload-reference] Mureka error:', res.status, errMsg)
-    return c.json({ error: errMsg }, 502)
+    console.error('[upload-reference] MusicAPI error:', res.status, errMsg)
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: errMsg }, 500)
   }
 
   const data = await res.json() as any
-  // Pass back any metadata Mureka returns (duration, etc.)
-  return c.json({
-    ok: true,
-    file_id: data.id,
-    filename: file?.name || url || 'reference',
-    duration: data.duration || null,
-    start_time: startTimeSec
-  })
+  const taskId = data.task_id || data.data?.task_id
+  if (!taskId) {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
+  }
+  // Returns task_id — client polls /sonic/task/:taskId to get clip_id for use as reference_clip_id
+  return c.json({ ok: true, task_id: taskId, upload_task_id: taskId, filename: audioUrl })
 })
 
-// POST /api/generate-oneshot — legacy Mureka endpoint (kept for backward compat, now requires pro)
+// POST /api/generate-oneshot — one-shot sound design via MusicAPI Producer (Lyria 3 Pro)
 app.post('/api/generate-oneshot', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5281,41 +5310,37 @@ app.post('/api/generate-oneshot', async (c) => {
   }>()
   if (!sound_type) return c.json({ error: 'sound_type is required' }, 400)
 
-  // Build a tight one-shot prompt — extremely short, percussive, isolated
-  const parts: string[] = []
-  parts.push(sound_type)
+  // Build a tight one-shot prompt
+  const parts: string[] = [sound_type]
   if (description) parts.push(description)
   if (pitch) parts.push(`pitch ${pitch}`)
   if (texture) parts.push(texture)
-  // Critical: force shortest possible duration and percussive character
-  parts.push('single isolated hit, no melody, no chord, no bassline, no beat, no loop, just one hit, percussive sound design, dry, punchy, studio sample')
+  parts.push('single isolated hit, percussive sound design, dry, punchy, studio sample, short duration, no melody, no loop')
 
   const oneshotPrompt = parts.join(', ')
 
-  // Use BGM short-form endpoint with very short duration to force a minimal sound
-  // model: 'chirp-v3-0' targets shortest possible generation
-  // duration_seconds: 3 forces ~3s max which limits full-beat generation
-  const res = await fetch(`${MUSICAPI_SONIC}/instrumental/generate`, {
+  // Use Producer (Lyria 3 Pro) with short duration for one-shot sounds
+  const res = await fetch(`${MUSICAPI_PRODUCER}/create`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      prompt: oneshotPrompt,
-      model: 'auto',
-      duration: 3,          // Request shortest duration — limits to a brief sound
-      make_instrumental: true
+      task_type: 'generate_music',
+      sound: oneshotPrompt,
+      duration: 3  // shortest available
     })
   })
 
   if (!res.ok) {
     const err = await res.json() as any
-    return c.json({ error: err?.error?.message || `Mureka error ${res.status}` }, 502)
+    return c.json({ error: err?.message || err?.error || `MusicAPI error ${res.status}` }, 500)
   }
 
   const data = await res.json() as any
-  return c.json({ ok: true, task_id: data.id, sound_type, prompt: oneshotPrompt })
+  const taskId = data.task_id || data.data?.task_id
+  return c.json({ ok: true, task_id: taskId, sound_type, prompt: oneshotPrompt })
 })
 
-// POST /api/poll-oneshot/:task_id — poll Mureka for one-shot status
+// POST /api/poll-oneshot/:task_id — poll MusicAPI for one-shot status
 app.post('/api/poll-oneshot/:task_id', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5325,14 +5350,16 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
   const taskId = c.req.param('task_id')
   const { sound_type } = await c.req.json<{ sound_type?: string }>().catch(() => ({ sound_type: undefined }))
 
-  const res = await fetch(`${MUSICAPI_SONIC}/instrumental/query/${taskId}`, {
+  // Poll MusicAPI Sonic task endpoint (Producer tasks use same polling path)
+  const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
   })
-  if (!res.ok) return c.json({ status: 'error' }, 502)
+  if (!res.ok) return c.json({ status: 'error' }, 500)
 
   const data = await res.json() as any
-  if (data.status === 'succeeded' && data.choices?.[0]?.url) {
-    const audioUrl = data.choices[0].url as string
+  const clips = Array.isArray(data) ? data : (data.data || [])
+  if (clips.length && clips[0].state === 'succeeded' && clips[0].audio_url) {
+    const audioUrl = clips[0].audio_url as string
     // Save one-shot to library (jobs table with is_oneshot=1)
     if (c.env.DB) {
       try {
@@ -5352,7 +5379,7 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
     }
     return c.json({ status: 'ready', audio_url: audioUrl })
   }
-  if (data.status === 'failed') return c.json({ status: 'error', error: 'Generation failed' })
+  if (clips.length && clips[0].state === 'failed') return c.json({ status: 'error', error: clips[0].error || 'Generation failed' })
   return c.json({ status: 'pending' })
 })
 
@@ -5742,7 +5769,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260728-05'
+const ASSET_VER = '20260728-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9059,11 +9086,11 @@ function adminPage(user: User) {
           <table style="width:100%;font-size:.9rem;border-collapse:collapse">
             <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)">Subscription revenue (MRR)</td><td id="rv-pl-mrr" style="text-align:right;font-weight:700;border-bottom:1px solid var(--border10)">—</td></tr>
             <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)">Credit pack revenue</td><td id="rv-pl-credits" style="text-align:right;font-weight:700;border-bottom:1px solid var(--border10)">—</td></tr>
-            <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)"><span style="color:#ef4444">−</span> Mureka API costs (~$0.04/job)</td><td id="rv-pl-mureka" style="text-align:right;font-weight:700;color:#ef4444;border-bottom:1px solid var(--border10)">—</td></tr>
+            <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)"><span style="color:#ef4444">−</span> MusicAPI costs (~$0.04/job)</td><td id="rv-pl-musicapi" style="text-align:right;font-weight:700;color:#ef4444;border-bottom:1px solid var(--border10)">—</td></tr>
             <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)"><span style="color:#ef4444">−</span> Cloudflare Workers</td><td style="text-align:right;font-weight:700;color:#10b981;border-bottom:1px solid var(--border10)">$0 (free tier)</td></tr>
             <tr style="background:rgba(16,185,129,.06)"><td style="padding:10px 0 8px;font-weight:700"><i class="fas fa-chart-line" style="color:#10b981"></i> Estimated net profit</td><td id="rv-pl-profit" style="text-align:right;font-weight:800;font-size:1.1rem">—</td></tr>
           </table>
-          <div style="font-size:.75rem;color:var(--muted);margin-top:12px;line-height:1.4">* Mureka cost estimated at ~$0.04/generation. Actual varies. Stripe fees (~2.9%+$0.30 per charge) not included.</div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:12px;line-height:1.4">* MusicAPI cost estimated at ~$0.04/generation (Sonic + Producer combined). Actual varies. Stripe fees (~2.9%+$0.30 per charge) not included.</div>
         </div>
 
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
@@ -9339,7 +9366,7 @@ async function loadRevenue(){
     document.getElementById('stat-mrr').textContent = '\$'+d.mrr;
     document.getElementById('rv-pl-mrr').textContent = '\$'+d.mrr.toLocaleString();
     document.getElementById('rv-pl-credits').textContent = d.credit_pack_revenue ? '\$'+parseFloat(d.credit_pack_revenue).toFixed(2) : '\$0';
-    document.getElementById('rv-pl-mureka').textContent = '-\$'+d.estimated_musicapi_cost.toFixed(2)+' ('+d.jobs_this_month+' jobs)';
+    document.getElementById('rv-pl-musicapi').textContent = '-\$'+d.estimated_musicapi_cost.toFixed(2)+' ('+d.jobs_this_month+' jobs)';
     const profit = d.estimated_profit;
     const profitEl = document.getElementById('rv-pl-profit');
     profitEl.textContent = (profit>=0?'+':'')+'\$'+profit.toFixed(2);
