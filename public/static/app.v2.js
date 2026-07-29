@@ -6084,7 +6084,7 @@ window.renderEditInstrumentPills = function (bp) {
     var fd = new FormData();
     fd.append('file', file);
 
-    fetch('/api/upload-extend-audio', { method: 'POST', body: fd })
+    fetch('/api/upload-extend-audio', { method: 'POST', credentials: 'include', body: fd })
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) throw new Error(data.error);
@@ -6425,7 +6425,7 @@ window.renderEditInstrumentPills = function (bp) {
     var gridEl = document.getElementById('project-grid-extended');
     if (!gridEl) return;
     gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-    fetch('/api/projects?tab=extended')
+    fetch('/api/projects?tab=extended', { credentials: 'include' })
       .then(function(r) {
         if (!r.ok && r.status !== 200) {
           // Non-200 — read as text first so a gateway HTML page doesn't crash .json()
@@ -6726,6 +6726,7 @@ window.renderEditInstrumentPills = function (bp) {
 
       var res = await fetch('/api/job/extend-upload', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
