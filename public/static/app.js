@@ -1791,8 +1791,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function showBlueprint(bp) {
-    if (!bp || !bpPills) return;
-    bpPills.innerHTML = '';
+    if (!bp) return;
+
+    // Build pill HTML fragments
     const pills = [
       { icon: 'fa-drum',        label: bp.bpm ? bp.bpm + ' BPM' : null },
       { icon: 'fa-music',       label: (bp.key || bp.scale) ? (bp.key + ' ' + bp.scale).trim() : null },
@@ -1800,34 +1801,75 @@ document.addEventListener('DOMContentLoaded', () => {
       { icon: 'fa-heart',       label: bp.mood || null },
       { icon: 'fa-bolt',        label: bp.energy ? bp.energy + ' energy' : null },
     ].filter(p => p.label);
-    pills.forEach(p => {
-      const el = document.createElement('span');
-      el.className = 'blueprint-pill';
-      el.innerHTML = `<i class="fas ${p.icon}"></i> ${p.label}`;
-      bpPills.appendChild(el);
-    });
-    // Show individual instrument name pills if available, otherwise show count
-    if (bp.instruments && bp.instruments.length > 0) {
-      const familyIconMap = {
-        drums: 'fa-drum', bass: 'fa-guitar', keys: 'fa-keyboard',
-        guitar: 'fa-guitar', strings: 'fa-music', brass: 'fa-music',
-        woodwind: 'fa-music', synth: 'fa-wave-square', fx: 'fa-wand-magic-sparkles',
-        vocals: 'fa-microphone', default: 'fa-music'
-      };
-      bp.instruments.forEach(ins => {
-        const icon = familyIconMap[ins.family] || familyIconMap.default;
+
+    function buildPillHTML(extraClass) {
+      let html = '';
+      pills.forEach(p => {
+        html += `<span class="blueprint-pill${extraClass||''}"><i class="fas ${p.icon}"></i> ${p.label}</span>`;
+      });
+      if (bp.instruments && bp.instruments.length > 0) {
+        const familyIconMap = {
+          drums: 'fa-drum', bass: 'fa-guitar', keys: 'fa-keyboard',
+          guitar: 'fa-guitar', strings: 'fa-music', brass: 'fa-music',
+          woodwind: 'fa-music', synth: 'fa-wave-square', fx: 'fa-wand-magic-sparkles',
+          vocals: 'fa-microphone', default: 'fa-music'
+        };
+        bp.instruments.forEach(ins => {
+          const icon = familyIconMap[ins.family] || familyIconMap.default;
+          html += `<span class="blueprint-pill blueprint-pill--instr${extraClass||''}"><i class="fas ${icon}"></i> ${ins.name}</span>`;
+        });
+      } else if (bp.instrument_count) {
+        html += `<span class="blueprint-pill${extraClass||''}"><i class="fas fa-layer-group"></i> ${bp.instrument_count} instruments</span>`;
+      }
+      return html;
+    }
+
+    // Populate hidden legacy blueprint-pills (for backward compat)
+    if (bpPills) {
+      bpPills.innerHTML = '';
+      pills.forEach(p => {
         const el = document.createElement('span');
-        el.className = 'blueprint-pill blueprint-pill--instr';
-        el.innerHTML = `<i class="fas ${icon}"></i> ${ins.name}`;
+        el.className = 'blueprint-pill';
+        el.innerHTML = `<i class="fas ${p.icon}"></i> ${p.label}`;
         bpPills.appendChild(el);
       });
-    } else if (bp.instrument_count) {
-      const el = document.createElement('span');
-      el.className = 'blueprint-pill';
-      el.innerHTML = `<i class="fas fa-layer-group"></i> ${bp.instrument_count} instruments`;
-      bpPills.appendChild(el);
+      if (bp.instruments && bp.instruments.length > 0) {
+        const familyIconMap = {
+          drums: 'fa-drum', bass: 'fa-guitar', keys: 'fa-keyboard',
+          guitar: 'fa-guitar', strings: 'fa-music', brass: 'fa-music',
+          woodwind: 'fa-music', synth: 'fa-wave-square', fx: 'fa-wand-magic-sparkles',
+          vocals: 'fa-microphone', default: 'fa-music'
+        };
+        bp.instruments.forEach(ins => {
+          const icon = familyIconMap[ins.family] || familyIconMap.default;
+          const el = document.createElement('span');
+          el.className = 'blueprint-pill blueprint-pill--instr';
+          el.innerHTML = `<i class="fas ${icon}"></i> ${ins.name}`;
+          bpPills.appendChild(el);
+        });
+      } else if (bp.instrument_count) {
+        const el = document.createElement('span');
+        el.className = 'blueprint-pill';
+        el.innerHTML = `<i class="fas fa-layer-group"></i> ${bp.instrument_count} instruments`;
+        bpPills.appendChild(el);
+      }
+      if (bpBlueprint) bpBlueprint.style.display = 'block';
     }
-    bpBlueprint.style.display = 'block';
+
+    // Populate pills in both gen cards
+    const pillsHTML = buildPillHTML('');
+    ['1','2'].forEach(n => {
+      const el = document.getElementById('pipeline-card-' + n + '-pills');
+      if (el) {
+        el.innerHTML = pillsHTML;
+        el.style.display = 'flex';
+      }
+      // Update status msg to show key info
+      const msg = document.getElementById('pipeline-card-' + n + '-msg');
+      if (msg && bp.bpm) {
+        msg.textContent = bp.bpm + ' BPM · ' + (bp.key||'') + ' ' + (bp.scale||'');
+      }
+    });
   }
 
 
@@ -1863,6 +1905,35 @@ document.addEventListener('DOMContentLoaded', () => {
     currentJobId = null;
   };
 
+  // ── Pipeline card play/pause (called from card onclick) ──────
+  window.pipelineCardPlay = function(n) {
+    const audio = document.getElementById('pipeline-audio-' + n);
+    const playBtn = document.getElementById('pipeline-card-' + n + '-play');
+    if (!audio || !audio.src) return;
+    // Pause the other card if it's playing
+    const other = n === 1 ? 2 : 1;
+    const otherAudio = document.getElementById('pipeline-audio-' + other);
+    const otherPlayBtn = document.getElementById('pipeline-card-' + other + '-play');
+    if (otherAudio && !otherAudio.paused) {
+      otherAudio.pause();
+      if (otherPlayBtn) otherPlayBtn.classList.remove('is-playing');
+    }
+    if (audio.paused) {
+      audio.play().catch(() => {});
+      if (playBtn) playBtn.classList.add('is-playing');
+    } else {
+      audio.pause();
+      if (playBtn) playBtn.classList.remove('is-playing');
+    }
+    // Update icon
+    if (playBtn) {
+      playBtn.innerHTML = audio.paused ? '<i class="fas fa-play"></i>' : '<i class="fas fa-pause"></i>';
+    }
+    audio.onended = function() {
+      if (playBtn) { playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
+    };
+  };
+
   async function startGeneration() {
     const inputs = getInputs();
 
@@ -1893,8 +1964,36 @@ document.addEventListener('DOMContentLoaded', () => {
     // Remove any dual-card layout from previous run
     const oldDual = document.getElementById('gen-result-dual');
     if (oldDual) oldDual.remove();
-    if (pipelineStatus) { pipelineStatus.style.display = 'block'; }
+    if (pipelineStatus) { pipelineStatus.style.display = 'block'; pipelineStatus.style.opacity = '1'; }
     if (bpBlueprint) bpBlueprint.style.display = 'none';
+
+    // ── Reset pipeline cards to spinner state ─────────────────
+    window._pipelineAudioUrl = [null, null, null];
+    [1, 2].forEach(n => {
+      const card    = document.getElementById('pipeline-card-' + n);
+      const overlay = document.getElementById('pipeline-card-' + n + '-overlay');
+      const playBtn = document.getElementById('pipeline-card-' + n + '-play');
+      const titleEl = document.getElementById('pipeline-card-' + n + '-title');
+      const msgEl   = document.getElementById('pipeline-card-' + n + '-msg');
+      const pillsEl = document.getElementById('pipeline-card-' + n + '-pills');
+      const audio   = document.getElementById('pipeline-audio-' + n);
+      if (card)    { card.classList.remove('is-ready'); }
+      if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; }
+      if (playBtn) { playBtn.style.display = 'none'; playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
+      if (titleEl) titleEl.textContent = 'Beat ' + n;
+      if (msgEl)   { msgEl.textContent = 'Generating…'; msgEl.classList.remove('is-done'); }
+      if (pillsEl) { pillsEl.innerHTML = ''; pillsEl.style.display = 'none'; }
+      if (audio)   { audio.pause(); audio.src = ''; }
+      // Remove any old download buttons
+      if (pillsEl && pillsEl.nextSibling && pillsEl.nextSibling.tagName === 'BUTTON') {
+        pillsEl.nextSibling.remove();
+      }
+    });
+    // Restore cancel btn and status sub
+    const cancelBtnReset = document.getElementById('gen-cancel-btn');
+    if (cancelBtnReset) cancelBtnReset.style.display = 'block';
+    const statusSubReset = document.getElementById('pipeline-status-sub');
+    if (statusSubReset) { statusSubReset.textContent = 'Stemforge is forging your beats…'; statusSubReset.style.display = 'block'; }
 
     setStep('blueprint', 'active');
     setStep('generating', '');
@@ -1974,20 +2073,26 @@ document.addEventListener('DOMContentLoaded', () => {
           if (!pollRes.ok) return;
           const job = await safeJson(pollRes);
 
-          // Update pipeline steps
-          // Update spinner message based on status
-          const spinnerMsg = document.getElementById('pipeline-spinner-msg');
+          // ── Helper: set both card status messages ────────────────
+          function setCardMsg(txt) {
+            ['1','2'].forEach(n => {
+              const el = document.getElementById('pipeline-card-' + n + '-msg');
+              if (el) el.textContent = txt;
+            });
+          }
+
+          // Update pipeline steps + card messages based on status
           const statusSub = document.getElementById('pipeline-status-sub');
           if (job.status === 'blueprint' && lastStatus !== 'blueprint') {
             setStep('blueprint', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Designing…';
+            setCardMsg('Designing…');
             if (statusSub) statusSub.textContent = 'Designing your beat blueprint…';
             lastStatus = 'blueprint';
           }
           if (job.status === 'generating' && lastStatus !== 'generating') {
             setStep('blueprint', 'done');
             setStep('generating', 'active');
-            if (spinnerMsg) spinnerMsg.textContent = 'Generating…';
+            setCardMsg('Generating…');
             if (statusSub) statusSub.textContent = 'Stemforge is forging both beats…';
             if (job.blueprint) showBlueprint(job.blueprint);
             lastStatus = 'generating';
@@ -1996,20 +2101,9 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('blueprint', 'done');
             setStep('generating', 'done');
             setStep('extracting', 'active');
+            setCardMsg('Extracting stems…');
+            if (statusSub) statusSub.textContent = 'Extracting stems…';
             if (job.blueprint) showBlueprint(job.blueprint);
-
-            // Show stereo player immediately (audio player always shown; download gated by plan)
-            if (job.stereo_url && stereoPlayer && stereoAudio) {
-              stereoAudio.src = job.stereo_url;
-              stereoPlayer.style.display = 'block';
-              if (stereoDownload) {
-                // Hide download link during extraction (will be finalized in 'ready' block)
-                stereoDownload.style.display = 'none';
-              }
-            }
-
-            // Show result panel early
-            if (genResult) genResult.style.display = 'block';
             lastStatus = 'extracting';
           }
 
@@ -2019,14 +2113,15 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('generating', 'done');
             setStep('extracting', 'done');
 
-            // ── Collapse the spinner window ──────────────────────
-            if (pipelineStatus) {
-              pipelineStatus.style.transition = 'opacity .4s ease';
-              pipelineStatus.style.opacity = '0';
-              setTimeout(() => { pipelineStatus.style.display = 'none'; pipelineStatus.style.opacity = '1'; }, 400);
-            }
+            // ── Cards STAY — transition to ready state ────────────
+            // Hide cancel button
             const cancelBtn = document.getElementById('gen-cancel-btn');
             if (cancelBtn) cancelBtn.style.display = 'none';
+            // Hide status sub-line
+            const statusSubReady = document.getElementById('pipeline-status-sub');
+            if (statusSubReady) statusSubReady.style.display = 'none';
+            // Keep gen-result hidden (cards are the result now)
+            if (genResult) genResult.style.display = 'none';
 
             // ── Resolve final track title ─────────────────────────
             const finalTitle = job.title ||
@@ -2072,77 +2167,59 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
-            // ── Dual beat cards: show both clips Producer returned ──────────────
+            // ── Update pipeline cards in-place (cards STAY as result) ──
             const hasAlt = !!job.stereo_url_alt;
+            const urls = [job.stereo_url, job.stereo_url_alt || job.stereo_url];
 
-            // If we have 2 clips, wrap the result panel in a dual-card layout
-            if (hasAlt) {
-              const resultEl = document.getElementById('gen-result');
-              if (resultEl && !document.getElementById('gen-result-dual')) {
-                resultEl.style.display = 'none'; // hide original
-                const dual = document.createElement('div');
-                dual.id = 'gen-result-dual';
-                dual.style.cssText = 'display:flex;gap:12px;width:100%;flex-wrap:wrap';
+            // Store audio URLs for card playback
+            window._pipelineAudioUrl = [null, job.stereo_url, job.stereo_url_alt || job.stereo_url];
 
-                function makeBeatCard(url, label, num) {
-                  const card = document.createElement('div');
-                  card.style.cssText = 'flex:1;min-width:0;background:var(--surface-2,#1a1a2e);border:1px solid var(--border,#2a2a3e);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:10px';
-                  const hue = job.thumbnail_seed ?? 180;
-                  card.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-                      <div style="display:flex;align-items:center;gap:8px;min-width:0">
-                        <div style="width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,hsl(${hue},60%,40%),hsl(${(hue+60)%360},70%,50%));flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff"><i class="fas fa-music"></i></div>
-                        <div style="min-width:0">
-                          <div style="font-weight:700;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${finalTitle.replace(/_/g,' ')} ${label}</div>
-                          <div style="font-size:.75rem;color:var(--muted)">${job.blueprint ? job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale : ''}</div>
-                        </div>
-                      </div>
-                    </div>
-                    <audio controls style="width:100%;height:34px" src="${url}"></audio>
-                    ${isFree
-                      ? `<button onclick="(${showUpgradePrompt.toString()})()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-size:.8rem"><i class="fas fa-lock"></i> Upgrade to download</button>`
-                      : `<button onclick="(function(){var a=document.createElement('a');a.href='${url}';a.download='${safeFilename}_v${num}.mp3';document.body.appendChild(a);a.click();a.remove();})()" style="width:100%;padding:8px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.8rem;font-weight:600"><i class="fas fa-download"></i> Download Beat ${num}</button>`
-                    }`;
-                  return card;
-                }
+            // Activate each card: hide spinner, show play button, update body
+            [1, 2].forEach(n => {
+              const url = urls[n - 1];
+              if (!url) return;
+              const card    = document.getElementById('pipeline-card-' + n);
+              const overlay = document.getElementById('pipeline-card-' + n + '-overlay');
+              const playBtn = document.getElementById('pipeline-card-' + n + '-play');
+              const titleEl = document.getElementById('pipeline-card-' + n + '-title');
+              const msgEl   = document.getElementById('pipeline-card-' + n + '-msg');
+              const audio   = document.getElementById('pipeline-audio-' + n);
 
-                dual.appendChild(makeBeatCard(job.stereo_url, '— Version 1', 1));
-                dual.appendChild(makeBeatCard(job.stereo_url_alt, '— Version 2', 2));
+              if (overlay) overlay.style.transition = 'opacity .4s', overlay.style.opacity = '0', setTimeout(() => overlay.style.display = 'none', 400);
+              if (playBtn) playBtn.style.display = 'flex';
+              if (card)    card.classList.add('is-ready');
+              if (titleEl) titleEl.textContent = (finalTitle.replace(/_/g,' ') + (n === 1 ? ' — V1' : ' — V2'));
+              if (msgEl)   { msgEl.textContent = 'Ready · tap to play'; msgEl.classList.add('is-done'); }
+              if (audio)   { audio.src = url; audio.preload = 'auto'; }
 
-                // Stems / library actions row below both cards
-                if (!isFree && job.stereo_url) {
-                  const actRow = document.createElement('div');
-                  actRow.style.cssText = 'width:100%;display:flex;gap:8px;margin-top:4px';
-                  actRow.innerHTML = `<button onclick="if(typeof window.openStemsPanel==='function')window.openStemsPanel('${job.id}','${job.stereo_url}','${finalTitle||safeFilename}','${userPlan}')" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:.8rem"><i class="fas fa-layer-group"></i> Get Stems (V1)</button>`;
-                  dual.appendChild(actRow);
-                }
-
-                resultEl.parentNode.insertBefore(dual, resultEl.nextSibling);
-              }
-            } else {
-              // Single clip — normal flow below
-            }
-
-            // Stereo player — show audio player always, gate the download button
-            if (!hasAlt && job.stereo_url && stereoPlayer && stereoAudio) {
-              stereoAudio.src = job.stereo_url;
-              stereoPlayer.style.display = 'block';
-              if (stereoDownload) {
-                stereoDownload.style.display = '';  // make visible again
+              // Download button below pills
+              const pillsEl = document.getElementById('pipeline-card-' + n + '-pills');
+              if (pillsEl) {
+                const dlBtn = document.createElement('button');
                 if (isFree) {
-                  // Show lock state on download button
-                  stereoDownload.href = '#';
-                  stereoDownload.setAttribute('download', '');
-                  stereoDownload.innerHTML = '<i class="fas fa-lock"></i> Upgrade to access';
-                  stereoDownload.style.opacity = '0.7';
-                  stereoDownload.addEventListener('click', e => { e.preventDefault(); showUpgradePrompt(); });
+                  dlBtn.className = 'btn btn--sm';
+                  dlBtn.style.cssText = 'margin-top:8px;width:100%;padding:6px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-size:.78rem';
+                  dlBtn.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
+                  dlBtn.onclick = function() { showUpgradePrompt(); };
                 } else {
-                  stereoDownload.href = job.stereo_url;
-                  stereoDownload.setAttribute('download', safeFilename + '_stereo.mp3');
-                  stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download';
-                  stereoDownload.style.opacity = '';
+                  dlBtn.className = 'btn btn--sm';
+                  dlBtn.style.cssText = 'margin-top:8px;width:100%;padding:6px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.78rem;font-weight:600';
+                  dlBtn.innerHTML = '<i class="fas fa-download"></i> Download V' + n;
+                  const dlUrl = url, dlName = safeFilename + '_v' + n + '.mp3';
+                  dlBtn.onclick = function() { var a=document.createElement('a');a.href=dlUrl;a.download=dlName;document.body.appendChild(a);a.click();a.remove(); };
                 }
+                pillsEl.parentNode.insertBefore(dlBtn, pillsEl.nextSibling);
               }
+            });
+
+            // If only 1 clip (no alt), card 2 shows "—" state
+            if (!hasAlt) {
+              const card2    = document.getElementById('pipeline-card-2');
+              const overlay2 = document.getElementById('pipeline-card-2-overlay');
+              const msg2     = document.getElementById('pipeline-card-2-msg');
+              if (overlay2) overlay2.style.display = 'none';
+              if (msg2) msg2.textContent = 'Same as V1';
+              // keep spinner hidden, no play btn for card 2 if no alt url
             }
 
             // Build export action buttons — Creator: mastered only; Pro: 3 options
@@ -2266,7 +2343,8 @@ document.addEventListener('DOMContentLoaded', () => {
               drawCanvasArt(thumbEl, hue, finalTitle, genre);
             }
 
-            if (genResult && !hasAlt) genResult.style.display = 'block';
+            // gen-result panel stays hidden — pipeline cards are the result
+            if (genResult) genResult.style.display = 'none';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
             // Invalidate library cache so new beat appears immediately when user navigates to library

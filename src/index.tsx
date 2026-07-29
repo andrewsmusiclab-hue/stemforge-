@@ -2141,7 +2141,7 @@ app.get('/api/remix-dl', async (c) => {
 //
 //  Costs 20 pts, Pro Artist only.
 //  Flow:
-//   1. POST /sonic/upload { audio_url: ... } → { task_id }
+//   1. POST /sonic/upload { url: ... } → { task_id }
 //   2. Poll /sonic/task/:taskId until state=succeeded → clip_id
 //   3. POST /producer/create { task_type: "generate_music", reference_clip_id: clip_id, sound: "..." }
 //   4. Returns { task_id } — async; poll with GET below
@@ -2234,7 +2234,7 @@ app.post('/api/job/regen-stem', async (c) => {
     const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url: uploadAudioUrl })
+      body: JSON.stringify({ url: uploadAudioUrl })
     })
     if (!uploadRes.ok) {
       const errText = await uploadRes.text()
@@ -2412,7 +2412,7 @@ app.post('/api/job/remix', async (c) => {
     const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url: stereo_url })
+      body: JSON.stringify({ url: stereo_url })
     })
     if (!uploadRes.ok) {
       const t = await uploadRes.text()
@@ -3972,7 +3972,7 @@ app.post('/api/job/extend', async (c) => {
     const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url: sourceJob.stereo_url })
+      body: JSON.stringify({ url: sourceJob.stereo_url })
     })
     if (!uploadRes.ok) {
       const errText = await uploadRes.text()
@@ -5299,7 +5299,7 @@ app.post('/api/upload-extend-audio', async (c) => {
   const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audio_url: audioUrl })
+    body: JSON.stringify({ url: audioUrl })
   })
 
   if (!res.ok) {
@@ -5352,7 +5352,7 @@ app.get('/api/poll-upload-task/:taskId', async (c) => {
 })
 
 // POST /api/upload-reference — upload reference audio for AI generation (Pro Artist only)
-// MusicAPI: POST /sonic/upload { audio_url } → task_id → poll → clip_id
+// MusicAPI: POST /sonic/upload { url } → task_id → poll → clip_id
 app.post('/api/upload-reference', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5388,7 +5388,7 @@ app.post('/api/upload-reference', async (c) => {
   const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ audio_url: audioUrl })
+    body: JSON.stringify({ url: audioUrl })
   })
 
   if (!res.ok) {
@@ -5885,7 +5885,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-02'
+const ASSET_VER = '20260729-03'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7205,26 +7205,70 @@ function generatorPage() {
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
   <div class="suno-right">
 
-    <!-- Pipeline status - dual compact spinners -->
+    <!-- Pipeline status - dual project-card style beat cards -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
-      <!-- Two side-by-side beat cards shown during generation -->
-      <div class="pipeline-dual-row">
-        <div class="pipeline-dual-card">
-          <div class="pipeline-dual-label">Beat 1</div>
-          <div class="pipeline-spinner" style="width:36px;height:36px"></div>
-          <p class="pipeline-spinner-msg" style="font-size:.8rem;margin:0" id="pipeline-spinner-msg">Generating…</p>
+
+      <!-- Two side-by-side beat cards (project-card structure) -->
+      <div class="pipeline-gen-row">
+
+        <!-- Beat 1 card -->
+        <div class="project-card pipeline-gen-card" id="pipeline-card-1">
+          <!-- Art / Video section (top half) -->
+          <div class="project-card__art pipeline-gen-card__art">
+            <video class="pipeline-gen-video" src="/static/forge-beat1.mp4" autoplay muted loop playsinline></video>
+            <!-- Spinner overlay (shown during generation) -->
+            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-1-overlay">
+              <div class="pipeline-spinner"></div>
+            </div>
+            <!-- Play button overlay (shown when ready) -->
+            <div class="project-card__play pipeline-gen-card__play" id="pipeline-card-1-play" style="display:none" onclick="pipelineCardPlay(1)">
+              <i class="fas fa-play"></i>
+            </div>
+          </div>
+          <!-- Body section (bottom half) -->
+          <div class="project-card__body pipeline-gen-card__body">
+            <h4 id="pipeline-card-1-title">Beat 1</h4>
+            <p id="pipeline-card-1-msg" class="pipeline-spinner-msg">Generating…</p>
+            <div class="project-card__tags pipeline-gen-card__pills" id="pipeline-card-1-pills" style="display:none"></div>
+          </div>
         </div>
-        <div class="pipeline-dual-card">
-          <div class="pipeline-dual-label">Beat 2</div>
-          <div class="pipeline-spinner" style="width:36px;height:36px"></div>
-          <p class="pipeline-spinner-msg" style="font-size:.8rem;margin:0">Generating…</p>
+
+        <!-- Beat 2 card -->
+        <div class="project-card pipeline-gen-card" id="pipeline-card-2">
+          <!-- Art / Video section (top half) -->
+          <div class="project-card__art pipeline-gen-card__art">
+            <video class="pipeline-gen-video" src="/static/forge-beat2.mp4" autoplay muted loop playsinline></video>
+            <!-- Spinner overlay (shown during generation) -->
+            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-2-overlay">
+              <div class="pipeline-spinner"></div>
+            </div>
+            <!-- Play button overlay (shown when ready) -->
+            <div class="project-card__play pipeline-gen-card__play" id="pipeline-card-2-play" style="display:none" onclick="pipelineCardPlay(2)">
+              <i class="fas fa-play"></i>
+            </div>
+          </div>
+          <!-- Body section (bottom half) -->
+          <div class="project-card__body pipeline-gen-card__body">
+            <h4 id="pipeline-card-2-title">Beat 2</h4>
+            <p id="pipeline-card-2-msg" class="pipeline-spinner-msg">Generating…</p>
+            <div class="project-card__tags pipeline-gen-card__pills" id="pipeline-card-2-pills" style="display:none"></div>
+          </div>
         </div>
-      </div>
-      <!-- Status line below both cards -->
-      <p style="font-size:.78rem;color:rgba(255,255,255,.5);margin:4px 0 0;text-align:center" id="pipeline-status-sub">Stemforge is forging your beats…</p>
-      <button id="gen-cancel-btn" onclick="cancelGeneration()" style="margin-top:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);color:rgba(255,255,255,.6);border-radius:8px;padding:5px 16px;font-size:.78rem;cursor:pointer;transition:all .15s" onmouseover="this.style.background='rgba(239,68,68,.18)';this.style.borderColor='rgba(239,68,68,.5)';this.style.color='#ef4444'" onmouseout="this.style.background='rgba(255,255,255,.06)';this.style.borderColor='rgba(255,255,255,.15)';this.style.color='rgba(255,255,255,.6)'">
+
+      </div><!-- /pipeline-gen-row -->
+
+      <!-- Hidden audio players for card playback -->
+      <audio id="pipeline-audio-1" style="display:none"></audio>
+      <audio id="pipeline-audio-2" style="display:none"></audio>
+
+      <!-- Status line -->
+      <p class="pipeline-gen-status-sub" id="pipeline-status-sub">Stemforge is forging your beats…</p>
+
+      <!-- Cancel button -->
+      <button id="gen-cancel-btn" onclick="cancelGeneration()" class="pipeline-gen-cancel-btn">
         <i class="fas fa-times" style="margin-right:5px"></i>Cancel
       </button>
+
       <!-- hidden step trackers for JS logic only (not shown to user) -->
       <div style="display:none" id="step-blueprint"><div id="ind-blueprint"></div></div>
       <div style="display:none" id="step-generating"><div id="ind-generating"></div></div>

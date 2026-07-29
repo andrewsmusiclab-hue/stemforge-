@@ -1192,8 +1192,15 @@ p  { color: var(--sub); }
    Pipeline UI styles
 ═══════════════════════════════════════════════════════════════ */
 .pipeline-status {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); padding: 24px; margin-bottom: 20px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
 }
 .pipeline-steps { display: flex; flex-direction: column; gap: 0; }
 .pipeline-step {
@@ -2450,81 +2457,146 @@ body.light .legal-body td {
   pointer-events: none;
   border-radius: inherit;
 }
-.pipeline-spinner-wrap {
-  position: relative;
+/* ── Generation pipeline: two project-card-style beat cards ── */
+
+/* Row: two cards sit side by side, same width as project-card grid */
+.pipeline-gen-row {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 18px 16px;
-  gap: 10px;
-  border-radius: 14px;
+  gap: 14px;
+  width: 100%;
+}
+
+/* Each gen card inherits project-card dimensions/style */
+.pipeline-gen-card {
+  flex: 1;
+  min-width: 0;
+  cursor: default; /* not clickable until ready */
+}
+.pipeline-gen-card.is-ready {
+  cursor: pointer;
+}
+.pipeline-gen-card.is-ready:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: var(--border-2); }
+
+/* Art area: video fills the square top half */
+.pipeline-gen-card__art {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1/1;
   overflow: hidden;
   background: #0d0d1a;
-  max-width: 320px;
-  width: 100%;
-  margin: 0 auto;
 }
-/* Dual spinner row: two compact cards side by side */
-.pipeline-dual-row {
-  display: flex;
-  gap: 10px;
-  width: 100%;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-.pipeline-dual-card {
-  flex: 1;
-  min-width: 120px;
-  max-width: 200px;
-  background: rgba(167,139,250,.08);
-  border: 1px solid rgba(167,139,250,.2);
-  border-radius: 12px;
-  padding: 14px 10px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.pipeline-dual-label {
-  font-size: .75rem;
-  color: rgba(255,255,255,.6);
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-}
-/* Dark gradient overlay so text stays readable over the colorful video */
-.pipeline-spinner-wrap::before {
-  content: '';
+
+/* Video fills the art area, cropped to cover */
+.pipeline-gen-video {
   position: absolute;
   inset: 0;
-  background: linear-gradient(135deg, rgba(5,5,20,.55) 0%, rgba(10,5,30,.45) 100%);
-  z-index: 1;
-  border-radius: inherit;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.65;
 }
-.pipeline-spinner-wrap > * { position: relative; z-index: 2; }
+
+/* Spinner overlay sits over the video while generating */
+.pipeline-gen-card__spinner-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.35);
+  z-index: 2;
+}
+
+/* Play button (project-card__play style) — hidden until ready */
+.pipeline-gen-card__play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.4);
+  color: #fff;
+  font-size: 1.5rem;
+  opacity: 0;
+  transition: opacity var(--transition);
+  z-index: 3;
+  cursor: pointer;
+}
+.pipeline-gen-card.is-ready:hover .pipeline-gen-card__play { opacity: 1; }
+.pipeline-gen-card__play.is-playing { opacity: 1; color: #a78bfa; }
+
+/* Body: title, status msg, pills */
+.pipeline-gen-card__body {
+  /* inherits project-card__body padding */
+}
+.pipeline-gen-card__body h4 {
+  font-size: .88rem;
+  font-weight: 700;
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Status message under title */
+.pipeline-spinner-msg {
+  font-size: .75rem;
+  color: var(--muted);
+  margin: 0 0 8px;
+  animation: pulse-opacity 1.8s ease-in-out infinite;
+}
+.pipeline-spinner-msg.is-done {
+  animation: none;
+  color: var(--accent-2, #34d399);
+}
+
+/* Pills row in card body */
+.pipeline-gen-card__pills {
+  margin-top: 6px;
+}
+
+/* Global spinner (used inside the overlay) */
 .pipeline-spinner {
-  width: 52px; height: 52px;
+  width: 38px; height: 38px;
   border: 3px solid rgba(255,255,255,.2);
   border-top-color: #a78bfa;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  filter: drop-shadow(0 0 8px rgba(167,139,250,.6));
+  filter: drop-shadow(0 0 8px rgba(167,139,250,.5));
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.pipeline-spinner-msg {
-  font-size: 1rem;
-  color: #fff;
-  font-weight: 700;
-  margin: 0;
-  text-align: center;
-  letter-spacing: .02em;
-  text-shadow: 0 1px 8px rgba(0,0,0,.8), 0 0 24px rgba(167,139,250,.5);
-  animation: pulse-opacity 1.8s ease-in-out infinite;
-}
 @keyframes pulse-opacity {
   0%,100% { opacity: 1; }
-  50% { opacity: .7; }
+  50% { opacity: .5; }
+}
+
+/* Status text below both cards */
+.pipeline-gen-status-sub {
+  font-size: .78rem;
+  color: rgba(255,255,255,.45);
+  margin: 6px 0 0;
+  text-align: center;
+}
+
+/* Cancel button */
+.pipeline-gen-cancel-btn {
+  margin-top: 8px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.15);
+  color: rgba(255,255,255,.6);
+  border-radius: 8px;
+  padding: 5px 16px;
+  font-size: .78rem;
+  cursor: pointer;
+  transition: all .15s;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+.pipeline-gen-cancel-btn:hover {
+  background: rgba(239,68,68,.18);
+  border-color: rgba(239,68,68,.5);
+  color: #ef4444;
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -4215,8 +4287,11 @@ html, body {
 
   /* ── Pipeline status ─────────────────────────────────────── */
   .pipeline-status {
-    padding: 16px;
-    overflow: hidden;
+    padding: 0;
+    overflow: visible;
+  }
+  .pipeline-gen-row {
+    gap: 8px;
   }
 
   /* ── Create button ───────────────────────────────────────── */
