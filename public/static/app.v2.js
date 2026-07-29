@@ -3090,7 +3090,7 @@ async function uploadRefTrack(file, name) {
     if (zone) zone.classList.add('has-file');
     if (modePanel) modePanel.style.display = 'block';
     if (clearBtn) clearBtn.style.display = 'block';
-    updateRefTabBadge();
+    if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
     // Populate info strip
     _showRefInfoStrip({ serverDuration: data.duration, startTime: 0, audioDuration: null });
   } catch(err) {
@@ -3159,7 +3159,7 @@ window.clearRefTrack = function() {
   if (modePanel) modePanel.style.display = 'none';
   if (clearBtn) clearBtn.style.display = 'none';
   if (fileInput) fileInput.value = '';
-  updateRefTabBadge();
+  if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
   // Close the dropdown if nothing is loaded
   var panel = document.getElementById('ref-inline-panel');
   var btn   = document.getElementById('ctab-reference');
@@ -3548,6 +3548,14 @@ window.selectBarPreset = function(btn, bars) {
   // We don't override fetch globally — instead we rely on the app reading window._refFileId
   // and window._refMode at generate time
 })();
+
+// Update the "ON" badge on the Reference tab button
+function updateRefTabBadge() {
+  var badge = document.getElementById('ctab-ref-badge');
+  if (!badge) return;
+  badge.style.display = refFileId ? 'inline' : 'none';
+}
+window.updateRefTabBadge = updateRefTabBadge;
 
 // Expose ref info so startGeneration can read it
 Object.defineProperty(window, '_refFileId', { get: () => refFileId });
