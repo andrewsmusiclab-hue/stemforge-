@@ -5255,9 +5255,8 @@ app.get('/api/extend-audio-proxy/:key', async (c) => {
 
 // POST /api/upload-extend-audio — upload audio for Song Extend
 // Accepts: JSON { audio_url } or multipart { url } or multipart { file }
-// For file blobs: stores in R2 (IMAGES binding) and generates a public proxy URL,
-// then passes that URL to MusicAPI Sonic /upload → returns { task_id, upload_task_id }
-// Client polls GET /api/poll-upload-task/:taskId to get clip_id, then calls /api/job/extend-upload
+// MusicAPI /sonic/upload SYNC mode: returns { code:200, clip_id: "..." } immediately — no polling needed.
+// Returns { ok: true, clip_id } directly to client.
 app.post('/api/upload-extend-audio', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5295,7 +5294,7 @@ app.post('/api/upload-extend-audio', async (c) => {
   }
   if (!audioUrl) return c.json({ error: 'audio_url required' }, 400)
 
-  // Upload to MusicAPI Sonic — returns { task_id }
+  // POST /sonic/upload — SYNC MODE: returns { code:200, clip_id: "..." } directly, no task_id
   const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -5305,14 +5304,28 @@ app.post('/api/upload-extend-audio', async (c) => {
   if (!res.ok) {
     let errMsg = `MusicAPI upload error ${res.status}`
     try { const e = await res.json() as any; errMsg = e?.message || e?.error || errMsg } catch {}
+    console.error('[upload-extend] MusicAPI error:', res.status, errMsg)
     return c.json({ error: errMsg }, 500)
   }
 
   const data = await res.json() as any
-  // Returns { task_id } — client polls /api/poll-upload-task/:taskId to get clip_id
-  const taskId = data.task_id || data.data?.task_id
-  if (!taskId) return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
-  return c.json({ ok: true, task_id: taskId, upload_task_id: taskId })
+  console.log('[upload-extend] MusicAPI response:', JSON.stringify(data).slice(0, 300))
+
+  // Sync mode returns clip_id directly; async mode (with callback_url) returns task_id
+  const clipId = data.clip_id || data.data?.clip_id
+  if (clipId) {
+    // Sync mode — clip is ready immediately
+    return c.json({ ok: true, clip_id: clipId, status: 'ready' })
+  }
+
+  // Async fallback — shouldn't happen without callback_url but handle gracefully
+  const taskId = data.task_id || data.data?.task_id || data.id
+  if (taskId) {
+    return c.json({ ok: true, task_id: taskId, upload_task_id: taskId, status: 'processing' })
+  }
+
+  console.error('[upload-extend] Unexpected MusicAPI response:', JSON.stringify(data).slice(0, 500))
+  return c.json({ error: `Unexpected MusicAPI response: ${JSON.stringify(data).slice(0, 200)}` }, 500)
 })
 
 // GET /api/poll-upload-task/:taskId — poll MusicAPI Sonic for uploaded clip's clip_id
@@ -5403,13 +5416,23 @@ app.post('/api/upload-reference', async (c) => {
   }
 
   const data = await res.json() as any
-  const taskId = data.task_id || data.data?.task_id
+  console.log('[upload-reference] MusicAPI response:', JSON.stringify(data).slice(0, 300))
+
+  // Sync mode returns clip_id directly
+  const clipId = data.clip_id || data.data?.clip_id
+  if (clipId) {
+    return c.json({ ok: true, clip_id: clipId, task_id: clipId, upload_task_id: clipId, status: 'ready', filename: audioUrl })
+  }
+
+  // Async fallback
+  const taskId = data.task_id || data.data?.task_id || data.id
   if (!taskId) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
+    console.error('[upload-reference] Unexpected response:', JSON.stringify(data).slice(0, 500))
+    return c.json({ error: `Unexpected MusicAPI response: ${JSON.stringify(data).slice(0,200)}` }, 500)
   }
   // Returns task_id — client polls /sonic/task/:taskId to get clip_id for use as reference_clip_id
-  return c.json({ ok: true, task_id: taskId, upload_task_id: taskId, filename: audioUrl })
+  return c.json({ ok: true, task_id: taskId, upload_task_id: taskId, status: 'processing', filename: audioUrl })
 })
 
 // POST /api/generate-oneshot — one-shot sound design via MusicAPI Producer (Lyria 3 Pro)
@@ -5885,7 +5908,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-03'
+const ASSET_VER = '20260729-04'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7216,11 +7239,11 @@ function generatorPage() {
           <!-- Art / Video section (top half) -->
           <div class="project-card__art pipeline-gen-card__art">
             <video class="pipeline-gen-video" src="/static/forge-beat1.mp4" autoplay muted loop playsinline></video>
-            <!-- Spinner overlay (shown during generation) -->
-            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-1-overlay">
+            <!-- Spinner overlay (shown during generation, display:flex by default) -->
+            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-1-overlay" style="display:flex">
               <div class="pipeline-spinner"></div>
             </div>
-            <!-- Play button overlay (shown when ready) -->
+            <!-- Play button overlay (hidden until ready) -->
             <div class="project-card__play pipeline-gen-card__play" id="pipeline-card-1-play" style="display:none" onclick="pipelineCardPlay(1)">
               <i class="fas fa-play"></i>
             </div>
@@ -7229,7 +7252,14 @@ function generatorPage() {
           <div class="project-card__body pipeline-gen-card__body">
             <h4 id="pipeline-card-1-title">Beat 1</h4>
             <p id="pipeline-card-1-msg" class="pipeline-spinner-msg">Generating…</p>
-            <div class="project-card__tags pipeline-gen-card__pills" id="pipeline-card-1-pills" style="display:none"></div>
+            <!-- Scrubber (hidden until ready) -->
+            <div class="pipeline-scrubber" id="pipeline-scrubber-1" style="display:none">
+              <input type="range" class="pipeline-scrubber__range" id="pipeline-scrubber-1-range" min="0" max="100" step="0.1" value="0">
+              <div class="pipeline-scrubber__times">
+                <span id="pipeline-scrubber-1-cur">0:00</span>
+                <span id="pipeline-scrubber-1-dur">0:00</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -7238,11 +7268,11 @@ function generatorPage() {
           <!-- Art / Video section (top half) -->
           <div class="project-card__art pipeline-gen-card__art">
             <video class="pipeline-gen-video" src="/static/forge-beat2.mp4" autoplay muted loop playsinline></video>
-            <!-- Spinner overlay (shown during generation) -->
-            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-2-overlay">
+            <!-- Spinner overlay (shown during generation, display:flex by default) -->
+            <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-2-overlay" style="display:flex">
               <div class="pipeline-spinner"></div>
             </div>
-            <!-- Play button overlay (shown when ready) -->
+            <!-- Play button overlay (hidden until ready) -->
             <div class="project-card__play pipeline-gen-card__play" id="pipeline-card-2-play" style="display:none" onclick="pipelineCardPlay(2)">
               <i class="fas fa-play"></i>
             </div>
@@ -7251,7 +7281,14 @@ function generatorPage() {
           <div class="project-card__body pipeline-gen-card__body">
             <h4 id="pipeline-card-2-title">Beat 2</h4>
             <p id="pipeline-card-2-msg" class="pipeline-spinner-msg">Generating…</p>
-            <div class="project-card__tags pipeline-gen-card__pills" id="pipeline-card-2-pills" style="display:none"></div>
+            <!-- Scrubber (hidden until ready) -->
+            <div class="pipeline-scrubber" id="pipeline-scrubber-2" style="display:none">
+              <input type="range" class="pipeline-scrubber__range" id="pipeline-scrubber-2-range" min="0" max="100" step="0.1" value="0">
+              <div class="pipeline-scrubber__times">
+                <span id="pipeline-scrubber-2-cur">0:00</span>
+                <span id="pipeline-scrubber-2-dur">0:00</span>
+              </div>
+            </div>
           </div>
         </div>
 

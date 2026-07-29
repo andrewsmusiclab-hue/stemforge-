@@ -1856,15 +1856,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (bpBlueprint) bpBlueprint.style.display = 'block';
     }
 
-    // Populate pills in both gen cards
-    const pillsHTML = buildPillHTML('');
+    // Update status msg in cards to show key blueprint info (no pills in cards)
     ['1','2'].forEach(n => {
-      const el = document.getElementById('pipeline-card-' + n + '-pills');
-      if (el) {
-        el.innerHTML = pillsHTML;
-        el.style.display = 'flex';
-      }
-      // Update status msg to show key info
       const msg = document.getElementById('pipeline-card-' + n + '-msg');
       if (msg && bp.bpm) {
         msg.textContent = bp.bpm + ' BPM · ' + (bp.key||'') + ' ' + (bp.scale||'');
@@ -1905,6 +1898,64 @@ document.addEventListener('DOMContentLoaded', () => {
     currentJobId = null;
   };
 
+  // ── Scrubber time formatter ───────────────────────────────────
+  function _pipelineFmtTime(sec) {
+    if (!isFinite(sec) || sec < 0) return '0:00';
+    var m = Math.floor(sec / 60);
+    var s = Math.floor(sec % 60);
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  // ── Wire scrubber to an audio element (call once per card when audio src is set) ──
+  function _pipelineWireScrubber(n) {
+    var audio    = document.getElementById('pipeline-audio-' + n);
+    var scrubber = document.getElementById('pipeline-scrubber-' + n);
+    var range    = document.getElementById('pipeline-scrubber-' + n + '-range');
+    var curEl    = document.getElementById('pipeline-scrubber-' + n + '-cur');
+    var durEl    = document.getElementById('pipeline-scrubber-' + n + '-dur');
+    if (!audio || !range) return;
+
+    // Show scrubber panel
+    if (scrubber) scrubber.style.display = 'block';
+
+    // Duration: set once metadata loads
+    audio.addEventListener('loadedmetadata', function() {
+      if (durEl) durEl.textContent = _pipelineFmtTime(audio.duration);
+      range.max = audio.duration || 100;
+    });
+
+    // Tick: update position while playing
+    audio.addEventListener('timeupdate', function() {
+      if (!range._seeking) {
+        var pct = audio.duration > 0 ? (audio.currentTime / audio.duration) * 100 : 0;
+        range.value = pct;
+        if (curEl) curEl.textContent = _pipelineFmtTime(audio.currentTime);
+        // Fill track progress via CSS gradient
+        range.style.background = 'linear-gradient(to right, #a78bfa 0%, #a78bfa ' + pct + '%, rgba(255,255,255,.15) ' + pct + '%, rgba(255,255,255,.15) 100%)';
+      }
+    });
+
+    // Seek: user drags the range
+    range.addEventListener('input', function() {
+      range._seeking = true;
+      var seekTo = (range.value / 100) * (audio.duration || 0);
+      if (curEl) curEl.textContent = _pipelineFmtTime(seekTo);
+      var pct = parseFloat(range.value);
+      range.style.background = 'linear-gradient(to right, #a78bfa 0%, #a78bfa ' + pct + '%, rgba(255,255,255,.15) ' + pct + '%, rgba(255,255,255,.15) 100%)';
+    });
+    range.addEventListener('change', function() {
+      audio.currentTime = (range.value / 100) * (audio.duration || 0);
+      range._seeking = false;
+    });
+
+    // Reset range on ended
+    audio.addEventListener('ended', function() {
+      range.value = 0;
+      range.style.background = 'rgba(255,255,255,.15)';
+      if (curEl) curEl.textContent = '0:00';
+    });
+  }
+
   // ── Pipeline card play/pause (called from card onclick) ──────
   window.pipelineCardPlay = function(n) {
     const audio = document.getElementById('pipeline-audio-' + n);
@@ -1916,18 +1967,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const otherPlayBtn = document.getElementById('pipeline-card-' + other + '-play');
     if (otherAudio && !otherAudio.paused) {
       otherAudio.pause();
-      if (otherPlayBtn) otherPlayBtn.classList.remove('is-playing');
+      if (otherPlayBtn) { otherPlayBtn.classList.remove('is-playing'); otherPlayBtn.innerHTML = '<i class="fas fa-play"></i>'; }
     }
     if (audio.paused) {
       audio.play().catch(() => {});
-      if (playBtn) playBtn.classList.add('is-playing');
+      if (playBtn) { playBtn.classList.add('is-playing'); playBtn.innerHTML = '<i class="fas fa-pause"></i>'; }
     } else {
       audio.pause();
-      if (playBtn) playBtn.classList.remove('is-playing');
-    }
-    // Update icon
-    if (playBtn) {
-      playBtn.innerHTML = audio.paused ? '<i class="fas fa-play"></i>' : '<i class="fas fa-pause"></i>';
+      if (playBtn) { playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
     }
     audio.onended = function() {
       if (playBtn) { playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
@@ -1977,16 +2024,24 @@ document.addEventListener('DOMContentLoaded', () => {
       const msgEl   = document.getElementById('pipeline-card-' + n + '-msg');
       const pillsEl = document.getElementById('pipeline-card-' + n + '-pills');
       const audio   = document.getElementById('pipeline-audio-' + n);
+      const scrubber = document.getElementById('pipeline-scrubber-' + n);
+      const scrubRange = document.getElementById('pipeline-scrubber-' + n + '-range');
+      const scrubCur = document.getElementById('pipeline-scrubber-' + n + '-cur');
       if (card)    { card.classList.remove('is-ready'); }
-      if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; }
+      if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; overlay.style.transition = ''; }
       if (playBtn) { playBtn.style.display = 'none'; playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
       if (titleEl) titleEl.textContent = 'Beat ' + n;
       if (msgEl)   { msgEl.textContent = 'Generating…'; msgEl.classList.remove('is-done'); }
       if (pillsEl) { pillsEl.innerHTML = ''; pillsEl.style.display = 'none'; }
       if (audio)   { audio.pause(); audio.src = ''; }
+      // Reset scrubber
+      if (scrubber) scrubber.style.display = 'none';
+      if (scrubRange) { scrubRange.value = 0; scrubRange.style.background = 'rgba(255,255,255,.15)'; }
+      if (scrubCur) scrubCur.textContent = '0:00';
       // Remove any old download buttons
-      if (pillsEl && pillsEl.nextSibling && pillsEl.nextSibling.tagName === 'BUTTON') {
-        pillsEl.nextSibling.remove();
+      const scrubberEl = document.getElementById('pipeline-scrubber-' + n);
+      if (scrubberEl && scrubberEl.nextSibling && scrubberEl.nextSibling.tagName === 'BUTTON') {
+        scrubberEl.nextSibling.remove();
       }
     });
     // Restore cancel btn and status sub
@@ -2174,53 +2229,66 @@ document.addEventListener('DOMContentLoaded', () => {
             // Store audio URLs for card playback
             window._pipelineAudioUrl = [null, job.stereo_url, job.stereo_url_alt || job.stereo_url];
 
-            // Activate each card: hide spinner, show play button, update body
+            // Activate each card: hide spinner, show play button, scrubber, update body
             [1, 2].forEach(n => {
-              const url = urls[n - 1];
-              if (!url) return;
+              // If no alt, card 2 gets a "plan limit" state instead of duplicating card 1
+              const url = hasAlt ? urls[n - 1] : (n === 1 ? urls[0] : null);
               const card    = document.getElementById('pipeline-card-' + n);
               const overlay = document.getElementById('pipeline-card-' + n + '-overlay');
               const playBtn = document.getElementById('pipeline-card-' + n + '-play');
               const titleEl = document.getElementById('pipeline-card-' + n + '-title');
               const msgEl   = document.getElementById('pipeline-card-' + n + '-msg');
               const audio   = document.getElementById('pipeline-audio-' + n);
+              const scrubberEl = document.getElementById('pipeline-scrubber-' + n);
 
-              if (overlay) overlay.style.transition = 'opacity .4s', overlay.style.opacity = '0', setTimeout(() => overlay.style.display = 'none', 400);
+              // Always fade the spinner out on both cards
+              if (overlay) {
+                overlay.style.transition = 'opacity .4s';
+                overlay.style.opacity = '0';
+                setTimeout(() => { overlay.style.display = 'none'; }, 400);
+              }
+
+              if (!url) {
+                // No second clip — show "plan limit" message on card 2
+                if (card) card.classList.add('is-ready');
+                if (titleEl) titleEl.textContent = 'Only 1 version';
+                if (msgEl) {
+                  msgEl.innerHTML = '<i class="fas fa-crown" style="color:#f59e0b;margin-right:4px"></i>Upgrade for 2 versions';
+                  msgEl.classList.remove('is-done');
+                }
+                return;
+              }
+
               if (playBtn) playBtn.style.display = 'flex';
               if (card)    card.classList.add('is-ready');
-              if (titleEl) titleEl.textContent = (finalTitle.replace(/_/g,' ') + (n === 1 ? ' — V1' : ' — V2'));
+              if (titleEl) titleEl.textContent = (finalTitle.replace(/_/g,' ') + (hasAlt ? (n === 1 ? ' — V1' : ' — V2') : ''));
               if (msgEl)   { msgEl.textContent = 'Ready · tap to play'; msgEl.classList.add('is-done'); }
               if (audio)   { audio.src = url; audio.preload = 'auto'; }
 
-              // Download button below pills
-              const pillsEl = document.getElementById('pipeline-card-' + n + '-pills');
-              if (pillsEl) {
+              // Wire scrubber
+              _pipelineWireScrubber(n);
+
+              // Download button below scrubber
+              const scrubParent = scrubberEl ? scrubberEl.parentNode : null;
+              if (scrubParent) {
+                // Remove any old download button
+                const oldDl = scrubParent.querySelector('.pipeline-dl-btn');
+                if (oldDl) oldDl.remove();
                 const dlBtn = document.createElement('button');
+                dlBtn.className = 'pipeline-dl-btn btn btn--sm';
                 if (isFree) {
-                  dlBtn.className = 'btn btn--sm';
-                  dlBtn.style.cssText = 'margin-top:8px;width:100%;padding:6px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-size:.78rem';
+                  dlBtn.style.cssText = 'margin-top:6px;width:100%;padding:5px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-size:.75rem';
                   dlBtn.innerHTML = '<i class="fas fa-lock"></i> Upgrade to download';
                   dlBtn.onclick = function() { showUpgradePrompt(); };
                 } else {
-                  dlBtn.className = 'btn btn--sm';
-                  dlBtn.style.cssText = 'margin-top:8px;width:100%;padding:6px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.78rem;font-weight:600';
-                  dlBtn.innerHTML = '<i class="fas fa-download"></i> Download V' + n;
-                  const dlUrl = url, dlName = safeFilename + '_v' + n + '.mp3';
+                  dlBtn.style.cssText = 'margin-top:6px;width:100%;padding:5px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.75rem;font-weight:600';
+                  dlBtn.innerHTML = '<i class="fas fa-download"></i> Download' + (hasAlt ? ' V' + n : '');
+                  const dlUrl = url, dlName = safeFilename + (hasAlt ? '_v' + n : '') + '.mp3';
                   dlBtn.onclick = function() { var a=document.createElement('a');a.href=dlUrl;a.download=dlName;document.body.appendChild(a);a.click();a.remove(); };
                 }
-                pillsEl.parentNode.insertBefore(dlBtn, pillsEl.nextSibling);
+                scrubParent.appendChild(dlBtn);
               }
             });
-
-            // If only 1 clip (no alt), card 2 shows "—" state
-            if (!hasAlt) {
-              const card2    = document.getElementById('pipeline-card-2');
-              const overlay2 = document.getElementById('pipeline-card-2-overlay');
-              const msg2     = document.getElementById('pipeline-card-2-msg');
-              if (overlay2) overlay2.style.display = 'none';
-              if (msg2) msg2.textContent = 'Same as V1';
-              // keep spinner hidden, no play btn for card 2 if no alt url
-            }
 
             // Build export action buttons — Creator: mastered only; Pro: 3 options
             const exportOptionsRow = document.getElementById('export-options-row');
@@ -2349,6 +2417,18 @@ document.addEventListener('DOMContentLoaded', () => {
             genBtn.disabled = false;
             // Invalidate library cache so new beat appears immediately when user navigates to library
             if (window._libLoaded) { window._libLoaded.beats = false; }
+            // If library is already visible, reload the beats tab immediately
+            if (typeof fetchLibTab === 'function' && document.getElementById('lib-tab-beats')) {
+              fetchLibTab('beats');
+            }
+            // Show toast confirming library save
+            (function() {
+              var t = document.createElement('div');
+              t.style.cssText = 'position:fixed;bottom:24px;right:24px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:12px 18px;border-radius:12px;font-size:.85rem;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4);display:flex;align-items:center;gap:8px;max-width:280px';
+              t.innerHTML = '<i class="fas fa-check-circle" style="font-size:1.1rem;flex-shrink:0"></i><span>Beats saved to your library!</span>';
+              document.body.appendChild(t);
+              setTimeout(function() { t.style.transition='opacity .4s'; t.style.opacity='0'; setTimeout(function(){ t.remove(); }, 400); }, 4000);
+            })();
             // Refresh sidebar points counter to reflect the new usage
             fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
               if (!user) return;
@@ -5952,12 +6032,20 @@ window.renderEditInstrumentPills = function (bp) {
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) throw new Error(data.error);
-        // Backend returns { task_id } — we must poll until clip_id is ready
+        // MusicAPI /sonic/upload is SYNC — returns clip_id directly (no polling needed)
+        if (data.clip_id) {
+          extUploadAudioId = data.clip_id;
+          setExtZoneState('done', name);
+          return;
+        }
+        // Async fallback: if a task_id comes back, poll for it
         var taskId = data.task_id || data.upload_task_id;
-        if (!taskId) throw new Error('No task_id returned from upload');
-        // Show "processing" state while we wait for MusicAPI to process the upload
-        setExtZoneState('loading');
-        _extPollUploadTask(taskId, name, 0);
+        if (taskId) {
+          setExtZoneState('loading');
+          _extPollUploadTask(taskId, name, 0);
+          return;
+        }
+        throw new Error('Upload failed — no clip_id returned. Please try again.');
       })
       .catch(function(err) {
         setExtZoneState('idle');
@@ -5968,7 +6056,7 @@ window.renderEditInstrumentPills = function (bp) {
       });
   }
 
-  // Poll /api/poll-upload-task/:taskId until clip_id is ready
+  // Poll /api/poll-upload-task/:taskId until clip_id is ready (async fallback only)
   function _extPollUploadTask(taskId, name, attempt) {
     var errEl = document.getElementById('ext-upload-error');
     if (attempt > 40) { // ~3.3 minutes max
@@ -5981,14 +6069,12 @@ window.renderEditInstrumentPills = function (bp) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data.error) throw new Error(data.error);
-          if (data.status === 'ready') {
-            // Got clip_id — store it and mark zone as done
+          if (data.status === 'ready' && data.clip_id) {
             extUploadAudioId = data.clip_id;
             setExtZoneState('done', name);
           } else if (data.status === 'failed') {
             throw new Error(data.error || 'Upload processing failed');
           } else {
-            // Still pending — keep polling
             _extPollUploadTask(taskId, name, attempt + 1);
           }
         })
@@ -5996,7 +6082,7 @@ window.renderEditInstrumentPills = function (bp) {
           setExtZoneState('idle');
           if (errEl) { errEl.textContent = 'Upload failed: ' + (err.message || 'Unknown error'); errEl.style.display = 'block'; }
         });
-    }, attempt === 0 ? 3000 : 5000); // first poll after 3s, then every 5s
+    }, attempt === 0 ? 3000 : 5000);
   }
 
   // ── Draw waveform on canvas using Web Audio API ───────────────────────────
