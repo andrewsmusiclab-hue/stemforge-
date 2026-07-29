@@ -725,7 +725,6 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
 
   // Build request body for Producer (Lyria 3 Pro)
   const body: Record<string, any> = {
-    task_type: 'generate_music',
     sound: stylePrompt.slice(0, 400),
     // Producer accepts duration in seconds
     duration: durationSec
@@ -799,9 +798,9 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
   }
 
   const body: Record<string, any> = {
-    task_type: 'generate_music',
+    custom_mode: true,
     tags: stylePrompt.slice(0, 200),
-    lyrics: userLyrics,
+    prompt: userLyrics,   // Sonic uses 'prompt' for lyrics in custom_mode
     duration: durationSec,
     mv: 'sonic-v5'
   }
@@ -2263,7 +2262,6 @@ app.post('/api/job/regen-stem', async (c) => {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        task_type: 'generate_music',
         reference_clip_id: clipId,
         sound: 'instrumental, no vocals, clean stem regeneration'
       })
@@ -2416,7 +2414,7 @@ app.post('/api/job/remix', async (c) => {
     const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_type: 'generate_music', reference_clip_id: clipId, sound: prompt })
+      body: JSON.stringify({ reference_clip_id: clipId, sound: prompt })
     })
     if (!genRes.ok) {
       const t = await genRes.text()
@@ -3821,7 +3819,7 @@ app.post('/api/job/extend-upload', async (c) => {
       // Pass user lyrics if provided
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-        sonicBody.lyrics = typedLyrics
+        sonicBody.prompt = typedLyrics
       }
       const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
         method: 'POST',
@@ -4016,7 +4014,7 @@ app.post('/api/job/extend', async (c) => {
       if (styleStr) sonicBody.tags = styleStr.slice(0, 200)
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-        sonicBody.lyrics = typedLyrics
+        sonicBody.prompt = typedLyrics
       }
       console.log(`[job/extend] Sonic extend clip_id=${clipId} instrumental=${isInstrumental} style="${styleStr.slice(0,60)}"`)
       const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
@@ -5324,7 +5322,6 @@ app.post('/api/generate-oneshot', async (c) => {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      task_type: 'generate_music',
       sound: oneshotPrompt,
       duration: 3  // shortest available
     })
@@ -6827,7 +6824,7 @@ function generatorPage() {
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
       <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"
-        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more. 10 pts per shot. Pro Artist only.">
+        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more. Pro Artist only.">
         <i class="fas fa-bolt"></i> One Shot Creator <span style="font-size:.65rem;opacity:.6;margin-left:3px">Pro</span>
       </button>
     </div>
@@ -7078,7 +7075,7 @@ function generatorPage() {
     <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline">
       <button class="suno-create-btn" id="gen-full-btn"
-        data-tooltip="Generate your beat using StemForge — uses 10 points">
+        data-tooltip="Generate your beat using StemForge">
         <i class="fas fa-music"></i> Create
       </button>
 
