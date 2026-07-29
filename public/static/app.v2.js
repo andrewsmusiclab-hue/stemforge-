@@ -3252,8 +3252,8 @@ window.selectBarPreset = function(btn, bars) {
   }
 
   window.extResetPick = function() {
-    window._extVocalMode = 'instrumental';
-    window.setExtVocalMode && window.setExtVocalMode('instrumental');
+    window._extMode = 'instrumental';
+    window.setExtMode && window.setExtMode('instrumental');
     window._extActiveTab = 'upload';
     _extLibLoaded = false; // Allow re-fetch next open
     // Reset tabs back to Upload (use extSwitchTab so loop panel is also hidden)
@@ -3444,33 +3444,22 @@ window.selectBarPreset = function(btn, bars) {
   window.extSwitchTab = window.extSwitchTab;
 
   // Extend popup: vocal mode toggle state
-  // 'instrumental' = make_instrumental:true sent to Mureka
-  // 'vocal' = make_instrumental omitted (allows vocal continuation)
-  window._extVocalMode = 'instrumental'; // default: instrumental
+  // 'instrumental' = make_instrumental:true; 'vocal' = continuation with lyrics
+  window._extMode = 'instrumental'; // default: instrumental
 
-  window.setExtVocalMode = function(mode) {
-    window._extVocalMode = mode;
-    var instrBtn = document.getElementById('ext-vocal-instrumental-btn');
-    var vocalBtn = document.getElementById('ext-vocal-vocal-btn');
-    if (!instrBtn || !vocalBtn) return;
-    if (mode === 'instrumental') {
-      instrBtn.classList.add('beat-count-btn--active');
-      vocalBtn.classList.remove('beat-count-btn--active');
-    } else {
-      vocalBtn.classList.add('beat-count-btn--active');
-      instrBtn.classList.remove('beat-count-btn--active');
-    }
-    // Show/hide lyrics textarea based on mode
-    var lyricsLabel = document.querySelector('label[for="ext-lyrics"], .suno-option-label + .suno-textarea, #ext-lyrics');
-    var lyricsSection = document.getElementById('ext-lyrics');
-    if (lyricsSection) {
-      lyricsSection.parentElement && lyricsSection.parentElement.querySelectorAll('label').forEach(function(l){
-        if (l.textContent && l.textContent.indexOf('Continuation lyrics') > -1) {
-          l.style.display = mode === 'vocal' ? '' : '';
-        }
-      });
-    }
+  window.setExtMode = function(mode) {
+    window._extMode = mode;
+    var instrBtn = document.getElementById('ext-mode-instr-btn');
+    var vocalBtn = document.getElementById('ext-mode-vocal-btn');
+    var lyricsSection = document.getElementById('ext-lyrics-section');
+    if (instrBtn) instrBtn.classList.toggle('beat-count-btn--active', mode === 'instrumental');
+    if (vocalBtn) vocalBtn.classList.toggle('beat-count-btn--active', mode === 'vocal');
+    // Show lyrics textarea only in vocal mode
+    if (lyricsSection) lyricsSection.style.display = mode === 'vocal' ? 'block' : 'none';
   };
+
+  // Legacy alias (in case old code calls setExtVocalMode)
+  window.setExtVocalMode = window.setExtMode;
 
   window.submitSongExtend = async function() {
     if (!extSelectedJob) return;
@@ -3491,11 +3480,11 @@ window.selectBarPreset = function(btn, bars) {
     if (status) { status.style.display = 'block'; var _stxt2 = document.getElementById('ext-submit-status-text'); if (_stxt2) _stxt2.textContent = 'Stemforge is forging your track…'; }
 
     try {
-      // Vocal toggle removed — always instrumental; backend uses [Instrumental] lyrics tag
+      const isInstr = (window._extMode !== 'vocal');
       const res = await fetch('/api/job/extend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: lyrics, make_instrumental: true })
+        body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: isInstr ? '' : lyrics, make_instrumental: isInstr })
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -6695,17 +6684,17 @@ window.renderEditInstrumentPills = function (bp) {
       // If the user set a scrubber position, use that instead.
       var effectiveExtendAt = extExtendAtMs > 0 ? extExtendAtMs
         : (extAudioDuration > 0 ? Math.round(extAudioDuration * 1000) : 0);
-      // Vocal toggle removed — always instrumental; backend will use [Instrumental] lyrics tag
+      var isInstr = (window._extMode !== 'vocal');
       var body = {
         upload_audio_id: extUploadAudioId,
         title: extUploadTitle || 'Uploaded Track',
-        make_instrumental: true
+        make_instrumental: isInstr
       };
       // Always pass source_duration_ms — backend uses it as extend_at to maximize new content
       if (extAudioDuration > 0) body.source_duration_ms = Math.round(extAudioDuration * 1000);
       if (effectiveExtendAt > 0) body.extend_at = effectiveExtendAt;
-      // Pass lyrics if user typed something (backend ignores [Verse] / empty, defaults to [Instrumental])
-      if (lyrics.trim()) body.lyrics = lyrics.trim();
+      // Pass lyrics in vocal mode if user typed something
+      if (!isInstr && lyrics.trim()) body.lyrics = lyrics.trim();
 
       var res = await fetch('/api/job/extend-upload', {
         method: 'POST',

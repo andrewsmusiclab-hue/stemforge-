@@ -5880,7 +5880,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-05'
+const ASSET_VER = '20260729-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7428,9 +7428,28 @@ function generatorPage() {
         <span id="ext-duration-label" style="margin-left:auto;font-size:.78rem;color:var(--muted);white-space:nowrap">—</span>
       </div>
 
-      <!-- Lyrics -->
-      <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional — leave blank to auto-generate)</span></label>
-      <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse]&#10;Your next verse or hook here…&#10;Leave blank to auto-generate" style="margin-bottom:12px"></textarea>
+      <!-- Instrumental / Vocal toggle -->
+      <div style="margin-bottom:12px">
+        <label class="suno-option-label" style="margin-bottom:6px">Extension type</label>
+        <div style="display:flex;gap:8px">
+          <button id="ext-mode-instr-btn" onclick="setExtMode('instrumental')"
+            class="beat-count-btn beat-count-btn--active"
+            style="flex:1;padding:8px 0;border-radius:10px;font-size:.82rem;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px">
+            <i class="fas fa-guitar"></i> Instrumental
+          </button>
+          <button id="ext-mode-vocal-btn" onclick="setExtMode('vocal')"
+            class="beat-count-btn"
+            style="flex:1;padding:8px 0;border-radius:10px;font-size:.82rem;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px">
+            <i class="fas fa-microphone"></i> Vocal
+          </button>
+        </div>
+      </div>
+
+      <!-- Lyrics (shown only in vocal mode) -->
+      <div id="ext-lyrics-section" style="display:none">
+        <label class="suno-option-label" style="margin-bottom:6px">Continuation lyrics <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+        <textarea id="ext-lyrics" class="suno-textarea" rows="3" placeholder="[Verse]&#10;Your next verse or hook here…&#10;Leave blank to auto-generate" style="margin-bottom:12px"></textarea>
+      </div>
 
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
