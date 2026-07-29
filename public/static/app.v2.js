@@ -800,7 +800,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
     const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
-    const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : (p.blueprint ? p.blueprint.genre : 'Beat'));
+    // Use blueprint genre as primary title source; fall back to p.title only if it looks like
+    // a real user-supplied name (not a prompt string containing "instrumental only" etc.)
+    const _blueprintTitle = p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : null;
+    const _userTitle = (p.title && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(p.title)) ? p.title : null;
+    const rawTitle = _blueprintTitle || _userTitle || p.title || 'Beat';
     const sub  = bpm || '';
     const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
     const dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
@@ -1143,15 +1147,20 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const r = await fetch('/api/job/delete', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId })
       });
-      if (!r.ok) throw new Error('Delete failed');
+      if (!r.ok) {
+        let errMsg = 'HTTP ' + r.status;
+        try { const j = await r.json(); errMsg = j.error || errMsg; } catch {}
+        throw new Error(errMsg);
+      }
       // Refresh beats/extended/oneshots and trash tabs
       _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false; _libLoaded.extended = false;
       fetchLibTab(_libActive);
       if (_libActive !== 'trash') fetchLibTab('trash'); // pre-load trash count
-    } catch(e) { alert('Could not delete item. Please try again.'); }
+    } catch(e) { alert('Could not delete item: ' + e.message); }
   };
 
   // ── Restore a trashed card ──────────────────────────────────
@@ -1159,13 +1168,18 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const r = await fetch('/api/job/restore', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId })
       });
-      if (!r.ok) throw new Error('Restore failed');
+      if (!r.ok) {
+        let errMsg = 'HTTP ' + r.status;
+        try { const j = await r.json(); errMsg = j.error || errMsg; } catch {}
+        throw new Error(errMsg);
+      }
       _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false;
       fetchLibTab('trash');
-    } catch(e) { alert('Could not restore item. Please try again.'); }
+    } catch(e) { alert('Could not restore item: ' + e.message); }
   };
 
   // ── Permanently delete a trashed card ──────────────────────
@@ -2044,7 +2058,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (card)    { card.classList.remove('is-ready'); }
       if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; overlay.style.transition = ''; }
       if (playBtn) { playBtn.style.display = 'none'; playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
-      if (titleEl) titleEl.textContent = 'Beat ' + n;
+      if (titleEl) titleEl.textContent = '';
       if (msgEl)   { msgEl.textContent = 'Generating…'; msgEl.classList.remove('is-done'); }
       if (pillsEl) { pillsEl.innerHTML = ''; pillsEl.style.display = 'none'; }
       if (audio)   { audio.pause(); audio.src = ''; }
@@ -2162,7 +2176,7 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('blueprint', 'done');
             setStep('generating', 'active');
             setCardMsg('Generating…');
-            if (statusSub) statusSub.textContent = 'Stemforge is forging both beats…';
+            if (statusSub) statusSub.textContent = 'StemForge is forging your beat…';
             if (job.blueprint) showBlueprint(job.blueprint);
             lastStatus = 'generating';
           }
@@ -2193,8 +2207,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (genResult) genResult.style.display = 'none';
 
             // ── Resolve final track title ─────────────────────────
-            const finalTitle = job.title ||
-              (job.blueprint ? (job.blueprint.genre + ' — ' + job.blueprint.key + ' ' + job.blueprint.scale) : 'Beat Ready');
+            // Prefer blueprint genre; only use job.title if it's a real name (not a prompt string)
+            const _jobTitleClean = (job.title && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(job.title)) ? job.title : null;
+            const finalTitle = (job.blueprint ? (job.blueprint.genre + (job.blueprint.key ? ' — ' + job.blueprint.key + ' ' + (job.blueprint.scale||'') : '')) : null) ||
+              _jobTitleClean || 'Beat Ready';
             // Sanitize for filename: replace special chars with underscores, ensure non-empty
             const safeFilename = (finalTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g, '_').toLowerCase().replace(/^_+|_+$/g, '')) || 'stemforge_beat';
 
