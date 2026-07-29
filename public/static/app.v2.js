@@ -1852,6 +1852,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (pollInterval) clearInterval(pollInterval);
   }
 
+  // ── Cancel generation ────────────────────────────────────────
+  window.cancelGeneration = function() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    if (pipelineStatus) { pipelineStatus.style.display = 'none'; }
+    if (genBtn) { genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; genBtn.disabled = false; }
+    if (genEmpty) genEmpty.style.display = 'block';
+    if (genResult) genResult.style.display = 'none';
+    if (genError) genError.style.display = 'none';
+    currentJobId = null;
+  };
+
   async function startGeneration() {
     const inputs = getInputs();
 
@@ -1879,6 +1890,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (genEmpty) genEmpty.style.display = 'none';
     if (genError) genError.style.display = 'none';
     if (genResult) genResult.style.display = 'none';
+    // Remove any dual-card layout from previous run
+    const oldDual = document.getElementById('gen-result-dual');
+    if (oldDual) oldDual.remove();
     if (pipelineStatus) { pipelineStatus.style.display = 'block'; }
     if (bpBlueprint) bpBlueprint.style.display = 'none';
 
@@ -2008,6 +2022,8 @@ document.addEventListener('DOMContentLoaded', () => {
               pipelineStatus.style.opacity = '0';
               setTimeout(() => { pipelineStatus.style.display = 'none'; pipelineStatus.style.opacity = '1'; }, 400);
             }
+            const cancelBtn = document.getElementById('gen-cancel-btn');
+            if (cancelBtn) cancelBtn.style.display = 'none';
 
             // ── Resolve final track title ─────────────────────────
             const finalTitle = job.title ||
@@ -2053,8 +2069,59 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             }
 
+            // ── Dual beat cards: show both clips Producer returned ──────────────
+            const hasAlt = !!job.stereo_url_alt;
+
+            // If we have 2 clips, wrap the result panel in a dual-card layout
+            if (hasAlt) {
+              const resultEl = document.getElementById('gen-result');
+              if (resultEl && !document.getElementById('gen-result-dual')) {
+                resultEl.style.display = 'none'; // hide original
+                const dual = document.createElement('div');
+                dual.id = 'gen-result-dual';
+                dual.style.cssText = 'display:flex;gap:12px;width:100%;flex-wrap:wrap';
+
+                function makeBeatCard(url, label, num) {
+                  const card = document.createElement('div');
+                  card.style.cssText = 'flex:1;min-width:0;background:var(--surface-2,#1a1a2e);border:1px solid var(--border,#2a2a3e);border-radius:14px;padding:14px 16px;display:flex;flex-direction:column;gap:10px';
+                  const hue = job.thumbnail_seed ?? 180;
+                  card.innerHTML = `
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                      <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                        <div style="width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,hsl(${hue},60%,40%),hsl(${(hue+60)%360},70%,50%));flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:.9rem;color:#fff"><i class="fas fa-music"></i></div>
+                        <div style="min-width:0">
+                          <div style="font-weight:700;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${finalTitle.replace(/_/g,' ')} ${label}</div>
+                          <div style="font-size:.75rem;color:var(--muted)">${job.blueprint ? job.blueprint.bpm + ' BPM · ' + job.blueprint.key + ' ' + job.blueprint.scale : ''}</div>
+                        </div>
+                      </div>
+                    </div>
+                    <audio controls style="width:100%;height:34px" src="${url}"></audio>
+                    ${isFree
+                      ? `<button onclick="(${showUpgradePrompt.toString()})()" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--muted);cursor:pointer;font-size:.8rem"><i class="fas fa-lock"></i> Upgrade to download</button>`
+                      : `<button onclick="(function(){var a=document.createElement('a');a.href='${url}';a.download='${safeFilename}_v${num}.mp3';document.body.appendChild(a);a.click();a.remove();})()" style="width:100%;padding:8px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.8rem;font-weight:600"><i class="fas fa-download"></i> Download Beat ${num}</button>`
+                    }`;
+                  return card;
+                }
+
+                dual.appendChild(makeBeatCard(job.stereo_url, '— Version 1', 1));
+                dual.appendChild(makeBeatCard(job.stereo_url_alt, '— Version 2', 2));
+
+                // Stems / library actions row below both cards
+                if (!isFree && job.stereo_url) {
+                  const actRow = document.createElement('div');
+                  actRow.style.cssText = 'width:100%;display:flex;gap:8px;margin-top:4px';
+                  actRow.innerHTML = `<button onclick="if(typeof window.openStemsPanel==='function')window.openStemsPanel('${job.id}','${job.stereo_url}','${finalTitle||safeFilename}','${userPlan}')" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--text);cursor:pointer;font-size:.8rem"><i class="fas fa-layer-group"></i> Get Stems (V1)</button>`;
+                  dual.appendChild(actRow);
+                }
+
+                resultEl.parentNode.insertBefore(dual, resultEl.nextSibling);
+              }
+            } else {
+              // Single clip — normal flow below
+            }
+
             // Stereo player — show audio player always, gate the download button
-            if (job.stereo_url && stereoPlayer && stereoAudio) {
+            if (!hasAlt && job.stereo_url && stereoPlayer && stereoAudio) {
               stereoAudio.src = job.stereo_url;
               stereoPlayer.style.display = 'block';
               if (stereoDownload) {
@@ -2196,7 +2263,7 @@ document.addEventListener('DOMContentLoaded', () => {
               drawCanvasArt(thumbEl, hue, finalTitle, genre);
             }
 
-            if (genResult) genResult.style.display = 'block';
+            if (genResult && !hasAlt) genResult.style.display = 'block';
             genBtn.innerHTML = '<i class="fas fa-check"></i> Done!';
             genBtn.disabled = false;
             // Invalidate library cache so new beat appears immediately when user navigates to library

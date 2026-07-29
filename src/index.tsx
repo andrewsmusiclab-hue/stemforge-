@@ -875,21 +875,35 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
 }
 
 // ── MusicAPI polling helpers ──────────────────────────────────────────────────
-// Poll MusicAPI Sonic task/:taskId — used for instrumental generation (beat creation)
-// Returns stereo URL string or null if still running
-async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<string | null> {
-  const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
+// Poll MusicAPI Producer task/:taskId — used for instrumental generation (beat creation)
+// Returns { url1, url2, clipId1, clipId2 } when both clips ready, or null if still running
+async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{ url1: string; url2: string | null; clipId1: string; clipId2: string | null } | null> {
+  const res = await fetch(`${MUSICAPI_PRODUCER}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    // not_ready is normal — task still processing
+    const txt = await res.text()
+    if (txt.includes('not_ready')) return null
+    return null
+  }
   const data = await res.json() as any
-  // MusicAPI Sonic returns array of clips: [{ id, audio_url, state, ... }]
+  // Producer returns { code: 200, data: [{ clip_id, audio_url, state, ... }, ...] }
   const clips = Array.isArray(data) ? data : (data.data || [])
   if (!clips.length) return null
-  const clip = clips[0]
-  if (clip.state === 'succeeded') return clip.audio_url || null
-  if (clip.state === 'failed') throw new Error(clip.error || 'MusicAPI instrumental generation failed')
-  return null // still processing
+  // Check all clips — if any still pending/running, not ready yet
+  const allDone = clips.every((c: any) => c.state === 'succeeded' || c.state === 'failed')
+  if (!allDone) return null
+  if (clips.every((c: any) => c.state === 'failed')) throw new Error(clips[0]?.error || 'MusicAPI instrumental generation failed')
+  const clip1 = clips.find((c: any) => c.state === 'succeeded')
+  if (!clip1) return null
+  const clip2 = clips.find((c: any, i: number) => c.state === 'succeeded' && i !== clips.indexOf(clip1)) || null
+  return {
+    url1: clip1.audio_url || clip1.wav_url,
+    url2: clip2 ? (clip2.audio_url || clip2.wav_url) : null,
+    clipId1: clip1.clip_id || clip1.id || '',
+    clipId2: clip2 ? (clip2.clip_id || clip2.id || '') : null
+  }
 }
 
 // Poll MusicAPI Sonic task/:taskId — used for song extend results
@@ -1074,9 +1088,9 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     const useSongQuery = taskType === 'song_extend' || taskType === 'song_generate'
 
     if (!useSongQuery) {
-      // Instrumental path — no chaining
-      const stereoUrl = await pollInstrumentalStatus(job.stereo_task_id, env.MUSICAPI_KEY)
-      if (!stereoUrl) {
+      // Instrumental path — Producer generates 2 clips, we save both
+      const result = await pollInstrumentalStatus(job.stereo_task_id, env.MUSICAPI_KEY)
+      if (!result) {
         const ageMs = Date.now() - job.created_at
         if (ageMs > 10 * 60 * 1000) {
           job.status = 'error'
@@ -1085,7 +1099,10 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
         }
         return job
       }
-      job.stereo_url = stereoUrl
+      job.stereo_url = result.url1
+      ;(job as any).stereo_url_alt = result.url2   // second clip from Producer
+      ;(job as any).clip_id = result.clipId1
+      ;(job as any).clip_id_alt = result.clipId2
       job.status = 'ready'
       await setJob(db, { ...job })
       return job
@@ -5766,7 +5783,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260728-06'
+const ASSET_VER = '20260729-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7093,6 +7110,9 @@ function generatorPage() {
           src="/static/forge-bg.mp4"></video>
         <div class="pipeline-spinner"></div>
         <p class="pipeline-spinner-msg" id="pipeline-spinner-msg">Stemforge is forging your beat…</p>
+        <button id="gen-cancel-btn" onclick="cancelGeneration()" style="margin-top:14px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);color:rgba(255,255,255,.7);border-radius:8px;padding:7px 20px;font-size:.82rem;cursor:pointer;transition:all .15s" onmouseover="this.style.background='rgba(239,68,68,.18)';this.style.borderColor='rgba(239,68,68,.5)';this.style.color='#ef4444'" onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.borderColor='rgba(255,255,255,.18)';this.style.color='rgba(255,255,255,.7)'">
+          <i class="fas fa-times" style="margin-right:6px"></i>Cancel
+        </button>
       </div>
       <!-- hidden step trackers for JS logic only (not shown to user) -->
       <div style="display:none" id="step-blueprint"><div id="ind-blueprint"></div></div>
