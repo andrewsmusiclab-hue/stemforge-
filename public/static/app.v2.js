@@ -923,7 +923,11 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     let html = '';
-    projects.forEach((p, i) => {
+    // Filter out error-status jobs from beats/oneshots — they shouldn't appear in library
+    const visibleProjects = (tab === 'beats' || tab === 'oneshots')
+      ? projects.filter(p => p.status !== 'error' && p.status !== 'generating')
+      : projects;
+    visibleProjects.forEach((p, i) => {
       if (tab === 'beats')    html += renderBeatCard(p, i);
       else if (tab === 'oneshots') html += renderOneshotCard(p, i);
       else if (tab === 'trash')    html += renderTrashCard(p, i);
