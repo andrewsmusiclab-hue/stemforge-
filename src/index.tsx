@@ -3802,47 +3802,58 @@ app.post('/api/job/extend-upload', async (c) => {
   ).bind(EXTEND_COST, user.id).run()
 
   try {
-    // All extends use MusicAPI Sonic (Suno v5.5) — the clip_id came from /sonic/upload
-    // so it is always a Suno clip_id; passing it to Producer gives a 400.
+    // FIX: use /sonic/upload-extend (one-stop API) — clip_id from /sonic/upload is NOT
+    // usable as continue_clip_id; that field is for platform-generated clips only.
+    // /sonic/upload-extend accepts a URL + extend params directly.
     const isInstrumental = make_instrumental === true
 
-    let extTaskId: string
+    // We need the original proxy URL, not the clip_id — look it up from R2 key
+    // upload_audio_id is the clip_id returned by /api/upload-extend-audio;
+    // the R2 proxy URL was stored as SITE_URL/api/extend-audio-proxy/<encoded key>
+    // but we don't have the key here. Fallback: treat upload_audio_id as a URL if it
+    // starts with http, else reconstruct via the proxy base.
+    const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
+    const audioSrc = upload_audio_id.startsWith('http')
+      ? upload_audio_id
+      : `${siteUrl2}/api/extend-audio-proxy/${encodeURIComponent(upload_audio_id)}`
 
+    // /sonic/upload-extend — single request: upload URL + extend parameters
+    const uploadExtBody: Record<string, any> = {
+      url: audioSrc,
+      mv: 'sonic-v5',
+      continue_at: 0.1  // start continuation from 0.1s for smooth join
+    }
+    if (isInstrumental) {
+      uploadExtBody.make_instrumental = true
+      uploadExtBody.prompt = '[Instrumental]'
+    } else {
+      const typedLyrics = lyrics && lyrics.trim()
+      if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
+        uploadExtBody.prompt = typedLyrics
+        uploadExtBody.custom_mode = true
+      }
+    }
+    console.log(`[extend-upload] /sonic/upload-extend url=${audioSrc.slice(0,80)} instrumental=${isInstrumental}`)
+    let extTaskId: string
     {
-      // Sonic (Suno v5.5) — extend_music with continue_clip_id
-      const sonicBody: Record<string, any> = {
-        task_type: 'extend_music',
-        continue_clip_id: upload_audio_id,
-        mv: 'sonic-v5'
-      }
-      // Instrumental: suppress vocals via make_instrumental flag + lyric tag
-      if (isInstrumental) {
-        sonicBody.make_instrumental = true
-        sonicBody.prompt = '[Instrumental]'
-      } else {
-        // Pass user lyrics if provided
-        const typedLyrics = lyrics && lyrics.trim()
-        if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-          sonicBody.prompt = typedLyrics
-        }
-      }
-      console.log(`[extend-upload] Sonic extend clip_id=${upload_audio_id} instrumental=${isInstrumental}`)
-      const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(sonicBody)
+        body: JSON.stringify(uploadExtBody)
       })
       if (!sonicRes.ok) {
         const errText = await sonicRes.text()
-        let errMsg = `${sonicRes.status}`
-        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+        let errMsg = `${sonicRes.status}: ${errText.slice(0, 300)}`
+        try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch (_) {}
+        console.error('[extend-upload] /sonic/upload-extend error:', errMsg)
         return c.json({ error: `MusicAPI Sonic extend error: ${errMsg}` }, 500)
       }
       const sonicData = await sonicRes.json() as any
-      extTaskId = sonicData.task_id || sonicData.data?.[0]?.id
+      console.log('[extend-upload] /sonic/upload-extend response:', JSON.stringify(sonicData).slice(0, 300))
+      extTaskId = sonicData.task_id || sonicData.data?.[0]?.id || sonicData.data?.task_id
       if (!extTaskId) {
-        console.error('[extend-upload] Sonic missing task_id:', JSON.stringify(sonicData).slice(0, 500))
-        return c.json({ error: `MusicAPI Sonic returned unexpected response: ${JSON.stringify(sonicData).slice(0, 200)}` }, 500)
+        console.error('[extend-upload] missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+        return c.json({ error: `MusicAPI returned unexpected response: ${JSON.stringify(sonicData).slice(0, 200)}` }, 500)
       }
     }
 
@@ -3951,83 +3962,46 @@ app.post('/api/job/extend', async (c) => {
   }
 
   try {
-    // Step 1: Upload audio to MusicAPI Sonic upload endpoint → get clip_id
-    const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: sourceJob.stereo_url })
-    })
-    if (!uploadRes.ok) {
-      const errText = await uploadRes.text()
-      let errMsg = `${uploadRes.status}`
-      try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
-      return c.json({ error: `MusicAPI upload error: ${errMsg}` }, 500)
-    }
-    const uploadData = await uploadRes.json() as any
-    console.log('[job/extend] upload response:', JSON.stringify(uploadData).slice(0, 200))
-
-    // Upload is SYNC by default — returns { clip_id } directly
-    // Only poll if an async task_id comes back instead
-    let clipId: string | null = uploadData.clip_id || uploadData.data?.clip_id || null
-    if (!clipId) {
-      const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
-      if (!uploadTaskId) return c.json({ error: 'MusicAPI upload returned no clip_id or task_id' }, 500)
-      // Poll for upload completion
-      const uploadDeadline = Date.now() + 60_000
-      while (Date.now() < uploadDeadline) {
-        await new Promise(r => setTimeout(r, 2000))
-        const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, {
-          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-        })
-        if (!pollRes.ok) continue
-        const pollData = await pollRes.json() as any
-        const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
-        if (clips.length && clips[0].state === 'succeeded') {
-          clipId = clips[0].id || clips[0].clip_id || null
-          break
-        }
-        if (clips.length && clips[0].state === 'failed') break
-      }
-    }
-    if (!clipId) return c.json({ error: 'MusicAPI upload timed out or failed to return clip_id' }, 500)
-
-    // Step 2: Extend via Sonic (Suno v5.5) — always use Sonic since clip_id is from /sonic/upload
-    // Using Producer here gives a 400 (Producer doesn't accept Suno clip IDs)
+    // FIX: use /sonic/upload-extend (one-stop API) instead of upload→extend_music.
+    // clip_id from /sonic/upload cannot be used as continue_clip_id — that field is
+    // only valid for platform-generated clips. /sonic/upload-extend accepts a URL directly.
     let extTaskId: string
-
     {
-      const sonicBody: Record<string, any> = {
-        task_type: 'extend_music',
-        continue_clip_id: clipId,
-        mv: 'sonic-v5'
+      const uploadExtBody: Record<string, any> = {
+        url: sourceJob.stereo_url,
+        mv: 'sonic-v5',
+        continue_at: 0.1
       }
-      if (styleStr) sonicBody.tags = styleStr.slice(0, 200)
+      if (styleStr) uploadExtBody.tags = styleStr.slice(0, 200)
       if (isInstrumental) {
-        sonicBody.make_instrumental = true
-        sonicBody.prompt = '[Instrumental]'
+        uploadExtBody.make_instrumental = true
+        uploadExtBody.prompt = '[Instrumental]'
       } else {
         const typedLyrics = lyrics && lyrics.trim()
         if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-          sonicBody.prompt = typedLyrics
+          uploadExtBody.prompt = typedLyrics
+          uploadExtBody.custom_mode = true
         }
       }
-      console.log(`[job/extend] Sonic extend clip_id=${clipId} instrumental=${isInstrumental} style="${styleStr.slice(0,60)}"`)
-      const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+      console.log(`[job/extend] /sonic/upload-extend url=${sourceJob.stereo_url.slice(0,80)} instrumental=${isInstrumental} style="${styleStr.slice(0,60)}"`)
+      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(sonicBody)
+        body: JSON.stringify(uploadExtBody)
       })
       if (!sonicRes.ok) {
         const errText = await sonicRes.text()
-        let errMsg = `${sonicRes.status}`
-        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+        let errMsg = `${sonicRes.status}: ${errText.slice(0, 300)}`
+        try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch (_) {}
+        console.error('[job/extend] /sonic/upload-extend error:', errMsg)
         return c.json({ error: `MusicAPI Sonic extend error: ${errMsg}` }, 500)
       }
       const sonicData = await sonicRes.json() as any
-      extTaskId = sonicData.task_id || sonicData.data?.[0]?.id
+      console.log('[job/extend] /sonic/upload-extend response:', JSON.stringify(sonicData).slice(0, 300))
+      extTaskId = sonicData.task_id || sonicData.data?.[0]?.id || sonicData.data?.task_id
       if (!extTaskId) {
-        console.error('[job/extend] Sonic missing task_id:', JSON.stringify(sonicData).slice(0, 500))
-        return c.json({ error: `MusicAPI Sonic returned unexpected response: ${JSON.stringify(sonicData).slice(0, 200)}` }, 500)
+        console.error('[job/extend] missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+        return c.json({ error: `MusicAPI returned unexpected response: ${JSON.stringify(sonicData).slice(0, 200)}` }, 500)
       }
     }
 
@@ -5354,7 +5328,7 @@ app.post('/api/upload-reference', async (c) => {
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
 
-  // Accept JSON { audio_url } or multipart { url }
+  // Accept JSON { audio_url } or multipart { url } or multipart { file }
   let audioUrl: string | null = null
   const contentType = c.req.header('content-type') || ''
   if (contentType.includes('application/json')) {
@@ -5362,11 +5336,32 @@ app.post('/api/upload-reference', async (c) => {
     audioUrl = body.audio_url || body.url || null
   } else {
     const formData = await c.req.formData()
-    audioUrl = (formData.get('url') as string | null) || (formData.get('audio_url') as string | null) || null
+    const urlField = (formData.get('url') as string | null) || (formData.get('audio_url') as string | null) || null
+    audioUrl = urlField || null
+    // File blob upload: store in R2 and create a proxy URL (same pattern as upload-extend-audio)
+    if (!audioUrl) {
+      const file = formData.get('file') as File | null
+      if (!file) {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        return c.json({ error: 'No file or url provided' }, 400)
+      }
+      if (!c.env.IMAGES) {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        return c.json({ error: 'File upload unavailable — storage not configured. Please provide an audio_url instead.' }, 400)
+      }
+      const safeFilename = (file.name || 'reference').replace(/[^a-zA-Z0-9._-]/g, '_')
+      const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
+      await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
+        httpMetadata: { contentType: file.type || 'audio/mpeg' }
+      })
+      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+      audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
+      console.log(`[upload-reference] Stored file in R2, proxy URL: ${audioUrl}`)
+    }
   }
   if (!audioUrl) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: 'audio_url required (MusicAPI accepts URL uploads only)' }, 400)
+    return c.json({ error: 'No audio source provided' }, 400)
   }
 
   // Upload to MusicAPI Sonic
@@ -5880,7 +5875,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-06'
+const ASSET_VER = '20260729-07'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7685,7 +7680,7 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-redo" style="font-size:.75rem;opacity:.8"></i> Loop Extend (10 pts)</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend (20 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
           <li><i class="fas fa-check"></i> Reference track uploads (20 pts)</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem (20 pts)</li>
           <li><i class="fas fa-check"></i> Stem regeneration (20 pts)</li>
@@ -7719,7 +7714,7 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>

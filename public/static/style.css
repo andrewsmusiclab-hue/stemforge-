@@ -2467,10 +2467,11 @@ body.light .legal-body td {
   justify-content: center;
 }
 
-/* Each gen card inherits project-card dimensions/style */
+/* Each gen card inherits project-card dimensions/style — natural width, centered */
 .pipeline-gen-card {
-  flex: 0 0 220px;   /* fixed width, centered */
-  width: 220px;
+  flex: 0 0 auto;
+  width: 260px;
+  max-width: 100%;
   min-width: 0;
   cursor: default; /* not clickable until ready */
 }

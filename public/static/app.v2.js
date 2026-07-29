@@ -1328,7 +1328,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Edit only for full beats
     if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
-      items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song — 20 pts', action: () => {
+      items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song', action: () => {
         window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
       }});
     }
