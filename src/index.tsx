@@ -4,7 +4,7 @@ import { serveStatic } from 'hono/cloudflare-workers'
 
 type Bindings = {
   OPENAI_API_KEY: string
-  MUREKA_API_KEY: string
+  MUSICAPI_KEY: string
   ELEVENLABS_API_KEY: string  // ElevenLabs SFX API for One Shot Creator
   DB: D1Database             // Cloudflare D1 for persistent job storage
   IMAGES: R2Bucket           // Cloudflare R2 for permanent cover art storage
@@ -43,7 +43,9 @@ app.use('/static/*', serveStatic({ root: './' }))
 //  PIPELINE CONSTANTS
 // ═══════════════════════════════════════════════════════════════
 
-const MUREKA_BASE = 'https://api.mureka.ai/v1'
+const MUSICAPI_BASE = 'https://api.musicapi.ai/api/v1'
+const MUSICAPI_SONIC  = `${MUSICAPI_BASE}/sonic`
+const MUSICAPI_PRODUCER = `${MUSICAPI_BASE}/producer`
 const OPENAI_BASE = 'https://api.openai.com/v1'
 // ── D1-backed job store ───────────────────────────────────────
 // Survives across Cloudflare Worker instances (no more "Job not found")
@@ -691,53 +693,49 @@ Instrument rules:
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  STEP 2 — MUREKA INSTRUMENTAL GENERATION
+//  STEP 2 — MUSICAPI PRODUCER INSTRUMENTAL GENERATION
+//  Uses Producer (Google Lyria 3 Pro) endpoint — clean instrumentals,
+//  no vocal bleed, guaranteed instrumental output.
 // ═══════════════════════════════════════════════════════════════
 
 async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number, refMode?: string, refPrompt?: string): Promise<string> {
-  let murekaPrompt = blueprint.mureka_prompt
-  if (!refFileId) {
-    murekaPrompt = murekaPrompt
-      .replace(/\bwith vocals?\b/gi, '')
-      .replace(/\bvocal chops?\b/gi, '')
-      .replace(/\bchops?\b/gi, '')
-      .replace(/\bsinging\b/gi, '')
-      .replace(/\blyrics\b/gi, '')
-      .trim()
-    if (!murekaPrompt.includes('no vocals')) {
-      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental, no vocal chops'
-    }
+  let stylePrompt = blueprint.mureka_prompt || ''
+
+  // Strip vocal references — Producer is strictly instrumental
+  stylePrompt = stylePrompt
+    .replace(/\bwith vocals?\b/gi, '')
+    .replace(/\bvocal chops?\b/gi, '')
+    .replace(/\bchops?\b/gi, '')
+    .replace(/\bsinging\b/gi, '')
+    .replace(/\blyrics\b/gi, '')
+    .trim()
+  if (!stylePrompt.includes('no vocals')) {
+    stylePrompt = stylePrompt.replace(/,?\s*$/, '') + ', no vocals, purely instrumental'
   }
 
-  // Anti-jazz injection: for hip hop / trap / drill / R&B, explicitly forbid trumpet,
-  // saxophone, and jazz elements so Mureka's model doesn't drift into jazz territory.
+  // Anti-jazz for hip-hop family
   const genreLower = (blueprint.genre || '').toLowerCase()
   const isHipHopFamily = /hip.?hop|trap|drill|r.?b|rnb|rap|boom.?bap|grime/.test(genreLower)
-  if (isHipHopFamily && !/(jazz|trumpet|sax|brass)/.test(blueprint.mureka_prompt.toLowerCase())) {
-    murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') +
+  if (isHipHopFamily && !/(jazz|trumpet|sax|brass)/.test(stylePrompt.toLowerCase())) {
+    stylePrompt = stylePrompt.replace(/,?\s*$/, '') +
       ', no trumpet, no saxophone, no jazz, no brass winds, no swing'
   }
 
-  if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
-
-  const body: Record<string, any> = {
-    prompt: murekaPrompt,
-    model: 'auto'
-  }
-  // Default duration is always 240s (4:00) — user can override via userDurationSec
   const durationSec = userDurationSec || blueprint.duration_seconds || 240
-  if (durationSec && durationSec > 0) {
-    body.duration = durationSec
-    const durMin = Math.floor(durationSec / 60)
-    const durSec = durationSec % 60
-    const durStr = `${durMin}:${String(durSec).padStart(2,'0')}`
-    if (!murekaPrompt.includes('minute') && !murekaPrompt.includes('second') && !murekaPrompt.includes(':')) {
-      murekaPrompt = murekaPrompt.replace(/,?\s*$/, '') + `, duration ${durStr}`
-      body.prompt = murekaPrompt
-    }
+
+  // Build request body for Producer (Lyria 3 Pro)
+  const body: Record<string, any> = {
+    task_type: 'generate_music',
+    sound: stylePrompt.slice(0, 400),
+    // Producer accepts duration in seconds
+    duration: durationSec
   }
+
+  // Reference audio: upload by URL to MusicAPI upload, get clip_id, pass as reference_clip_id
   if (refFileId) {
-    body.reference_audio = refFileId
+    // refFileId is already a MusicAPI clip_id from an earlier upload
+    body.reference_clip_id = refFileId
+    // Override sound with reference-aware prompt
     const genre  = blueprint.genre  || ''
     const bpm    = blueprint.bpm    || ''
     const energy = blueprint.energy || ''
@@ -748,19 +746,17 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
     const context = contextParts.join(', ')
     let modeDirective: string
     if (refMode === 'inspire') {
-      modeDirective = 'inspired by the reference track — take creative liberties with arrangement and sound design, but match its tempo and rhythmic feel'
+      modeDirective = 'inspired by the reference track, instrumental, no vocals'
     } else {
-      modeDirective = 'closely match the style, energy, sonic texture, BPM, groove, and overall vibe of the reference track'
+      modeDirective = 'closely match style, energy, sonic texture, BPM, groove — instrumental, no vocals'
     }
     const parts: string[] = [modeDirective]
     if (context) parts.push(context)
     if (refPrompt && refPrompt.trim()) parts.push(refPrompt.trim())
-    murekaPrompt = parts.join(', ')
-    if (murekaPrompt.length > 200) murekaPrompt = murekaPrompt.slice(0, 197) + '...'
-    body.prompt = murekaPrompt
+    body.sound = parts.join(', ').slice(0, 400)
   }
 
-  const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+  const res = await fetch(`${MUSICAPI_PRODUCER}/create`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -771,23 +767,26 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
 
   if (!res.ok) {
     const err = await res.json() as any
-    throw new Error(`Mureka instrumental error: ${err?.error?.message || res.status}`)
+    throw new Error(`MusicAPI Producer error: ${err?.message || err?.error || res.status}`)
   }
 
   const data = await res.json() as any
-  return data.id as string
+  // Producer returns { task_id: "..." } or { data: { task_id: "..." } }
+  const taskId = data.task_id || data.data?.task_id
+  if (!taskId) throw new Error(`MusicAPI Producer returned no task_id: ${JSON.stringify(data).slice(0, 200)}`)
+  return taskId as string
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  STEP 2b — MUREKA SONG GENERATION (with user lyrics)
-//  Uses /v1/song/generate — respects lyrics text and duration
+//  STEP 2b — MUSICAPI SONIC SONG GENERATION (with user lyrics)
+//  Uses Sonic (Suno v5.5-compatible) endpoint — supports lyrics
 // ═══════════════════════════════════════════════════════════════
 
 async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyrics: string, vocalGender?: string, userDurationSec?: number): Promise<string> {
   const durationSec = userDurationSec || blueprint.duration_seconds || 240
 
-  // Build a clean style prompt (no lyrics or vocal refs — those go in the lyrics field)
-  let stylePrompt = blueprint.mureka_prompt
+  // Build style/tags from blueprint — clean of instrumental-only descriptors
+  let stylePrompt = (blueprint.mureka_prompt || '')
     .replace(/\bno vocals?\b/gi, '')
     .replace(/\bpurely instrumental\b/gi, '')
     .replace(/\bno vocal chops?\b/gi, '')
@@ -798,16 +797,16 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
   if (vocalGender && vocalGender !== 'off') {
     stylePrompt = stylePrompt.replace(/,?\s*$/, '') + `, ${vocalGender} vocalist`
   }
-  if (stylePrompt.length > 200) stylePrompt = stylePrompt.slice(0, 197) + '...'
 
   const body: Record<string, any> = {
-    prompt: stylePrompt,
+    task_type: 'generate_music',
+    tags: stylePrompt.slice(0, 200),
     lyrics: userLyrics,
     duration: durationSec,
-    model: 'auto'
+    mv: 'sonic-v5'
   }
 
-  const res = await fetch(`${MUREKA_BASE}/song/generate`, {
+  const res = await fetch(`${MUSICAPI_SONIC}/create`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
@@ -818,15 +817,17 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
 
   if (!res.ok) {
     const err = await res.json() as any
-    throw new Error(`Mureka song error: ${err?.error?.message || err?.message || res.status}`)
+    throw new Error(`MusicAPI Sonic error: ${err?.message || err?.error || res.status}`)
   }
 
   const data = await res.json() as any
-  // song/generate returns { id: "task_id" }
-  return data.id as string
+  // Sonic returns { data: [{ id, state, ... }] } or { task_id }
+  const taskId = data.task_id || data.data?.[0]?.id
+  if (!taskId) throw new Error(`MusicAPI Sonic returned no task_id: ${JSON.stringify(data).slice(0, 200)}`)
+  return taskId as string
 }
 
-// Step 1+2: called once from POST /api/generate (fast — GPT + Mureka kick-off only)
+// Step 1+2: called once from POST /api/generate (fast — GPT + MusicAPI kick-off only)
 async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number, refMode?: string, refPrompt?: string, userLyrics?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
@@ -850,18 +851,18 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
 
     job.blueprint = blueprint
 
-    // Step 2 — kick off Mureka (instant — just submits the job)
+    // Step 2 — kick off MusicAPI (instant — just submits the job)
     job.status = 'generating'
     await setJob(db, { ...job })
 
-    // If user provided lyrics → route to Mureka song/generate (respects lyrics + duration)
-    // Otherwise → instrumental/generate (no vocals)
+    // If user provided lyrics → route to MusicAPI Sonic (supports lyrics)
+    // Otherwise → MusicAPI Producer (clean instrumental, Lyria 3 Pro)
     let stereoTaskId: string
     if (userLyrics) {
-      stereoTaskId = await startSongGeneration(blueprint, env.MUREKA_API_KEY, userLyrics, (job as any).vocal_gender, userDurationSec)
-      ;(job as any).extend_task_type = 'song_generate'  // tells advancePipeline to use song/query
+      stereoTaskId = await startSongGeneration(blueprint, env.MUSICAPI_KEY, userLyrics, (job as any).vocal_gender, userDurationSec)
+      ;(job as any).extend_task_type = 'song_generate'  // tells advancePipeline to use Sonic task poll
     } else {
-      stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUREKA_API_KEY, refFileId, (job as any).vocal_gender, userDurationSec, refMode, refPrompt)
+      stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUSICAPI_KEY, refFileId, (job as any).vocal_gender, userDurationSec, refMode, refPrompt)
     }
 
     job.stereo_task_id = stereoTaskId
@@ -874,40 +875,44 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
   }
 }
 
-// ── Mureka polling helpers ────────────────────────────────────────────────────
-// Poll Mureka instrumental/query/:taskId — returns stereo URL string or null if still running
+// ── MusicAPI polling helpers ──────────────────────────────────────────────────
+// Poll MusicAPI Sonic task/:taskId — used for instrumental generation (beat creation)
+// Returns stereo URL string or null if still running
 async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<string | null> {
-  const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
+  const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
   if (!res.ok) return null
   const data = await res.json() as any
-  if (data.status === 'succeeded' || data.status === 'completed') {
-    // Mureka instrumental returns choices[0].url or choices[0].audio_url
-    return data.choices?.[0]?.url || data.choices?.[0]?.audio_url || null
-  }
-  if (data.status === 'failed') throw new Error(data.error?.message || 'Mureka instrumental generation failed')
+  // MusicAPI Sonic returns array of clips: [{ id, audio_url, state, ... }]
+  const clips = Array.isArray(data) ? data : (data.data || [])
+  if (!clips.length) return null
+  const clip = clips[0]
+  if (clip.state === 'succeeded') return clip.audio_url || null
+  if (clip.state === 'failed') throw new Error(clip.error || 'MusicAPI instrumental generation failed')
   return null // still processing
 }
 
-// Poll Mureka song/query/:taskId — used for song/extend results
-// Mureka song/extend uses the same song/query endpoint, returns choices[0].url + duration
-async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ url: string; durationMs: number } | null> {
-  const res = await fetch(`${MUREKA_BASE}/song/query/${taskId}`, {
+// Poll MusicAPI Sonic task/:taskId — used for song extend results
+// Returns { url, durationMs, clipId } or null if still running
+async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ url: string; durationMs: number; clipId: string } | null> {
+  const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
   if (!res.ok) return null
   const data = await res.json() as any
-  if (data.status === 'succeeded' || data.status === 'completed') {
-    // song/extend returns: { choices: [{ url: "...", audio_url: "...", duration: <ms> }] }
-    const choice = data.choices?.[0]
-    const url = choice?.url || choice?.audio_url || null
+  const clips = Array.isArray(data) ? data : (data.data || [])
+  if (!clips.length) return null
+  const clip = clips[0]
+  if (clip.state === 'succeeded') {
+    const url = clip.audio_url || null
     if (!url) return null
-    // duration field is in milliseconds when present; fall back to 0 (unknown)
-    const durationMs: number = typeof choice?.duration === 'number' ? choice.duration : 0
-    return { url, durationMs }
+    // MusicAPI returns duration in seconds — convert to ms; fall back to 0
+    const durationMs: number = typeof clip.duration === 'number' ? Math.round(clip.duration * 1000) : 0
+    const clipId: string = clip.id || clip.clip_id || ''
+    return { url, durationMs, clipId }
   }
-  if (data.status === 'failed') throw new Error(data.error?.message || 'Mureka song extend failed')
+  if (clip.state === 'failed') throw new Error(clip.error || 'MusicAPI song extend failed')
   return null // still processing
 }
 
@@ -917,68 +922,141 @@ async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ u
 // Mureka extend calls until total duration reaches the target.
 
 // ── Song extend chain helper ───────────────────────────────────────────────────
-// Fires the next Mureka song/extend call from the given audio URL.
-// Returns { taskId } on success, throws on failure.
+// Fires the next MusicAPI extend call using the clip_id from previous step.
+// Returns taskId on success, throws on failure.
+// MusicAPI Sonic: use continue_clip_id — no re-upload needed.
+// Vocal extends → Sonic; Instrumental extends → Producer (Lyria 3 Pro)
 async function fireNextChainExtend(
   currentUrl: string,
   currentDurationMs: number,
   job: any,
-  env: Bindings
+  env: Bindings,
+  clipId?: string
 ): Promise<string> {
-  // Upload current result to Mureka files API
-  const uploadForm = new FormData()
-  uploadForm.append('purpose', 'audio')
-  uploadForm.append('url', currentUrl)
-  const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${env.MUREKA_API_KEY}` },
-    body: uploadForm
-  })
-  if (!uploadRes.ok) {
-    const t = await uploadRes.text()
-    throw new Error(`Chain upload failed: ${uploadRes.status} ${t.slice(0, 200)}`)
-  }
-  const uploadData = await uploadRes.json() as any
-  const uploadAudioId = uploadData.id as string
-  if (!uploadAudioId) throw new Error('Chain upload returned no file ID')
+  const isInstrumental = job.make_instrumental === true
 
-  // extend_at = full current duration so Mureka generates as much new content as possible
-  const safeExtendAt = Math.max(8000, Math.min(currentDurationMs, 420000))
+  if (isInstrumental) {
+    // ── Producer (Lyria 3 Pro) instrumental extend ──────────────────────────
+    // Requires clip_id from previous step — use job.chain_clip_id
+    const sourceClipId = clipId || job.chain_clip_id
+    if (!sourceClipId) throw new Error('Chain extend (instrumental): no clip_id available')
 
-  const extendBody: Record<string, any> = {
-    upload_audio_id: uploadAudioId,
-    extend_at: safeExtendAt
-  }
-  // Send [Verse] so Mureka adds natural vocal content to the extension.
-  // User-supplied lyrics override this; [Instrumental] is never used.
-  const chainLyrics = job.chain_lyrics && job.chain_lyrics.trim()
-  if (chainLyrics && chainLyrics !== '[Verse]' && chainLyrics !== '[Instrumental]') {
-    extendBody.lyrics = chainLyrics   // user typed actual lyrics
+    const styleSound = job.chain_style
+      ? `${job.chain_style}, instrumental, no vocals`
+      : 'instrumental continuation, no vocals'
+
+    const extBody: Record<string, any> = {
+      task_type: 'extend_music',
+      clip_id: sourceClipId,
+      sound: styleSound
+      // lyrics intentionally omitted → instrumental
+    }
+
+    const extRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(extBody)
+    })
+    if (!extRes.ok) {
+      const t = await extRes.text()
+      let msg = `${extRes.status}`
+      try { msg = (JSON.parse(t) as any)?.error || msg } catch (_) {}
+      throw new Error(`Chain extend (instrumental) failed: ${msg}`)
+    }
+    const extData = await extRes.json() as any
+    const taskId = extData.task_id || extData.id
+    if (!taskId) throw new Error(`Chain extend (instrumental) returned no task ID: ${JSON.stringify(extData).slice(0, 200)}`)
+    return taskId
+
   } else {
-    extendBody.lyrics = '[Verse]'     // natural vocal continuation
-  }
-  if (job.chain_style) {
-    extendBody.style = job.chain_style
-  }
+    // ── Sonic (Suno-compatible) vocal extend ────────────────────────────────
+    // Use continue_clip_id if available; fall back to upload-extend from URL
+    const sourceclipId = clipId || job.chain_clip_id
 
-  const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${env.MUREKA_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(extendBody)
-  })
-  if (!extRes.ok) {
-    const t = await extRes.text()
-    let msg = `${extRes.status}`
-    try { msg = (JSON.parse(t) as any)?.error?.message || msg } catch (_) {}
-    throw new Error(`Chain extend failed: ${msg}`)
+    const chainLyrics = job.chain_lyrics && job.chain_lyrics.trim()
+    const hasCustomLyrics = chainLyrics && chainLyrics !== '[Verse]' && chainLyrics !== '[Instrumental]'
+
+    if (sourceclipId) {
+      // Fast path — pass clip_id directly, no upload
+      const extBody: Record<string, any> = {
+        task_type: 'extend_music',
+        continue_clip_id: sourceclipId,
+        mv: 'sonic-v5'
+      }
+      if (hasCustomLyrics) extBody.prompt = chainLyrics
+      if (job.chain_style) extBody.tags = job.chain_style
+
+      const extRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(extBody)
+      })
+      if (!extRes.ok) {
+        const t = await extRes.text()
+        let msg = `${extRes.status}`
+        try { msg = (JSON.parse(t) as any)?.error || msg } catch (_) {}
+        throw new Error(`Chain extend (vocal) failed: ${msg}`)
+      }
+      const extData = await extRes.json() as any
+      const taskId = extData.task_id || extData.id
+      if (!taskId) throw new Error(`Chain extend (vocal) returned no task ID: ${JSON.stringify(extData).slice(0, 200)}`)
+      return taskId
+    } else {
+      // Fallback — upload audio URL then extend
+      const uploadBody = { audio_url: currentUrl }
+      const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(uploadBody)
+      })
+      if (!uploadRes.ok) {
+        const t = await uploadRes.text()
+        throw new Error(`Chain upload failed: ${uploadRes.status} ${t.slice(0, 200)}`)
+      }
+      const uploadData = await uploadRes.json() as any
+      const uploadTaskId = uploadData.task_id || uploadData.id
+      if (!uploadTaskId) throw new Error('Chain upload returned no task ID')
+      // Poll upload completion (typically fast)
+      let uploadedClipId = ''
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 3000))
+        const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, {
+          headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}` }
+        })
+        if (pollRes.ok) {
+          const pd = await pollRes.json() as any
+          const clips = Array.isArray(pd) ? pd : (pd.data || [])
+          if (clips[0]?.state === 'succeeded') { uploadedClipId = clips[0].id || clips[0].clip_id || ''; break }
+          if (clips[0]?.state === 'failed') throw new Error('Chain upload task failed')
+        }
+      }
+      if (!uploadedClipId) throw new Error('Chain upload timed out')
+
+      const extBody: Record<string, any> = {
+        task_type: 'extend_music',
+        continue_clip_id: uploadedClipId,
+        mv: 'sonic-v5'
+      }
+      if (hasCustomLyrics) extBody.prompt = chainLyrics
+      if (job.chain_style) extBody.tags = job.chain_style
+
+      const extRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(extBody)
+      })
+      if (!extRes.ok) {
+        const t = await extRes.text()
+        let msg = `${extRes.status}`
+        try { msg = (JSON.parse(t) as any)?.error || msg } catch (_) {}
+        throw new Error(`Chain extend (vocal fallback) failed: ${msg}`)
+      }
+      const extData = await extRes.json() as any
+      const taskId = extData.task_id || extData.id
+      if (!taskId) throw new Error(`Chain extend (vocal fallback) returned no task ID`)
+      return taskId
+    }
   }
-  const extData = await extRes.json() as any
-  const taskId = extData.id || extData.task_id || extData.taskId
-  if (!taskId) throw new Error(`Chain extend returned no task ID: ${JSON.stringify(extData).slice(0, 200)}`)
-  return taskId
 }
 
 async function advancePipeline(jobId: string, env: Bindings, skipStems = true): Promise<Job | null> {
@@ -986,24 +1064,24 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   let job = await getJob(db, jobId)
   if (!job) return null
 
-  // Only advance jobs that are waiting on Mureka
+  // Only advance jobs that are waiting on MusicAPI
   if (job.status !== 'generating' || !job.stereo_task_id) return job
 
   try {
     // Route polling based on task type:
-    // - song_extend and song_generate both use Mureka song/query endpoint
-    // - instrumental/generate uses Mureka instrumental/query endpoint
+    // - song_extend and song_generate use MusicAPI Sonic task endpoint
+    // - Producer (instrumental) uses MusicAPI Sonic task endpoint (same polling path)
     const taskType = (job as any).extend_task_type
     const useSongQuery = taskType === 'song_extend' || taskType === 'song_generate'
 
     if (!useSongQuery) {
       // Instrumental path — no chaining
-      const stereoUrl = await pollInstrumentalStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+      const stereoUrl = await pollInstrumentalStatus(job.stereo_task_id, env.MUSICAPI_KEY)
       if (!stereoUrl) {
         const ageMs = Date.now() - job.created_at
         if (ageMs > 10 * 60 * 1000) {
           job.status = 'error'
-          job.error = 'Mureka generation timed out after 10 minutes'
+          job.error = 'MusicAPI generation timed out after 10 minutes'
           await setJob(db, { ...job })
         }
         return job
@@ -1015,7 +1093,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     }
 
     // ── Song query path (song_extend / song_generate) ──────────────────────────
-    const result = await pollSongExtendStatus(job.stereo_task_id, env.MUREKA_API_KEY)
+    const result = await pollSongExtendStatus(job.stereo_task_id, env.MUSICAPI_KEY)
 
     if (!result) {
       // Not ready yet — check timeout (15 min max for chained extends)
@@ -1023,13 +1101,13 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
       const timeoutMs = (job as any).chain_target_ms ? 15 * 60 * 1000 : 10 * 60 * 1000
       if (ageMs > timeoutMs) {
         job.status = 'error'
-        job.error = 'Mureka generation timed out'
+        job.error = 'MusicAPI generation timed out'
         await setJob(db, { ...job })
       }
       return job
     }
 
-    const { url: stereoUrl, durationMs: resultDurationMs } = result
+    const { url: stereoUrl, durationMs: resultDurationMs, clipId: resultClipId } = result
 
     // ── Chain extend logic ─────────────────────────────────────────────────────
     // chain_target_ms: target total output duration in ms (set at job creation)
@@ -1039,8 +1117,8 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     const chainStep: number = (job as any).chain_step || 0
     const chainMaxSteps: number = (job as any).chain_max_steps || 15
 
-    // Determine current track duration: prefer the Mureka-reported duration
-    // If Mureka didn't report duration (= 0), estimate from chain_step progress
+    // Determine current track duration: prefer the MusicAPI-reported duration
+    // If MusicAPI didn't report duration (= 0), use last known
     const currentDurationMs = resultDurationMs > 0
       ? resultDurationMs
       : ((job as any).chain_last_duration_ms || 0)
@@ -1051,17 +1129,18 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
       && chainStep < chainMaxSteps
 
     if (shouldChain) {
-      // Fire the next extend call
+      // Fire the next extend call — pass clip_id for efficient chaining
       console.log(`[chain-extend] step=${chainStep + 1} currentDuration=${currentDurationMs}ms target=${chainTargetMs}ms jobId=${jobId}`)
       try {
-        const nextTaskId = await fireNextChainExtend(stereoUrl, currentDurationMs, job as any, env)
-        // Update job: new task ID, increment step, save last known duration
+        const nextTaskId = await fireNextChainExtend(stereoUrl, currentDurationMs, job as any, env, resultClipId)
+        // Update job: new task ID, increment step, save last known duration + clipId
         const updatedJob = {
           ...(job as any),
           stereo_task_id: nextTaskId,
           stereo_url: null, // will be populated when next step completes
           chain_step: chainStep + 1,
           chain_last_duration_ms: currentDurationMs,
+          chain_clip_id: resultClipId, // pass clip_id to next chain step
           // Keep status as 'generating' so polling continues
           status: 'generating'
         }
@@ -1318,7 +1397,7 @@ app.post('/api/poll/:id', async (c) => {
         name: ins.name,
         family: ins.family
       })),
-      mureka_prompt: job.blueprint.mureka_prompt
+      style_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
     error: job.error || null,
@@ -1359,7 +1438,7 @@ app.get('/api/job/:id', async (c) => {
         name: ins.name,
         family: ins.family
       })),
-      mureka_prompt: job.blueprint.mureka_prompt
+      style_prompt: job.blueprint.mureka_prompt
     } : null,
     stereo_url: job.stereo_url || null,
     error: job.error || null
@@ -1408,9 +1487,9 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 // ═══════════════════════════════════════════════════════════════
 //  STEM EXTRACTION API
 //  Three modes matching Suno's UX:
-//    auto          → Mureka audio-separation-2 → 5 stems (vocals, drums, bass, other, instrumental)
-//    split_from_mix → Mureka audio-separation-2 with target → 2 stems (target + everything_else)
-//    advanced      → same as split_from_mix but labelled differently in UI
+//    auto          → MusicAPI /sonic/stems/full → 5 stems (vocals, drums, bass, other, instrumental)
+//    split_from_mix → MusicAPI /sonic/stems/basic → 2 stems (vocals + instrumental)
+//    advanced      → MusicAPI /sonic/stems/full → 5 stems (same as auto, Pro only)
 //
 //  Lifecycle: POST /api/job/stems → starts task, returns task_id
 //             GET  /api/job/stems/:jobId → polls / returns cached results
@@ -1418,7 +1497,7 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 
 // POST /api/job/stems — start stem extraction
 app.post('/api/job/stems', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Stem extraction not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -1466,16 +1545,11 @@ app.post('/api/job/stems', async (c) => {
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
 
-  // song/stem is SYNCHRONOUS on Mureka's side (60–120 s), but Cloudflare Workers
-  // has a 30-second wall-clock limit.  Calling fetch() here directly would cause
-  // Cloudflare to kill the Worker and return an HTML 502 page.
-  //
-  // Fix: store a "stemwait:" task_id immediately and return to the client right
-  // away.  The actual Mureka song/stem call is deferred to the GET poll handler,
-  // which fires it with a 25-second AbortController signal.  If it times out the
-  // client (polling every 2.5 s) retries and gets another 25-second window.
-  // Stem separation typically completes within 2–4 poll cycles (5–10 s real time
-  // for short tracks, up to 60–120 s for long ones).
+  // MusicAPI stem separation is async — POST /sonic/stems/basic or /sonic/stems/full
+  // returns a task_id immediately; we poll GET /sonic/stems/task/:taskId.
+  // Because Cloudflare Workers has a 30-second wall-clock limit we store a
+  // "stemwait:" task_id immediately and return to the client; the actual
+  // MusicAPI call is deferred to the GET poll handler via waitUntil().
 
   const stemwaitTaskId = `stemwait:${mode}:${Date.now()}`
 
@@ -1505,7 +1579,7 @@ app.post('/api/job/stems', async (c) => {
 
 // GET /api/job/stems/:jobId — poll stem extraction status
 app.get('/api/job/stems/:jobId', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -1573,11 +1647,11 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
     // ── Stuck-in-processing recovery ──────────────────────────────────────
     // waitUntil() on Genspark-hosted Workers may be terminated early if the
-    // Mureka song/stem call exceeds the platform's wall-clock budget (~30 s).
+    // MusicAPI stems call exceeds the platform's wall-clock budget (~30 s).
     // When that happens the job stays 'processing' forever.
     // Detect: status===processing AND created_at older than 90 s → reset to
     // 'pending' so this poll re-fires waitUntil() and gets another 30-second window.
-    // Mureka song/stem is idempotent (same URL → same separation); retrying is safe.
+    // MusicAPI stems call is idempotent (same URL → same separation); retrying is safe.
     if (stemJob.status === 'processing') {
       const ageMs = Date.now() - (stemJob.created_at || 0)
       if (ageMs > 90_000) {
@@ -1601,17 +1675,22 @@ app.get('/api/job/stems/:jobId', async (c) => {
       const bgTaskId = stemJob.task_id
       const bgJobId  = jobId
       const bgDb     = c.env.DB
-      const bgKey    = c.env.MUREKA_API_KEY
+      const bgKey    = c.env.MUSICAPI_KEY
       const bgUrl    = stereoUrl
+      const bgMode   = stemJob.mode
 
       // Fire-and-forget: runs after response is sent, no Worker wall-clock pressure
       c.executionCtx.waitUntil((async () => {
         try {
-          console.log(`[stems/bg] Starting Mureka song/stem for task ${bgTaskId}`)
-          const murekaRes = await fetch(`${MUREKA_BASE}/song/stem`, {
+          // Choose endpoint: basic (2-stem) for split_from_mix, full (5-stem) for auto/advanced
+          const stemEndpoint = (bgMode === 'split_from_mix')
+            ? `${MUSICAPI_SONIC}/stems/basic`
+            : `${MUSICAPI_SONIC}/stems/full`
+          console.log(`[stems/bg] Starting MusicAPI stem (${bgMode}) for task ${bgTaskId}`)
+          const musicapiRes = await fetch(stemEndpoint, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: bgUrl, model: 'audio-separation-2' })
+            body: JSON.stringify({ audio_url: bgUrl })
           })
 
           // Re-read job from D1 to avoid clobbering concurrent writes
@@ -1622,11 +1701,11 @@ app.get('/api/job/stems/:jobId', async (c) => {
           const freshStem = freshStemJobs.find((s: StemJob) => s.task_id === bgTaskId)
           if (!freshStem) return
 
-          if (!murekaRes.ok) {
-            const errText = await murekaRes.text()
-            let errMsg = `Mureka stem error ${murekaRes.status}`
-            try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || j?.detail || errText || errMsg } catch {}
-            console.error(`[stems/bg] Mureka error ${murekaRes.status}: ${errText}`)
+          if (!musicapiRes.ok) {
+            const errText = await musicapiRes.text()
+            let errMsg = `MusicAPI stem error ${musicapiRes.status}`
+            try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || j?.detail || errText || errMsg } catch {}
+            console.error(`[stems/bg] MusicAPI error ${musicapiRes.status}: ${errText}`)
             freshStem.status = 'error'
             freshStem.error = errMsg
             const errJob = { ...freshJob } as any
@@ -1635,23 +1714,24 @@ app.get('/api/job/stems/:jobId', async (c) => {
             return
           }
 
-          const data = await murekaRes.json() as any
-          const zipUrl = data.zip_url as string | undefined
-          if (!zipUrl) {
+          const data = await musicapiRes.json() as any
+          // MusicAPI stems returns { task_id } — store as "stemtask:" for the poll handler
+          const stemTaskId = data.task_id || data.data?.task_id
+          if (!stemTaskId) {
             freshStem.status = 'error'
-            freshStem.error = 'No zip_url in Mureka stem response'
+            freshStem.error = 'No task_id in MusicAPI stem response'
             const errJob = { ...freshJob } as any
             errJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
             await setJob(bgDb, errJob)
             return
           }
 
-          console.log(`[stems/bg] Got zip_url: ${zipUrl}`)
-          freshStem.task_id = 'zip:' + zipUrl
-          freshStem.status  = 'pending'  // reset so zip: block re-processes it on next poll
-          const zipJob = { ...freshJob } as any
-          zipJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
-          await setJob(bgDb, zipJob)
+          console.log(`[stems/bg] Got MusicAPI stem task_id: ${stemTaskId}`)
+          freshStem.task_id = 'stemtask:' + stemTaskId
+          freshStem.status  = 'pending'  // reset so stemtask: block polls on next client poll
+          const updJob = { ...freshJob } as any
+          updJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+          await setJob(bgDb, updJob)
         } catch (bgErr: any) {
           console.error(`[stems/bg] Unhandled error: ${bgErr?.message}`)
           try {
@@ -1675,8 +1755,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
     return c.json({ status: 'processing', task_id: stemJob.task_id })
   }
 
-  // Poll Mureka for status
-  // If task_id starts with "zip:" it means song/stem already completed synchronously.
+  // If task_id starts with "zip:" it contains a direct ZIP URL from a legacy call.
   // We just need to unzip the result and return the stem URLs.
   if (stemJob.task_id.startsWith('zip:')) {
     const zipUrl = stemJob.task_id.slice(4)
@@ -1716,65 +1795,84 @@ app.get('/api/job/stems/:jobId', async (c) => {
     }
   }
 
-  try {
-    const res = await fetch(`${MUREKA_BASE}/song/query/${stemJob.task_id}`, {
-      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
-    })
-    if (!res.ok) return c.json({ status: 'processing' })
-    const data = await res.json() as any
+  // Poll MusicAPI stems task — task_id stored as "stemtask:<musicapi_task_id>"
+  if (stemJob.task_id.startsWith('stemtask:')) {
+    const musicapiTaskId = stemJob.task_id.slice('stemtask:'.length)
+    try {
+      const res = await fetch(`${MUSICAPI_SONIC}/stems/task/${musicapiTaskId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (!res.ok) return c.json({ status: 'processing' })
+      const data = await res.json() as any
 
-    if (data.status === 'succeeded' || data.status === 'completed') {
-      // Parse stem URLs from response
-      // Mureka returns: { choices: [{ stems: { vocals: url, drums: url, instrumental: url, ... } }] }
-      // or: { stems: { vocals: url, ... } }
-      const stemData = data.choices?.[0]?.stems || data.stems || {}
-      let stemTracks: StemTrack[] = Object.entries(stemData).map(([name, url]) => ({
-        name,
-        url: url as string
-      }))
+      // MusicAPI stems task returns { state: 'succeeded'|'failed'|'pending', stems: {...}, zip_url: ... }
+      // or nested under data
+      const taskState = data.state || data.data?.state || data.status
+      const stemsData = data.stems || data.data?.stems || {}
+      const zipUrl = data.zip_url || data.data?.zip_url
 
-      // For split_from_mix: only show vocals + instrumental (filter out drums/bass/other)
-      if (stemJob.mode === 'split_from_mix') {
-        const vocals = stemTracks.find(s => s.name === 'vocals')
-        const instrumental = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other')
-        stemTracks = []
-        if (vocals) stemTracks.push(vocals)
-        if (instrumental) stemTracks.push({ name: 'instrumental', url: instrumental.url })
-        // Fallback: if Mureka only returned one track, duplicate with complementary label
-        if (stemTracks.length === 1) {
-          const existing = stemTracks[0]
-          stemTracks.push({ name: existing.name === 'vocals' ? 'instrumental' : 'vocals', url: existing.url })
+      if (taskState === 'succeeded' || taskState === 'completed') {
+        // If we got a zip_url, transition to zip: handling
+        if (zipUrl) {
+          stemJob.task_id = 'zip:' + zipUrl
+          stemJob.status  = 'pending'
+          const updJob = { ...job } as any
+          updJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === 'stemtask:' + musicapiTaskId ? stemJob : s)
+          await setJob(c.env.DB, updJob)
+          return c.json({ status: 'processing', task_id: stemJob.task_id })
         }
+
+        // Direct stems object: { vocals: url, drums: url, ... }
+        let stemTracks: StemTrack[] = Object.entries(stemsData)
+          .filter(([, url]) => typeof url === 'string' && url)
+          .map(([name, url]) => ({ name, url: url as string }))
+
+        if (!stemTracks.length) return c.json({ status: 'processing' })
+
+        // For split_from_mix: only show vocals + instrumental
+        if (stemJob.mode === 'split_from_mix') {
+          const vocals = stemTracks.find(s => s.name === 'vocals')
+          const instrumental = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other')
+          stemTracks = []
+          if (vocals) stemTracks.push(vocals)
+          if (instrumental) stemTracks.push({ name: 'instrumental', url: instrumental.url })
+          if (stemTracks.length === 1) {
+            const ex = stemTracks[0]
+            stemTracks.push({ name: ex.name === 'vocals' ? 'instrumental' : 'vocals', url: ex.url })
+          }
+        }
+
+        stemJob.status = 'ready'
+        stemJob.stems = stemTracks
+        const updatedJob = { ...job } as any
+        updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+        await setJob(c.env.DB, updatedJob)
+        return c.json({ status: 'ready', stems: stemTracks, task_id: stemJob.task_id })
       }
 
-      stemJob.status = 'ready'
-      stemJob.stems = stemTracks
+      if (taskState === 'failed' || taskState === 'error') {
+        stemJob.status = 'error'
+        stemJob.error = data.error || data.message || 'Stem extraction failed'
+        const updatedJob = { ...job } as any
+        updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+        await setJob(c.env.DB, updatedJob)
+        return c.json({ status: 'error', error: stemJob.error })
+      }
 
-      const updatedJob = { ...job } as any
-      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-      await setJob(c.env.DB, updatedJob)
-
-      return c.json({ status: 'ready', stems: stemTracks, task_id: stemJob.task_id })
+      return c.json({ status: 'processing', task_id: stemJob.task_id })
+    } catch (err: any) {
+      return c.json({ status: 'error', error: err?.message || 'Poll failed' }, 500)
     }
-
-    if (data.status === 'failed' || data.status === 'error') {
-      stemJob.status = 'error'
-      stemJob.error = data.error?.message || 'Extraction failed'
-      const updatedJob = { ...job } as any
-      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-      await setJob(c.env.DB, updatedJob)
-      return c.json({ status: 'error', error: stemJob.error })
-    }
-
-    // Still processing
-    stemJob.status = 'processing'
-    const updatedJob = { ...job } as any
-    updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-    await setJob(c.env.DB, updatedJob)
-    return c.json({ status: 'processing', task_id: stemJob.task_id })
-  } catch (err: any) {
-    return c.json({ status: 'error', error: err?.message || 'Poll failed' }, 500)
   }
+
+  // Fallback for unknown task_id formats
+  try {
+    return c.json({ status: 'processing' })
+  } catch (err: any) {
+    return c.json({ status: 'error', error: err?.message || 'Unknown stem task state'
+    })
+  }
+
 })
 
 // GET /api/stem-audio/:jobId/:stem — proxy stem audio for browser playback
@@ -2012,8 +2110,8 @@ app.get('/api/remix-dl', async (c) => {
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/regen-stem
 //  Generative stem regen — instead of re-separating (same artifacts),
-//  uploads the beat as a reference to Mureka /v1/files/upload, then calls
-//  /v1/instrumental/generate with instrumental_id so Mureka AI generates
+//  uploads the beat as a reference to MusicAPI /sonic/upload, then calls
+//  Producer /producer/create with reference_clip_id so Lyria 3 Pro generates
 //  a clean, artifact-free instrumental inspired by the original beat.
 //
 //  ⚠️  Results are NOT saved to D1 — regen is session-only.
@@ -2021,11 +2119,12 @@ app.get('/api/remix-dl', async (c) => {
 //
 //  Costs 20 pts, Pro Artist only.
 //  Flow:
-//   1. POST /v1/files/upload { url: stereo_url, purpose: "reference" } → file_id
-//   2. POST /v1/instrumental/generate { model:"auto", instrumental_id: file_id }
-//   3. Returns { task_id } — async; poll with GET below
-//   4. GET /api/job/regen-stem/:jobId?task_id=... → polls /v1/instrumental/query/{task_id}
-//   5. When succeeded: return choices[0].url directly (never stored in D1)
+//   1. POST /sonic/upload { audio_url: ... } → { task_id }
+//   2. Poll /sonic/task/:taskId until state=succeeded → clip_id
+//   3. POST /producer/create { task_type: "generate_music", reference_clip_id: clip_id, sound: "..." }
+//   4. Returns { task_id } — async; poll with GET below
+//   5. GET /api/job/regen-stem/:jobId?task_id=... → polls /sonic/task/:taskId (Producer shares polling)
+//   6. When succeeded: return audio_url directly (never stored in D1)
 // ═══════════════════════════════════════════════════════════════
 
 interface RegenJob {
@@ -2038,7 +2137,7 @@ interface RegenJob {
 }
 
 app.post('/api/job/regen-stem', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2104,151 +2203,100 @@ app.post('/api/job/regen-stem', async (c) => {
     console.warn(`[remix] No extracted stem found for ${stemLabel} — falling back to full mix`)
   }
 
-  // ── Step 1: Upload stem to Mureka as instrumental reference ──
-  // purpose MUST be 'instrumental' so Mureka returns an instrumental_id usable
-  // by /v1/instrumental/generate. Using 'reference' gives a reference_id (wrong field).
-  //
-  // If stem is zip-entry:, we resolve it to raw WAV bytes here and upload as a file blob
-  // (multipart/form-data with a `file` field).  If it's a direct URL, we upload by URL.
-  let fileId: string
+  // ── Step 1: Upload stem to MusicAPI Sonic upload endpoint → get clip_id ──
+  let clipId: string
   try {
-    let uploadRes: Response
-    if (stemZipEntry) {
-      // ── Resolve zip-entry: stem to raw WAV bytes ──
-      const zipRest    = stemZipEntry.slice('zip-entry:'.length)
-      const zipParts   = zipRest.split('|')
-      const zipUrlStr  = zipParts[0]
-      const localOff   = parseInt(zipParts[1], 10)
-      const compSize   = parseInt(zipParts[2], 10)
-      const compMethod = zipParts[4] !== undefined ? parseInt(zipParts[4], 10) : -1
-      // uncompSize = zipParts[5] (unused here — we decompress fully)
+    // Resolve upload URL — prefer direct CDN URL; zip-entry falls back to full mix
+    const uploadAudioUrl = stemZipEntry ? job.stereo_url! : stemSourceUrl
 
-      // Read local file header (30 bytes) to find exact data start
-      const hdrRes = await fetch(zipUrlStr, {
-        headers: { 'Range': `bytes=${localOff}-${localOff + 29}` }
-      })
-      let dataStart = localOff + 30
-      let localCompMethod = compMethod
-      if (hdrRes.ok || hdrRes.status === 206) {
-        const hdrBuf  = await hdrRes.arrayBuffer()
-        const hdrView = new DataView(hdrBuf)
-        if (hdrView.getUint32(0, true) === 0x04034b50) {
-          if (localCompMethod === -1) localCompMethod = hdrView.getUint16(6, true)
-          const localFnLen = hdrView.getUint16(26, true)
-          const localExLen = hdrView.getUint16(28, true)
-          dataStart = localOff + 30 + localFnLen + localExLen
-        }
-      }
-
-      // Fetch the compressed bytes
-      const rangeRes = await fetch(zipUrlStr, {
-        headers: { 'Range': `bytes=${dataStart}-${dataStart + compSize - 1}` }
-      })
-      if (!rangeRes.ok && rangeRes.status !== 206) {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-        return c.json({ error: 'ZIP range request failed for stem extraction' }, 502)
-      }
-
-      // Decompress if deflated (method=8)
-      let stemBytes: ArrayBuffer
-      if (localCompMethod === 8) {
-        const ds = new DecompressionStream('deflate-raw')
-        const decompStream = rangeRes.body!.pipeThrough(ds)
-        stemBytes = await new Response(decompStream).arrayBuffer()
-      } else {
-        stemBytes = await rangeRes.arrayBuffer()
-      }
-      console.log(`[remix] Resolved zip-entry stem: ${stemBytes.byteLength} bytes for ${stemLabel}`)
-
-      // Upload as multipart file blob — Mureka accepts WAV bytes directly
-      const uploadForm = new FormData()
-      uploadForm.append('purpose', 'instrumental')
-      uploadForm.append('file', new Blob([stemBytes], { type: 'audio/wav' }), `${stemLabel}.wav`)
-      uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
-        body: uploadForm
-      })
-    } else {
-      // Direct CDN URL — upload by URL (no file bytes needed)
-      const uploadForm = new FormData()
-      uploadForm.append('purpose', 'instrumental')
-      uploadForm.append('url', stemSourceUrl)
-      uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
-        body: uploadForm
-      })
-    }
-
+    const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url: uploadAudioUrl })
+    })
     if (!uploadRes.ok) {
       const errText = await uploadRes.text()
-      let errMsg = `Mureka upload error ${uploadRes.status}`
-      try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || errMsg } catch {}
-      console.error(`[regen] files/upload error ${uploadRes.status}: ${errText}`)
+      let errMsg = `MusicAPI upload error ${uploadRes.status}`
+      try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
+      console.error(`[regen] upload error ${uploadRes.status}: ${errText}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: errMsg }, 502)
+      return c.json({ error: errMsg }, 500)
     }
     const uploadData = await uploadRes.json() as any
-    fileId = uploadData.id as string
-    if (!fileId) {
+    const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
+    if (!uploadTaskId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No file id returned from Mureka upload' }, 502)
+      return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
+    }
+
+    // Poll for clip_id
+    const deadline = Date.now() + 60_000
+    clipId = ''
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000))
+      const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (!pollRes.ok) continue
+      const pollData = await pollRes.json() as any
+      const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
+      if (clips.length && clips[0].state === 'succeeded') {
+        clipId = clips[0].id || clips[0].clip_id || ''
+        break
+      }
+      if (clips.length && clips[0].state === 'failed') break
+    }
+    if (!clipId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'MusicAPI upload timed out or failed' }, 500)
     }
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: err?.message || 'File upload failed' }, 502)
+    return c.json({ error: err?.message || 'File upload failed' }, 500)
   }
 
-  // ── Step 2: POST /v1/instrumental/generate with instrumental_id reference ──
-  // This asks Mureka to AI-generate a clean instrumental in the same style as the beat,
-  // rather than frequency-separating the existing mix (which causes artifacts/bleed).
+  // ── Step 2: POST /producer/create with reference_clip_id ──
+  // Producer (Lyria 3 Pro) generates a clean instrumental version
   let taskId: string
   try {
-    const genRes = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+    const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'auto',
-        instrumental_id: fileId,
-        n: 1
+        task_type: 'generate_music',
+        reference_clip_id: clipId,
+        sound: 'instrumental, no vocals, clean stem regeneration'
       })
     })
     if (!genRes.ok) {
       const errText = await genRes.text()
-      let errMsg = `Mureka generate error ${genRes.status}`
-      try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || errMsg } catch {}
-      console.error(`[regen] instrumental/generate error ${genRes.status}: ${errText}`)
+      let errMsg = `MusicAPI Producer error ${genRes.status}`
+      try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
+      console.error(`[regen] producer/create error ${genRes.status}: ${errText}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: errMsg }, 502)
+      return c.json({ error: errMsg }, 500)
     }
     const genData = await genRes.json() as any
-    taskId = genData.id as string
+    taskId = genData.task_id || genData.data?.task_id
     if (!taskId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No task id returned from Mureka generate' }, 502)
+      return c.json({ error: 'No task_id from MusicAPI Producer' }, 500)
     }
-    console.log(`[regen] instrumental/generate started: task=${taskId} stem=${stemLabel} job=${job_id}`)
+    console.log(`[regen] Producer started: task=${taskId} stem=${stemLabel} job=${job_id}`)
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: err?.message || 'Generate request failed' }, 502)
+    return c.json({ error: err?.message || 'Generate request failed' }, 500)
   }
 
-  // ⚠️  Results are NOT saved to D1 — regen is session-only.
-  //      The frontend polls GET /api/job/regen-stem/:jobId?task_id=<taskId>
-  //      which queries Mureka directly and returns the URL in the response.
-  //      No persistence means closing & reopening the stem player always starts fresh.
+  // Results are NOT saved to D1 — regen is session-only.
   return c.json({ ok: true, task_id: taskId, status: 'processing', stem_type: stemLabel })
 })
 
 // ── GET /api/job/regen-stem/:jobId — poll regen status ────────────────────
-// Polls Mureka /v1/instrumental/query/{task_id} directly.
+// Polls MusicAPI /sonic/task/:taskId directly.
 // Results are NOT stored in D1 — purely pass-through to the frontend.
 app.get('/api/job/regen-stem/:jobId', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2268,34 +2316,31 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  // Poll Mureka /v1/instrumental/query/{task_id}
+  // Poll MusicAPI /sonic/task/:taskId (Producer tasks share same polling endpoint)
   try {
-    const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
-      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+    const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
     })
     if (!res.ok) return c.json({ status: 'processing', task_id: taskId })
     const data = await res.json() as any
+    const clips = Array.isArray(data) ? data : (data.data || [])
+    if (!clips.length) return c.json({ status: 'processing', task_id: taskId })
+    const clip = clips[0]
 
-    if (data.status === 'succeeded') {
-      // choices is an array of Instrumental objects with .url field
-      const url: string = data.choices?.[0]?.url || data.choices?.[0]?.flac_url || ''
-      if (!url) {
-        console.error(`[regen poll] succeeded but no url in choices for task=${taskId}`)
-        return c.json({ status: 'error', error: 'No audio URL in Mureka response' })
-      }
+    if (clip.state === 'succeeded') {
+      const url: string = clip.audio_url || ''
+      if (!url) return c.json({ status: 'error', error: 'No audio URL in MusicAPI response' })
       console.log(`[regen poll] ready: task=${taskId} stem=${stemType} url=${url.slice(0,60)}...`)
-      // Return the URL directly — NOT saved to D1
       return c.json({ status: 'ready', task_id: taskId,
         stems: [{ name: stemType.toLowerCase(), url }] })
     }
 
-    if (data.status === 'failed' || data.status === 'timeouted' || data.status === 'cancelled') {
-      const reason = data.failed_reason || data.error?.message || 'Regeneration failed'
+    if (clip.state === 'failed') {
+      const reason = clip.error || 'Regeneration failed'
       console.error(`[regen poll] failed: task=${taskId} reason=${reason}`)
       return c.json({ status: 'error', error: reason })
     }
 
-    // Still running: preparing | queued | running | streaming
     return c.json({ status: 'processing', task_id: taskId })
   } catch (err: any) {
     return c.json({ status: 'error', error: err?.message || 'Poll failed' }, 500)
@@ -2304,14 +2349,14 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  POST /api/job/remix — AI Remix the full stereo track
-//  Uploads the beat's stereo_url to Mureka /v1/files/upload,
-//  calls /v1/instrumental/generate, creates a NEW Job in D1 so the
-//  result appears in the library exactly like a freshly generated beat.
+//  Uploads the beat's stereo_url to MusicAPI /sonic/upload,
+//  calls MusicAPI Producer /producer/create with reference_clip_id.
+//  Creates a NEW Job in D1 so the result appears in the library.
 //  Costs 20 pts. Available to creator/pro/developer plans.
 //  Frontend polls the new job via existing POST /api/poll/:id.
 // ═══════════════════════════════════════════════════════════════
 app.post('/api/job/remix', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2340,37 +2385,54 @@ app.post('/api/job/remix', async (c) => {
     ? `${bp.genre || 'instrumental'} beat, ${bp.mood || ''} mood, ${bp.bpm || 120}bpm, key of ${bp.key || 'C'}`
     : 'instrumental beat'
 
-  // Call instrumental/generate directly with reference_url — no file upload needed
-  let murekTaskId: string
+  // MusicAPI: upload then Producer create with reference_clip_id
+  let remixTaskId: string
   try {
-    const genRes = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+    const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ model: 'auto', prompt, reference_url: stereo_url, n: 1 })
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url: stereo_url })
+    })
+    if (!uploadRes.ok) {
+      const t = await uploadRes.text()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: `MusicAPI upload error ${uploadRes.status}: ${t.slice(0,200)}` }, 500)
+    }
+    const uploadData = await uploadRes.json() as any
+    const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
+    if (!uploadTaskId) { await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run(); return c.json({ error: 'No task_id from MusicAPI upload' }, 500) }
+    let clipId = ''
+    const dl = Date.now() + 60_000
+    while (Date.now() < dl) {
+      await new Promise(r => setTimeout(r, 2000))
+      const pr = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, { headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } })
+      if (!pr.ok) continue
+      const pd = await pr.json() as any
+      const clips = Array.isArray(pd) ? pd : (pd.data || [])
+      if (clips.length && clips[0].state === 'succeeded') { clipId = clips[0].id || ''; break }
+      if (clips.length && clips[0].state === 'failed') break
+    }
+    if (!clipId) { await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run(); return c.json({ error: 'MusicAPI upload timed out' }, 500) }
+    const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_type: 'generate_music', reference_clip_id: clipId, sound: prompt })
     })
     if (!genRes.ok) {
       const t = await genRes.text()
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: `Mureka generate error ${genRes.status}: ${t.slice(0,200)}` }, 502)
+      return c.json({ error: `MusicAPI Producer error ${genRes.status}: ${t.slice(0,200)}` }, 500)
     }
     const genData = await genRes.json() as any
-    murekTaskId = genData.id as string
-    if (!murekTaskId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No task id from Mureka generate' }, 502)
-    }
-    console.log(`[remix] instrumental/generate started: task=${murekTaskId}`)
+    remixTaskId = genData.task_id || genData.data?.task_id
+    if (!remixTaskId) { await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run(); return c.json({ error: 'No task_id from MusicAPI Producer' }, 500) }
+    console.log(`[remix] Producer started: task=${remixTaskId}`)
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: err?.message || 'Generate request failed' }, 502)
+    return c.json({ error: err?.message || 'Generate request failed' }, 500)
   }
 
-  // Create new library job — status 'generating' so /api/poll/:id can advance it
   const newJobId = makeJobId()
-  // Clean underscores from title for display
   const cleanTitle = title ? title.replace(/_/g, ' ') : ''
   const remixTitle = cleanTitle ? `${cleanTitle} Remix` : 'Stemforge Remix'
   const newJob: Job = {
@@ -2380,13 +2442,12 @@ app.post('/api/job/remix', async (c) => {
     prompt: `Stemforge Remix of job ${job_id}`,
     title: remixTitle,
     thumbnail_seed: Math.floor(Math.random() * 360),
-    stereo_task_id: murekTaskId
+    stereo_task_id: remixTaskId
   }
-  // Mark as instrumental/generate type so advancePipeline uses instrumental/query
-  ;(newJob as any).extend_task_type = undefined  // not song_extend — uses instrumental/query path
+  ;(newJob as any).extend_task_type = undefined
   await setJob(c.env.DB, newJob, user.id)
 
-  console.log(`[remix] New job ${newJobId} created, murekTaskId=${murekTaskId}, source=${job_id}`)
+  console.log(`[remix] New job ${newJobId} created, task=${remixTaskId}, source=${job_id}`)
   return c.json({ ok: true, job_id: newJobId, status: 'generating' })
 })
 
@@ -3217,7 +3278,7 @@ Disallow: /admin
 Disallow: /checkout
 Disallow: /promos
 Disallow: /api/
-Disallow: /mureka-monitor
+Disallow: /musicapi-monitor
 
 Sitemap: https://stemforge.studio/sitemap.xml`
 
@@ -3688,7 +3749,7 @@ app.post('/api/job/purge', async (c) => {
 // Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string, make_instrumental?: boolean, source_duration_ms?: number }
 app.post('/api/job/extend-upload', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
@@ -3720,48 +3781,65 @@ app.post('/api/job/extend-upload', async (c) => {
   ).bind(EXTEND_COST, user.id).run()
 
   try {
-    // Call Mureka song/extend using the already-uploaded audio ID
-    // Mureka requires extend_at between 8000–420000ms — clamp to safe range
-    // Use source_duration_ms as extend_at so Mureka extends from the very end
-    const sourceDurMs = source_duration_ms && source_duration_ms > 0 ? source_duration_ms : (extend_at || 30000)
-    const safeExtendAt = Math.max(8000, Math.min(sourceDurMs, 420000))
+    // Route: vocal extends → MusicAPI Sonic (Suno v5.5); instrumental → Producer (Lyria 3 Pro)
+    // upload_audio_id is a MusicAPI clip_id from a prior POST /sonic/upload call
+    const isInstrumental = make_instrumental === true
 
-    const extendBody: Record<string, any> = {
-      upload_audio_id: upload_audio_id,
-      extend_at: safeExtendAt
-    }
-    // Send [Verse] so Mureka adds natural vocal content to the extension.
-    // User-supplied lyrics override this; [Instrumental] is never used.
-    {
+    let extTaskId: string
+
+    if (isInstrumental) {
+      // Producer (Lyria 3 Pro) — extend_music with clip_id
+      const prodBody: Record<string, any> = {
+        task_type: 'extend_music',
+        clip_id: upload_audio_id,
+        sound: 'instrumental continuation, no vocals'
+      }
+      const prodRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(prodBody)
+      })
+      if (!prodRes.ok) {
+        const errText = await prodRes.text()
+        let errMsg = `${prodRes.status}`
+        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+        return c.json({ error: `MusicAPI Producer extend error: ${errMsg}` }, 500)
+      }
+      const prodData = await prodRes.json() as any
+      extTaskId = prodData.task_id || prodData.data?.task_id
+      if (!extTaskId) {
+        console.error('[extend-upload] Producer missing task_id:', JSON.stringify(prodData).slice(0, 500))
+        return c.json({ error: `MusicAPI Producer returned unexpected response: ${JSON.stringify(prodData).slice(0, 200)}` }, 500)
+      }
+    } else {
+      // Sonic (Suno v5.5) — extend_music with continue_clip_id
+      const sonicBody: Record<string, any> = {
+        task_type: 'extend_music',
+        continue_clip_id: upload_audio_id,
+        mv: 'sonic-v5'
+      }
+      // Pass user lyrics if provided
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-        extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
-      } else {
-        extendBody.lyrics = '[Verse]'    // natural vocal continuation
+        sonicBody.lyrics = typedLyrics
       }
-    }
-
-    const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(extendBody)
-    })
-    if (!extRes.ok) {
-      const errText = await extRes.text()
-      let errMsg = `${extRes.status}`
-      try { errMsg = (JSON.parse(errText) as any)?.error?.message || errMsg } catch (_) {}
-      return c.json({ error: `Mureka extend error: ${errMsg}` }, 500)
-    }
-    const extData = await extRes.json() as any
-    // Mureka song/extend returns { id: "task_id", status: "...", ... }
-    // Guard against unexpected response shapes
-    const extTaskId = extData.id || extData.task_id || extData.taskId
-    if (!extTaskId) {
-      console.error('[extend-upload] Mureka extend response missing id:', JSON.stringify(extData).slice(0, 500))
-      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 500)
+      const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(sonicBody)
+      })
+      if (!sonicRes.ok) {
+        const errText = await sonicRes.text()
+        let errMsg = `${sonicRes.status}`
+        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+        return c.json({ error: `MusicAPI Sonic extend error: ${errMsg}` }, 500)
+      }
+      const sonicData = await sonicRes.json() as any
+      extTaskId = sonicData.task_id || sonicData.data?.[0]?.id
+      if (!extTaskId) {
+        console.error('[extend-upload] Sonic missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+        return c.json({ error: `MusicAPI Sonic returned unexpected response: ${JSON.stringify(sonicData).slice(0, 200)}` }, 500)
+      }
     }
 
     // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
@@ -3777,16 +3855,17 @@ app.post('/api/job/extend-upload', async (c) => {
       status: 'generating',
       prompt: `[Extended from uploaded track: ${trackTitle}]`,
       title: `${trackTitle} (Extended)`,
-      blueprint: {},
+      blueprint: { make_instrumental: isInstrumental },
       stereo_task_id: extTaskId,
       stereo_url: null,
       created_at: now,
       extend_task_type: 'song_extend',
+      make_instrumental: isInstrumental,
       // ── Chain extend metadata ────────────────────────────────────────────
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '[Verse]',
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
       chain_style: null // no blueprint for uploaded tracks
     }
     await c.env.DB.prepare(
@@ -3805,11 +3884,11 @@ app.post('/api/job/extend-upload', async (c) => {
   }
 })
 
-// POST /api/job/extend — extend a completed track using Mureka song/extend API
+// POST /api/job/extend — extend a completed track using MusicAPI
 // Body: { source_job_id: string, extend_at?: number (ms), lyrics?: string, make_instrumental?: boolean }
 app.post('/api/job/extend', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
@@ -3850,95 +3929,113 @@ app.post('/api/job/extend', async (c) => {
     `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
   ).bind(EXTEND_COST, user.id).run()
 
+  const isInstrumental = make_instrumental === true
+
+  // Build style string from blueprint for sonic continuity
+  const bp = sourceJob.blueprint as Blueprint | undefined
+  let styleStr = ''
+  if (bp?.mureka_prompt) {
+    styleStr = bp.mureka_prompt
+  } else if (bp) {
+    const parts: string[] = []
+    if (bp.genre)  parts.push(bp.genre)
+    if (bp.bpm)    parts.push(`${bp.bpm} BPM`)
+    if (bp.key && bp.scale) parts.push(`${bp.key} ${bp.scale}`)
+    if (bp.mood)   parts.push(`${bp.mood} mood`)
+    if (bp.energy) parts.push(`${bp.energy} energy`)
+    styleStr = parts.join(', ')
+  }
+
   try {
-    // Step 1: Upload the source audio to Mureka files API (purpose: audio)
-    const uploadForm = new FormData()
-    uploadForm.append('purpose', 'audio')
-    uploadForm.append('url', sourceJob.stereo_url)
-    const uploadRes = await fetch(`${MUREKA_BASE}/files/upload`, {
+    // Step 1: Upload audio to MusicAPI Sonic upload endpoint → get clip_id
+    const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
-      body: uploadForm
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url: sourceJob.stereo_url })
     })
     if (!uploadRes.ok) {
       const errText = await uploadRes.text()
       let errMsg = `${uploadRes.status}`
-      try { errMsg = (JSON.parse(errText) as any)?.error?.message || errMsg } catch (_) {}
-      return c.json({ error: `Mureka upload error: ${errMsg}` }, 500)
+      try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+      return c.json({ error: `MusicAPI upload error: ${errMsg}` }, 500)
     }
     const uploadData = await uploadRes.json() as any
-    const uploadAudioId = uploadData.id as string
-    if (!uploadAudioId) return c.json({ error: 'Mureka upload returned no file ID' }, 500)
+    // Upload returns { task_id } — poll for clip_id
+    const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
+    if (!uploadTaskId) return c.json({ error: 'MusicAPI upload returned no task_id' }, 500)
 
-    // Step 2: Call Mureka song/extend
-    // Mureka requires extend_at between 8000–420000 ms.
-    // Clamp: if 0/missing, use the track's blueprint duration or default 30s.
-    // If > 420000 ms, clamp to track duration or 420000.
-    const trackDurationMs = sourceJob.blueprint?.duration_seconds
-      ? sourceJob.blueprint.duration_seconds * 1000
-      : 30000
-    let safeExtendAt: number
-    if (!extend_at || extend_at < 8000) {
-      // Default: extend from ~halfway through the track (or 30s minimum)
-      safeExtendAt = Math.max(8000, Math.min(Math.floor(trackDurationMs * 0.75), 420000))
+    // Poll for upload completion (clip_id)
+    let clipId: string | null = null
+    const uploadDeadline = Date.now() + 60_000
+    while (Date.now() < uploadDeadline) {
+      await new Promise(r => setTimeout(r, 2000))
+      const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (!pollRes.ok) continue
+      const pollData = await pollRes.json() as any
+      const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
+      if (clips.length && clips[0].state === 'succeeded') {
+        clipId = clips[0].id || clips[0].clip_id || null
+        break
+      }
+      if (clips.length && clips[0].state === 'failed') break
+    }
+    if (!clipId) return c.json({ error: 'MusicAPI upload timed out or failed' }, 500)
+
+    // Step 2: Extend via appropriate endpoint
+    let extTaskId: string
+
+    if (isInstrumental) {
+      // Producer (Lyria 3 Pro) — extend_music
+      const sound = styleStr ? `${styleStr}, instrumental, no vocals` : 'instrumental continuation, no vocals'
+      const prodRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_type: 'extend_music', clip_id: clipId, sound: sound.slice(0, 400) })
+      })
+      if (!prodRes.ok) {
+        const errText = await prodRes.text()
+        let errMsg = `${prodRes.status}`
+        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+        return c.json({ error: `MusicAPI Producer extend error: ${errMsg}` }, 500)
+      }
+      const prodData = await prodRes.json() as any
+      extTaskId = prodData.task_id || prodData.data?.task_id
+      if (!extTaskId) {
+        console.error('[job/extend] Producer missing task_id:', JSON.stringify(prodData).slice(0, 500))
+        return c.json({ error: `MusicAPI Producer returned unexpected response: ${JSON.stringify(prodData).slice(0, 200)}` }, 500)
+      }
     } else {
-      safeExtendAt = Math.min(extend_at, 420000)
-    }
-
-    // `make_instrumental` is NOT a real Mureka field — use "[Instrumental]" lyrics tag instead.
-    const extendBody: Record<string, any> = {
-      upload_audio_id: uploadAudioId,
-      extend_at: safeExtendAt
-    }
-    // Send [Verse] so Mureka adds natural vocal content to the extension.
-    // User-supplied lyrics override this; [Instrumental] is never used.
-    {
+      // Sonic (Suno v5.5) — extend_music with continue_clip_id
+      const sonicBody: Record<string, any> = {
+        task_type: 'extend_music',
+        continue_clip_id: clipId,
+        mv: 'sonic-v5'
+      }
+      if (styleStr) sonicBody.tags = styleStr.slice(0, 200)
       const typedLyrics = lyrics && lyrics.trim()
       if (typedLyrics && typedLyrics !== '[Verse]' && typedLyrics !== '[Instrumental]') {
-        extendBody.lyrics = typedLyrics  // user typed actual continuation lyrics
-      } else {
-        extendBody.lyrics = '[Verse]'    // natural vocal continuation
+        sonicBody.lyrics = typedLyrics
       }
-    }
-
-    // Pass the blueprint's style descriptor so Mureka continues with the same
-    // genre, tempo, instruments and mood — improves sonic continuity.
-    const bp = sourceJob.blueprint as Blueprint | undefined
-    if (bp?.mureka_prompt) {
-      extendBody.style = bp.mureka_prompt
-    } else if (bp) {
-      // Build a concise style string from individual blueprint fields as fallback
-      const parts: string[] = []
-      if (bp.genre)  parts.push(bp.genre)
-      if (bp.bpm)    parts.push(`${bp.bpm} BPM`)
-      if (bp.key && bp.scale) parts.push(`${bp.key} ${bp.scale}`)
-      if (bp.mood)   parts.push(`${bp.mood} mood`)
-      if (bp.energy) parts.push(`${bp.energy} energy`)
-      if (parts.length) extendBody.style = parts.join(', ')
-    }
-
-    console.log(`[job/extend] upload_audio_id=${uploadAudioId} extend_at=${safeExtendAt} instrumental=${make_instrumental} style="${extendBody.style || 'none'}"`)
-
-
-    const extRes = await fetch(`${MUREKA_BASE}/song/extend`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(extendBody)
-    })
-    if (!extRes.ok) {
-      const errText = await extRes.text()
-      let errMsg = `${extRes.status}`
-      try { errMsg = (JSON.parse(errText) as any)?.error?.message || errMsg } catch (_) {}
-      return c.json({ error: `Mureka extend error: ${errMsg}` }, 500)
-    }
-    const extData = await extRes.json() as any
-    const extTaskId = extData.id || extData.task_id || extData.taskId
-    if (!extTaskId) {
-      console.error('[job/extend] Mureka extend response missing id:', JSON.stringify(extData).slice(0, 500))
-      return c.json({ error: `Mureka extend returned unexpected response: ${JSON.stringify(extData).slice(0, 200)}` }, 500)
+      console.log(`[job/extend] Sonic extend clip_id=${clipId} instrumental=${isInstrumental} style="${styleStr.slice(0,60)}"`)
+      const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(sonicBody)
+      })
+      if (!sonicRes.ok) {
+        const errText = await sonicRes.text()
+        let errMsg = `${sonicRes.status}`
+        try { errMsg = (JSON.parse(errText) as any)?.message || errMsg } catch (_) {}
+        return c.json({ error: `MusicAPI Sonic extend error: ${errMsg}` }, 500)
+      }
+      const sonicData = await sonicRes.json() as any
+      extTaskId = sonicData.task_id || sonicData.data?.[0]?.id
+      if (!extTaskId) {
+        console.error('[job/extend] Sonic missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+        return c.json({ error: `MusicAPI Sonic returned unexpected response: ${JSON.stringify(sonicData).slice(0, 200)}` }, 500)
+      }
     }
 
     // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
@@ -3953,18 +4050,20 @@ app.post('/api/job/extend', async (c) => {
       status: 'generating',
       prompt: `[Extended from: ${sourceJob.title || source_job_id}] ${sourceJob.prompt || ''}`.trim(),
       title: `${sourceJob.title || 'Track'} (Extended)`,
-      blueprint: sourceJob.blueprint || {},
+      blueprint: { ...(sourceJob.blueprint || {}), make_instrumental: isInstrumental },
       stereo_task_id: extTaskId,
       stereo_url: null,
       created_at: now,
       source_job_id: source_job_id,
       extend_task_type: 'song_extend',
+      make_instrumental: isInstrumental,
+      chain_clip_id: clipId,
       // ── Chain extend metadata ────────────────────────────────────────────
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
       chain_max_steps: 5,
-      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '[Verse]',
-      chain_style: extendBody.style || null
+      chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
+      chain_style: styleStr || null
     }
     await c.env.DB.prepare(
       `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
@@ -3972,7 +4071,7 @@ app.post('/api/job/extend', async (c) => {
 
     return c.json({ ok: true, job_id: newJobId, task_id: extTaskId })
   } catch (e: any) {
-    // Refund the 2 credits if Mureka call failed
+    // Refund credits on failure
     try {
       await c.env.DB.prepare(
         `UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`
@@ -4640,10 +4739,10 @@ app.get('/api/admin/revenue', async (c) => {
 
   // Estimated costs (rough)
   const jobsThisMonth = (jobsRow as any)?.this_month || 0
-  const murekaCostPerJob = 0.04 // approx
-  const estimatedMurekaCost = jobsThisMonth * murekaCostPerJob
+  const musicapiCostPerJob = 0.04 // approx
+  const estimatedMusicapiCost = jobsThisMonth * musicapiCostPerJob
   const cloudflareWorkersCost = 0 // free tier for most usage
-  const estimatedTotalCost = estimatedMurekaCost + cloudflareWorkersCost
+  const estimatedTotalCost = estimatedMusicapiCost + cloudflareWorkersCost
   const estimatedProfit = mrr + creditPackRevenue - estimatedTotalCost
 
   return c.json({
@@ -4652,7 +4751,7 @@ app.get('/api/admin/revenue', async (c) => {
     creator_count: creatorCount,
     free_count: freeCount,
     credit_pack_revenue: creditPackRevenue,
-    estimated_mureka_cost: parseFloat(estimatedMurekaCost.toFixed(2)),
+    estimated_musicapi_cost: parseFloat(estimatedMusicapiCost.toFixed(2)),
     estimated_total_cost: parseFloat(estimatedTotalCost.toFixed(2)),
     estimated_profit: parseFloat(estimatedProfit.toFixed(2)),
     jobs_this_month: jobsThisMonth,
@@ -4821,8 +4920,8 @@ app.get('/api/admin/elevenlabs-credits', async (c) => {
 })
 
 // ─── MUREKA BALANCE MONITOR ──────────────────────────────────────────────────
-// GET /api/mureka/balance — returns D1-based usage stats (Mureka API has no balance endpoint)
-app.get('/api/mureka/balance', async (c) => {
+// GET /api/musicapi/balance — returns D1-based usage stats (Mureka API has no balance endpoint)
+app.get('/api/musicapi/balance', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -4857,15 +4956,15 @@ app.get('/api/mureka/balance', async (c) => {
   }
 })
 
-// GET /mureka-monitor — Mureka balance monitor page (admin only)
-app.get('/mureka-monitor', async (c) => {
+// GET /musicapi-monitor — Mureka balance monitor page (admin only)
+app.get('/musicapi-monitor', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.redirect('/login')
-  return c.html(murekaMonitorPage())
+  return c.html(musicapiMonitorPage())
 })
 
-function murekaMonitorPage(): string {
+function musicapiMonitorPage(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4955,7 +5054,7 @@ function murekaMonitorPage(): string {
 <script>
 async function loadStats() {
   try {
-    const res = await fetch('/api/mureka/balance');
+    const res = await fetch('/api/musicapi/balance');
     const data = await res.json();
 
     document.getElementById('stat-today').textContent = data.generations_today ?? '—';
@@ -5069,7 +5168,7 @@ app.post('/api/generate-lyrics', async (c) => {
 // POST /api/upload-extend-audio — upload audio for Song Extend (purpose: audio, full file)
 // Does NOT clip — Mureka's extend API needs the full track, not a 30s clip
 app.post('/api/upload-extend-audio', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -5082,9 +5181,9 @@ app.post('/api/upload-extend-audio', async (c) => {
   mForm.append('purpose', 'audio')   // ← must be 'audio' for song/extend
   mForm.append('file', file)
 
-  const res = await fetch(`${MUREKA_BASE}/files/upload`, {
+  const res = await fetch(`${MUSICAPI_SONIC}/files/upload`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
     body: mForm
   })
 
@@ -5101,7 +5200,7 @@ app.post('/api/upload-extend-audio', async (c) => {
 // POST /api/upload-reference — upload reference audio to Mureka (purpose: reference, 30s)
 // Pro Artist only
 app.post('/api/upload-reference', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -5128,7 +5227,7 @@ app.post('/api/upload-reference', async (c) => {
   // Cloudflare Workers has no ffmpeg — we cannot slice audio server-side.
   // Mureka's /files/upload trims from the beginning, so we pass start_time
   // as a query param so Mureka can seek to the right position before trimming.
-  const uploadUrl = new URL(`${MUREKA_BASE}/files/upload`)
+  const uploadUrl = new URL(`${MUSICAPI_SONIC}/files/upload`)
   if (startTimeSec > 0) uploadUrl.searchParams.set('start_time', String(startTimeSec))
 
   // Forward to Mureka as multipart
@@ -5142,7 +5241,7 @@ app.post('/api/upload-reference', async (c) => {
 
   const res = await fetch(uploadUrl.toString(), {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` },
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
     body: mForm
   })
 
@@ -5169,7 +5268,7 @@ app.post('/api/upload-reference', async (c) => {
 
 // POST /api/generate-oneshot — legacy Mureka endpoint (kept for backward compat, now requires pro)
 app.post('/api/generate-oneshot', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -5196,9 +5295,9 @@ app.post('/api/generate-oneshot', async (c) => {
   // Use BGM short-form endpoint with very short duration to force a minimal sound
   // model: 'chirp-v3-0' targets shortest possible generation
   // duration_seconds: 3 forces ~3s max which limits full-beat generation
-  const res = await fetch(`${MUREKA_BASE}/instrumental/generate`, {
+  const res = await fetch(`${MUSICAPI_SONIC}/instrumental/generate`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}`, 'Content-Type': 'application/json' },
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       prompt: oneshotPrompt,
       model: 'auto',
@@ -5218,7 +5317,7 @@ app.post('/api/generate-oneshot', async (c) => {
 
 // POST /api/poll-oneshot/:task_id — poll Mureka for one-shot status
 app.post('/api/poll-oneshot/:task_id', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -5226,8 +5325,8 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
   const taskId = c.req.param('task_id')
   const { sound_type } = await c.req.json<{ sound_type?: string }>().catch(() => ({ sound_type: undefined }))
 
-  const res = await fetch(`${MUREKA_BASE}/instrumental/query/${taskId}`, {
-    headers: { 'Authorization': `Bearer ${c.env.MUREKA_API_KEY}` }
+  const res = await fetch(`${MUSICAPI_SONIC}/instrumental/query/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
   })
   if (!res.ok) return c.json({ status: 'error' }, 502)
 
@@ -5643,7 +5742,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260728-04'
+const ASSET_VER = '20260728-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9240,7 +9339,7 @@ async function loadRevenue(){
     document.getElementById('stat-mrr').textContent = '\$'+d.mrr;
     document.getElementById('rv-pl-mrr').textContent = '\$'+d.mrr.toLocaleString();
     document.getElementById('rv-pl-credits').textContent = d.credit_pack_revenue ? '\$'+parseFloat(d.credit_pack_revenue).toFixed(2) : '\$0';
-    document.getElementById('rv-pl-mureka').textContent = '-\$'+d.estimated_mureka_cost.toFixed(2)+' ('+d.jobs_this_month+' jobs)';
+    document.getElementById('rv-pl-mureka').textContent = '-\$'+d.estimated_musicapi_cost.toFixed(2)+' ('+d.jobs_this_month+' jobs)';
     const profit = d.estimated_profit;
     const profitEl = document.getElementById('rv-pl-profit');
     profitEl.textContent = (profit>=0?'+':'')+'\$'+profit.toFixed(2);
