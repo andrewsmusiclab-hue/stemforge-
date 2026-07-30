@@ -6885,11 +6885,11 @@ function generatorPage() {
     <div id="ref-inline-panel" style="display:none;margin-bottom:10px">
       <!-- Upload zone -->
       <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
-        <input type="file" id="ref-audio-file" accept="audio/mpeg,audio/mp3" style="display:none"/>
+        <input type="file" id="ref-audio-file" accept="audio/mpeg,audio/mp3,audio/wav,audio/wave,.mp3,.wav" style="display:none"/>
         <div id="ref-upload-idle" style="display:flex;flex-direction:column;align-items:center">
           <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
-          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Reference MP3</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — we'll let you pick a 30s clip</p>
+          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Reference Audio</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3 or WAV — drop a file or click to browse</p>
         </div>
         <div id="ref-upload-loading" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
@@ -7288,11 +7288,11 @@ function generatorPage() {
     <div id="ext-step-pick" style="display:block">
       <label class="suno-option-label" style="margin-bottom:10px">Upload a track to extend</label>
       <div class="ref-upload-zone" id="ext-upload-zone" onclick="document.getElementById('ext-audio-file').click()" style="cursor:pointer">
-        <input type="file" id="ext-audio-file" accept="audio/mpeg,audio/mp3,.mp3" style="display:none" onchange="extHandleFileSelect(this)"/>
+        <input type="file" id="ext-audio-file" accept="audio/mpeg,audio/mp3,audio/wav,audio/wave,.mp3,.wav" style="display:none" onchange="extHandleFileSelect(this)"/>
         <div id="ext-upload-idle" style="display:flex;flex-direction:column;align-items:center">
           <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
           <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Extend</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — MP3 upload, WAV output</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3 or WAV — output delivered as WAV</p>
         </div>
         <div id="ext-upload-loading" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
@@ -7300,7 +7300,7 @@ function generatorPage() {
         </div>
         <div id="ext-upload-done" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
-          <p style="margin:0;font-weight:600;font-size:.85rem" id="ext-upload-name">track.mp3</p>
+          <p style="margin:0;font-weight:600;font-size:.85rem" id="ext-upload-name">track.wav</p>
           <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem">Ready — scrub below to set extend point</p>
         </div>
       </div>

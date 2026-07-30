@@ -5949,12 +5949,12 @@ window.renderEditInstrumentPills = function (bp) {
       var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (!file) return;
       var ext = (file.name || '').split('.').pop().toLowerCase();
-      var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3';
-      var extOk  = ext === 'mp3';
+      var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3' || file.type === 'audio/wav' || file.type === 'audio/wave';
+      var extOk  = ext === 'mp3' || ext === 'wav';
       if (!mimeOk && !extOk) {
         var errEl = document.getElementById('ext-upload-error');
         if (errEl) {
-          errEl.textContent = 'Only MP3 uploads are supported. Your output will be delivered as WAV.';
+          errEl.textContent = 'Please upload an MP3 or WAV file.';
           errEl.style.display = 'block';
         }
         return;
@@ -5982,14 +5982,14 @@ window.renderEditInstrumentPills = function (bp) {
   window.extHandleFileSelect = function(input) {
     var file = input && input.files && input.files[0];
     if (!file) return;
-    // Validate MP3 only — WAV/FLAC are not supported by Mureka's audio upload endpoint
+    // Validate MP3 or WAV — both supported by music.ai upload endpoint
     var ext = (file.name || '').split('.').pop().toLowerCase();
-    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3';
-    var extOk  = ext === 'mp3';
+    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3' || file.type === 'audio/wav' || file.type === 'audio/wave';
+    var extOk  = ext === 'mp3' || ext === 'wav';
     if (!mimeOk && !extOk) {
       var errEl = document.getElementById('ext-upload-error');
       if (errEl) {
-        errEl.textContent = 'Only MP3 uploads are supported. Your output will be delivered as WAV.';
+        errEl.textContent = 'Please upload an MP3 or WAV file.';
         errEl.style.display = 'block';
       }
       // Reset the input so user can try again
