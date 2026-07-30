@@ -1316,7 +1316,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // ── Dashboard: card 3-dots context menu ─────────────────────────
-  window.openCardMenu = function(btn, jobId, stereoUrl, zipUrl, safeTitle, cardTab) {
+  window.openCardMenu = function(btn, jobId, stereoUrl, zipUrl, safeTitle, cardTab, sourceJobId) {
     const existing = document.getElementById('card-context-menu');
     if (existing) existing.remove();
 
@@ -1330,11 +1330,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const items = [];
 
+    const isExtended = cardTab === 'extended';
+
     // Edit only for full beats
     if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
-      items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song', action: () => {
-        window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
+      if (!isExtended) {
+        items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song', action: () => {
+          window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
+        }});
+      }
+    }
+
+    // Get Full Track — extended cards with a source job only
+    if (isExtended && sourceJobId && stereoUrl) {
+      items.push({ icon: 'fa-link', label: 'Get Full Track', tooltip: 'Stitch original + extended into one WAV file', action: () => {
+        var a = document.createElement('a');
+        a.href = '/api/get-full-track/' + jobId;
+        a.download = safeTitle + '_full.wav';
+        document.body.appendChild(a); a.click(); a.remove();
       }});
     }
 
@@ -6361,11 +6375,13 @@ window.renderEditInstrumentPills = function (bp) {
     var playBtn  = stereoUrl
       ? '<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>'
       : '<div class="project-card__play" style="opacity:.3;pointer-events:none"><i class="fas fa-hourglass-half"></i></div>';
+    var sourceJobId = p.source_job_id || '';
     return '<div class="project-card"' +
       ' data-stereo="' + stereoUrl + '"' +
       ' data-id="' + p.id + '"' +
       ' data-title="' + title.replace(/"/g,'&quot;') + '"' +
-      ' data-hue="' + hue + '">' +
+      ' data-hue="' + hue + '"' +
+      ' data-source-job-id="' + sourceJobId + '">' +
       '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + hue2 + ',70%,10%));position:relative;overflow:hidden">' +
         playBtn +
       '</div>' +
@@ -6373,7 +6389,7 @@ window.renderEditInstrumentPills = function (bp) {
         '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
           '<h4 style="margin:0;flex:1">' + displayTitle + '</h4>' +
           '<button class="song-dots-btn" title="More options"' +
-            ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + stereoUrl + '\',\'\',\'' + safeTitle + '\',\'extended\')"' +
+            ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + stereoUrl + '\',\'\',\'' + safeTitle + '\',\'extended\',\'' + sourceJobId + '\')"' +
             ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
         '</div>' +
         '<p style="margin-bottom:6px;color:var(--muted);font-size:.8rem"><i class="fas fa-expand-arrows-alt" style="font-size:.7rem;margin-right:4px;opacity:.6"></i>Extended · ' + date + '</p>' +
