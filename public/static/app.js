@@ -802,7 +802,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
     // Use blueprint genre as primary title source; fall back to p.title only if it looks like
     // a real user-supplied name (not a prompt string containing "instrumental only" etc.)
-    const _blueprintTitle = p.blueprint ? (p.blueprint.genre + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : null;
+    const _genreRaw = p.blueprint ? p.blueprint.genre : null;
+    const _genreClean = (_genreRaw && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(_genreRaw)) ? _genreRaw : null;
+    const _blueprintTitle = _genreClean ? (_genreClean + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : null;
     const _userTitle = (p.title && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(p.title)) ? p.title : null;
     const rawTitle = _blueprintTitle || _userTitle || p.title || 'Beat';
     const sub  = bpm || '';
