@@ -802,19 +802,26 @@ document.addEventListener('DOMContentLoaded', () => {
     const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
     // Use blueprint genre as primary title source; fall back to p.title only if it looks like
     // a real user-supplied name (not a prompt string containing "instrumental only" etc.)
+    // Genre display (top title) — filter out "instrumental only" etc. from genre
     const _genreRaw = p.blueprint ? p.blueprint.genre : null;
     const _genreClean = (_genreRaw && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(_genreRaw)) ? _genreRaw : null;
-    const _blueprintTitle = _genreClean ? (_genreClean + (p.blueprint.key ? ' — '+p.blueprint.key:'')) : null;
+    // Top card title = genre + key (e.g. "boom bap, hip hop — F")
+    const cardHeadTitle = _genreClean
+      ? (_genreClean + (p.blueprint && p.blueprint.key ? ' — '+p.blueprint.key : ''))
+      : (genre !== 'music' ? genre : 'Beat');
+    // Bottom subtitle = user's song title (never show "instrumental only" strings)
     const _userTitle = (p.title && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(p.title)) ? p.title : null;
-    const rawTitle = _blueprintTitle || _userTitle || p.title || 'Beat';
+    const songSubtitle = _userTitle || '';
+    // rawTitle used for download filename and data-title attribute
+    const rawTitle = cardHeadTitle;
     const sub  = bpm || '';
-    const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
+    const safeFilename = cardHeadTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
     const dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
     return `
       <div class="project-card"
            data-stereo="${p.stereo_url||''}" data-zip="${p.zip_url||''}"
            data-id="${p.id}"
-           data-title="${rawTitle.replace(/"/g,'&quot;')}"
+           data-title="${cardHeadTitle.replace(/"/g,'&quot;')}"
            data-hue="${hue}"
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
            >
@@ -827,12 +834,13 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <div class="project-card__body">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
-            <h4 style="margin:0;flex:1">${formatCardTitle(rawTitle)}</h4>
+            <h4 style="margin:0;flex:1">${formatCardTitle(cardHeadTitle)}</h4>
             <button class="song-dots-btn" title="More options"
               onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
               style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
           </div>
-          <p style="margin-bottom:4px">${sub||genre||'Beat'}${dateStr ? ' · ' + dateStr : ''}</p>
+          ${songSubtitle ? `<p style="margin-bottom:2px;color:var(--muted);font-size:.82rem;font-style:italic">${songSubtitle}</p>` : ''}
+          <p style="margin-bottom:4px">${sub}${dateStr ? ' · ' + dateStr : ''}</p>
           <div class="project-card__tags">
             ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
           </div>
@@ -2215,7 +2223,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // ── Resolve final track title ─────────────────────────
             // Prefer blueprint genre; only use job.title if it's a real name (not a prompt string)
             const _jobTitleClean = (job.title && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(job.title)) ? job.title : null;
-            const finalTitle = (job.blueprint ? (job.blueprint.genre + (job.blueprint.key ? ' — ' + job.blueprint.key + ' ' + (job.blueprint.scale||'') : '')) : null) ||
+            const _pipelineGenreRaw = job.blueprint ? job.blueprint.genre : null;
+            const _pipelineGenreClean = (_pipelineGenreRaw && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(_pipelineGenreRaw)) ? _pipelineGenreRaw : null;
+            const finalTitle = (_pipelineGenreClean ? (_pipelineGenreClean + (job.blueprint.key ? ' — ' + job.blueprint.key + ' ' + (job.blueprint.scale||'') : '')) : null) ||
               _jobTitleClean || 'Beat Ready';
             // Sanitize for filename: replace special chars with underscores, ensure non-empty
             const safeFilename = (finalTitle.replace(/[^a-zA-Z0-9\s\-_]/g, '').replace(/\s+/g, '_').toLowerCase().replace(/^_+|_+$/g, '')) || 'stemforge_beat';
