@@ -698,7 +698,7 @@ Instrument rules:
 //  no vocal bleed, guaranteed instrumental output.
 // ═══════════════════════════════════════════════════════════════
 
-async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, refFileId?: string, vocalGender?: string, userDurationSec?: number, refMode?: string, refPrompt?: string): Promise<string> {
+async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string, vocalGender?: string, userDurationSec?: number): Promise<string> {
   let stylePrompt = blueprint.style_prompt || ''
 
   // Strip vocal references — Producer is strictly instrumental
@@ -728,31 +728,6 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
     sound: stylePrompt.slice(0, 400),
     // Producer accepts duration in seconds
     duration: durationSec
-  }
-
-  // Reference audio: upload by URL to MusicAPI upload, get clip_id, pass as reference_clip_id
-  if (refFileId) {
-    // refFileId is already a MusicAPI clip_id from an earlier upload
-    body.reference_clip_id = refFileId
-    // Override sound with reference-aware prompt
-    const genre  = blueprint.genre  || ''
-    const bpm    = blueprint.bpm    || ''
-    const energy = blueprint.energy || ''
-    const contextParts: string[] = []
-    if (genre)  contextParts.push(genre)
-    if (bpm)    contextParts.push(`${bpm} BPM`)
-    if (energy) contextParts.push(`${energy} energy`)
-    const context = contextParts.join(', ')
-    let modeDirective: string
-    if (refMode === 'inspire') {
-      modeDirective = 'inspired by the reference track, instrumental, no vocals'
-    } else {
-      modeDirective = 'closely match style, energy, sonic texture, BPM, groove — instrumental, no vocals'
-    }
-    const parts: string[] = [modeDirective]
-    if (context) parts.push(context)
-    if (refPrompt && refPrompt.trim()) parts.push(refPrompt.trim())
-    body.sound = parts.join(', ').slice(0, 400)
   }
 
   const res = await fetch(`${MUSICAPI_PRODUCER}/create`, {
@@ -827,7 +802,7 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + MusicAPI kick-off only)
-async function startPipeline(jobId: string, env: Bindings, refFileId?: string, userPlan?: string, userDurationSec?: number, refMode?: string, refPrompt?: string, userLyrics?: string) {
+async function startPipeline(jobId: string, env: Bindings, userPlan?: string, userDurationSec?: number, userLyrics?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -861,7 +836,7 @@ async function startPipeline(jobId: string, env: Bindings, refFileId?: string, u
       stereoTaskId = await startSongGeneration(blueprint, env.MUSICAPI_KEY, userLyrics, (job as any).vocal_gender, userDurationSec)
       ;(job as any).extend_task_type = 'song_generate'  // tells advancePipeline to use Sonic task poll
     } else {
-      stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUSICAPI_KEY, refFileId, (job as any).vocal_gender, userDurationSec, refMode, refPrompt)
+      stereoTaskId = await startInstrumentalGeneration(blueprint, env.MUSICAPI_KEY, (job as any).vocal_gender, userDurationSec)
     }
 
     job.stereo_task_id = stereoTaskId
@@ -1287,7 +1262,7 @@ function parseZipTailBuffer(tailBuf: ArrayBuffer, tailOffset: number, zipUrl = '
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, reference_file_id, ref_mode, ref_prompt, vocal_gender, lyrics } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, vocal_gender, lyrics } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -1371,7 +1346,7 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, reference_file_id || undefined, userPlan, userDurationSec, ref_mode || 'style', ref_prompt || undefined, lyrics?.trim() || undefined))
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, userPlan, userDurationSec, lyrics?.trim() || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -5435,98 +5410,6 @@ app.get('/api/poll-upload-task/:taskId', async (c) => {
   return c.json({ status: 'ready', clip_id: clipId, audio_url: clip.audio_url || null })
 })
 
-// POST /api/upload-reference — upload reference audio for AI generation (Pro Artist only)
-// MusicAPI: POST /sonic/upload { url } → task_id → poll → clip_id
-app.post('/api/upload-reference', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Reference track uploads require a Pro Artist plan.', upgrade: true }, 403)
-  }
-
-  // Deduct 15 points for reference upload (matches MusicAPI extend cost)
-  const refFresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
-  if (!refFresh || refFresh.gens_used + 15 > refFresh.gens_limit) {
-    return c.json({ error: `Not enough points. Using a reference track costs 15 points and you only have ${refFresh ? Math.max(0, refFresh.gens_limit - refFresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
-  }
-  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 15 WHERE id=?`).bind(user.id).run()
-
-  // Accept JSON { audio_url } or multipart { url } or multipart { file }
-  let audioUrl: string | null = null
-  const contentType = c.req.header('content-type') || ''
-  if (contentType.includes('application/json')) {
-    const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
-    audioUrl = body.audio_url || body.url || null
-  } else {
-    const formData = await c.req.formData()
-    const urlField = (formData.get('url') as string | null) || (formData.get('audio_url') as string | null) || null
-    audioUrl = urlField || null
-    // File blob upload: store in R2 and create a proxy URL (same pattern as upload-extend-audio)
-    if (!audioUrl) {
-      const file = formData.get('file') as File | null
-      if (!file) {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
-        return c.json({ error: 'No file or url provided' }, 400)
-      }
-      if (!c.env.IMAGES) {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
-        return c.json({ error: 'File upload unavailable — storage not configured. Please provide an audio_url instead.' }, 400)
-      }
-      const safeFilename = (file.name || 'reference').replace(/[^a-zA-Z0-9._-]/g, '_')
-      const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
-      await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
-        httpMetadata: { contentType: file.type || 'audio/mpeg' }
-      })
-      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
-      audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
-      console.log(`[upload-reference] Stored file in R2, proxy URL: ${audioUrl}`)
-    }
-  }
-  if (!audioUrl) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: 'No audio source provided' }, 400)
-  }
-
-  // Upload to MusicAPI Sonic
-  const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: audioUrl })
-  })
-
-  if (!res.ok) {
-    let errMsg = `MusicAPI upload error ${res.status}`
-    try {
-      const err = await res.json() as any
-      errMsg = err?.message || err?.error || errMsg
-    } catch {}
-    console.error('[upload-reference] MusicAPI error:', res.status, errMsg)
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: errMsg }, 500)
-  }
-
-  const data = await res.json() as any
-  console.log('[upload-reference] MusicAPI response:', JSON.stringify(data).slice(0, 300))
-
-  // Sync mode returns clip_id directly
-  const clipId = data.clip_id || data.data?.clip_id
-  if (clipId) {
-    return c.json({ ok: true, clip_id: clipId, task_id: clipId, upload_task_id: clipId, status: 'ready', filename: audioUrl })
-  }
-
-  // Async fallback
-  const taskId = data.task_id || data.data?.task_id || data.id
-  if (!taskId) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
-    console.error('[upload-reference] Unexpected response:', JSON.stringify(data).slice(0, 500))
-    return c.json({ error: `Unexpected MusicAPI response: ${JSON.stringify(data).slice(0,200)}` }, 500)
-  }
-  // Returns task_id — client polls /sonic/task/:taskId to get clip_id for use as reference_clip_id
-  return c.json({ ok: true, task_id: taskId, upload_task_id: taskId, status: 'processing', filename: audioUrl })
-})
-
 // POST /api/generate-oneshot — one-shot sound design via MusicAPI Producer (Lyria 3 Pro)
 app.post('/api/generate-oneshot', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
@@ -5814,169 +5697,6 @@ app.get('/api/download-wav-url', async (c) => {
       'Cache-Control': 'no-store'
     }
   })
-})
-
-// POST /api/analyze-reference — analyze a reference audio file using OpenAI
-app.post('/api/analyze-reference', async (c) => {
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (!c.env.OPENAI_API_KEY) return c.json({ error: 'OpenAI not configured' }, 500)
-
-  const { file_id, filename, duration } = await c.req.json() as any
-  if (!file_id) return c.json({ error: 'Missing file_id' }, 400)
-
-  const prompt = `You are a professional music producer and audio analyst. Analyze this audio track and provide a detailed breakdown in JSON format.
-
-Track info: filename="${filename || 'reference track'}", file_id="${file_id}", duration=${duration ? Math.round(duration) + ' seconds' : 'unknown'}.
-
-Return a JSON object with these exact fields:
-{
-  "genre": "primary genre",
-  "subgenre": "subgenre or style",
-  "bpm": estimated BPM as a number,
-  "key": "musical key (e.g. D Minor, G Major)",
-  "energy": "low/medium/high/very high",
-  "mood": "descriptive mood words",
-  "instruments": ["list", "of", "instruments", "detected"],
-  "production_style": "description of production techniques",
-  "vocals": {
-    "present": true or false,
-    "style": "vocal style description or null",
-    "effects": ["list", "of", "vocal", "effects", "if", "any"]
-  },
-  "sonic_texture": "description of the overall sound texture",
-  "arrangement": "description of song structure/arrangement",
-  "similar_artists": ["3-5", "similar", "artists"],
-  "summary": "2-3 sentence Suno-style description that captures the essence of the track for AI music generation"
-}
-
-Base your analysis on the filename, genre context, and general musical knowledge. Be specific and detailed.`
-
-  try {
-    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${c.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-        response_format: { type: 'json_object' },
-        temperature: 0.3,
-        max_tokens: 800
-      })
-    })
-    if (!aiRes.ok) throw new Error(`OpenAI error ${aiRes.status}`)
-    const aiData = await aiRes.json() as any
-    const analysisText = aiData.choices?.[0]?.message?.content || '{}'
-    let analysis: any = {}
-    try { analysis = JSON.parse(analysisText) } catch {}
-    return c.json({ ok: true, analysis })
-  } catch (err: any) {
-    return c.json({ error: err.message || 'Analysis failed' }, 500)
-  }
-})
-
-// POST /api/save-reference-upload — persist upload metadata to D1
-app.post('/api/save-reference-upload', async (c) => {
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
-
-  const { file_id, filename, duration, analysis_json } = await c.req.json() as any
-  if (!file_id || !filename) return c.json({ error: 'Missing file_id or filename' }, 400)
-
-  // Ensure table exists
-  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS reference_uploads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    file_id TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    duration REAL,
-    analysis_json TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`).run()
-
-  await c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ref_uploads_user ON reference_uploads(user_id)`).run().catch(() => {})
-  await c.env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ref_uploads_filename ON reference_uploads(user_id, filename)`).run().catch(() => {})
-
-  try {
-    await c.env.DB.prepare(
-      `INSERT INTO reference_uploads (user_id, file_id, filename, duration, analysis_json) VALUES (?, ?, ?, ?, ?)`
-    ).bind(user.id, file_id, filename, duration || null, analysis_json ? JSON.stringify(analysis_json) : null).run()
-    return c.json({ ok: true })
-  } catch (err: any) {
-    return c.json({ error: err.message || 'DB insert failed' }, 500)
-  }
-})
-
-// GET /api/reference-uploads — list user's uploaded reference tracks
-app.get('/api/reference-uploads', async (c) => {
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (!c.env.DB) return c.json({ uploads: [] })
-
-  // Ensure table exists
-  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS reference_uploads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    file_id TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    duration REAL,
-    analysis_json TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`).run().catch(() => {})
-
-  try {
-    const rows = await c.env.DB.prepare(
-      `SELECT id, file_id, filename, duration, analysis_json, created_at FROM reference_uploads WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`
-    ).bind(user.id).all()
-    const uploads = (rows.results || []).map((r: any) => ({
-      ...r,
-      analysis: r.analysis_json ? (() => { try { return JSON.parse(r.analysis_json) } catch { return null } })() : null
-    }))
-    return c.json({ uploads })
-  } catch {
-    return c.json({ uploads: [] })
-  }
-})
-
-// GET /api/check-duplicate-upload?filename=X — check if filename already uploaded by user
-app.get('/api/check-duplicate-upload', async (c) => {
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (!c.env.DB) return c.json({ exists: false })
-
-  const filename = c.req.query('filename')
-  if (!filename) return c.json({ exists: false })
-
-  // Ensure table exists
-  await c.env.DB.prepare(`CREATE TABLE IF NOT EXISTS reference_uploads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    file_id TEXT NOT NULL,
-    filename TEXT NOT NULL,
-    duration REAL,
-    analysis_json TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`).run().catch(() => {})
-
-  try {
-    const row = await c.env.DB.prepare(
-      `SELECT id, file_id, filename, duration, created_at FROM reference_uploads WHERE user_id = ? AND filename = ? ORDER BY created_at DESC LIMIT 1`
-    ).bind(user.id, filename).first()
-    if (row) {
-      return c.json({ exists: true, upload: row })
-    }
-    return c.json({ exists: false })
-  } catch {
-    return c.json({ exists: false })
-  }
 })
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
@@ -6463,7 +6183,6 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
           <li><i class="fas fa-check"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> Reference track uploads</li>
           <li><i class="fas fa-check"></i> All split modes + advanced</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -7028,11 +6747,9 @@ function generatorPage() {
 
     <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
     <div class="creator-tabs-row" id="creator-tabs-row">
-      <button class="creator-tab-btn" id="ctab-reference" onclick="toggleRefDropdown()"
-        data-tooltip="Upload a reference track to guide the style and vibe of your beat.">
-        <i class="fas fa-music"></i> Reference Track
-        <span id="ctab-ref-badge" style="display:none;margin-left:4px;background:var(--primary);color:#fff;border-radius:999px;padding:1px 6px;font-size:.65rem;font-weight:700">ON</span>
-        <i class="fas fa-chevron-down" id="ctab-ref-chevron" style="margin-left:4px;font-size:.6rem;transition:transform .2s"></i>
+      <button class="creator-tab-btn" id="ctab-remix" onclick="window.openRemixCard && window.openRemixCard()"
+        data-tooltip="AI Remix: reinvent any beat from your library with a fresh take.">
+        <i class="fas fa-wand-magic-sparkles"></i> Remix
       </button>
       <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
         data-tooltip="Continue any track from your library or upload a file to extend it seamlessly.">
@@ -7044,90 +6761,6 @@ function generatorPage() {
       </button>
     </div>
 
-    <!-- ── Reference Track inline dropdown (toggles open/closed) ── -->
-    <div id="ref-inline-panel" style="display:none;margin-bottom:10px">
-      <!-- Upload zone -->
-      <div class="ref-upload-zone" id="ref-upload-zone" onclick="document.getElementById('ref-audio-file').click()">
-        <input type="file" id="ref-audio-file" accept="audio/mpeg,audio/mp3,audio/wav,audio/wave,.mp3,.wav" style="display:none"/>
-        <div id="ref-upload-idle" style="display:flex;flex-direction:column;align-items:center">
-          <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
-          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Reference Audio</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3 or WAV — drop a file or click to browse</p>
-        </div>
-        <div id="ref-upload-loading" style="display:none;flex-direction:column;align-items:center">
-          <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
-          <p style="margin:0;font-size:.85rem;color:var(--muted)">Uploading…</p>
-        </div>
-        <div id="ref-upload-done" style="display:none;flex-direction:column;align-items:center">
-          <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
-          <p style="margin:0;font-weight:600;font-size:.85rem" id="ref-upload-name">reference.mp3</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem" id="ref-clip-info">30s clip selected</p>
-          <!-- Track info strip — shown after upload -->
-          <div id="ref-track-info" style="display:none;margin-top:8px;padding:6px 12px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.25);border-radius:8px;font-size:.75rem;color:var(--text);display:flex;gap:14px;flex-wrap:wrap;justify-content:center">
-            <span id="ref-info-duration" style="display:none"><i class="fas fa-clock" style="color:var(--primary);margin-right:4px"></i><span id="ref-info-duration-val">—</span></span>
-            <span id="ref-info-clip" style="display:none"><i class="fas fa-cut" style="color:var(--primary);margin-right:4px"></i><span id="ref-info-clip-val">—</span></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 30-sec clip picker -->
-      <div id="ref-clip-picker" style="display:none;margin-top:10px;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <label class="suno-option-label" style="margin:0;font-size:.8rem">Choose 30-second clip</label>
-          <span id="ref-clip-timestamp" style="font-size:.76rem;color:var(--primary);font-weight:600">0:00 – 0:30</span>
-        </div>
-        <audio id="ref-preview-audio" style="width:100%;margin-bottom:8px;border-radius:8px" controls preload="metadata"></audio>
-        <div style="position:relative;margin-bottom:6px">
-          <input type="range" id="ref-clip-start" min="0" max="100" value="0" step="0.1"
-            style="width:100%;accent-color:var(--primary);cursor:pointer"
-            oninput="updateClipPicker(this.value)"/>
-          <div id="ref-clip-window" style="position:absolute;top:0;height:100%;background:rgba(78,159,255,0.2);border:1px solid rgba(78,159,255,0.5);border-radius:4px;pointer-events:none;left:0;width:30%"></div>
-        </div>
-        <p style="color:var(--muted);font-size:.73rem;margin:0 0 8px"><i class="fas fa-info-circle"></i> Drag to select which 30 seconds to use</p>
-        <button class="btn btn--primary btn--sm" style="width:100%" onclick="uploadRefWithClip()">
-          <i class="fas fa-cloud-upload-alt"></i> Upload this clip
-        </button>
-      </div>
-
-      <!-- Remove track link -->
-      <button id="ref-clear-btn" onclick="clearRefTrack()" style="display:none;margin-top:6px;width:100%;padding:6px;background:none;border:1px solid var(--border);border-radius:8px;color:var(--muted);cursor:pointer;font-size:.8rem">
-        <i class="fas fa-times"></i> Remove reference track
-      </button>
-
-      <!-- Analysis panel — shown after upload & analysis -->
-      <div id="ref-analysis-panel" style="display:none;margin-top:12px;max-height:280px;overflow-y:auto;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-          <span style="font-size:.82rem;font-weight:700;color:var(--primary)"><i class="fas fa-microscope" style="margin-right:5px"></i>Track Analysis</span>
-          <div id="ref-analysis-loading" style="display:none"><i class="fas fa-spinner fa-spin" style="font-size:.8rem;color:var(--muted)"></i> <span style="font-size:.75rem;color:var(--muted)">Analyzing…</span></div>
-        </div>
-        <div id="ref-analysis-content" style="font-size:.8rem;line-height:1.65;color:var(--text)">
-          <!-- populated by JS -->
-        </div>
-      </div>
-
-      <!-- Mode pills — shown after upload -->
-      <div id="ref-mode-panel" style="display:none;margin-top:12px">
-        <label class="suno-option-label" style="margin-bottom:8px;font-size:.8rem">How should StemForge use this track?</label>
-        <div style="display:flex;flex-direction:column;gap:6px">
-          <button class="ref-mode-btn ref-mode-btn--active" data-mode="style" onclick="selectRefMode('style')">
-            <i class="fas fa-fingerprint ref-mode-btn__icon" style="color:var(--primary)"></i>
-            <span class="ref-mode-btn__title">Match Style</span>
-            <span class="ref-mode-btn__sep">·</span>
-            <span class="ref-mode-btn__sub">stays true to energy, timing, sonic feel &amp; vibe</span>
-          </button>
-          <button class="ref-mode-btn" data-mode="inspire" onclick="selectRefMode('inspire')">
-            <i class="fas fa-meteor ref-mode-btn__icon" style="color:#a78bfa"></i>
-            <span class="ref-mode-btn__title">Fresh Start</span>
-            <span class="ref-mode-btn__sep">·</span>
-            <span class="ref-mode-btn__sub">inspired by reference, not a copy of it</span>
-          </button>
-        </div>
-        <!-- Subtle hint pointing to main Create button -->
-        <p style="margin:10px 0 0;font-size:.75rem;color:var(--muted);text-align:center">
-          <i class="fas fa-arrow-down" style="margin-right:4px"></i>Now hit <strong style="color:var(--primary)">Create</strong> below to generate with this reference
-        </p>
-      </div>
-    </div>
 
     <!-- SECTION 1: Prompt — sits above Lyrics/Instrumental -->
     <div class="suno-card" id="card-prompt">
@@ -7664,7 +7297,6 @@ function pricingPage() {
           <li class="muted"><i class="fas fa-times"></i> Commercial use rights</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
-          <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
           <li class="muted"><i class="fas fa-times"></i> Top-up points packs</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full" id="pricing-free-btn">Start free</a>
@@ -7691,7 +7323,6 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> WAV / mastered downloads</li>
-          <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
           <li class="muted"><i class="fas fa-times"></i> Advanced per-stem split</li>
           <li class="muted"><i class="fas fa-times"></i> Stem regeneration</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
@@ -7714,7 +7345,6 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> Reference track uploads</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem</li>
           <li><i class="fas fa-check"></i> Stem regeneration</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
@@ -8187,9 +7817,6 @@ function dashboardPage() {
     <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')" style="display:none">
       <i class="fas fa-bolt"></i> One Shots
     </button>
-    <button class="lib-tab" data-tab="uploads" onclick="switchLibTab('uploads')">
-      <i class="fas fa-cloud-upload-alt"></i> Uploads
-    </button>
     <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
@@ -8220,14 +7847,6 @@ function dashboardPage() {
   </div>
   <div id="lib-panel-oneshots" style="display:none">
     <div class="project-grid" id="project-grid-oneshots">
-      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
-    </div>
-  </div>
-  <div id="lib-panel-uploads" style="display:none">
-    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
-      <i class="fas fa-cloud-upload-alt" style="color:var(--primary)"></i> Reference tracks you've uploaded. Click a track to use it as a reference.
-    </div>
-    <div class="project-grid project-grid--uploads" id="project-grid-uploads">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>

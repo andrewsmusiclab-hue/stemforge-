@@ -987,9 +987,7 @@ document.addEventListener('DOMContentLoaded', () => {
       filterLibrary('');
     }
     // Load data — extended and uploads have their own dedicated loaders
-    if (tab === 'uploads') {
-      fetchUploadsTab();
-    } else if (tab === 'extended') {
+    if (tab === 'extended') {
       // Always hard-reload extended tab — bypasses stale _libLoaded cache
       if (window.reloadExtendedTab) {
         window.reloadExtendedTab();
@@ -1010,16 +1008,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const gridEl = document.getElementById('project-grid-' + tab);
     if (!gridEl) return;
     // Uploads tab uses its own renderer
-    if (tab === 'uploads') {
-      const filtered = !q ? _libData.uploads : _libData.uploads.filter(u => {
-        const fn = (u.filename || '').toLowerCase();
-        const g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
-        const m  = (u.analysis && u.analysis.mood ? u.analysis.mood : '').toLowerCase();
-        return fn.includes(q) || g.includes(q) || m.includes(q);
-      });
-      renderUploadsGrid(gridEl, filtered);
-      return;
-    }
+
     const filtered = !q ? _libData[tab] : _libData[tab].filter(p => {
       const t  = (p.title || '').toLowerCase();
       const pr = (p.prompt || '').toLowerCase();
@@ -1029,124 +1018,6 @@ document.addEventListener('DOMContentLoaded', () => {
     populateGrid(gridEl, tab, filtered);
   };
 
-  // ── Fetch uploads tab ──────────────────────────────────────
-  async function fetchUploadsTab() {
-    const gridEl = document.getElementById('project-grid-uploads');
-    if (!gridEl) return;
-    // Always refetch uploads — never cache, list changes after each upload/delete
-    _libLoaded.uploads = false;
-    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-    try {
-      const res = await fetch('/api/reference-uploads');
-      if (!res.ok) {
-        if (res.status === 401) {
-          gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your uploads. <a href="/login">Log in</a></div>';
-          return;
-        }
-        // Try to get error body for better diagnostics
-        let errBody = '';
-        try { const j = await res.json(); errBody = j.error || ''; } catch {}
-        throw new Error('HTTP ' + res.status + (errBody ? ': ' + errBody : ''));
-      }
-      const { uploads } = await res.json();
-      _libData.uploads = uploads || [];
-      _libLoaded.uploads = true;
-      updateTabCount('uploads', _libData.uploads.length);
-      renderUploadsGrid(gridEl, _libData.uploads);
-    } catch(e) {
-      console.error('[fetchUploadsTab] error:', e);
-      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-exclamation-circle"></i> Could not load uploads' + (e && e.message ? ' (' + e.message + ')' : '') + '. <button onclick="window.fetchUploadsTab()" style="background:none;border:none;color:var(--primary);cursor:pointer;text-decoration:underline;font-size:inherit">Retry</button></div>';
-    }
-  }
-  // Expose so override + retry button can call it
-  window.fetchUploadsTab = fetchUploadsTab;
-
-  // ── Render uploads grid ─────────────────────────────────────
-  function renderUploadsGrid(gridEl, uploads) {
-    if (!gridEl) return;
-    if (!uploads || uploads.length === 0) {
-      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-cloud-upload-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No uploads yet. Upload a reference track to get started.</p></div>';
-      return;
-    }
-    let html = '';
-    uploads.forEach((u) => {
-      const analysis = u.analysis || {};
-      const genre = analysis.genre || '';
-      const bpm = analysis.bpm ? (analysis.bpm + ' BPM') : '';
-      const dur = u.duration ? (Math.floor(u.duration/60) + ':' + String(Math.floor(u.duration%60)).padStart(2,'0')) : '';
-      const instruments = analysis.instruments ? analysis.instruments.slice(0,4).join(', ') : '';
-      const mood = analysis.mood || '';
-      const dateStr = u.created_at ? new Date(u.created_at).toLocaleDateString() : '';
-      const summary = analysis.summary || '';
-      html += `
-        <div class="upload-item" onclick="useExistingUpload('${u.file_id}','${(u.filename||'').replace(/'/g,'\\u0027')}',' ${ (summary||genre||'').replace(/'/g,'\\u0027').replace(/"/g,'&quot;').slice(0,120) }')">
-          <div class="upload-item__icon"><i class="fas fa-music"></i></div>
-          <div class="upload-item__body">
-            <div class="upload-item__name">${u.filename || 'Reference track'}</div>
-            <div class="upload-item__meta">${[genre, bpm, dur].filter(Boolean).join(' · ')}</div>
-            ${instruments ? `<div class="upload-item__instruments"><i class="fas fa-guitar" style="color:var(--primary);margin-right:4px;font-size:.7rem"></i>${instruments}</div>` : ''}
-            ${mood ? `<div class="upload-item__mood">${mood}</div>` : ''}
-            ${summary ? `<div class="upload-item__summary">${summary}</div>` : ''}
-            <div class="upload-item__date">${dateStr}</div>
-          </div>
-          <button class="upload-item__use-btn" onclick="event.stopPropagation();useExistingUpload('${u.file_id}','${(u.filename||'').replace(/'/g,'\\u0027')}','${(summary||genre||'').replace(/'/g,'\\u0027').replace(/"/g,'&quot;').slice(0,120)}')" title="Use as reference">
-            <i class="fas fa-arrow-right"></i>
-          </button>
-        </div>`;
-    });
-    gridEl.innerHTML = html;
-  }
-
-  // ── Use an existing upload as reference ─────────────────────
-  window.useExistingUpload = function(fileId, filename, description) {
-    // Navigate to generator and set the ref file
-    window._refFileId = fileId;
-    window.refFileId = fileId;
-    // If on dashboard, switch to generator
-    const genPage = document.getElementById('ref-upload-done');
-    if (genPage) {
-      const nameEl = document.getElementById('ref-upload-name');
-      if (nameEl) nameEl.textContent = filename;
-      const doneEl = document.getElementById('ref-upload-done');
-      const idleEl = document.getElementById('ref-upload-idle');
-      const loadEl = document.getElementById('ref-upload-loading');
-      if (idleEl) idleEl.style.display = 'none';
-      if (loadEl) loadEl.style.display = 'none';
-      if (doneEl) doneEl.style.display = 'flex';
-      const zone = document.getElementById('ref-upload-zone');
-      if (zone) { zone.classList.add('has-file'); }
-      const modePanel = document.getElementById('ref-mode-panel');
-      if (modePanel) modePanel.style.display = 'block';
-      const clearBtn = document.getElementById('ref-clear-btn');
-      if (clearBtn) clearBtn.style.display = 'block';
-      updateRefTabBadge && updateRefTabBadge();
-    } else {
-      // Redirect to generator with file_id param
-      window.location.href = '/generator?ref_file_id=' + encodeURIComponent(fileId) + '&ref_filename=' + encodeURIComponent(filename);
-    }
-  };
-
-  // ── Soft-delete a card ──────────────────────────────────────
-  window.deleteLibItem = async function(jobId) {
-    if (!confirm('Move this item to Trash?')) return;
-    try {
-      const r = await fetch('/api/job/delete', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_id: jobId })
-      });
-      if (!r.ok) {
-        let errMsg = 'HTTP ' + r.status;
-        try { const j = await r.json(); errMsg = j.error || errMsg; } catch {}
-        throw new Error(errMsg);
-      }
-      // Refresh beats/extended/oneshots and trash tabs
-      _libLoaded.beats = false; _libLoaded.oneshots = false; _libLoaded.trash = false; _libLoaded.extended = false;
-      fetchLibTab(_libActive);
-      if (_libActive !== 'trash') fetchLibTab('trash'); // pre-load trash count
-    } catch(e) { alert('Could not delete item: ' + e.message); }
-  };
 
   // ── Restore a trashed card ──────────────────────────────────
   window.restoreLibItem = async function(jobId) {
@@ -2021,8 +1892,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const hasContent = document.getElementById('gen-lyrics')?.value?.trim() ||
                        document.getElementById('gen-prompt')?.value?.trim() ||
                        document.getElementById('gen-style')?.value?.trim() ||
-                       document.getElementById('gen-instrumental')?.checked ||
-                       window._refFileId;  // reference track counts as content
+                       document.getElementById('gen-instrumental')?.checked;
     if (!hasContent) {
       const left = document.getElementById('suno-left');
       if (left) { left.style.animation = 'shake .3s ease'; setTimeout(() => left.style.animation = '', 400); }
@@ -2909,9 +2779,6 @@ window.removeCoverImage = function() {
   }
 
   window.openCreatorPopup = function(name) {
-    // Reference track is now an inline dropdown — skip popup for it
-    if (name === 'reference') { window.toggleRefDropdown(); return; }
-
     // Ensure popups are at body level (escapes any stacking context from parent containers)
     ensurePopupsAtBodyLevel();
 
@@ -2936,7 +2803,7 @@ window.removeCoverImage = function() {
     popup.style.transform = 'translate(-50%, -50%)';
 
     // Mark active tab
-    document.querySelectorAll('.creator-tab-btn').forEach(b => { if (b.id !== 'ctab-reference') b.classList.remove('active'); });
+    document.querySelectorAll('.creator-tab-btn').forEach(b => b.classList.remove('active'));
     const btn = document.getElementById('ctab-' + name);
     if (btn) btn.classList.add('active');
 
@@ -2945,19 +2812,10 @@ window.removeCoverImage = function() {
   };
 
   window.closeCreatorPopup = function(name) {
-    if (name === 'reference') {
-      var panel = document.getElementById('ref-inline-panel');
-      if (panel) panel.style.display = 'none';
-      var btn = document.getElementById('ctab-reference');
-      var chev = document.getElementById('ctab-ref-chevron');
-      if (btn && !refFileId) btn.classList.remove('active');
-      if (chev) chev.style.transform = '';
-      return;
-    }
     const popup = document.getElementById('creator-popup-' + name);
     if (popup) popup.style.display = 'none';
     if (_activeOverlay) { _activeOverlay.remove(); _activeOverlay = null; }
-    document.querySelectorAll('.creator-tab-btn').forEach(b => { if (b.id !== 'ctab-reference') b.classList.remove('active'); });
+    document.querySelectorAll('.creator-tab-btn').forEach(b => b.classList.remove('active'));
   };
 
   function makeDraggable(el, handle) {
@@ -3029,161 +2887,6 @@ window.toggleOneShotCard = function() {
   }
 };
 
-// Handle reference audio file selection
-(function() {
-  const fileInput = document.getElementById('ref-audio-file');
-  if (!fileInput) return;
-  fileInput.addEventListener('change', async function() {
-    const file = this.files?.[0];
-    if (!file) return;
-    await uploadRefTrack(file, file.name);
-  });
-
-  // Drag-and-drop on the upload zone
-  const zone = document.getElementById('ref-upload-zone');
-  if (zone) {
-    zone.addEventListener('dragover', e => { e.preventDefault(); zone.style.borderColor = 'var(--primary)'; });
-    zone.addEventListener('dragleave', () => { zone.style.borderColor = ''; });
-    zone.addEventListener('drop', async e => {
-      e.preventDefault();
-      zone.style.borderColor = '';
-      const file = e.dataTransfer?.files?.[0];
-      if (file) await uploadRefTrack(file, file.name);
-    });
-  }
-})();
-
-async function uploadRefTrack(file, name) {
-  // Check file size — warn if likely > 30s (rough estimate: 30s MP3 ≈ 720KB at 192kbps)
-  const zone = document.getElementById('ref-upload-zone');
-  const idle = document.getElementById('ref-upload-idle');
-  const loading = document.getElementById('ref-upload-loading');
-  const done = document.getElementById('ref-upload-done');
-  const nameEl = document.getElementById('ref-upload-name');
-  const modePanel = document.getElementById('ref-mode-panel');
-  const clearBtn = document.getElementById('ref-clear-btn');
-
-  if (loading) { idle.style.display = 'none'; loading.style.display = 'flex'; done.style.display = 'none'; }
-
-  const formData = new FormData();
-  formData.append('file', file);
-
-  try {
-    const res = await fetch('/api/upload-reference', { method: 'POST', body: formData });
-    const data = await res.json();
-
-    if (!res.ok) {
-      if (data.upgrade) {
-        if (loading) loading.style.display = 'none';
-        idle.style.display = 'flex';
-        showUpgradeToast('Reference tracks require the Pro Artist plan.');
-        return;
-      }
-      throw new Error(data.error || 'Upload failed');
-    }
-
-    refFileId = data.file_id;
-    if (nameEl) nameEl.textContent = name.length > 28 ? name.slice(0, 25) + '...' : name;
-    if (done) { loading.style.display = 'none'; done.style.display = 'flex'; }
-    if (zone) zone.classList.add('has-file');
-    if (modePanel) modePanel.style.display = 'block';
-    if (clearBtn) clearBtn.style.display = 'block';
-    if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
-    // Populate info strip
-    _showRefInfoStrip({ serverDuration: data.duration, startTime: 0, audioDuration: null });
-  } catch(err) {
-    if (loading) loading.style.display = 'none';
-    if (idle) idle.style.display = 'flex';
-    // Show error inline instead of alert
-    var errEl = document.getElementById('ref-upload-error');
-    if (!errEl) {
-      errEl = document.createElement('p');
-      errEl.id = 'ref-upload-error';
-      errEl.style.cssText = 'margin:8px 0 0;color:#ef4444;font-size:.78rem;text-align:center';
-      if (zone && zone.parentNode) zone.parentNode.insertBefore(errEl, zone.nextSibling);
-    }
-    errEl.textContent = '\u26a0\ufe0f ' + (err.message || 'Upload failed — try again');
-    setTimeout(function() { if (errEl) errEl.textContent = ''; }, 6000);
-  }
-}
-
-// Show ref track info strip below the upload done state
-function _showRefInfoStrip(opts) {
-  var trackInfoEl = document.getElementById('ref-track-info');
-  var durEl       = document.getElementById('ref-info-duration');
-  var durValEl    = document.getElementById('ref-info-duration-val');
-  var clipEl      = document.getElementById('ref-info-clip');
-  var clipValEl   = document.getElementById('ref-info-clip-val');
-  if (!trackInfoEl) return;
-
-  var fmtTime = function(s) { return Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0'); };
-  var shown = false;
-
-  // Full file duration (from audio element or server)
-  var totalDur = opts.audioDuration || opts.serverDuration;
-  if (totalDur && totalDur > 0 && durEl && durValEl) {
-    durValEl.textContent = fmtTime(totalDur) + ' total';
-    durEl.style.display = '';
-    shown = true;
-  } else if (durEl) {
-    durEl.style.display = 'none';
-  }
-
-  // Clip window used
-  var startTime = opts.startTime || 0;
-  if (clipEl && clipValEl) {
-    var clipEnd = Math.min(startTime + 30, totalDur || startTime + 30);
-    clipValEl.textContent = fmtTime(startTime) + ' – ' + fmtTime(clipEnd) + ' used';
-    clipEl.style.display = '';
-    shown = true;
-  }
-
-  trackInfoEl.style.display = shown ? 'flex' : 'none';
-}
-
-window.clearRefTrack = function() {
-  refFileId = null;
-  const zone = document.getElementById('ref-upload-zone');
-  const idle = document.getElementById('ref-upload-idle');
-  const done = document.getElementById('ref-upload-done');
-  const modePanel = document.getElementById('ref-mode-panel');
-  const clearBtn = document.getElementById('ref-clear-btn');
-  const fileInput = document.getElementById('ref-audio-file');
-  if (idle) idle.style.display = 'flex';
-  if (done) done.style.display = 'none';
-  var trackInfo = document.getElementById('ref-track-info');
-  if (trackInfo) trackInfo.style.display = 'none';
-  if (zone) zone.classList.remove('has-file');
-  if (modePanel) modePanel.style.display = 'none';
-  if (clearBtn) clearBtn.style.display = 'none';
-  if (fileInput) fileInput.value = '';
-  if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
-  // Close the dropdown if nothing is loaded
-  var panel = document.getElementById('ref-inline-panel');
-  var btn   = document.getElementById('ctab-reference');
-  var chev  = document.getElementById('ctab-ref-chevron');
-  if (panel) panel.style.display = 'none';
-  if (btn)   btn.classList.remove('active');
-  if (chev)  chev.style.transform = '';
-};
-
-window.selectRefMode = function(mode) {
-  refMode = mode;
-  document.querySelectorAll('.ref-mode-btn').forEach(b => {
-    const isActive = b.dataset.mode === mode;
-    b.classList.toggle('ref-mode-btn--active', isActive);
-  });
-};
-
-// submitRefAndGenerate no longer needed — panel stays open, user hits main Create button
-
-window.selectBarPreset = function(btn, bars) {
-  refBars = bars;
-  document.querySelectorAll('.ref-bar-btn').forEach(b => b.classList.remove('ref-bar-btn--active'));
-  btn.classList.add('ref-bar-btn--active');
-  const customInput = document.getElementById('ref-bar-custom');
-  if (customInput) customInput.style.display = bars === 'custom' ? 'flex' : 'none';
-};
 
 // ── Song Extend popup ─────────────────────────────────────────────────────────
 (function initSongExtend() {
@@ -3530,28 +3233,6 @@ window.selectBarPreset = function(btn, bars) {
     }
   };
 })();
-
-// Override getInputs to inject reference_file_id into the generate payload
-// We patch the startGeneration fetch call via a global variable
-(function patchStartGenerationForRef() {
-  // We'll inject refFileId into the fetch body inside startGeneration
-  // by hooking into the existing startGeneration function via a window override
-  const _originalFetch = window.fetch;
-  // We don't override fetch globally — instead we rely on the app reading window._refFileId
-  // and window._refMode at generate time
-})();
-
-// Update the "ON" badge on the Reference tab button
-function updateRefTabBadge() {
-  var badge = document.getElementById('ctab-ref-badge');
-  if (!badge) return;
-  badge.style.display = refFileId ? 'inline' : 'none';
-}
-window.updateRefTabBadge = updateRefTabBadge;
-
-// Expose ref info so startGeneration can read it
-Object.defineProperty(window, '_refFileId', { get: () => refFileId });
-Object.defineProperty(window, '_refMode', { get: () => refMode });
 Object.defineProperty(window, '_refPrompt', { get: () => {
   // Use the main prompt/lyrics field — whatever the user typed there
   const prompt = document.getElementById('gen-prompt');
@@ -3716,29 +3397,6 @@ window.generateOneshotSfx = async function() {
   }
 };
 
-// ═══════════════════════════════════════════════════════════
-//  Patch startGeneration to send reference_file_id
-// ═══════════════════════════════════════════════════════════
-// We intercept the fetch('/api/generate',...) call by overriding window.fetch
-// ONLY for that specific path, injecting refFileId and ref mode data.
-(function patchFetchForRef() {
-  const _orig = window.fetch.bind(window);
-  window.fetch = function(input, init) {
-    const url = typeof input === 'string' ? input : input?.url || '';
-    if (url === '/api/generate' && init?.method === 'POST' && init?.body) {
-      try {
-        const body = JSON.parse(init.body);
-        if (window._refFileId) {
-          body.reference_file_id = window._refFileId;
-          body.ref_mode = window._refMode || 'style';
-          if (window._refPrompt) body.ref_prompt = window._refPrompt;
-          init = { ...init, body: JSON.stringify(body) };
-        }
-      } catch {}
-    }
-    return _orig(input, init);
-  };
-})();
 
 // ═══════════════════════════════════════════════════════════
 //  NEW FEATURE JS — Tasks 8, 11, 12, 13, 15, 16
@@ -3952,307 +3610,9 @@ document.addEventListener('click', function(e) {
 });
 
 // ── Clip picker: update timestamp + window overlay ─────────
-window.updateClipPicker = function(val) {
-  const audio = document.getElementById('ref-preview-audio');
-  const tsEl = document.getElementById('ref-clip-timestamp');
-  const windowEl = document.getElementById('ref-clip-window');
-  if (!audio || !audio.duration) return;
-  const dur = audio.duration;
-  const startSec = (val / 100) * Math.max(0, dur - 30);
-  const endSec = Math.min(dur, startSec + 30);
-  const fmt = s => Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0');
-  if (tsEl) tsEl.textContent = fmt(startSec) + ' – ' + fmt(endSec);
-  // Position the blue rectangle to start exactly where the knob is
-  if (windowEl) {
-    const clipFrac = Math.min(1, 30 / dur);
-    const startFrac = startSec / dur;
-    windowEl.style.left = (startFrac * 100) + '%';
-    windowEl.style.width = (clipFrac * 100) + '%';
-  }
-  // Seek audio to the clip start position so playback starts from the knob
-  try {
-    if (!audio.paused) {
-      audio.currentTime = startSec;
-    } else {
-      audio.currentTime = startSec;
-    }
-  } catch(e) {}
-  window._refClipStart = startSec;
-};
 
-window.uploadRefWithClip = async function() {
-  const fileInput = document.getElementById('ref-audio-file');
-  if (!fileInput || !fileInput.files[0]) return;
-  const file = fileInput.files[0];
-  const startTime = window._refClipStart || 0;
 
-  // ── Duplicate check ──────────────────────────────────────────
-  try {
-    const dupRes = await fetch('/api/check-duplicate-upload?filename=' + encodeURIComponent(file.name));
-    if (dupRes.ok) {
-      const dupData = await dupRes.json();
-      if (dupData.exists && dupData.upload) {
-        const choice = await showDuplicateUploadModal(file.name, dupData.upload);
-        if (choice === 'use_existing') {
-          const existingUpload = dupData.upload;
-          refFileId = existingUpload.file_id;
-          document.getElementById('ref-clip-picker').style.display = 'none';
-          const nameEl = document.getElementById('ref-upload-name');
-          if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
-          const idle2 = document.getElementById('ref-upload-idle');
-          const loading2 = document.getElementById('ref-upload-loading');
-          const done2 = document.getElementById('ref-upload-done');
-          if (idle2) idle2.style.display = 'none';
-          if (loading2) loading2.style.display = 'none';
-          if (done2) done2.style.display = 'flex';
-          const zone2 = document.getElementById('ref-upload-zone');
-          if (zone2) { zone2.classList.add('has-file'); zone2.onclick = null; }
-          const modePanel2 = document.getElementById('ref-mode-panel');
-          if (modePanel2) modePanel2.style.display = 'block';
-          const clearBtn2 = document.getElementById('ref-clear-btn');
-          if (clearBtn2) clearBtn2.style.display = 'block';
-          if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
-          // Fetch cached analysis and display
-          try {
-            const upRow = await fetch('/api/reference-uploads').then(r => r.json());
-            const found = (upRow.uploads || []).find(u => u.file_id === existingUpload.file_id);
-            if (found && found.analysis) {
-              renderAnalysisPanel(found.analysis);
-            } else {
-              startAnalysis(existingUpload.file_id, file.name, null);
-            }
-          } catch { startAnalysis(existingUpload.file_id, file.name, null); }
-          return;
-        }
-        if (choice === 'cancel') return;
-        // choice === 'overwrite' — continue with normal upload
-      }
-    }
-  } catch {}
 
-  // ── Normal upload flow ────────────────────────────────────────
-  document.getElementById('ref-clip-picker').style.display = 'none';
-  const idle = document.getElementById('ref-upload-idle');
-  const loading = document.getElementById('ref-upload-loading');
-  const done = document.getElementById('ref-upload-done');
-  const nameEl = document.getElementById('ref-upload-name');
-  const clipInfo = document.getElementById('ref-clip-info');
-  const modePanel = document.getElementById('ref-mode-panel');
-  const clearBtn = document.getElementById('ref-clear-btn');
-  const zone = document.getElementById('ref-upload-zone');
-  if (idle) idle.style.display = 'none';
-  if (loading) loading.style.display = 'flex';
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('start_time', String(Math.round(startTime)));
-  try {
-    const res = await fetch('/api/upload-reference', { method: 'POST', body: formData });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
-    refFileId = data.file_id;  // use shared var (window._refFileId getter reads this)
-    if (nameEl) nameEl.textContent = file.name.length > 28 ? file.name.slice(0,25)+'...' : file.name;
-    const fmt = s => Math.floor(s/60)+':'+String(Math.floor(s%60)).padStart(2,'0');
-    if (clipInfo) clipInfo.textContent = 'Clip: ' + fmt(startTime) + ' \u2013 ' + fmt(startTime+30) + ' used';
-    if (done) { loading.style.display = 'none'; done.style.display = 'flex'; }
-    if (zone) { zone.classList.add('has-file'); zone.onclick = null; }
-    if (modePanel) modePanel.style.display = 'block';
-    if (clearBtn) clearBtn.style.display = 'block';
-    if (typeof updateRefTabBadge === 'function') updateRefTabBadge();
-    // Populate info strip
-    var audioEl = document.getElementById('ref-preview-audio');
-    var audioDur = (audioEl && audioEl.duration && !isNaN(audioEl.duration)) ? audioEl.duration : null;
-    _showRefInfoStrip({ serverDuration: data.duration, startTime: startTime, audioDuration: audioDur });
-    // Start track analysis
-    startAnalysis(data.file_id, file.name, data.duration);
-    // Save to uploads DB
-    saveReferenceUpload(data.file_id, file.name, data.duration, null);
-  } catch(err) {
-    if (loading) loading.style.display = 'none';
-    if (idle) idle.style.display = 'flex';
-    var errEl = document.getElementById('ref-upload-error');
-    if (!errEl) {
-      errEl = document.createElement('p');
-      errEl.id = 'ref-upload-error';
-      errEl.style.cssText = 'margin:8px 0 0;color:#ef4444;font-size:.78rem;text-align:center';
-      var z2 = document.getElementById('ref-upload-zone');
-      if (z2 && z2.parentNode) z2.parentNode.insertBefore(errEl, z2.nextSibling);
-    }
-    errEl.textContent = '\u26a0\ufe0f ' + (err.message || 'Upload failed \u2014 try again');
-    setTimeout(function() { if (errEl) errEl.textContent = ''; }, 6000);
-  }
-};
-
-// Override file input change to show clip picker for larger/WAV files
-(function patchRefFileInputForClipPicker() {
-  const fileInput = document.getElementById('ref-audio-file');
-  if (!fileInput) return;
-  fileInput.addEventListener('change', function(e) {
-    e.stopImmediatePropagation();
-    const file = this.files?.[0];
-    if (!file) return;
-    // Show clip picker for WAV or files > 500KB (likely full track)
-    // Always show clip picker so user can choose which 30 seconds to use
-    const preview = document.getElementById('ref-preview-audio');
-    if (preview) {
-      preview.src = URL.createObjectURL(file);
-      preview.load();
-      preview.onloadedmetadata = function() {
-        const clipPicker = document.getElementById('ref-clip-picker');
-        if (clipPicker) clipPicker.style.display = 'block';
-        window._refClipStart = 0;
-        updateClipPicker(0);
-      };
-    }
-  }, true);
-})();
-
-// ══ Duplicate upload modal ══════════════════════════════════════════════════
-function showDuplicateUploadModal(filename, existing) {
-  return new Promise((resolve) => {
-    const existingModal = document.getElementById('dup-upload-modal');
-    if (existingModal) existingModal.remove();
-    const dateStr = existing.created_at ? new Date(existing.created_at).toLocaleDateString() : '';
-    const modal = document.createElement('div');
-    modal.id = 'dup-upload-modal';
-    modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px)';
-    modal.innerHTML = `
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:32px 28px;max-width:400px;width:90%;text-align:center;position:relative;box-shadow:0 20px 60px rgba(0,0,0,.4)">
-        <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,rgba(245,158,11,.25),rgba(245,158,11,.1));display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.4rem;color:#f59e0b"><i class="fas fa-exclamation-triangle"></i></div>
-        <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:8px">File already uploaded</h3>
-        <p style="color:var(--muted);font-size:.85rem;margin-bottom:6px"><strong style="color:var(--text)">${filename.length > 36 ? filename.slice(0,33)+'...' : filename}</strong></p>
-        <p style="color:var(--muted);font-size:.8rem;margin-bottom:24px">You uploaded this file on <strong>${dateStr || 'a previous date'}</strong>. What would you like to do?</p>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <button id="dup-use-existing" style="width:100%;padding:12px;background:linear-gradient(135deg,var(--primary),#8b5cf6);color:#fff;border:none;border-radius:10px;font-weight:700;cursor:pointer;font-size:.9rem">
-            <i class="fas fa-check-circle" style="margin-right:6px"></i>Use Existing Upload
-          </button>
-          <button id="dup-overwrite" style="width:100%;padding:12px;background:var(--surface-2,rgba(255,255,255,.06));color:var(--text);border:1px solid var(--border);border-radius:10px;font-weight:600;cursor:pointer;font-size:.9rem">
-            <i class="fas fa-upload" style="margin-right:6px"></i>Overwrite with New File
-          </button>
-          <button id="dup-cancel" style="width:100%;padding:8px;background:none;color:var(--muted);border:none;cursor:pointer;font-size:.82rem">
-            Cancel
-          </button>
-        </div>
-      </div>`;
-    document.body.appendChild(modal);
-    modal.querySelector('#dup-use-existing').onclick = () => { modal.remove(); resolve('use_existing'); };
-    modal.querySelector('#dup-overwrite').onclick = () => { modal.remove(); resolve('overwrite'); };
-    modal.querySelector('#dup-cancel').onclick = () => { modal.remove(); resolve('cancel'); };
-  });
-}
-
-// ══ Start async track analysis ══════════════════════════════════════════════
-async function startAnalysis(fileId, filename, duration) {
-  const panel = document.getElementById('ref-analysis-panel');
-  const loadingEl = document.getElementById('ref-analysis-loading');
-  const content = document.getElementById('ref-analysis-content');
-  if (!panel) return;
-  panel.style.display = 'block';
-  if (loadingEl) loadingEl.style.display = 'flex';
-  if (content) content.innerHTML = '';
-  try {
-    const res = await fetch('/api/analyze-reference', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_id: fileId, filename, duration })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Analysis failed');
-    if (loadingEl) loadingEl.style.display = 'none';
-    if (data.analysis) {
-      renderAnalysisPanel(data.analysis);
-      // Update the saved upload entry with analysis data
-      saveReferenceUpload(fileId, filename, duration, data.analysis);
-    }
-  } catch (err) {
-    if (loadingEl) loadingEl.style.display = 'none';
-    if (content) content.innerHTML = `<p style="color:var(--muted);font-size:.78rem"><i class="fas fa-exclamation-circle" style="margin-right:4px"></i>Analysis unavailable &mdash; ${err.message || 'please try again'}</p>`;
-  }
-}
-
-// ══ Render analysis results panel ══════════════════════════════════════════
-function renderAnalysisPanel(analysis) {
-  const panel = document.getElementById('ref-analysis-panel');
-  const content = document.getElementById('ref-analysis-content');
-  if (!panel || !content || !analysis) return;
-  panel.style.display = 'block';
-
-  const chip = (v) => `<span style="display:inline-block;padding:2px 9px;margin:2px 2px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.25);border-radius:20px;font-size:.72rem;color:var(--primary)">${v}</span>`;
-
-  const row = (icon, label, value) => value
-    ? `<div style="display:flex;gap:8px;margin-bottom:9px;align-items:flex-start">
-         <span style="min-width:18px;color:var(--primary);font-size:.8rem;margin-top:2px"><i class="fas fa-${icon}"></i></span>
-         <div><div style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">${label}</div><div style="color:var(--text);font-size:.8rem;font-weight:500;line-height:1.5">${value}</div></div>
-       </div>` : '';
-
-  let html = '';
-
-  // Summary — Suno style description
-  if (analysis.summary) {
-    html += `<div style="padding:10px 12px;background:rgba(78,159,255,.07);border-left:3px solid var(--primary);border-radius:0 8px 8px 0;margin-bottom:14px;font-size:.82rem;line-height:1.65;color:var(--text);font-style:italic">&ldquo;${analysis.summary}&rdquo;</div>`;
-  }
-
-  // Core meta badges
-  const metaItems = [
-    analysis.genre ? `<span style="font-weight:700;color:var(--primary)">${analysis.genre}${analysis.subgenre ? ' &middot; ' + analysis.subgenre : ''}</span>` : '',
-    analysis.bpm ? `<b>${analysis.bpm} BPM</b>` : '',
-    analysis.key ? `${analysis.key}` : '',
-    analysis.energy ? `Energy: <b>${analysis.energy}</b>` : '',
-  ].filter(Boolean);
-  if (metaItems.length) {
-    html += `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px;font-size:.8rem;color:var(--text)">${metaItems.join('<span style="color:var(--border);margin:0 2px">&bull;</span>')}</div>`;
-  }
-
-  // Mood
-  if (analysis.mood) html += row('heart', 'Mood &amp; Vibe', analysis.mood);
-
-  // Instruments
-  if (analysis.instruments && analysis.instruments.length) {
-    html += `<div style="margin-bottom:10px">
-      <div style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px"><i class="fas fa-guitar" style="color:var(--primary);margin-right:4px"></i>Instruments</div>
-      <div>${analysis.instruments.map(chip).join('')}</div>
-    </div>`;
-  }
-
-  // Vocals
-  if (analysis.vocals) {
-    const v = analysis.vocals;
-    if (v.present) {
-      let vStyle = v.style || 'Vocals detected';
-      if (v.effects && v.effects.length) {
-        vStyle += `<br><span style="color:var(--muted);font-size:.75rem">Effects: ${v.effects.map(chip).join('')}</span>`;
-      }
-      html += row('microphone', 'Vocals', vStyle);
-    } else {
-      html += row('microphone-slash', 'Vocals', '<span style="color:var(--muted)">Instrumental &mdash; no vocals</span>');
-    }
-  }
-
-  // Production & Texture
-  if (analysis.production_style) html += row('sliders-h', 'Production Style', analysis.production_style);
-  if (analysis.sonic_texture) html += row('wave-square', 'Sonic Texture', analysis.sonic_texture);
-  if (analysis.arrangement) html += row('list-music', 'Arrangement', analysis.arrangement);
-
-  // Similar artists
-  if (analysis.similar_artists && analysis.similar_artists.length) {
-    html += `<div style="margin-bottom:4px">
-      <div style="color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px"><i class="fas fa-users" style="color:var(--primary);margin-right:4px"></i>Similar Artists</div>
-      <div>${analysis.similar_artists.map(chip).join('')}</div>
-    </div>`;
-  }
-
-  content.innerHTML = html || '<p style="color:var(--muted);font-size:.8rem">No analysis data available.</p>';
-}
-
-// ══ Save reference upload metadata to DB ═══════════════════════════════════
-async function saveReferenceUpload(fileId, filename, duration, analysis) {
-  try {
-    await fetch('/api/save-reference-upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file_id: fileId, filename, duration, analysis_json: analysis })
-    });
-  } catch {}
-}
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -6316,15 +5676,6 @@ window.renderEditInstrumentPills = function (bp) {
   // ── Override openCreatorPopup for 'extend' + close ref panel ─────────────
   var _origOpen = window.openCreatorPopup;
   window.openCreatorPopup = function(type) {
-    // Always close the ref inline panel when any popup/tab is opened
-    var refPanel = document.getElementById('ref-inline-panel');
-    var refChev  = document.getElementById('ctab-ref-chevron');
-    var refBtn   = document.getElementById('ctab-reference');
-    if (refPanel && refPanel.style.display !== 'none') {
-      refPanel.style.display = 'none';
-      if (refChev) refChev.style.transform = '';
-      if (refBtn && !window._refFileId) refBtn.classList.remove('active');
-    }
     if (type === 'extend') {
       // Pro Artist only
       var _extPlan = (window._sfUser && window._sfUser.plan) || 'free';
@@ -6475,13 +5826,13 @@ window.renderEditInstrumentPills = function (bp) {
 
       // Shared: manually switch panels + tab buttons
       function manualSwitchUI(tab) {
-        var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
+        var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', trash: 'Search trash…' };
         document.querySelectorAll('.lib-tab').forEach(function(btn) {
           btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
           btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
           if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
         });
-        ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
+        ['beats', 'extended', 'oneshots', 'trash'].forEach(function(t) {
           var panel = document.getElementById('lib-panel-' + t);
           if (panel) panel.style.display = t === tab ? '' : 'none';
         });
@@ -6499,20 +5850,6 @@ window.renderEditInstrumentPills = function (bp) {
           manualSwitchUI('extended');
           reloadExtendedTab();
 
-        } else if (tab === 'uploads') {
-          manualSwitchUI('uploads');
-          // Delegate to the IIFE's exposed fetchUploadsTab — single source of truth for
-          // fetch + error handling + rendering. It always resets _libLoaded.uploads = false
-          // so it always refetches regardless of cache state.
-          if (window.fetchUploadsTab) {
-            window.fetchUploadsTab();
-          } else {
-            // Safety fallback in case IIFE hasn't exposed it yet
-            var gridEl2 = document.getElementById('project-grid-uploads');
-            if (gridEl2) gridEl2.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-            setTimeout(function() { if (window.fetchUploadsTab) window.fetchUploadsTab(); }, 200);
-          }
-
         } else {
           if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
         }
@@ -6523,37 +5860,13 @@ window.renderEditInstrumentPills = function (bp) {
       if (extTabBtn) {
         extTabBtn.onclick = function() { window.switchLibTab('extended'); };
       }
-      var uploadsTabBtn = document.querySelector('.lib-tab[data-tab="uploads"]');
-      if (uploadsTabBtn) {
-        uploadsTabBtn.onclick = function() { window.switchLibTab('uploads'); };
-      }
-
       // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
       var _baseFilterLibrary = window.filterLibrary;
       window.filterLibrary = function(query) {
         var activeBtn = document.querySelector('.lib-tab--active');
         var tab = activeBtn ? activeBtn.dataset.tab : null;
         if (tab === 'extended') return; // don't wipe — reloadExtendedTab owns the grid
-        if (tab === 'uploads') {
-          var gridEl = document.getElementById('project-grid-uploads');
-          if (!gridEl) return;
-          fetch('/api/reference-uploads')
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-              var uploads = d.uploads || [];
-              if (query) {
-                var q = query.toLowerCase();
-                uploads = uploads.filter(function(u) {
-                  var fn = (u.filename || '').toLowerCase();
-                  var g  = (u.analysis && u.analysis.genre ? u.analysis.genre : '').toLowerCase();
-                  return fn.includes(q) || g.includes(q);
-                });
-              }
-              if (window.renderUploadsGrid) window.renderUploadsGrid(gridEl, uploads);
-            })
-            .catch(function() {});
-          return;
-        }
+
         if (_baseFilterLibrary) _baseFilterLibrary(query);
       };
     }
@@ -6776,160 +6089,6 @@ window.renderEditInstrumentPills = function (bp) {
 })();
 
 
-// ── Override renderUploadsGrid with card-style layout matching beats/oneshots ─
-// Cards have three-dot menu (Use as reference, Delete), no arrow badge.
-(function() {
-  // Open a context menu for an upload card
-  window.openUploadCardMenu = function(btn, fileId, filename, summary) {
-    var existing = document.getElementById('card-context-menu');
-    if (existing) existing.remove();
-
-    var menu = document.createElement('div');
-    menu.id = 'card-context-menu';
-    menu.style.cssText = 'position:fixed;z-index:99999;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);min-width:200px;overflow:hidden;padding:4px 0';
-
-    var items = [
-      {
-        icon: 'fa-headphones',
-        label: 'Use as Reference',
-        action: function() { if (window.useExistingUpload) window.useExistingUpload(fileId, filename, summary); }
-      },
-      {
-        icon: 'fa-trash-alt',
-        label: 'Delete Upload',
-        danger: true,
-        action: function() { deleteUploadItem(fileId, filename); }
-      }
-    ];
-
-    items.forEach(function(item) {
-      var el = document.createElement('button');
-      el.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;padding:10px 16px;background:none;border:none;color:' + (item.danger ? 'var(--danger)' : 'var(--text)') + ';cursor:pointer;font-size:.875rem;font-weight:500;text-align:left;transition:background .12s';
-      el.innerHTML = '<i class="fas ' + item.icon + '" style="width:15px;opacity:.7;flex-shrink:0"></i>' + item.label;
-      el.onmouseover = function() { el.style.background = 'rgba(255,255,255,.06)'; };
-      el.onmouseout  = function() { el.style.background = 'none'; };
-      el.onclick = function(e) { e.stopPropagation(); menu.remove(); item.action(); };
-      menu.appendChild(el);
-    });
-
-    var rect = btn.getBoundingClientRect();
-    document.body.appendChild(menu);
-    var mh = menu.offsetHeight, mw = menu.offsetWidth;
-    var top  = rect.bottom + 6;
-    var left = rect.right  - mw;
-    if (left < 8) left = 8;
-    if (top + mh > window.innerHeight - 8) top = rect.top - mh - 6;
-    menu.style.top  = top  + 'px';
-    menu.style.left = left + 'px';
-
-    setTimeout(function() {
-      document.addEventListener('click', function closeMenu(e) {
-        if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', closeMenu); }
-      });
-    }, 0);
-  };
-
-  // Delete an upload item (calls API then re-renders)
-  function deleteUploadItem(fileId, filename) {
-    if (!confirm('Delete "' + filename + '"? This cannot be undone.')) return;
-    fetch('/api/reference-uploads/' + encodeURIComponent(fileId), { method: 'DELETE' })
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.ok || d.success) {
-          // Re-fetch uploads and re-render
-          var gridEl = document.getElementById('project-grid-uploads');
-          if (gridEl) {
-            gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-            fetch('/api/reference-uploads').then(function(r) { return r.json(); }).then(function(data) {
-              window.renderUploadsGrid(gridEl, data.uploads || []);
-            }).catch(function() {});
-          }
-        } else {
-          alert(d.error || 'Could not delete upload.');
-        }
-      })
-      .catch(function() { alert('Network error. Please try again.'); });
-  }
-
-  function installUploadGridOverride() {
-    window.renderUploadsGrid = function(gridEl, uploads) {
-      if (!gridEl) return;
-      if (!uploads || uploads.length === 0) {
-        gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-cloud-upload-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No uploads yet. Upload a reference track to get started.</p></div>';
-        return;
-      }
-      var html = '';
-      uploads.forEach(function(u, i) {
-        var analysis    = u.analysis || {};
-        var genre       = analysis.genre || '';
-        var bpm         = analysis.bpm ? (analysis.bpm + ' BPM') : '';
-        var dur         = u.duration ? (Math.floor(u.duration / 60) + ':' + String(Math.floor(u.duration % 60)).padStart(2, '0')) : '';
-        var mood        = analysis.mood || '';
-        var instruments = analysis.instruments ? analysis.instruments.slice(0, 3).join(', ') : '';
-        var dateStr     = u.created_at ? new Date(u.created_at).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '';
-        var filename    = (u.filename || 'Reference track').replace(/\.[^.]+$/, '');
-        var summary     = (analysis.summary || '').slice(0, 90);
-        var hue         = hueFromIndex(i, u.file_id);
-        var hue2        = (hue + 40) % 360;
-        var safeFileId  = (u.file_id || '').replace(/'/g, '');
-        var safeFilename = (u.filename || '').replace(/'/g, '\\u0027');
-        var safeSummary  = (analysis.summary || genre || '').replace(/'/g, '\\u0027').replace(/"/g, '&quot;').slice(0, 120);
-        var displayName  = filename.replace(/"/g, '&quot;');
-
-        html +=
-          // Card — clicking the art/body uses as reference; three-dot opens menu
-          '<div class="project-card upload-card">' +
-            // Art area — click to use as reference
-            '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',50%,14%),hsl(' + hue2 + ',60%,8%));position:relative;cursor:pointer;overflow:hidden"' +
-              ' onclick="useExistingUpload(\'' + safeFileId + '\',\'' + safeFilename + '\',\'' + safeSummary + '\')" title="Use as reference">' +
-              '<div style="position:absolute;top:10px;left:10px">' +
-                '<span style="background:rgba(0,0,0,.45);color:hsl(' + hue + ',80%,70%);font-size:.62rem;font-weight:700;padding:2px 7px;border-radius:99px;letter-spacing:.04em;backdrop-filter:blur(4px)">' +
-                  '<i class="fas fa-cloud-upload-alt" style="margin-right:3px;font-size:.55rem"></i>UPLOAD' +
-                '</span>' +
-              '</div>' +
-              (dur ? '<div style="position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.5);color:rgba(255,255,255,.8);font-size:.67rem;padding:2px 6px;border-radius:6px;backdrop-filter:blur(4px)">' + dur + '</div>' : '') +
-            '</div>' +
-            // Body
-            '<div class="project-card__body">' +
-              '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
-                '<h4 style="font-size:.88rem;margin:0 0 3px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + (u.filename || '') + '">' + displayName + '</h4>' +
-                '<button class="song-dots-btn" title="More options"' +
-                  ' onclick="event.stopPropagation();openUploadCardMenu(this,\'' + safeFileId + '\',\'' + safeFilename + '\',\'' + safeSummary + '\')"' +
-                  ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
-              '</div>' +
-              '<p style="font-size:.75rem;color:var(--primary);font-weight:500;margin-bottom:5px">' +
-                [genre, bpm].filter(Boolean).join(' · ') +
-              '</p>' +
-              (mood ? '<p style="font-size:.72rem;color:var(--muted);font-style:italic;margin-bottom:4px">' + mood + '</p>' : '') +
-              (instruments ? '<p style="font-size:.71rem;color:var(--muted);margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><i class="fas fa-guitar" style="color:var(--primary);margin-right:3px;font-size:.65rem"></i>' + instruments + '</p>' : '') +
-              (summary ? '<p style="font-size:.72rem;color:var(--muted);line-height:1.45;margin-bottom:4px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">' + summary + '</p>' : '') +
-              '<div class="project-card__tags">' +
-                (dateStr ? '<span style="font-size:.67rem;color:var(--muted)">' + dateStr + '</span>' : '') +
-                '<span style="font-size:.67rem;color:var(--primary);margin-left:auto;opacity:.7"><i class="fas fa-headphones" style="margin-right:3px;font-size:.6rem"></i>Tap to use</span>' +
-              '</div>' +
-            '</div>' +
-          '</div>';
-      });
-      gridEl.innerHTML = html;
-    };
-
-    // If uploads tab is already loaded with old list-row style, re-render
-    var uploadsGrid = document.getElementById('project-grid-uploads');
-    if (uploadsGrid && uploadsGrid.querySelector('.upload-item')) {
-      uploadsGrid.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
-      fetch('/api/reference-uploads').then(function(r) { return r.json(); }).then(function(d) {
-        window.renderUploadsGrid(uploadsGrid, d.uploads || []);
-      }).catch(function() {});
-    }
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', installUploadGridOverride);
-  } else {
-    installUploadGridOverride();
-  }
-})();
-
 // ── Pro Artist upgrade modal (Reference Track / Song Extend) ─────────────────
 function showProUpgradeModal(featureName) {
   var existing = document.getElementById('sf-pro-upgrade-modal');
@@ -6942,44 +6101,10 @@ function showProUpgradeModal(featureName) {
       '<button onclick="document.getElementById(\'sf-pro-upgrade-modal\').style.display=\'none\'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>' +
       '<div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#ec4899);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-star"></i></div>' +
       '<h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Pro Artist only</h3>' +
-      '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6"><strong>' + featureName + '</strong> is a Pro Artist feature. Upgrade to unlock reference track uploads, song extend, advanced splits, WAV downloads, and priority queue.</p>' +
+      '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6"><strong>' + featureName + '</strong> is a Pro Artist feature. Upgrade to unlock song extend, advanced splits, WAV downloads, and priority queue.</p>' +
       '<a href="/pricing?plan=pro" style="display:block;padding:13px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Upgrade to Pro Artist — $26/mo</a>' +
       '<p style="color:var(--muted);font-size:.78rem;margin-top:14px">Your existing beats and points are kept when you upgrade.</p>' +
     '</div>';
   modal.addEventListener('click', function(e){ if (e.target === modal) modal.style.display = 'none'; });
   document.body.appendChild(modal);
 }
-
-// ── Reference Track Dropdown toggle ──────────────────────────────────────────
-// Closes any open popup/overlay first, then toggles the ref inline panel.
-window.toggleRefDropdown = function() {
-  // Pro Artist only
-  var _plan = (window._sfUser && window._sfUser.plan) || 'free';
-  if (_plan !== 'pro' && _plan !== 'developer') {
-    showProUpgradeModal('Reference Track');
-    return;
-  }
-  // Close any open creator popup first (e.g. extend popup)
-  var anyOpen = document.querySelector('.creator-popup[style*="display: flex"], .creator-popup[style*="display:flex"]');
-  if (anyOpen) {
-    var popupId = anyOpen.id || '';
-    var name = popupId.replace('creator-popup-', '');
-    if (name && window.closeCreatorPopup) window.closeCreatorPopup(name);
-  }
-
-  var panel = document.getElementById('ref-inline-panel');
-  var chev  = document.getElementById('ctab-ref-chevron');
-  var btn   = document.getElementById('ctab-reference');
-  if (!panel) return;
-  var isOpen = panel.style.display !== 'none' && panel.style.display !== '';
-  if (isOpen) {
-    panel.style.display = 'none';
-    if (chev) chev.style.transform = '';
-    var refLoaded = window._refFileId || window.refFileId;
-    if (btn && !refLoaded) btn.classList.remove('active');
-  } else {
-    panel.style.display = 'block';
-    if (chev) chev.style.transform = 'rotate(180deg)';
-    if (btn) btn.classList.add('active');
-  }
-};
