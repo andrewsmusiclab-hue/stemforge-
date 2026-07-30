@@ -2491,13 +2491,11 @@ app.get('/api/stem-mix/:jobId', async (c) => {
   }
 
   const jobId = c.req.param('jobId')
-  const fmt  = c.req.query('fmt')  || 'mp3'   // 'mp3' | 'wav'
+  const fmt  = c.req.query('fmt')  || 'wav'   // 'mp3' | 'wav' — WAV is default output
   const type = c.req.query('type') || 'mastered'  // 'mastered' | 'unmastered'
 
-  // WAV download = Pro/developer only
-  if (fmt === 'wav' && user.plan === 'creator') {
-    return c.json({ error: 'WAV download requires a Pro Artist plan.', upgrade: true }, 403)
-  }
+  // WAV is now the default and only output format — available on all plans with downloads
+  // (MP3 still supported if explicitly requested via ?fmt=mp3)
 
   // Unmastered = Pro/developer only
   if (type === 'unmastered' && user.plan === 'creator') {
@@ -4149,113 +4147,6 @@ app.get('/api/debug/sonic-task/:task_id', async (c) => {
   return c.json({ status: res.status, ok: res.ok, raw: text })
 })
 
-// POST /api/upload-loop-audio — upload a loop audio blob to R2 and return a permanent URL
-// Used by Loop Extend to store the generated MP3 before saving to D1 library
-app.post('/api/upload-loop-audio', async (c) => {
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not logged in' }, 401)
-  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
-
-  const formData = await c.req.formData()
-  const file = formData.get('file') as File | null
-  if (!file) return c.json({ error: 'No file provided' }, 400)
-
-  const safeFilename = (file.name || 'loop.mp3').replace(/[^a-zA-Z0-9._-]/g, '_')
-  const r2Key = `loop-audio/${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
-  await c.env.IMAGES.put(r2Key, await file.arrayBuffer(), {
-    httpMetadata: { contentType: file.type || 'audio/mpeg' }
-  })
-  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
-  const audioUrl = `${siteUrl}/api/loop-audio-proxy/${encodeURIComponent(r2Key)}`
-  return c.json({ ok: true, audio_url: audioUrl })
-})
-
-// GET /api/loop-audio-proxy/:key — serve R2-stored loop audio files
-app.get('/api/loop-audio-proxy/:key', async (c) => {
-  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
-  const key = decodeURIComponent(c.req.param('key'))
-  const obj = await c.env.IMAGES.get(key)
-  if (!obj) return c.json({ error: 'Not found' }, 404)
-  return new Response(obj.body, {
-    headers: {
-      'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
-      'Cache-Control': 'public, max-age=86400',
-      'Access-Control-Allow-Origin': '*'
-    }
-  })
-})
-
-// POST /api/job/loop-save — save a browser-generated loop extension to D1 so it
-// appears in the Extended library tab. The MP3 blob URL is ephemeral (object URL),
-// so the client uploads the actual audio to /api/upload-loop-audio first, then calls this
-// route with the resulting permanent URL.
-// Body: { audio_url: string, title: string, duration_seconds: number, bpm?: number }
-app.post('/api/job/loop-save', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  // Loop Extend is Pro Artist only
-  if (user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Loop Extend requires a Pro Artist plan.', upgrade: true }, 403)
-  }
-
-  const { audio_url, title, duration_seconds, bpm } = await c.req.json<{
-    audio_url: string; title: string; duration_seconds: number; bpm?: number
-  }>()
-  if (!audio_url) return c.json({ error: 'audio_url required' }, 400)
-  if (!title)     return c.json({ error: 'title required' }, 400)
-
-  // Deduct 15 points for Loop Extend (matches MusicAPI extend cost)
-  const LOOP_COST = 15
-  await ensureTable(c.env.DB)
-  const freshUser = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
-  if (!freshUser) return c.json({ error: 'User not found' }, 401)
-  if (freshUser.gens_used + LOOP_COST > freshUser.gens_limit) {
-    return c.json({
-      error: `Not enough points. Loop Extend costs ${LOOP_COST} points and you only have ${freshUser.gens_limit - freshUser.gens_used} remaining.`,
-      code: 'insufficient_credits'
-    }, 402)
-  }
-  await c.env.DB.prepare(
-    `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
-  ).bind(LOOP_COST, user.id).run()
-
-  try {
-    const newJobId = crypto.randomUUID()
-    const now = Date.now()
-    const newJob = {
-      id: newJobId,
-      user_id: user.id,
-      status: 'ready',
-      prompt: `[Loop Extension: ${title}]`,
-      title: title,
-      blueprint: bpm ? { bpm } : {},
-      stereo_task_id: null,
-      stereo_url: audio_url,
-      created_at: now,
-      extend_task_type: 'song_extend',   // shows in extended library tab
-      loop_extend: true,
-      duration_seconds: duration_seconds || null
-    }
-    await c.env.DB.prepare(
-      `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
-    ).bind(newJobId, user.id, JSON.stringify(newJob), now).run()
-
-    return c.json({ ok: true, job_id: newJobId })
-  } catch (e: any) {
-    // Refund on failure
-    try {
-      await c.env.DB.prepare(
-        `UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`
-      ).bind(LOOP_COST, user.id).run()
-    } catch (_) {}
-    return c.json({ error: e.message || 'Loop save failed' }, 500)
-  }
-})
 
 // GET /api/stripe/portal — redirect to Stripe billing portal
 app.get('/api/stripe/portal', async (c) => {
@@ -5736,6 +5627,7 @@ app.get('/api/download-wav/:id', async (c) => {
 })
 
 // GET /api/download-mp3/:id — proxy stereo URL as MP3 with proper track title filename
+// Legacy MP3 endpoint — now serves WAV
 app.get('/api/download-mp3/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -5975,7 +5867,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.24.js"></script>
+<script src="/static/app.v2.25.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
@@ -6387,7 +6279,7 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 50 points monthly</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-          <li class="muted"><i class="fas fa-times"></i> Downloads (WAV / MP3)</li>
+          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
         </ul>
         <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
@@ -6408,7 +6300,7 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 600 points monthly</li>
           <li><i class="fas fa-check"></i> Auto-split &amp; Vocal+Instrumental</li>
-          <li><i class="fas fa-check"></i> MP3 download</li>
+          <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
@@ -6427,10 +6319,10 @@ function homePage() {
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
-          <li><i class="fas fa-check"></i> Loop Extend + Song Extend</li>
+          <li><i class="fas fa-check"></i> Song Extend (15 pts)</li>
           <li><i class="fas fa-check"></i> Reference track uploads</li>
           <li><i class="fas fa-check"></i> All split modes + advanced</li>
-          <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
+          <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
@@ -7401,7 +7293,7 @@ function generatorPage() {
   </div>
   <div class="creator-popup__body">
 
-    <!-- Source tabs: Upload / Library / Loop Extend -->
+    <!-- Source tabs: Upload / Library -->
     <div id="ext-source-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px">
       <button id="ext-tab-upload" onclick="extSwitchTab('upload')" style="flex:1;background:none;border:none;border-bottom:2px solid var(--primary);color:var(--primary);font-weight:700;padding:9px 0;font-size:.82rem;cursor:pointer;transition:all .2s">
         <i class="fas fa-cloud-upload-alt" style="margin-right:5px"></i>Upload
@@ -7420,7 +7312,7 @@ function generatorPage() {
         <div id="ext-upload-idle" style="display:flex;flex-direction:column;align-items:center">
           <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
           <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Extend</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — MP3 only (best results)</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">Drop a file or click — MP3 upload, WAV output</p>
         </div>
         <div id="ext-upload-loading" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
@@ -7527,76 +7419,6 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- ══ Loop Extend panel ══════════════════════════════════════════ -->
-    <div id="ext-step-loop" style="display:none">
-
-      <!-- Upload zone -->
-      <div class="ref-upload-zone" id="loop-upload-zone" onclick="document.getElementById('loop-audio-file').click()" style="cursor:pointer;margin-bottom:10px">
-        <input type="file" id="loop-audio-file" accept="audio/mpeg,audio/mp3,.mp3,audio/wav,.wav,audio/flac,.flac,audio/*" style="display:none" onchange="loopHandleFileSelect(this)"/>
-        <div id="loop-upload-idle" style="display:flex;flex-direction:column;align-items:center">
-          <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
-          <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Loop-Extend</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3, WAV, FLAC — any format works</p>
-        </div>
-        <div id="loop-upload-loading" style="display:none;flex-direction:column;align-items:center">
-          <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>
-          <p style="margin:0;font-size:.85rem;color:var(--muted)">Analysing…</p>
-        </div>
-        <div id="loop-upload-done" style="display:none;flex-direction:column;align-items:center">
-          <i class="fas fa-check-circle" style="font-size:1.3rem;color:#10b981;margin-bottom:5px"></i>
-          <p style="margin:0;font-weight:600;font-size:.85rem" id="loop-upload-name">track.mp3</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.75rem" id="loop-upload-meta">Ready</p>
-        </div>
-      </div>
-      <div id="loop-upload-error" style="display:none;margin-bottom:10px;padding:8px 12px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:.8rem;color:#f87171;text-align:center"></div>
-
-      <!-- Analysis result card (shown after file loaded) -->
-      <div id="loop-analysis-card" style="display:none;margin-bottom:14px;padding:11px 14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:10px;font-size:.82rem;line-height:1.7">
-        <div style="display:flex;flex-wrap:wrap;gap:6px 18px">
-          <span><i class="fas fa-stopwatch" style="color:var(--primary);margin-right:5px"></i>BPM: <strong id="loop-info-bpm">—</strong></span>
-          <span><i class="fas fa-clock" style="color:var(--primary);margin-right:5px"></i>Duration: <strong id="loop-info-dur">—</strong></span>
-          <span><i class="fas fa-plus-circle" style="color:#10b981;margin-right:5px"></i>Adding: <strong id="loop-info-add">~60s</strong></span>
-          <span><i class="fas fa-blender" style="color:#a78bfa;margin-right:5px"></i>Crossfade: <strong id="loop-info-xfade">—</strong></span>
-        </div>
-      </div>
-
-      <!-- Generate button -->
-      <button id="loop-generate-btn" onclick="loopGenerate()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;display:none">
-        <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">15 pts</span>
-      </button>
-
-      <!-- Progress — forge video background shown while encoding -->
-      <div id="loop-progress" style="display:none;margin-top:12px;position:relative;border-radius:12px;overflow:hidden;background:#0d0d1a;padding:14px 16px">
-        <video class="forge-video-bg" autoplay loop muted playsinline preload="auto" src="/static/forge-bg.mp4" style="opacity:.75"></video>
-        <div style="position:absolute;inset:0;background:rgba(5,5,20,.5);border-radius:inherit"></div>
-        <div style="position:relative;z-index:2">
-          <div style="height:5px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden;margin-bottom:12px">
-            <div id="loop-progress-bar" style="height:100%;background:linear-gradient(90deg,#a78bfa,#4e9fff);border-radius:3px;width:0%;transition:width .3s ease"></div>
-          </div>
-          <p id="loop-progress-msg" style="text-align:center;font-size:.88rem;color:#fff;font-weight:700;margin:0;text-shadow:0 1px 6px rgba(0,0,0,.8)"></p>
-        </div>
-      </div>
-
-      <!-- Result -->
-      <div id="loop-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-          <i class="fas fa-check-circle" style="color:#10b981;font-size:1.1rem"></i>
-          <span style="font-weight:700;font-size:.9rem">Loop Extension Ready</span>
-          <span id="loop-result-meta" style="margin-left:auto;font-size:.75rem;color:var(--muted)"></span>
-        </div>
-        <audio id="loop-result-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
-        <div style="display:flex;gap:8px">
-          <a id="loop-dl-btn" href="#" class="btn btn--primary" style="flex:1;text-align:center" download>
-            <i class="fas fa-download"></i> Download
-          </a>
-          <button onclick="loopReset()" class="btn btn--outline btn--sm" style="flex-shrink:0">
-            <i class="fas fa-redo"></i> New
-          </button>
-        </div>
-      </div>
-
-    </div>
-    <!-- ══ /Loop Extend panel ════════════════════════════════════════ -->
 
   </div>
 </div>
@@ -7659,7 +7481,7 @@ function generatorPage() {
       <audio id="oneshot-sfx-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
       <div style="display:flex;gap:8px">
         <a id="oneshot-sfx-dl-mp3" href="#" class="btn btn--outline btn--sm" style="flex:1;text-align:center" download>
-          <i class="fas fa-download"></i> Download MP3
+          <i class="fas fa-download"></i> Download WAV
         </a>
       </div>
     </div>
@@ -7695,9 +7517,8 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Full StemForge beat generation (20 pts)</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
-          <li class="muted"><i class="fas fa-times"></i> MP3 / WAV downloads</li>
+          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use rights</li>
-          <li class="muted"><i class="fas fa-times"></i> Loop Extend</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
           <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
@@ -7723,9 +7544,8 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Full StemForge beat generation (20 pts/beat)</li>
           <li><i class="fas fa-check"></i> Auto-split — 5 stems (75 pts)</li>
           <li><i class="fas fa-check"></i> Vocal + Instrumental split (30 pts)</li>
-          <li><i class="fas fa-check"></i> MP3 download — commercial use</li>
+          <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
-          <li class="muted"><i class="fas fa-times"></i> Loop Extend</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> WAV / mastered downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Reference track uploads</li>
@@ -7750,13 +7570,12 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 2,000 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-redo" style="font-size:.75rem;opacity:.8"></i> Loop Extend (15 pts)</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
           <li><i class="fas fa-check"></i> Reference track uploads (15 pts)</li>
           <li><i class="fas fa-check"></i> Advanced split — per stem (30 pts)</li>
           <li><i class="fas fa-check"></i> Stem regeneration (30 pts)</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
-          <li><i class="fas fa-check"></i> WAV + MP3 download (mastered &amp; unmastered)</li>
+          <li><i class="fas fa-check"></i> WAV download (mastered &amp; unmastered)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
@@ -7786,12 +7605,11 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">75 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-download"></i> MP3 / WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (StemForge SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
       </div>
     </div>
@@ -8720,7 +8538,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 600 points monthly</li>
-            <li><i class="fas fa-check"></i> MP3 download</li>
+            <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
           ${user.plan === 'creator'
@@ -8776,7 +8594,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 2,000 points monthly</li>
-            <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV / MP3</li>
+            <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> (20 pts)</li>
@@ -9958,8 +9776,8 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, auto-split, vocal+instrumental, MP3 download, commercial use rights</li>
-    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, MP3 + WAV download, commercial use rights, priority queue, Stemforge Remix (reinvent any beat, 20 pts), Loop Extend (15 pts), Extend song (15 pts)</li>
+    <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, auto-split, vocal+instrumental, WAV download, commercial use rights</li>
+    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix (reinvent any beat, 20 pts), Extend song (15 pts)</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>

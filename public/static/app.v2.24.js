@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
       creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'Mastered stereo mix download', 'Commercial use rights'] },
-      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix (20 pts)', 'Unmastered mix, mastered mix, or stems bundle', 'Priority queue'] },
+      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix (20 pts)', 'WAV output, unmastered + mastered mix, stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -1431,10 +1431,10 @@ document.addEventListener('DOMContentLoaded', () => {
         <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download Full Track</h3>
         <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your format:</p>
         <div style="display:flex;flex-direction:column;gap:10px">
-          <a href="/api/download-mp3/${jobId}" download="${title}.mp3"
+          <a href="/api/download-wav/${jobId}" download="${title}.wav"
              onclick="document.getElementById('sf-download-modal').remove()"
              style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,var(--primary),#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
-            <i class="fas fa-file-audio"></i> Download MP3
+            <i class="fas fa-file-audio"></i> Download WAV
           </a>
           <a href="/api/download-wav/${jobId}" download="${title}.wav"
              onclick="document.getElementById('sf-download-modal').remove()"
@@ -1442,7 +1442,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <i class="fas fa-file-waveform"></i> Download WAV
           </a>
         </div>
-        <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV = lossless quality · MP3 = smaller file size</p>
+        <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV — lossless quality</p>
       </div>`;
 
     document.body.appendChild(modal);
@@ -2330,7 +2330,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                   dlBtn.style.cssText = 'margin-top:6px;width:100%;padding:5px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.75rem;font-weight:600';
                   dlBtn.innerHTML = '<i class="fas fa-download"></i> Download' + (hasAlt ? ' V' + n : '');
-                  const dlUrl = url, dlName = safeFilename + (hasAlt ? '_v' + n : '') + '.mp3';
+                  const dlUrl = url, dlName = safeFilename + (hasAlt ? '_v' + n : '') + '.wav';
                   dlBtn.onclick = function() { var a=document.createElement('a');a.href=dlUrl;a.download=dlName;document.body.appendChild(a);a.click();a.remove(); };
                 }
                 scrubParent.appendChild(dlBtn);
@@ -2353,7 +2353,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                   const a = document.createElement('a');
                   a.href = url;
-                  a.download = filename + '.mp3';
+                  a.download = filename + '.wav';
                   document.body.appendChild(a); a.click(); a.remove();
                 }
               }
@@ -2366,7 +2366,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 popup.id = 'export-fmt-popup';
                 popup.style.cssText = 'position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card-bg,#1a1a2e);border:1px solid var(--border,#333);border-radius:10px;padding:8px;display:flex;gap:8px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5);white-space:nowrap';
                 popup.innerHTML = `
-                  <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('mp3')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border,#333);background:var(--surface-2,#222);color:var(--text,#fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-audio"></i> MP3</button>
+                  <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('wav')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border,#333);background:var(--surface-2,#222);color:var(--text,#fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-audio"></i> WAV</button>
                   <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('wav')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid rgba(78,159,255,.4);background:rgba(78,159,255,.1);color:var(--primary,#4e9fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-waveform"></i> WAV</button>
                 `;
                 anchorBtn.style.position = 'relative';
@@ -2385,28 +2385,28 @@ document.addEventListener('DOMContentLoaded', () => {
               } else if (userPlan === 'pro' || userPlan === 'developer') {
                 // ── Pro Artist: Unmastered Mix (WAV/MP3) + Mastered Mix (WAV/MP3) ──
 
-                // (a) Unmastered mix — WAV or MP3
+                // (a) Unmastered mix — WAV
                 const unmastBtn = document.createElement('button');
                 unmastBtn.className = 'export-btn export-btn--pro';
-                unmastBtn.title = 'Raw unmastered mix — WAV or MP3, ideal for your DAW';
-                unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>WAV / MP3</small>';
+                unmastBtn.title = 'Raw unmastered mix — WAV, ideal for your DAW';
+                unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>WAV</small>';
                 unmastBtn.onclick = () => showFormatPicker(unmastBtn, 'Unmastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_unmastered', fmt));
 
-                // (b) Mastered mix — WAV or MP3
+                // (b) Mastered mix — WAV
                 const mastBtn = document.createElement('button');
                 mastBtn.className = 'export-btn export-btn--pro';
-                mastBtn.title = 'Mastered stereo mix ready for release — WAV or MP3';
-                mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV / MP3</small>';
+                mastBtn.title = 'Mastered stereo mix ready for release — WAV';
+                mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV</small>';
                 mastBtn.onclick = () => showFormatPicker(mastBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
 
                 exportOptionsRow.appendChild(unmastBtn);
                 exportOptionsRow.appendChild(mastBtn);
               } else {
-                // ── Creator: Mastered Mix only (WAV or MP3) ──
+                // ── Creator: Mastered Mix only (WAV) ──
                 const dlBtn = document.createElement('button');
                 dlBtn.className = 'export-btn';
-                dlBtn.title = 'Download your mastered stereo mix — WAV or MP3';
-                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV / MP3</small>';
+                dlBtn.title = 'Download your mastered stereo mix — WAV';
+                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV</small>';
                 dlBtn.onclick = () => showFormatPicker(dlBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
                 exportOptionsRow.appendChild(dlBtn);
               }
@@ -3264,7 +3264,7 @@ window.selectBarPreset = function(btn, bars) {
     window.setExtMode && window.setExtMode('instrumental');
     window._extActiveTab = 'upload';
     _extLibLoaded = false; // Allow re-fetch next open
-    // Reset tabs back to Upload (use extSwitchTab so loop panel is also hidden)
+    // Reset tabs back to Upload
     var stepLib   = document.getElementById('ext-step-library');
     if (stepLib)   stepLib.style.display = 'none';
     // Restore submit btn to upload mode
@@ -3291,14 +3291,12 @@ window.selectBarPreset = function(btn, bars) {
     window._extActiveTab = tab;
     var uploadBtn  = document.getElementById('ext-tab-upload');
     var libBtn     = document.getElementById('ext-tab-library');
-    var loopBtn    = document.getElementById('ext-tab-loop');
     var stepPick   = document.getElementById('ext-step-pick');
     var stepLib    = document.getElementById('ext-step-library');
     var stepOpts   = document.getElementById('ext-step-options');
-    var stepLoop   = document.getElementById('ext-step-loop');
 
     // Reset all tab styles
-    var allBtns = [uploadBtn, libBtn, loopBtn];
+    var allBtns = [uploadBtn, libBtn];
     allBtns.forEach(function(b) {
       if (b) { b.style.borderBottom = '2px solid transparent'; b.style.color = 'var(--muted)'; b.style.fontWeight = '600'; }
     });
@@ -3306,14 +3304,10 @@ window.selectBarPreset = function(btn, bars) {
     if (stepOpts) stepOpts.style.display = 'none';
     if (stepPick) stepPick.style.display = 'none';
     if (stepLib)  stepLib.style.display  = 'none';
-    if (stepLoop) stepLoop.style.display = 'none';
 
     if (tab === 'upload') {
       if (uploadBtn) { uploadBtn.style.borderBottom = '2px solid var(--primary)'; uploadBtn.style.color = 'var(--primary)'; uploadBtn.style.fontWeight = '700'; }
       if (stepPick)  stepPick.style.display = 'block';
-    } else if (tab === 'loop') {
-      if (loopBtn) { loopBtn.style.borderBottom = '2px solid var(--primary)'; loopBtn.style.color = 'var(--primary)'; loopBtn.style.fontWeight = '700'; }
-      if (stepLoop) stepLoop.style.display = 'block';
     } else {
       // library
       if (libBtn)    { libBtn.style.borderBottom = '2px solid var(--primary)'; libBtn.style.color = 'var(--primary)'; libBtn.style.fontWeight = '700'; }
@@ -5140,7 +5134,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<span style="font-size:.8rem;font-weight:700;color:#f1f5f9">Mastered Mix</span>' +
         '</div>' +
         '<div style="display:flex;gap:8px">' +
-          fmtCard('mp3', 'mastered', 'blue', 'fas fa-file-audio', 'MP3', 'Compressed') +
+          fmtCard('wav', 'mastered', 'blue', 'fas fa-file-audio', 'WAV', 'Lossless') +
           (canWav
             ? fmtCard('wav', 'mastered', 'purple', 'fas fa-wave-square', 'WAV', 'Lossless')
             : '<div style="flex:1;padding:12px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.06);' +
@@ -5168,7 +5162,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             'your own EQ, compression, reverb, and mastering chain.' +
           '</p>' +
           '<div style="display:flex;gap:8px">' +
-            fmtCard('mp3', 'unmastered', 'blue', 'fas fa-file-audio', 'MP3', 'Compressed') +
+            fmtCard('wav', 'unmastered', 'blue', 'fas fa-file-audio', 'WAV', 'Lossless') +
             fmtCard('wav', 'unmastered', 'purple', 'fas fa-wave-square', 'WAV', 'Lossless') +
           '</div>' +
         '</div>'
@@ -5249,10 +5243,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
     ].join(';');
 
     // Stem download always uses the /api/stem-audio proxy route
-    var mp3Url = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=mp3';
+    var wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav';
     var wavUrl = '/api/stem-audio/' + _jobId + '/' + encodeURIComponent(stemName) + '?dl=1&fmt=wav';
     var safeName = (_stemLabels[stemName] || stemName).replace(/[^a-z0-9_\-]/gi, '_');
-    var mp3DlName = safeName + '_stem.mp3';
+    var wavDlName = safeName + '_stem.wav';
     var wavDlName = safeName + '_stem.wav';
     var wavLabel  = 'WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless · Pro</span>';
 
@@ -5261,7 +5255,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
         '<i class="fas fa-download" style="margin-right:5px;color:#4e9fff"></i>Download ' + _escHtml(customLabel) +
       '</div>' +
       '<div style="display:flex;flex-direction:column;gap:5px">' +
-        '<a href="' + mp3Url + '" download="' + mp3DlName + '"' +
+        '<a href="' + wavUrl + '" download="' + wavDlName + '"' +
             ' onclick="document.getElementById(\'sp-stem-dl-popup\').remove()"' +
             ' style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;' +
               'border:1px solid rgba(78,159,255,.35);background:rgba(78,159,255,.08);' +
@@ -5269,7 +5263,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
             ' onmouseover="this.style.background=\'rgba(78,159,255,.2)\'"' +
             ' onmouseout="this.style.background=\'rgba(78,159,255,.08)\'">' +
           '<i class="fas fa-file-audio" style="font-size:.85rem"></i>' +
-          '<span>MP3 <span style="font-weight:400;opacity:.6;font-size:.68rem">Compressed</span></span>' +
+          '<span>WAV <span style="font-weight:400;opacity:.6;font-size:.68rem">Lossless</span></span>' +
         '</a>' +
         (canWav
           ? '<a href="' + wavUrl + '" download="' + wavDlName + '"' +
@@ -5984,7 +5978,7 @@ window.renderEditInstrumentPills = function (bp) {
       if (!mimeOk && !extOk) {
         var errEl = document.getElementById('ext-upload-error');
         if (errEl) {
-          errEl.textContent = 'Only MP3 files are supported. Please convert your file to MP3 first.';
+          errEl.textContent = 'Please upload an MP3 file. WAV and other formats coming soon.';
           errEl.style.display = 'block';
         }
         return;
@@ -6019,7 +6013,7 @@ window.renderEditInstrumentPills = function (bp) {
     if (!mimeOk && !extOk) {
       var errEl = document.getElementById('ext-upload-error');
       if (errEl) {
-        errEl.textContent = 'Only MP3 files are supported. Please convert your file to MP3 first.';
+        errEl.textContent = 'Please upload an MP3 file. WAV and other formats coming soon.';
         errEl.style.display = 'block';
       }
       // Reset the input so user can try again
@@ -6667,7 +6661,7 @@ window.renderEditInstrumentPills = function (bp) {
                 } else {
                   var safeTitle = (job.title || 'extended_track').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
                   ui.stereoDownload.href = job.stereo_url;
-                  ui.stereoDownload.setAttribute('download', safeTitle + '_extended.mp3');
+                  ui.stereoDownload.setAttribute('download', safeTitle + '_extended.wav');
                   ui.stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download';
                   ui.stereoDownload.style.opacity = '';
                 }
@@ -6789,424 +6783,6 @@ window.renderEditInstrumentPills = function (bp) {
 
 })();
 
-// ══ Loop Extend Engine ════════════════════════════════════════════════════════
-// True loop extension: decodes audio in-browser, analyses BPM + boundary
-// quality, auto-picks crossfade, stitches repeats to add ~60s, encodes MP3.
-// No server call, no points charged.
-(function initLoopExtend() {
-
-  // ── State ──────────────────────────────────────────────────────────────────
-  var _loopFile        = null;   // original File object
-  var _loopAudioBuffer = null;   // decoded Web Audio AudioBuffer
-  var _loopBpm         = 0;
-  var _loopCrossfadeMs = 40;     // auto-determined, ms
-  var _loopReps        = 1;      // number of extra full-loop repetitions
-  var _loopAddedSec    = 0;      // seconds being added
-
-  // ── File input handler ─────────────────────────────────────────────────────
-  window.loopHandleFileSelect = function(input) {
-    var file = input && input.files && input.files[0];
-    if (!file) return;
-    _loopFile = file;
-    _loopAudioBuffer = null;
-    loopSetZoneState('loading');
-    var errEl = document.getElementById('loop-upload-error');
-    if (errEl) errEl.style.display = 'none';
-
-    // Decode with Web Audio API
-    var reader = new FileReader();
-    reader.onload = function(e) {
-      var ctx = new (window.AudioContext || window.webkitAudioContext)();
-      ctx.decodeAudioData(e.target.result, function(buf) {
-        ctx.close();
-        _loopAudioBuffer = buf;
-        loopAnalyse(buf, file.name);
-      }, function(err) {
-        loopSetZoneState('idle');
-        if (errEl) { errEl.textContent = 'Could not decode audio: ' + (err && err.message || 'unsupported format'); errEl.style.display = 'block'; }
-      });
-    };
-    reader.onerror = function() {
-      loopSetZoneState('idle');
-      if (errEl) { errEl.textContent = 'Could not read file.'; errEl.style.display = 'block'; }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-
-  // Drag-and-drop support
-  document.addEventListener('DOMContentLoaded', function() {
-    var zone = document.getElementById('loop-upload-zone');
-    if (!zone) return;
-    zone.addEventListener('dragover',  function(e) { e.preventDefault(); zone.style.borderColor = 'rgba(78,159,255,.7)'; zone.style.background = 'rgba(78,159,255,.1)'; });
-    zone.addEventListener('dragleave', function()  { zone.style.borderColor = ''; zone.style.background = ''; });
-    zone.addEventListener('drop', function(e) {
-      e.preventDefault(); zone.style.borderColor = ''; zone.style.background = '';
-      var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file) { document.getElementById('loop-audio-file').value = ''; _loopFile = file; _loopAudioBuffer = null; loopSetZoneState('loading'); var errEl = document.getElementById('loop-upload-error'); if (errEl) errEl.style.display = 'none'; var reader = new FileReader(); reader.onload = function(ev) { var ctx = new (window.AudioContext || window.webkitAudioContext)(); ctx.decodeAudioData(ev.target.result, function(buf) { ctx.close(); _loopAudioBuffer = buf; loopAnalyse(buf, file.name); }, function() { loopSetZoneState('idle'); }); }; reader.readAsArrayBuffer(file); }
-    });
-  });
-
-  // ── Zone state helper ──────────────────────────────────────────────────────
-  function loopSetZoneState(state, filename) {
-    var idle    = document.getElementById('loop-upload-idle');
-    var loading = document.getElementById('loop-upload-loading');
-    var done    = document.getElementById('loop-upload-done');
-    var nameEl  = document.getElementById('loop-upload-name');
-    if (idle)    idle.style.display    = state === 'idle'    ? 'flex' : 'none';
-    if (loading) loading.style.display = state === 'loading' ? 'flex' : 'none';
-    if (done)    done.style.display    = state === 'done'    ? 'flex' : 'none';
-    if (nameEl && filename) nameEl.textContent = filename;
-  }
-
-  // ── Analysis: BPM + boundary RMS + transient density → crossfade ──────────
-  function loopAnalyse(buf, filename) {
-    var sr       = buf.sampleRate;
-    var ch0      = buf.getChannelData(0);
-    var durSec   = buf.duration;
-
-    // ── 1. Estimate BPM via autocorrelation on RMS envelope ──────────────────
-    // Downsample envelope: RMS in 10ms windows
-    var winSamples = Math.floor(sr * 0.010);
-    var envLen = Math.floor(ch0.length / winSamples);
-    var env = new Float32Array(envLen);
-    for (var i = 0; i < envLen; i++) {
-      var sum = 0;
-      var off = i * winSamples;
-      for (var j = 0; j < winSamples; j++) sum += ch0[off + j] * ch0[off + j];
-      env[i] = Math.sqrt(sum / winSamples);
-    }
-    // Autocorrelate env in BPM range 60–180 → period 333ms–1000ms
-    var minPeriodFrames = Math.floor(0.333 / 0.010);
-    var maxPeriodFrames = Math.floor(1.000 / 0.010);
-    var bestPeriod = minPeriodFrames, bestCorr = -Infinity;
-    for (var p = minPeriodFrames; p <= maxPeriodFrames; p++) {
-      var corr = 0, n = envLen - p;
-      for (var k = 0; k < n; k++) corr += env[k] * env[k + p];
-      corr /= n;
-      if (corr > bestCorr) { bestCorr = corr; bestPeriod = p; }
-    }
-    var beatDurationSec = bestPeriod * 0.010;
-    var bpm = Math.round(60 / beatDurationSec);
-    // Clamp to sane range
-    if (bpm < 60)  bpm = Math.round(bpm  * 2);
-    if (bpm > 200) bpm = Math.round(bpm  / 2);
-    _loopBpm = bpm;
-
-    // ── 2. Measure boundary energy at start & end (first/last 2048 samples) ──
-    var boundaryLen = Math.min(2048, Math.floor(sr * 0.05));
-    var rmsStart = 0, rmsEnd = 0;
-    for (var i = 0; i < boundaryLen; i++) {
-      rmsStart += ch0[i] * ch0[i];
-      rmsEnd   += ch0[ch0.length - boundaryLen + i] * ch0[ch0.length - boundaryLen + i];
-    }
-    rmsStart = Math.sqrt(rmsStart / boundaryLen);
-    rmsEnd   = Math.sqrt(rmsEnd   / boundaryLen);
-    var boundaryDelta = Math.abs(rmsStart - rmsEnd) / (Math.max(rmsStart, rmsEnd) + 1e-9);
-
-    // ── 3. Count transients (fast onset proxy: samples where RMS env spikes >2×) ──
-    var transients = 0;
-    for (var i = 1; i < envLen - 1; i++) {
-      if (env[i] > env[i-1] * 2.0 && env[i] > 0.05) transients++;
-    }
-    var transientDensity = transients / durSec; // per second
-
-    // ── 4. Auto-pick crossfade ────────────────────────────────────────────────
-    // Rule: punchy/percussive = short; mismatched boundaries = longer
-    var xfadeMs;
-    if (transientDensity > 6) {
-      // Dense percussive content — short crossfade to preserve transient attacks
-      xfadeMs = boundaryDelta < 0.3 ? 20 : 40;
-    } else if (boundaryDelta > 0.4) {
-      // Boundaries are very different energy — blend them
-      xfadeMs = 120;
-    } else {
-      // Mid-range: melodic, pads, moderate percussion
-      xfadeMs = 60;
-    }
-    // Never exceed half a beat at the estimated BPM
-    var halfBeatMs = (60000 / bpm) / 2;
-    xfadeMs = Math.min(xfadeMs, Math.floor(halfBeatMs));
-    xfadeMs = Math.max(xfadeMs, 10); // floor 10ms
-    _loopCrossfadeMs = xfadeMs;
-
-    // ── 5. Calculate how many reps to add ~60s ───────────────────────────────
-    var targetAddSec = 60;
-    var reps = Math.max(1, Math.round(targetAddSec / durSec));
-    // Check we're not undershooting too badly — prefer rounding up if < 70% of target
-    if (reps * durSec < targetAddSec * 0.7 && reps < 16) reps++;
-    _loopReps    = reps;
-    _loopAddedSec = Math.round(reps * durSec);
-
-    // ── 6. Update UI ─────────────────────────────────────────────────────────
-    var name = filename || 'track';
-    loopSetZoneState('done', name);
-    var metaEl   = document.getElementById('loop-upload-meta');
-    var cardEl   = document.getElementById('loop-analysis-card');
-    var bpmEl    = document.getElementById('loop-info-bpm');
-    var durEl    = document.getElementById('loop-info-dur');
-    var addEl    = document.getElementById('loop-info-add');
-    var xfEl     = document.getElementById('loop-info-xfade');
-    var genBtn   = document.getElementById('loop-generate-btn');
-    var resultEl = document.getElementById('loop-result');
-    if (metaEl)   metaEl.textContent = bpm + ' BPM · ' + durSec.toFixed(1) + 's';
-    if (cardEl)   cardEl.style.display = 'block';
-    if (bpmEl)    bpmEl.textContent = bpm + ' BPM';
-    if (durEl)    durEl.textContent = durSec.toFixed(1) + 's';
-    if (addEl)    addEl.textContent = '+' + _loopAddedSec + 's (' + reps + '× loop)';
-    if (xfEl)     xfEl.textContent = xfadeMs + 'ms';
-    if (genBtn)   genBtn.style.display = 'block';
-    if (resultEl) resultEl.style.display = 'none';
-    var prog = document.getElementById('loop-progress');
-    if (prog) prog.style.display = 'none';
-  }
-
-  // ── Generate: stitch buffer + encode MP3 ──────────────────────────────────
-  window.loopGenerate = function() {
-    if (!_loopAudioBuffer || !_loopFile) return;
-    var genBtn   = document.getElementById('loop-generate-btn');
-    var prog     = document.getElementById('loop-progress');
-    var progBar  = document.getElementById('loop-progress-bar');
-    var progMsg  = document.getElementById('loop-progress-msg');
-    var resultEl = document.getElementById('loop-result');
-    var errEl    = document.getElementById('loop-upload-error');
-
-    if (genBtn)  { genBtn.disabled = true; genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Stemforge is forging your loop\u2026'; }
-    if (prog)    prog.style.display = 'block';
-    if (progBar) progBar.style.width = '0%';
-    if (progMsg) progMsg.textContent = 'Stitching loops…';
-    if (errEl)   errEl.style.display = 'none';
-
-    // Use setTimeout to yield to the browser before heavy work
-    setTimeout(function() {
-      try {
-        var buf    = _loopAudioBuffer;
-        var sr     = buf.sampleRate;
-        var xfSamp = Math.floor(_loopCrossfadeMs * sr / 1000);
-        var nCh    = Math.min(buf.numberOfChannels, 2);
-
-        // ── 1. Build total output: original + N reps stitched with crossfade ──
-        // Each stitch point blends last xfSamp of previous with first xfSamp of loop
-        // Output length = (1 + reps) * loopSamples - reps * xfSamp
-        var loopSamples = buf.length;
-        var totalSamples = loopSamples + _loopReps * (loopSamples - xfSamp);
-
-        // Allocate output channels
-        var out = [];
-        for (var c = 0; c < nCh; c++) out.push(new Float32Array(totalSamples));
-
-        if (progMsg) progMsg.textContent = 'Building loop buffer…';
-        if (progBar) progBar.style.width = '15%';
-
-        for (var c = 0; c < nCh; c++) {
-          var src = buf.getChannelData(c);
-          var dst = out[c];
-          // Copy original loop
-          for (var i = 0; i < loopSamples; i++) dst[i] = src[i];
-          // Append reps with crossfade overlap
-          var writePos = loopSamples;
-          for (var r = 0; r < _loopReps; r++) {
-            // Crossfade region: blend tail of previous content with head of new loop
-            for (var x = 0; x < xfSamp; x++) {
-              var fadeOut = 1 - (x / xfSamp); // previous content fades out
-              var fadeIn  =     (x / xfSamp); // new loop fades in
-              // writePos - xfSamp + x is the blend position
-              var blendPos = writePos - xfSamp + x;
-              // dst already has the previous tail — blend with loop start
-              dst[blendPos] = dst[blendPos] * fadeOut + src[x] * fadeIn;
-            }
-            // Copy remainder of loop after the crossfade region
-            var copyStart = xfSamp;
-            var copyLen   = loopSamples - xfSamp;
-            for (var i = 0; i < copyLen; i++) dst[writePos + i] = src[copyStart + i];
-            writePos += copyLen;
-          }
-        }
-
-        if (progMsg) progMsg.textContent = 'Encoding MP3…';
-        if (progBar) progBar.style.width = '40%';
-
-        // ── 2. Encode to MP3 via lamejs (loaded from CDN) ─────────────────────
-        // lamejs is loaded lazily here on first use
-        function encodeAndFinish() {
-          var lame = new lamejs.Mp3Encoder(nCh, sr, 192);
-          var blockSize = 1152;
-          var mp3Chunks = [];
-          var totalBlocks = Math.ceil(totalSamples / blockSize);
-          var blocksDone  = 0;
-
-          function encodeBlock(startSample) {
-            if (startSample >= totalSamples) {
-              // Flush
-              var last = lame.flush();
-              if (last && last.length) mp3Chunks.push(new Int8Array(last));
-              // Done — assemble blob
-              var totalBytes = 0;
-              for (var i = 0; i < mp3Chunks.length; i++) totalBytes += mp3Chunks[i].length;
-              var mp3Data = new Uint8Array(totalBytes);
-              var offset = 0;
-              for (var i = 0; i < mp3Chunks.length; i++) {
-                mp3Data.set(new Uint8Array(mp3Chunks[i].buffer), offset);
-                offset += mp3Chunks[i].length;
-              }
-              var blob = new Blob([mp3Data], { type: 'audio/mpeg' });
-              var blobUrl = URL.createObjectURL(blob);
-
-              if (progBar) progBar.style.width = '100%';
-              if (progMsg) progMsg.textContent = 'Stemforge is saving your loop\u2026';
-
-              // Populate result immediately (local playback + download)
-              var audioEl  = document.getElementById('loop-result-audio');
-              var dlBtn    = document.getElementById('loop-dl-btn');
-              var metaEl   = document.getElementById('loop-result-meta');
-              var origName = (_loopFile.name || 'track').replace(/\.[^.]+$/, '');
-              var dlName   = origName + '_loop_extended.mp3';
-              var totalDurSec = parseFloat((totalSamples / sr).toFixed(1));
-              if (audioEl) { audioEl.src = blobUrl; }
-              if (dlBtn)   { dlBtn.href = blobUrl; dlBtn.setAttribute('download', dlName); }
-              if (metaEl)  { metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added'; }
-              if (resultEl) resultEl.style.display = 'block';
-              if (genBtn)  { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">15 pts</span>'; }
-              setTimeout(function() { if (prog) prog.style.display = 'none'; }, 800);
-
-              // ── Upload to R2 + save to D1 library (background, non-blocking) ──
-              (function saveLoopToLibrary() {
-                var saveTitle = origName + ' (Loop Extended)';
-                var saveForm = new FormData();
-                // Build a File from the blob so the server receives a proper filename
-                var loopFile = new File([blob], dlName, { type: 'audio/mpeg' });
-                saveForm.append('file', loopFile);
-
-                if (progMsg) progMsg.textContent = 'Saving to your library\u2026';
-
-                fetch('/api/upload-loop-audio', { method: 'POST', body: saveForm })
-                  .then(function(r) { return r.json(); })
-                  .then(function(uploadData) {
-                    if (uploadData.error) throw new Error(uploadData.error);
-                    var audioUrl = uploadData.audio_url;
-                    if (!audioUrl) throw new Error('No audio URL returned from upload');
-
-                    // Now save job to D1 via loop-save endpoint
-                    return fetch('/api/job/loop-save', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        audio_url: audioUrl,
-                        title: saveTitle,
-                        duration_seconds: totalDurSec,
-                        bpm: _loopBpm || undefined
-                      })
-                    }).then(function(r) { return r.json(); });
-                  })
-                  .then(function(saveData) {
-                    if (saveData.error) {
-                      if (saveData.upgrade) {
-                        // Free plan — Loop Extend is Creator+ only
-                        if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 Loop Extend requires Creator or Pro plan';
-                      } else if (saveData.code === 'insufficient_credits') {
-                        if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added \xb7 Not saved (no points)';
-                      }
-                      return;
-                    }
-                    // Success — reload extended tab so the new card appears
-                    if (metaEl) metaEl.textContent = totalDurSec + 's total \xb7 ' + _loopAddedSec + 's added \xb7 Saved to library';
-                    if (window.reloadExtendedTab) window.reloadExtendedTab();
-                  })
-                  .catch(function(err) {
-                    // Save failed silently — track still plays and can be downloaded
-                    console.warn('[loop-save] Could not save to library:', err && err.message);
-                  });
-              })();
-
-              return;
-            }
-
-            var end = Math.min(startSample + blockSize, totalSamples);
-            var len = end - startSample;
-
-            // lamejs expects Int16Array
-            function toInt16(floatArr, start, length) {
-              var buf16 = new Int16Array(length);
-              for (var i = 0; i < length; i++) {
-                var s = Math.max(-1, Math.min(1, floatArr[start + i]));
-                buf16[i] = s < 0 ? s * 32768 : s * 32767;
-              }
-              return buf16;
-            }
-
-            var encoded;
-            if (nCh === 2) {
-              encoded = lame.encodeBuffer(
-                toInt16(out[0], startSample, len),
-                toInt16(out[1], startSample, len)
-              );
-            } else {
-              var mono = toInt16(out[0], startSample, len);
-              encoded = lame.encodeBuffer(mono, mono);
-            }
-            if (encoded && encoded.length) mp3Chunks.push(new Int8Array(encoded));
-
-            blocksDone++;
-            if (progBar) progBar.style.width = (40 + Math.floor(blocksDone / totalBlocks * 55)) + '%';
-
-            // Yield every 50 blocks so the UI can update
-            if (blocksDone % 50 === 0) {
-              setTimeout(function() { encodeBlock(startSample + blockSize); }, 0);
-            } else {
-              encodeBlock(startSample + blockSize);
-            }
-          }
-
-          encodeBlock(0);
-        }
-
-        // Load lamejs from CDN if not already present, then encode
-        if (window.lamejs) {
-          encodeAndFinish();
-        } else {
-          if (progMsg) progMsg.textContent = 'Loading encoder…';
-          var script = document.createElement('script');
-          script.src = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
-          script.onload = function() { if (progMsg) progMsg.textContent = 'Encoding MP3…'; encodeAndFinish(); };
-          script.onerror = function() {
-            if (errEl) { errEl.textContent = 'Could not load MP3 encoder. Please check your connection and try again.'; errEl.style.display = 'block'; }
-            if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">15 pts</span>'; }
-            if (prog)   prog.style.display = 'none';
-          };
-          document.head.appendChild(script);
-        }
-
-      } catch(e) {
-        if (errEl) { errEl.textContent = 'Error: ' + (e.message || 'Unknown error'); errEl.style.display = 'block'; }
-        if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">15 pts</span>'; }
-        if (prog)   prog.style.display = 'none';
-      }
-    }, 30); // 30ms yield so spinner renders first
-  };
-
-  // ── Reset ──────────────────────────────────────────────────────────────────
-  window.loopReset = function() {
-    _loopFile        = null;
-    _loopAudioBuffer = null;
-    _loopBpm         = 0;
-    _loopCrossfadeMs = 40;
-    _loopReps        = 1;
-    _loopAddedSec    = 0;
-    loopSetZoneState('idle');
-    var cardEl   = document.getElementById('loop-analysis-card');
-    var genBtn   = document.getElementById('loop-generate-btn');
-    var resultEl = document.getElementById('loop-result');
-    var prog     = document.getElementById('loop-progress');
-    var errEl    = document.getElementById('loop-upload-error');
-    var fileIn   = document.getElementById('loop-audio-file');
-    if (cardEl)   cardEl.style.display   = 'none';
-    if (genBtn)   { genBtn.style.display = 'none'; genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">15 pts</span>'; }
-    if (resultEl) resultEl.style.display = 'none';
-    if (prog)     prog.style.display     = 'none';
-    if (errEl)    errEl.style.display    = 'none';
-    if (fileIn)   fileIn.value           = '';
-  };
-
-})(); // end Loop Extend Engine
 
 // ── Override renderUploadsGrid with card-style layout matching beats/oneshots ─
 // Cards have three-dot menu (Use as reference, Delete), no arrow badge.
