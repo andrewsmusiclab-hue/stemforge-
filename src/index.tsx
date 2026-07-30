@@ -5968,7 +5968,7 @@ app.get('/api/check-duplicate-upload', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-16'
+const ASSET_VER = '20260729-18'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -5997,7 +5997,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.16.js"></script>
+<script src="/static/app.v2.18.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
