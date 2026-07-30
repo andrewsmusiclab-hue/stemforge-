@@ -6101,7 +6101,7 @@ function showProUpgradeModal(featureName) {
       '<button onclick="document.getElementById(\'sf-pro-upgrade-modal\').style.display=\'none\'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>' +
       '<div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#ec4899);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-star"></i></div>' +
       '<h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Pro Artist only</h3>' +
-      '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6"><strong>' + featureName + '</strong> is a Pro Artist feature. Upgrade to unlock song extend, advanced splits, WAV downloads, and priority queue.</p>' +
+      '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6"><strong>' + featureName + '</strong> is a Pro Artist feature. Upgrade to unlock song extend, WAV downloads, and priority queue.</p>' +
       '<a href="/pricing?plan=pro" style="display:block;padding:13px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Upgrade to Pro Artist — $26/mo</a>' +
       '<p style="color:var(--muted);font-size:.78rem;margin-top:14px">Your existing beats and points are kept when you upgrade.</p>' +
     '</div>';

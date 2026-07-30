@@ -6183,7 +6183,7 @@ function homePage() {
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
           <li><i class="fas fa-check"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> All split modes + advanced</li>
+          <li><i class="fas fa-check"></i> All split modes</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
@@ -7323,7 +7323,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> WAV / mastered downloads</li>
-          <li class="muted"><i class="fas fa-times"></i> Advanced per-stem split</li>
+
           <li class="muted"><i class="fas fa-times"></i> Stem regeneration</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
         </ul>
@@ -7345,7 +7345,7 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> Advanced split — per stem</li>
+
           <li><i class="fas fa-check"></i> Stem regeneration</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
           <li><i class="fas fa-check"></i> WAV download (mastered &amp; unmastered)</li>
@@ -7378,7 +7378,6 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">75 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
