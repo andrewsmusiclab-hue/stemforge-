@@ -5997,7 +5997,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.18.js"></script>
+<script src="/static/app.v2.20.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
