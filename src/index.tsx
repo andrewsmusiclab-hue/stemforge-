@@ -3776,7 +3776,7 @@ app.post('/api/job/purge', async (c) => {
 })
 
 // POST /api/job/extend-upload — extend using a directly uploaded audio file
-// Body: { upload_audio_id: string, extend_at?: number (ms), lyrics?: string, title?: string, make_instrumental?: boolean, source_duration_ms?: number }
+// Body: { upload_audio_id: string (R2 proxy URL), extend_at?: number (ms), lyrics?: string, title?: string, make_instrumental?: boolean, source_duration_ms?: number }
 app.post('/api/job/extend-upload', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
@@ -3811,20 +3811,15 @@ app.post('/api/job/extend-upload', async (c) => {
   ).bind(EXTEND_COST, user.id).run()
 
   try {
-    // FIX: use /sonic/upload-extend (one-stop API) — clip_id from /sonic/upload is NOT
-    // usable as continue_clip_id; that field is for platform-generated clips only.
-    // /sonic/upload-extend accepts a URL + extend params directly.
+    // upload_audio_id is now always the full R2 proxy URL returned by /api/upload-extend-audio
+    // e.g. https://stemforge.studio/api/extend-audio-proxy/<encoded-r2-key>
+    // Pass it directly to /sonic/upload-extend — no clip_id lookup needed.
     const isInstrumental = make_instrumental === true
-
-    // We need the original proxy URL, not the clip_id — look it up from R2 key
-    // upload_audio_id is the clip_id returned by /api/upload-extend-audio;
-    // the R2 proxy URL was stored as SITE_URL/api/extend-audio-proxy/<encoded key>
-    // but we don't have the key here. Fallback: treat upload_audio_id as a URL if it
-    // starts with http, else reconstruct via the proxy base.
     const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
     const audioSrc = upload_audio_id.startsWith('http')
       ? upload_audio_id
       : `${siteUrl2}/api/extend-audio-proxy/${encodeURIComponent(upload_audio_id)}`
+    console.log(`[extend-upload] audioSrc=${audioSrc.slice(0, 100)}`)
 
     // /sonic/upload-extend — single request: upload URL + extend parameters
     // Rules:
@@ -3833,9 +3828,11 @@ app.post('/api/job/extend-upload', async (c) => {
     //   make_instrumental can be combined with either mode
     const typedLyricsUpload = lyrics && lyrics.trim()
     const hasCustomLyrics = !isInstrumental && typedLyricsUpload && typedLyricsUpload !== '[Verse]' && typedLyricsUpload !== '[Instrumental]'
-    // continue_at must be >= 1 (MusicAPI requirement)
+    // continue_at: use user's scrubber position (extend_at ms → seconds), else use end of track.
+    // Must be >= 1 (MusicAPI requirement).
     const uploadSrcDurSec = source_duration_ms ? source_duration_ms / 1000 : 0
-    const uploadContinueAt = uploadSrcDurSec > 3 ? Math.max(1, uploadSrcDurSec - 2) : 1
+    const extendAtSec = extend_at ? extend_at / 1000 : uploadSrcDurSec
+    const uploadContinueAt = Math.max(1, Math.floor(extendAtSec))
     const uploadExtBody: Record<string, any> = {
       url: audioSrc,
       mv: 'sonic-v5',
@@ -5302,78 +5299,48 @@ app.get('/api/extend-audio-proxy/:key', async (c) => {
 })
 
 // POST /api/upload-extend-audio — upload audio for Song Extend
-// Accepts: JSON { audio_url } or multipart { url } or multipart { file }
-// MusicAPI /sonic/upload SYNC mode: returns { code:200, clip_id: "..." } immediately — no polling needed.
-// Returns { ok: true, clip_id } directly to client.
+// Accepts: multipart { file } or multipart/JSON { url }
+// Stores the file in R2 and returns the public proxy URL.
+// The URL is then passed to /api/job/extend-upload which calls MusicAPI directly.
+// NO MusicAPI call is made here — just R2 storage + URL generation.
 app.post('/api/upload-extend-audio', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
 
-  // Accept JSON { audio_url } or multipart { url } or multipart { file }
-  let audioUrl: string | null = null
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
   const contentType = c.req.header('content-type') || ''
+
+  // JSON body: { audio_url } — caller is providing a URL directly (no R2 upload needed)
   if (contentType.includes('application/json')) {
     const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
-    audioUrl = body.audio_url || body.url || null
-  } else {
-    const formData = await c.req.formData()
-    const urlField = formData.get('url') as string | null
-    audioUrl = urlField || null
-    // File blob upload: store in R2 IMAGES bucket and create a public proxy URL
-    if (!audioUrl) {
-      const file = formData.get('file') as File | null
-      if (!file) return c.json({ error: 'No file or url provided' }, 400)
-      if (!c.env.IMAGES) {
-        return c.json({ error: 'File upload unavailable — storage not configured. Please provide an audio_url instead.' }, 400)
-      }
-      // Store file in R2 under extend-uploads/ with a unique key
-      const safeFilename = (file.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '_')
-      const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
-      await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
-        httpMetadata: { contentType: file.type || 'audio/mpeg' }
-      })
-      // Build public URL via our proxy route (uses SITE_URL so MusicAPI can reach it)
-      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
-      audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
-      console.log(`[upload-extend] Stored file in R2, proxy URL: ${audioUrl}`)
-    }
+    const directUrl = body.audio_url || body.url || null
+    if (!directUrl) return c.json({ error: 'audio_url required' }, 400)
+    console.log(`[upload-extend-audio] Using direct URL: ${directUrl.slice(0, 80)}`)
+    return c.json({ ok: true, audio_url: directUrl, status: 'ready' })
   }
-  if (!audioUrl) return c.json({ error: 'audio_url required' }, 400)
 
-  // POST /sonic/upload — SYNC MODE: returns { code:200, clip_id: "..." } directly, no task_id
-  const res = await fetch(`${MUSICAPI_SONIC}/upload`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: audioUrl })
+  // Multipart: file blob or url field
+  const formData = await c.req.formData()
+  const urlField = formData.get('url') as string | null
+  if (urlField) {
+    console.log(`[upload-extend-audio] Using URL from form field: ${urlField.slice(0, 80)}`)
+    return c.json({ ok: true, audio_url: urlField, status: 'ready' })
+  }
+
+  // File blob — store in R2
+  const file = formData.get('file') as File | null
+  if (!file) return c.json({ error: 'No file or url provided' }, 400)
+  if (!c.env.IMAGES) return c.json({ error: 'File storage not configured' }, 500)
+
+  const safeFilename = (file.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '_')
+  const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
+  await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
+    httpMetadata: { contentType: file.type || 'audio/mpeg' }
   })
-
-  if (!res.ok) {
-    let errMsg = `MusicAPI upload error ${res.status}`
-    try { const e = await res.json() as any; errMsg = e?.message || e?.error || errMsg } catch {}
-    console.error('[upload-extend] MusicAPI error:', res.status, errMsg)
-    return c.json({ error: errMsg }, 500)
-  }
-
-  const data = await res.json() as any
-  console.log('[upload-extend] MusicAPI response:', JSON.stringify(data).slice(0, 300))
-
-  // Sync mode returns clip_id directly; async mode (with callback_url) returns task_id
-  const clipId = data.clip_id || data.data?.clip_id
-  if (clipId) {
-    // Sync mode — clip is ready immediately
-    return c.json({ ok: true, clip_id: clipId, status: 'ready' })
-  }
-
-  // Async fallback — shouldn't happen without callback_url but handle gracefully
-  const taskId = data.task_id || data.data?.task_id || data.id
-  if (taskId) {
-    return c.json({ ok: true, task_id: taskId, upload_task_id: taskId, status: 'processing' })
-  }
-
-  console.error('[upload-extend] Unexpected MusicAPI response:', JSON.stringify(data).slice(0, 500))
-  return c.json({ error: `Unexpected MusicAPI response: ${JSON.stringify(data).slice(0, 200)}` }, 500)
+  const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
+  console.log(`[upload-extend-audio] Stored in R2, proxy URL: ${audioUrl}`)
+  return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
 })
 
 // GET /api/poll-upload-task/:taskId — poll MusicAPI Sonic for uploaded clip's clip_id

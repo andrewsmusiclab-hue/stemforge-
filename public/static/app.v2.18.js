@@ -6071,20 +6071,19 @@ window.renderEditInstrumentPills = function (bp) {
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) throw new Error(data.error);
-        // MusicAPI /sonic/upload is SYNC — returns clip_id directly (no polling needed)
+        // Server now returns audio_url (R2 proxy URL) — store it directly
+        if (data.audio_url) {
+          extUploadAudioId = data.audio_url;
+          setExtZoneState('done', name);
+          return;
+        }
+        // Legacy fallback: clip_id from old server code
         if (data.clip_id) {
           extUploadAudioId = data.clip_id;
           setExtZoneState('done', name);
           return;
         }
-        // Async fallback: if a task_id comes back, poll for it
-        var taskId = data.task_id || data.upload_task_id;
-        if (taskId) {
-          setExtZoneState('loading');
-          _extPollUploadTask(taskId, name, 0);
-          return;
-        }
-        throw new Error('Upload failed — no clip_id returned. Please try again.');
+        throw new Error('Upload failed — no audio_url returned. Please try again.');
       })
       .catch(function(err) {
         setExtZoneState('idle');
@@ -6108,8 +6107,8 @@ window.renderEditInstrumentPills = function (bp) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data.error) throw new Error(data.error);
-          if (data.status === 'ready' && data.clip_id) {
-            extUploadAudioId = data.clip_id;
+          if (data.status === 'ready' && (data.audio_url || data.clip_id)) {
+            extUploadAudioId = data.audio_url || data.clip_id;
             setExtZoneState('done', name);
           } else if (data.status === 'failed') {
             throw new Error(data.error || 'Upload processing failed');
