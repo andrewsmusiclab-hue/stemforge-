@@ -914,7 +914,7 @@ document.addEventListener('DOMContentLoaded', () => {
       html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
     }
     gridEl.innerHTML = html;
-    if (tab === 'beats') loadCoverImages(gridEl);
+    loadCoverImages(gridEl);  // draw logo art on all tabs
   }
 
   // ── Update tab count badges ─────────────────────────────────
@@ -6067,7 +6067,13 @@ window.renderEditInstrumentPills = function (bp) {
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) throw new Error(data.error);
-        // MusicAPI /sonic/upload is SYNC — returns clip_id directly (no polling needed)
+        // Server returns audio_url (R2 proxy URL) — store it directly
+        if (data.audio_url) {
+          extUploadAudioId = data.audio_url;
+          setExtZoneState('done', name);
+          return;
+        }
+        // Legacy fallback: clip_id from old server code
         if (data.clip_id) {
           extUploadAudioId = data.clip_id;
           setExtZoneState('done', name);
@@ -6080,7 +6086,7 @@ window.renderEditInstrumentPills = function (bp) {
           _extPollUploadTask(taskId, name, 0);
           return;
         }
-        throw new Error('Upload failed — no clip_id returned. Please try again.');
+        throw new Error('Upload failed — no audio_url returned. Please try again.');
       })
       .catch(function(err) {
         setExtZoneState('idle');
@@ -6104,8 +6110,8 @@ window.renderEditInstrumentPills = function (bp) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
           if (data.error) throw new Error(data.error);
-          if (data.status === 'ready' && data.clip_id) {
-            extUploadAudioId = data.clip_id;
+          if (data.status === 'ready' && (data.audio_url || data.clip_id)) {
+            extUploadAudioId = data.audio_url || data.clip_id;
             setExtZoneState('done', name);
           } else if (data.status === 'failed') {
             throw new Error(data.error || 'Upload processing failed');
@@ -6434,6 +6440,7 @@ window.renderEditInstrumentPills = function (bp) {
           if (p.status === 'ready' || p.stereo_url) readyCount++;
         });
         gridEl.innerHTML = html;
+        loadCoverImages(gridEl);  // draw logo art on extended cards
         // Update the tab badge count (show total including in-progress)
         var badge = document.querySelector('.lib-tab[data-tab="extended"] .lib-tab-count');
         if (badge) badge.textContent = projects.length;

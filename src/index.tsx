@@ -1309,7 +1309,7 @@ app.post('/api/generate', async (c) => {
   }
 
   // Enforce per-plan generation limit
-  if (authUser.gens_used + 10 > authUser.gens_limit) {
+  if (authUser.gens_used + 20 > authUser.gens_limit) {
     return c.json({
       error: `Points limit reached. You have used all ${authUser.gens_limit} points for this month. Upgrade your plan to continue.`,
       limit_reached: true
@@ -1321,7 +1321,7 @@ app.post('/api/generate', async (c) => {
 
   // Deduct 10 pts immediately to prevent concurrent races past the limit
   await c.env.DB.prepare(
-    `UPDATE users SET gens_used = gens_used + 10 WHERE id = ?`
+    `UPDATE users SET gens_used = gens_used + 20 WHERE id = ?`
   ).bind(authUser.id).run()
 
   // Build enriched prompt from all UI inputs
@@ -1560,7 +1560,7 @@ app.post('/api/job/stems', async (c) => {
   }
 
   // Deduct points for stem extraction based on mode
-  const stemCost = mode === 'auto' ? 50 : 20 // auto (5-stem)=50pts, split_from_mix / advanced=20pts
+  const stemCost = mode === 'auto' ? 75 : 30 // auto (5-stem)=75pts (MusicAPI full), split_from_mix / advanced=30pts (MusicAPI basic)
   const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
   if (!stemFreshUser || stemFreshUser.gens_used + stemCost > stemFreshUser.gens_limit) {
     return c.json({ error: `Not enough points. This operation costs ${stemCost} points and you only have ${stemFreshUser ? Math.max(0, stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0} remaining.`, limit_reached: true }, 403)
@@ -2170,12 +2170,12 @@ app.post('/api/job/regen-stem', async (c) => {
     return c.json({ error: 'Advanced stem regeneration requires a Pro Artist plan.', locked: true, upgrade: true }, 403)
   }
 
-  // Deduct 20 points for regen-stem
+  // Deduct 30 points for regen-stem
   const regenFresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
-  if (!regenFresh || regenFresh.gens_used + 20 > regenFresh.gens_limit) {
-    return c.json({ error: `Not enough points. Regen costs 20 points and you only have ${regenFresh ? Math.max(0, regenFresh.gens_limit - regenFresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+  if (!regenFresh || regenFresh.gens_used + 30 > regenFresh.gens_limit) {
+    return c.json({ error: `Not enough points. Regen costs 30 points and you only have ${regenFresh ? Math.max(0, regenFresh.gens_limit - regenFresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
   }
-  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
+  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 30 WHERE id=?`).bind(user.id).run()
 
   const body = await c.req.json<{ job_id: string; stem_type: string }>()
   const { job_id, stem_type } = body
@@ -2241,13 +2241,13 @@ app.post('/api/job/regen-stem', async (c) => {
       let errMsg = `MusicAPI upload error ${uploadRes.status}`
       try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
       console.error(`[regen] upload error ${uploadRes.status}: ${errText}`)
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
       return c.json({ error: errMsg }, 500)
     }
     const uploadData = await uploadRes.json() as any
     const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
     if (!uploadTaskId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
     }
 
@@ -2269,11 +2269,11 @@ app.post('/api/job/regen-stem', async (c) => {
       if (clips.length && clips[0].state === 'failed') break
     }
     if (!clipId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'MusicAPI upload timed out or failed' }, 500)
     }
   } catch (err: any) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
     return c.json({ error: err?.message || 'File upload failed' }, 500)
   }
 
@@ -2294,18 +2294,18 @@ app.post('/api/job/regen-stem', async (c) => {
       let errMsg = `MusicAPI Producer error ${genRes.status}`
       try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
       console.error(`[regen] producer/create error ${genRes.status}: ${errText}`)
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
       return c.json({ error: errMsg }, 500)
     }
     const genData = await genRes.json() as any
     taskId = genData.task_id || genData.data?.task_id
     if (!taskId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'No task_id from MusicAPI Producer' }, 500)
     }
     console.log(`[regen] Producer started: task=${taskId} stem=${stemLabel} job=${job_id}`)
   } catch (err: any) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
     return c.json({ error: err?.message || 'Generate request failed' }, 500)
   }
 
@@ -3221,7 +3221,9 @@ app.get('/dashboard', async (c) => {
     const user = token ? await getSessionUser(c.env.DB, token) : null
     if (!user) return c.redirect('/signup?next=/dashboard')
   }
-  return c.html(dashboardPage())
+  const resp = c.html(dashboardPage())
+  resp.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  return resp
 })
 app.get('/project', (c) => c.html(projectPage()))
 app.get('/signup', (c) => c.html(signupPage()))
@@ -3794,8 +3796,8 @@ app.post('/api/job/extend-upload', async (c) => {
 
   await ensureTable(c.env.DB)
 
-  // ── 2-credit deduction ──────────────────────────────────────────────────
-  const EXTEND_COST = 20
+  // ── credit deduction ──────────────────────────────────────────────────
+  const EXTEND_COST = 15
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
@@ -3949,8 +3951,8 @@ app.post('/api/job/extend', async (c) => {
   const sourceJob = JSON.parse(row.data) as any
   if (!sourceJob.stereo_url) return c.json({ error: 'Source track has no audio URL' }, 400)
 
-  // ── 2-credit deduction ──────────────────────────────────────────────────
-  const EXTEND_COST = 20
+  // ── credit deduction ──────────────────────────────────────────────────
+  const EXTEND_COST = 15
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
@@ -4205,8 +4207,8 @@ app.post('/api/job/loop-save', async (c) => {
   if (!audio_url) return c.json({ error: 'audio_url required' }, 400)
   if (!title)     return c.json({ error: 'title required' }, 400)
 
-  // Deduct 10 points for Loop Extend
-  const LOOP_COST = 10
+  // Deduct 15 points for Loop Extend (matches MusicAPI extend cost)
+  const LOOP_COST = 15
   await ensureTable(c.env.DB)
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit FROM users WHERE id = ?`
@@ -5390,12 +5392,12 @@ app.post('/api/upload-reference', async (c) => {
     return c.json({ error: 'Reference track uploads require a Pro Artist plan.', upgrade: true }, 403)
   }
 
-  // Deduct 20 points for reference upload
+  // Deduct 15 points for reference upload (matches MusicAPI extend cost)
   const refFresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
-  if (!refFresh || refFresh.gens_used + 20 > refFresh.gens_limit) {
-    return c.json({ error: `Not enough points. Using a reference track costs 20 points and you only have ${refFresh ? Math.max(0, refFresh.gens_limit - refFresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+  if (!refFresh || refFresh.gens_used + 15 > refFresh.gens_limit) {
+    return c.json({ error: `Not enough points. Using a reference track costs 15 points and you only have ${refFresh ? Math.max(0, refFresh.gens_limit - refFresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
   }
-  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
+  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 15 WHERE id=?`).bind(user.id).run()
 
   // Accept JSON { audio_url } or multipart { url } or multipart { file }
   let audioUrl: string | null = null
@@ -5411,11 +5413,11 @@ app.post('/api/upload-reference', async (c) => {
     if (!audioUrl) {
       const file = formData.get('file') as File | null
       if (!file) {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
         return c.json({ error: 'No file or url provided' }, 400)
       }
       if (!c.env.IMAGES) {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
         return c.json({ error: 'File upload unavailable — storage not configured. Please provide an audio_url instead.' }, 400)
       }
       const safeFilename = (file.name || 'reference').replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -5429,7 +5431,7 @@ app.post('/api/upload-reference', async (c) => {
     }
   }
   if (!audioUrl) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
     return c.json({ error: 'No audio source provided' }, 400)
   }
 
@@ -5447,7 +5449,7 @@ app.post('/api/upload-reference', async (c) => {
       errMsg = err?.message || err?.error || errMsg
     } catch {}
     console.error('[upload-reference] MusicAPI error:', res.status, errMsg)
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
     return c.json({ error: errMsg }, 500)
   }
 
@@ -5463,7 +5465,7 @@ app.post('/api/upload-reference', async (c) => {
   // Async fallback
   const taskId = data.task_id || data.data?.task_id || data.id
   if (!taskId) {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 15) WHERE id=?`).bind(user.id).run()
     console.error('[upload-reference] Unexpected response:', JSON.stringify(data).slice(0, 500))
     return c.json({ error: `Unexpected MusicAPI response: ${JSON.stringify(data).slice(0,200)}` }, 500)
   }
@@ -5973,7 +5975,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.20.js"></script>
+<script src="/static/app.v2.24.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
@@ -7560,7 +7562,7 @@ function generatorPage() {
 
       <!-- Generate button -->
       <button id="loop-generate-btn" onclick="loopGenerate()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;display:none">
-        <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">10 pts</span>
+        <i class="fas fa-redo"></i> Loop-Extend Track <span style="opacity:.65;font-size:.8rem;font-weight:400;margin-left:4px">15 pts</span>
       </button>
 
       <!-- Progress — forge video background shown while encoding -->
@@ -7690,7 +7692,7 @@ function pricingPage() {
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 50 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full StemForge beat generation (10 pts)</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation (20 pts)</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
           <li class="muted"><i class="fas fa-times"></i> MP3 / WAV downloads</li>
@@ -7718,9 +7720,9 @@ function pricingPage() {
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full StemForge beat generation (10 pts/beat)</li>
-          <li><i class="fas fa-check"></i> Auto-split — 5 stems (50 pts)</li>
-          <li><i class="fas fa-check"></i> Vocal + Instrumental split (20 pts)</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation (20 pts/beat)</li>
+          <li><i class="fas fa-check"></i> Auto-split — 5 stems (75 pts)</li>
+          <li><i class="fas fa-check"></i> Vocal + Instrumental split (30 pts)</li>
           <li><i class="fas fa-check"></i> MP3 download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Loop Extend</li>
@@ -7748,11 +7750,11 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 2,000 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-redo" style="font-size:.75rem;opacity:.8"></i> Loop Extend (10 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-redo" style="font-size:.75rem;opacity:.8"></i> Loop Extend (15 pts)</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> Reference track uploads (20 pts)</li>
-          <li><i class="fas fa-check"></i> Advanced split — per stem (20 pts)</li>
-          <li><i class="fas fa-check"></i> Stem regeneration (20 pts)</li>
+          <li><i class="fas fa-check"></i> Reference track uploads (15 pts)</li>
+          <li><i class="fas fa-check"></i> Advanced split — per stem (30 pts)</li>
+          <li><i class="fas fa-check"></i> Stem regeneration (30 pts)</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
           <li><i class="fas fa-check"></i> WAV + MP3 download (mastered &amp; unmastered)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -7780,15 +7782,15 @@ function pricingPage() {
       </div>
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">50 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">75 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Loop Extend</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-sliders-h"></i> Advanced split (per stem)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> MP3 / WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (StemForge SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
       </div>
@@ -9951,13 +9953,13 @@ function termsPage() {
 <section>
   <h2>4. Subscriptions, Credits & Billing</h2>
   <h3>4.1 Free Plan</h3>
-  <p>Free accounts receive 50 points per month at no charge (enough for 5 beats at 10 pts each). Free generations include the full stereo mix. No credit card is required to start.</p>
+  <p>Free accounts receive 50 points per month at no charge (enough for 2 beats at 20 pts each). Free generations include the full stereo mix. No credit card is required to start.</p>
 
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
     <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, auto-split, vocal+instrumental, MP3 download, commercial use rights</li>
-    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, MP3 + WAV download, commercial use rights, priority queue, Stemforge Remix (reinvent any beat, 20 pts)</li>
+    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, MP3 + WAV download, commercial use rights, priority queue, Stemforge Remix (reinvent any beat, 20 pts), Loop Extend (15 pts), Extend song (15 pts)</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
