@@ -697,39 +697,21 @@ document.addEventListener('DOMContentLoaded', () => {
       grad.addColorStop(1,   `hsl(${(hue+100)%360},65%,5%)`);
       ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
 
-      // ── LAYER 2: Logo — dimmed to 35% so it doesn't compete with text ──
+      // ── LAYER 2: Logo — full height, no genre band ──
       if (logoImg && logoImg.complete && logoImg.naturalWidth) {
         ctx.save();
-        ctx.globalAlpha = 0.55;
+        ctx.globalAlpha = 0.75;
         const off = document.createElement('canvas');
         off.width = W; off.height = H;
         const octx = off.getContext('2d');
         octx.drawImage(logoImg, 0, 0, W, H);
-        ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.8)`;
-        // Only clip top — leave 48px clear for genre label band
-        ctx.beginPath();
-        ctx.rect(0, 48, W, H - 48);
-        ctx.clip();
+        ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.9)`;
         ctx.drawImage(off, 0, 0);
         ctx.filter = 'none';
         ctx.restore();
       }
 
-      // ── LAYER 3: Solid black top band (genre label area) ──
-      ctx.fillStyle = 'rgba(0,0,0,0.95)';
-      ctx.fillRect(0, 0, W, 46);
-
-      // ── LAYER 4: Genre label — bright white, letter-spaced ──
-      const genreText = (genre||'music').toUpperCase().slice(0,16);
-      ctx.font = '700 13px system-ui,sans-serif';
-      ctx.fillStyle = '#ffffff';
-      ctx.globalAlpha = 1.0;
-      ctx.textAlign = 'center';
-      ctx.letterSpacing = '3px';
-      ctx.fillText(genreText, W/2, 29);
-      ctx.letterSpacing = '0';
-
-      // ── LAYER 5: Faint watermark ──
+      // ── LAYER 3: Faint watermark ──
       ctx.font = '600 9px system-ui,sans-serif';
       ctx.fillStyle = `hsla(${hue},60%,70%,0.35)`;
       ctx.textAlign = 'right';
