@@ -780,12 +780,12 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderBeatCard(p, i) {
     const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
     const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
-    const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
-    const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
+    const bpm  = (p.blueprint && p.blueprint.bpm) ? p.blueprint.bpm + ' BPM' : '';
+    const genre= (p.blueprint && p.blueprint.genre && !/instrumental\s+only|no\s+vocals/i.test(p.blueprint.genre)) ? p.blueprint.genre : 'music';
     // Song title only — no genre, no key
-    const rawTitle = (p.title && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(p.title))
+    const rawTitle = (p.title && !/^\s*$/.test(p.title) && !/instrumental\s+only|no\s+vocals|include\s+instruments/i.test(p.title))
       ? p.title
-      : (p.title || 'Beat');
+      : 'Beat';
     const sub  = bpm || '';
     const safeFilename = rawTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
     const dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
@@ -855,10 +855,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // so a track keeps the same colour it had before it was deleted.
   function renderTrashCard(p, i) {
     const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromId(p.id);
-    const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
-    const genre= p.blueprint ? p.blueprint.genre : (p.sound_type || '');
+    const bpm  = (p.blueprint && p.blueprint.bpm) ? p.blueprint.bpm + ' BPM' : '';
+    const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : (p.sound_type || '');
     const label= p.prompt ? p.prompt.slice(0,32)+(p.prompt.length>32?'…':'') : (p.title||'Item');
-    const rawTitle = p.title || (p.blueprint ? (p.blueprint.genre+(p.blueprint.key?' — '+p.blueprint.key:'')) : label);
+    const rawTitle = (p.title && !/instrumental\s+only|no\s+vocals/i.test(p.title)) ? p.title : (p.title || label);
     const days = p.days_until_purge != null ? p.days_until_purge : '?';
     const isOneshot = p.is_oneshot;
     const icon = isOneshot ? 'fa-bolt' : 'fa-wave-square';

@@ -3701,12 +3701,21 @@ app.get('/api/projects', async (c) => {
         image_url: (() => { const u = d.image_url; return (u && u.includes('/api/cover-art/')) ? u : null })(),
         created_at: d.created_at,
         stereo_url: d.stereo_url || d.audio_url || null,
-        blueprint: d.blueprint ? {
-          bpm: d.blueprint.bpm, key: d.blueprint.key, scale: d.blueprint.scale,
-          genre: d.blueprint.genre, mood: d.blueprint.mood,
-          duration_seconds: d.blueprint.duration_seconds,
-          arrangement: d.blueprint.arrangement || null
-        } : null,
+        blueprint: (() => {
+          let bp = d.blueprint
+          if (!bp) return null
+          // blueprint may be stored as a JSON string (double-encoded) — parse it
+          if (typeof bp === 'string') { try { bp = JSON.parse(bp) } catch(_) { return null } }
+          // Some older jobs store blueprint as an array [obj, null] — take first element
+          if (Array.isArray(bp)) bp = bp[0]
+          if (!bp || typeof bp !== 'object') return null
+          return {
+            bpm: bp.bpm, key: bp.key, scale: bp.scale,
+            genre: bp.genre, mood: bp.mood,
+            duration_seconds: bp.duration_seconds,
+            arrangement: bp.arrangement || null
+          }
+        })(),
         // Status field — required by renderExtendedCard and other card renderers
         status: d.status || 'ready',
         // One-shot specific fields
