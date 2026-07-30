@@ -2510,8 +2510,8 @@ app.get('/api/stem-mix/:jobId', async (c) => {
     const upstream = await fetch(job.stereo_url)
     if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
 
-    const ext      = fmt === 'wav' ? 'wav' : 'mp3'
-    const mime     = fmt === 'wav' ? 'audio/wav' : 'audio/mpeg'
+    const ext      = fmt === 'mp3' ? 'mp3' : 'wav'
+    const mime     = fmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
     const safeName = (job.title || jobId).replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
     const suffix   = type === 'unmastered' ? '_unmastered' : '_mastered'
 
@@ -5626,30 +5626,10 @@ app.get('/api/download-wav/:id', async (c) => {
   })
 })
 
-// GET /api/download-mp3/:id — proxy stereo URL as MP3 with proper track title filename
-// Legacy MP3 endpoint — now serves WAV
+// GET /api/download-mp3/:id — legacy endpoint, now redirects to WAV download
 app.get('/api/download-mp3/:id', async (c) => {
-  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
-  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
-  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.redirect('/login')
-  if (user.plan === 'free') {
-    return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan.', locked: true, upgrade: true }, 403)
-  }
   const jobId = c.req.param('id')
-  const job = await getJob(c.env.DB, jobId)
-  if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
-  const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
-    .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
-  const upstream = await fetch(job.stereo_url)
-  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
-  return new Response(upstream.body, {
-    headers: {
-      'Content-Type': 'audio/mpeg',
-      'Content-Disposition': `attachment; filename="${safeTitle}.mp3"`,
-      'Cache-Control': 'no-store'
-    }
-  })
+  return c.redirect(`/api/download-wav/${jobId}`, 301)
 })
 
 // GET /api/download-wav-url — proxy any audio URL as WAV download (for one shots)
@@ -6227,8 +6207,8 @@ function homePage() {
         <p>Download the full stereo mix in MP3 or lossless WAV — mastered and ready for release, streaming, or your DAW.</p>
         <div class="feature-card__tracks">
           <span class="track-pill track-pill--kick">Stereo Mix</span>
-          <span class="track-pill track-pill--bass">MP3</span>
-          <span class="track-pill track-pill--keys">WAV</span>
+          <span class="track-pill track-pill--bass">WAV</span>
+          <span class="track-pill track-pill--keys">Lossless</span>
           <span class="track-pill track-pill--pad">Mastered</span>
           <span class="track-pill track-pill--hats">Commercial rights</span>
         </div>
@@ -9747,7 +9727,7 @@ function termsPage() {
   <p>StemForge is a music beat generation platform that allows users to create original instrumental beats and audio tracks. The Service includes:</p>
   <ul>
     <li>StemForge beat generation using text prompts, style descriptors, and musical parameters</li>
-    <li>Stereo mix downloads (MP3 and WAV)</li>
+    <li>Stereo mix downloads (WAV — lossless)</li>
     <li>Stemforge Remix — reinvent any existing beat in your library (Pro Artist &amp; higher)</li>
     <li>Project storage, dashboard, and playback functionality</li>
     <li>Account management including profile, subscription, and billing tools</li>

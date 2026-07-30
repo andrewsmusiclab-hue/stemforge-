@@ -2343,36 +2343,12 @@ document.addEventListener('DOMContentLoaded', () => {
               exportOptionsRow.innerHTML = '';
 
               // Helper: trigger download in WAV (via /api/download-wav) or MP3 (direct)
-              function doDownload(url, filename, format) {
-                if (format === 'wav') {
-                  const jobIdDl = job.id || currentJobId;
-                  const a = document.createElement('a');
-                  a.href = '/api/download-wav/' + jobIdDl;
-                  a.download = filename + '.wav';
-                  document.body.appendChild(a); a.click(); a.remove();
-                } else {
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = filename + '.wav';
-                  document.body.appendChild(a); a.click(); a.remove();
-                }
-              }
-
-              // Helper: show format picker popup (WAV / MP3)
-              function showFormatPicker(anchorBtn, label, onPick) {
-                const existing = document.getElementById('export-fmt-popup');
-                if (existing) existing.remove();
-                const popup = document.createElement('div');
-                popup.id = 'export-fmt-popup';
-                popup.style.cssText = 'position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:var(--card-bg,#1a1a2e);border:1px solid var(--border,#333);border-radius:10px;padding:8px;display:flex;gap:8px;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5);white-space:nowrap';
-                popup.innerHTML = `
-                  <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('wav')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid var(--border,#333);background:var(--surface-2,#222);color:var(--text,#fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-audio"></i> WAV</button>
-                  <button onclick="this.closest('#export-fmt-popup').remove();(${onPick.toString()})('wav')" style="flex:1;padding:8px 14px;border-radius:8px;border:1px solid rgba(78,159,255,.4);background:rgba(78,159,255,.1);color:var(--primary,#4e9fff);cursor:pointer;font-size:.82rem"><i class="fas fa-file-waveform"></i> WAV</button>
-                `;
-                anchorBtn.style.position = 'relative';
-                anchorBtn.appendChild(popup);
-                const close = (e) => { if (!popup.contains(e.target) && e.target !== anchorBtn) { popup.remove(); document.removeEventListener('click', close); } };
-                setTimeout(() => document.addEventListener('click', close), 50);
+              function doDownload(filename) {
+                const jobIdDl = job.id || currentJobId;
+                const a = document.createElement('a');
+                a.href = '/api/download-wav/' + jobIdDl;
+                a.download = filename + '.wav';
+                document.body.appendChild(a); a.click(); a.remove();
               }
 
               if (isFree) {
@@ -2390,14 +2366,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 unmastBtn.className = 'export-btn export-btn--pro';
                 unmastBtn.title = 'Raw unmastered mix — WAV, ideal for your DAW';
                 unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>WAV</small>';
-                unmastBtn.onclick = () => showFormatPicker(unmastBtn, 'Unmastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_unmastered', fmt));
+                unmastBtn.onclick = () => doDownload(safeFilename + '_unmastered');
 
                 // (b) Mastered mix — WAV
                 const mastBtn = document.createElement('button');
                 mastBtn.className = 'export-btn export-btn--pro';
                 mastBtn.title = 'Mastered stereo mix ready for release — WAV';
                 mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV</small>';
-                mastBtn.onclick = () => showFormatPicker(mastBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
+                mastBtn.onclick = () => doDownload(safeFilename + '_mastered');
 
                 exportOptionsRow.appendChild(unmastBtn);
                 exportOptionsRow.appendChild(mastBtn);
@@ -2407,7 +2383,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 dlBtn.className = 'export-btn';
                 dlBtn.title = 'Download your mastered stereo mix — WAV';
                 dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV</small>';
-                dlBtn.onclick = () => showFormatPicker(dlBtn, 'Mastered Mix', (fmt) => doDownload(job.stereo_url, safeFilename + '_mastered', fmt));
+                dlBtn.onclick = () => doDownload(safeFilename + '_mastered');
                 exportOptionsRow.appendChild(dlBtn);
               }
 
