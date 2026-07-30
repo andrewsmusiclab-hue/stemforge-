@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
       creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'Mastered stereo mix download', 'Commercial use rights'] },
-      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix (20 pts)', 'WAV output, unmastered + mastered mix, stems bundle', 'Priority queue'] },
+      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix', 'WAV output, unmastered + mastered mix, stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -3626,7 +3626,7 @@ window.generateOneshotSfx = async function() {
   const durVal = durSlider ? parseInt(durSlider.value, 10) : 6;
   const durationSeconds = durVal > 0 ? durVal * 0.5 : 3.0;
 
-  const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(10 pts)</span>'; } };
+  const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; } };
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
   if (statusEl) statusEl.style.display = 'block';
@@ -5954,7 +5954,7 @@ window.renderEditInstrumentPills = function (bp) {
       if (!mimeOk && !extOk) {
         var errEl = document.getElementById('ext-upload-error');
         if (errEl) {
-          errEl.textContent = 'Please upload an MP3 file. WAV and other formats coming soon.';
+          errEl.textContent = 'Only MP3 uploads are supported. Your output will be delivered as WAV.';
           errEl.style.display = 'block';
         }
         return;
@@ -5989,7 +5989,7 @@ window.renderEditInstrumentPills = function (bp) {
     if (!mimeOk && !extOk) {
       var errEl = document.getElementById('ext-upload-error');
       if (errEl) {
-        errEl.textContent = 'Please upload an MP3 file. WAV and other formats coming soon.';
+        errEl.textContent = 'Only MP3 uploads are supported. Your output will be delivered as WAV.';
         errEl.style.display = 'block';
       }
       // Reset the input so user can try again
