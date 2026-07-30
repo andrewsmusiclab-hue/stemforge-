@@ -1404,7 +1404,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 0);
   };
 
-  // ── Dashboard: Download Full Track modal (WAV / MP3) ────────────
+  // ── Dashboard: Download Full Track modal (WAV) ────────────
   window.openDownloadModal = function(jobId, stereoUrl, safeTitle) {
     if (!stereoUrl) {
       alert('No audio available for this track yet. Generate the beat first.');
@@ -2359,7 +2359,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 lockBtn.onclick = () => showUpgradePrompt();
                 exportOptionsRow.appendChild(lockBtn);
               } else if (userPlan === 'pro' || userPlan === 'developer') {
-                // ── Pro Artist: Unmastered Mix (WAV/MP3) + Mastered Mix (WAV/MP3) ──
+                // ── Pro Artist: Unmastered Mix (WAV) + Mastered Mix (WAV) ──
 
                 // (a) Unmastered mix — WAV
                 const unmastBtn = document.createElement('button');
@@ -5063,7 +5063,7 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
       '</button>';
     }
 
-    // All paid tiers get the popup button (creator gets MP3 only inside popup)
+    // All paid tiers get the download popup button
     return '<button onclick="window._spOpenDlPopup()" style="' +
         'padding:3px 10px;border-radius:5px;border:1px solid rgba(78,159,255,.25);' +
         'background:rgba(78,159,255,.07);color:#4e9fff;font-size:.68rem;cursor:pointer;' +
@@ -5074,8 +5074,8 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   }
 
   // Opens the full-track download popup:
-  //   Creator plan → Mastered Mix only (MP3 or WAV)
-  //   Pro Artist  → Mastered Mix + Unmastered Mix (MP3 or WAV each)
+  //   Creator plan → Mastered Mix only (WAV)
+  //   Pro Artist  → Mastered Mix + Unmastered Mix (WAV each)
   window._spOpenDlPopup = function () {
     var existing = document.getElementById('sp-dl-popup-overlay');
     if (existing) { existing.remove(); return; }

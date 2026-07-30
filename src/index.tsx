@@ -6204,7 +6204,7 @@ function homePage() {
       <div class="feature-card feature-card--hero">
         <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
         <h3>Studio-quality downloads</h3>
-        <p>Download the full stereo mix in MP3 or lossless WAV — mastered and ready for release, streaming, or your DAW.</p>
+        <p>Download the full stereo mix in lossless WAV — mastered and ready for release, streaming, or your DAW.</p>
         <div class="feature-card__tracks">
           <span class="track-pill track-pill--kick">Stereo Mix</span>
           <span class="track-pill track-pill--bass">WAV</span>
@@ -6299,14 +6299,14 @@ function homePage() {
         <p class="plan-card__desc">For serious artists who need every track.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
-          <li><i class="fas fa-check"></i> Song Extend (15 pts)</li>
+          <li><i class="fas fa-check"></i> Song Extend</li>
           <li><i class="fas fa-check"></i> Reference track uploads</li>
           <li><i class="fas fa-check"></i> All split modes + advanced</li>
           <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX (10 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX</li>
         </ul>
         <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
         <div id="home-pro-plan-status" style="margin:8px 0 0">
@@ -6589,7 +6589,7 @@ window.showSfPlanToast = function(type, plan, msg) {
           _homeDgPlan = plan;
           const msg = document.getElementById('home-downgrade-msg');
           if (plan === 'free') {
-            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (50 pts/mo) after your billing cycle ends.';
+            msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
           } else if (plan === 'creator') {
             msg.textContent = 'You will be downgraded to Creator ($10/mo, 600 points/mo) at the end of your current billing cycle. You keep all features until then.';
           }
@@ -6783,7 +6783,7 @@ window.showSfPlanToast = function(type, plan, msg) {
             e.preventDefault();
             _homeDgPlan = 'free';
             const msg = document.getElementById('home-downgrade-msg');
-            if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (50 pts/mo) after your billing cycle ends.';
+            if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
             document.getElementById('home-downgrade-modal').style.display = 'flex';
           });
         }
@@ -6824,7 +6824,7 @@ window.showSfPlanToast = function(type, plan, msg) {
             _homeDgPlan = plan;
             const msg = document.getElementById('home-downgrade-msg');
             if (plan === 'free') {
-              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan (50 pts/mo) after your billing cycle ends.';
+              if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
             } else if (plan === 'creator') {
               if (msg) msg.textContent = 'You will be downgraded to Creator ($10/mo, 600 points/mo) at the end of your current billing cycle. You keep all features until then.';
             }
@@ -7443,7 +7443,7 @@ function generatorPage() {
 
     <!-- Generate button -->
     <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
-      <i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(10 pts)</span>
+      <i class="fas fa-bolt"></i> Generate One Shot
     </button>
 
     <!-- Status -->
@@ -7494,7 +7494,7 @@ function pricingPage() {
         <p class="plan-card__desc">Try the engine. No card needed.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 50 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full StemForge beat generation (20 pts)</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           <li><i class="fas fa-check"></i> 50 points monthly — free forever</li>
           <li class="muted"><i class="fas fa-times"></i> Downloads</li>
@@ -7521,9 +7521,9 @@ function pricingPage() {
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full StemForge beat generation (20 pts/beat)</li>
-          <li><i class="fas fa-check"></i> Auto-split — 5 stems (75 pts)</li>
-          <li><i class="fas fa-check"></i> Vocal + Instrumental split (30 pts)</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
+          <li><i class="fas fa-check"></i> Auto-split — 5 stems</li>
+          <li><i class="fas fa-check"></i> Vocal + Instrumental split</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
@@ -7551,15 +7551,15 @@ function pricingPage() {
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> Reference track uploads (15 pts)</li>
-          <li><i class="fas fa-check"></i> Advanced split — per stem (30 pts)</li>
-          <li><i class="fas fa-check"></i> Stem regeneration (30 pts)</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat (20 pts)</li>
+          <li><i class="fas fa-check"></i> Reference track uploads</li>
+          <li><i class="fas fa-check"></i> Advanced split — per stem</li>
+          <li><i class="fas fa-check"></i> Stem regeneration</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
           <li><i class="fas fa-check"></i> WAV download (mastered &amp; unmastered)</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX (10 pts)</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $26/mo</button>
         <div id="pricing-pro-plan-status" style="margin:8px 0 0">
@@ -7598,7 +7598,7 @@ function pricingPage() {
       <div class="section-header"><div class="section-tag">FAQ</div><h2>Common questions.</h2></div>
       <div class="faq">
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What counts as one generation? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">One generation = one full StemForge beat. StemForge builds the blueprint, generates the instrumental, and delivers your stereo mix — ready to download.</div></div>
-        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of points? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase point top-up packs from the Subscription page starting from $4.99 (50 pts). Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
+        <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>What happens if I run out of points? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">You can purchase point top-up packs from the Subscription page starting from $4.99. Packs are valid for your current billing cycle and stack on top of your plan. Free plan users must upgrade to download tracks.</div></div>
         
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Can I use the beats commercially? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Yes — Creator and Pro Artist exports include full commercial use rights. Free plan exports are for personal/demo use only.</div></div>
         <div class="faq-item" data-faq><button class="faq-item__q" data-faq-button>Do unused generations roll over? <i class="fas fa-chevron-down"></i></button><div class="faq-item__a">Unused generations do not roll over. Your count resets on your billing date each month.</div></div>
@@ -7964,7 +7964,7 @@ function pricingPage() {
   function openPricingDowngradeModal(plan, label) {
     _pdgPlan = plan;
     const msg = plan === 'free'
-      ? 'Your subscription will be cancelled. You will move to the Free plan (50 pts/mo) after your billing cycle ends.'
+      ? 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.'
       : plan === 'creator'
         ? 'You will be downgraded to the Creator plan ($10/mo, 600 points/mo) at the end of your current billing cycle.'
         : 'You will be switched to Pro Artist ($26/mo, 2,000 points/mo) at end of your billing cycle.';
@@ -8275,7 +8275,7 @@ function checkoutPage() {
           <i class="fas fa-lock"></i> <span id="co-btn-text">Continue to payment — $10/mo</span>
         </button>
         <p class="auth-card__sub" style="margin-top:16px;font-size:13px">
-          Not ready to pay? <a href="/signup">Try free (50 pts)</a>
+          Not ready to pay? <a href="/signup">Try free</a>
         </p>
       </div>
     </div>
@@ -8577,7 +8577,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
-            <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> (20 pts)</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></li>
           </ul>
           ${user.plan === 'pro'
             ? `<div class="sub-action-wrap" id="sub-pro-action-wrap">
@@ -9751,13 +9751,13 @@ function termsPage() {
 <section>
   <h2>4. Subscriptions, Credits & Billing</h2>
   <h3>4.1 Free Plan</h3>
-  <p>Free accounts receive 50 points per month at no charge (enough for 2 beats at 20 pts each). Free generations include the full stereo mix. No credit card is required to start.</p>
+  <p>Free accounts receive 50 points per month at no charge (enough for 2 beats). Free generations include the full stereo mix. No credit card is required to start.</p>
 
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
     <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, auto-split, vocal+instrumental, WAV download, commercial use rights</li>
-    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix (reinvent any beat, 20 pts), Extend song (15 pts)</li>
+    <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix, Extend song</li>
   </ul>
 
   <h3>4.3 Billing & Renewal</h3>
