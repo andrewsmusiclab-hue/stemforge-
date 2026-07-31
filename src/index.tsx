@@ -5393,6 +5393,117 @@ function stripMp3Id3(buf: ArrayBuffer): ArrayBuffer {
   return buf
 }
 
+// buildXingFrame — construct a Xing/Info VBR header frame so browsers count
+// actual MP3 frames for duration instead of using CBR bitrate math.
+// This is essential when original (44100Hz) and extension (48000Hz) have
+// different sample rates: CBR math gives wrong duration and playback cuts off.
+// We piggyback on the original file's first frame header (preserving its codec
+// settings) and insert the Xing frame right before the payload.
+function buildXingFrame(firstFrameHeader: Uint8Array, totalFrames: number, totalBytes: number): Uint8Array {
+  // Clone the first real frame header (4 bytes) to use as the Xing frame header
+  const hdr = new Uint8Array(4)
+  hdr.set(firstFrameHeader.slice(0, 4))
+
+  // Determine frame size from header: frame_size = 144 * bitrate / samplerate + padding
+  const bitrateTable = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320]
+  const sampleRateTable = [44100,48000,32000,0]
+  const bitrateIdx = (hdr[2] >> 4) & 0xf
+  const srIdx      = (hdr[2] >> 2) & 0x3
+  const padding    = (hdr[2] >> 1) & 0x1
+  const bitrate    = bitrateTable[bitrateIdx] * 1000
+  const sampleRate = sampleRateTable[srIdx]
+  const frameSize  = sampleRate > 0 && bitrate > 0
+    ? Math.floor(144 * bitrate / sampleRate) + padding
+    : 417  // 128kbps 44100Hz fallback
+
+  // Build Xing frame payload: zero-fill to frame size, then write Xing header
+  const frame = new Uint8Array(frameSize)
+  frame.set(hdr, 0)
+
+  // Xing header starts at byte 36 for stereo MPEG1 L3 (standard offset)
+  const xingOffset = 36
+  frame[xingOffset]   = 0x49 // 'I'
+  frame[xingOffset+1] = 0x6e // 'n'
+  frame[xingOffset+2] = 0x66 // 'f'
+  frame[xingOffset+3] = 0x6f // 'o' — "Info" = CBR-like, "Xing" = VBR
+
+  // Flags: 0x0003 = frame count + byte count present
+  frame[xingOffset+4] = 0x00
+  frame[xingOffset+5] = 0x00
+  frame[xingOffset+6] = 0x00
+  frame[xingOffset+7] = 0x03
+
+  // Total frame count (big-endian uint32)
+  frame[xingOffset+8]  = (totalFrames >> 24) & 0xff
+  frame[xingOffset+9]  = (totalFrames >> 16) & 0xff
+  frame[xingOffset+10] = (totalFrames >> 8)  & 0xff
+  frame[xingOffset+11] =  totalFrames        & 0xff
+
+  // Total byte count (big-endian uint32)
+  frame[xingOffset+12] = (totalBytes >> 24) & 0xff
+  frame[xingOffset+13] = (totalBytes >> 16) & 0xff
+  frame[xingOffset+14] = (totalBytes >> 8)  & 0xff
+  frame[xingOffset+15] =  totalBytes        & 0xff
+
+  return frame
+}
+
+// countMp3Frames — walk the MP3 bitstream and count actual frames.
+// Used to populate the Xing frame count field accurately.
+function countMp3Frames(data: Uint8Array): number {
+  let count = 0
+  let i = 0
+  const bitrateTable = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320]
+  const sampleRateTable = [44100,48000,32000,0]
+  while (i < data.length - 3) {
+    // Sync word
+    if (data[i] === 0xff && (data[i+1] & 0xe0) === 0xe0) {
+      const bitrateIdx = (data[i+2] >> 4) & 0xf
+      const srIdx      = (data[i+2] >> 2) & 0x3
+      const padding    = (data[i+2] >> 1) & 0x1
+      const bitrate    = bitrateTable[bitrateIdx] * 1000
+      const sampleRate = sampleRateTable[srIdx]
+      if (bitrate > 0 && sampleRate > 0) {
+        const frameSize = Math.floor(144 * bitrate / sampleRate) + padding
+        if (frameSize > 0) {
+          count++
+          i += frameSize
+          continue
+        }
+      }
+    }
+    i++
+  }
+  return count
+}
+
+// stitchMp3WithXing — concatenate two MP3 ArrayBuffers (stripping ext ID3)
+// then prepend an Info/Xing header frame so browsers compute duration correctly
+// even when the two halves have different sample rates (44100 vs 48000 Hz).
+function stitchMp3WithXing(origBuf: ArrayBuffer, extBuf: ArrayBuffer): Uint8Array {
+  // 1. Strip ID3 from both
+  const origStripped = new Uint8Array(stripMp3Id3(origBuf))
+  const extStripped  = new Uint8Array(stripMp3Id3(extBuf))
+
+  // 2. Concatenate raw payloads
+  const payload = new Uint8Array(origStripped.byteLength + extStripped.byteLength)
+  payload.set(origStripped, 0)
+  payload.set(extStripped, origStripped.byteLength)
+
+  // 3. Count total frames
+  const totalFrames = countMp3Frames(payload)
+  const totalBytes  = payload.byteLength
+
+  // 4. Build Xing frame from original's first frame header
+  const xingFrame = buildXingFrame(origStripped, totalFrames, totalBytes)
+
+  // 5. Prepend Xing frame to payload
+  const out = new Uint8Array(xingFrame.byteLength + payload.byteLength)
+  out.set(xingFrame, 0)
+  out.set(payload, xingFrame.byteLength)
+  return out
+}
+
 // GET /api/get-full-track/:jobId — stitch original + extended WAV into one download
 // Free operation — no credit cost. Fetches both WAVs, concatenates PCM data, returns merged WAV.
 app.get('/api/get-full-track/:jobId', async (c) => {
@@ -5438,12 +5549,9 @@ app.get('/api/get-full-track/:jobId', async (c) => {
 
       const [origBuf2, extBuf2] = await Promise.all([origResp2.arrayBuffer(), extResp2.arrayBuffer()])
 
-      // MP3 concatenation — strip the extension's ID3 tag so the browser sees
-      // one continuous bitstream (two ID3 headers cause duration miscalc & cutoff)
-      const extBuf2Stripped = stripMp3Id3(extBuf2)
-      const merged2 = new Uint8Array(origBuf2.byteLength + extBuf2Stripped.byteLength)
-      merged2.set(new Uint8Array(origBuf2), 0)
-      merged2.set(new Uint8Array(extBuf2Stripped), origBuf2.byteLength)
+      // MP3 stitch with Xing VBR header — handles 44100Hz original + 48000Hz
+      // extension: browser counts frames instead of using CBR bitrate math.
+      const merged2 = stitchMp3WithXing(origBuf2, extBuf2)
 
       const safeTitle2 = (extJob.title || 'full-track').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_').slice(0, 80)
       return new Response(merged2.buffer, {
@@ -5642,12 +5750,9 @@ app.post('/api/save-full-song/:jobId', async (c) => {
 
         const [origBuf, extBuf] = await Promise.all([origResp.arrayBuffer(), extResp.arrayBuffer()])
 
-        // MP3 concatenation — strip the extension's ID3 tag so the browser sees
-        // one continuous bitstream (two ID3 headers cause duration miscalc & cutoff)
-        const extBufStripped = stripMp3Id3(extBuf)
-        const joined = new Uint8Array(origBuf.byteLength + extBufStripped.byteLength)
-        joined.set(new Uint8Array(origBuf), 0)
-        joined.set(new Uint8Array(extBufStripped), origBuf.byteLength)
+        // MP3 stitch with Xing VBR header — handles 44100Hz original + 48000Hz
+        // extension: browser counts frames instead of using CBR bitrate math.
+        const joined = stitchMp3WithXing(origBuf, extBuf)
         mergedBuf = joined.buffer
         isUploadMp3 = true
       }

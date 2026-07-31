@@ -6000,6 +6000,8 @@ window.renderEditInstrumentPills = function (bp) {
 
   // ── Base deleteLibItem: soft-delete a card and reload the active tab ────
   window.deleteLibItem = async function(jobId) {
+    // Step 1: API call — only this can fail fatally
+    var deleteOk = false;
     try {
       const r = await fetch('/api/job/delete', {
         method: 'POST',
@@ -6010,19 +6012,27 @@ window.renderEditInstrumentPills = function (bp) {
       if (!r.ok) {
         let errMsg = 'HTTP ' + r.status;
         try { const j = await r.json(); errMsg = j.error || errMsg; } catch {}
-        throw new Error(errMsg);
+        alert('Could not delete item: ' + errMsg);
+        return;
       }
-      // Invalidate beats + oneshots + trash so they re-fetch
+      deleteOk = true;
+    } catch(e) {
+      alert('Could not delete item: ' + e.message);
+      return;
+    }
+
+    // Step 2: UI refresh — best effort, never show an error for this
+    if (!deleteOk) return;
+    try {
       if (window._libLoaded) {
         window._libLoaded.beats    = false;
         window._libLoaded.oneshots = false;
         window._libLoaded.trash    = false;
       }
-      // Reload whichever tab is currently active via the global switchLibTab
       var activeBtn = document.querySelector('.lib-tab--active');
       var activeTab = activeBtn ? activeBtn.dataset.tab : 'beats';
       if (window.switchLibTab) window.switchLibTab(activeTab);
-    } catch(e) { alert('Could not delete item: ' + e.message); }
+    } catch(_) { /* UI refresh failed — item is deleted, silently ignore */ }
   };
 
   // ── Patch deleteLibItem to hard-reload extended tab after deletion ──────
