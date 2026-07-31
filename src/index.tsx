@@ -2382,38 +2382,50 @@ app.post('/api/job/remix', async (c) => {
     : 'instrumental beat'
 
   // MusicAPI: upload then Producer create with reference_clip_id
-  // Strategy: fetch the Mureka MP3 bytes directly inside the Worker (it's publicly accessible),
-  // then POST them as binary multipart FormData to MusicAPI Sonic /upload.
-  // This bypasses the URL-based upload entirely so MusicAPI never sees an auth redirect.
+  // Strategy:
+  //   - Mureka CDN MP3 URLs → pass directly as { url: } to MusicAPI (proven to work)
+  //   - GCS M4A URLs or any non-Mureka URL → fetch bytes, store in R2, serve via our
+  //     public extend-audio-proxy endpoint (no auth required), then pass that URL to MusicAPI
+  // This ensures MusicAPI always gets a publicly accessible MP3 URL it can process.
 
+  const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
   let remixTaskId: string
   try {
-    // Step 1: fetch the audio bytes from wherever they live (Mureka CDN, R2 proxy, etc.)
-    console.log(`[remix] Fetching audio bytes from: ${stereo_url}`)
-    const audioFetch = await fetch(stereo_url)
-    if (!audioFetch.ok) {
-      console.error(`[remix] Could not fetch audio: ${audioFetch.status}`)
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Could not load your track for remixing. Please try again.' }, 500)
+    // Step 1: resolve a publicly accessible audio URL MusicAPI can process
+    let uploadUrl = stereo_url
+    const isMurekaUrl = stereo_url.includes('cdn.mureka.ai')
+
+    if (!isMurekaUrl) {
+      // Non-Mureka URL (GCS M4A, etc.) — MusicAPI rejects these.
+      // Fetch bytes and re-host via R2 → extend-audio-proxy (public, no auth).
+      console.log(`[remix] Non-Mureka URL detected, re-hosting via R2: ${stereo_url.slice(0,80)}`)
+      const audioFetch = await fetch(stereo_url)
+      if (!audioFetch.ok) {
+        console.error(`[remix] Could not fetch audio: ${audioFetch.status}`)
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        return c.json({ error: 'Could not load your track for remixing. Please try again.' }, 500)
+      }
+      const audioBytes = await audioFetch.arrayBuffer()
+      console.log(`[remix] Fetched ${audioBytes.byteLength} bytes, storing in R2`)
+      const r2Key = `remix-${job_id}-${Date.now()}.mp3`
+      if (!c.env.IMAGES) {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+        return c.json({ error: 'Storage not configured — cannot remix this track.' }, 500)
+      }
+      await c.env.IMAGES.put(`extend-uploads/${r2Key}`, audioBytes, {
+        httpMetadata: { contentType: 'audio/mpeg' }
+      })
+      uploadUrl = `${siteUrl2}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
+      console.log(`[remix] R2 proxy URL: ${uploadUrl}`)
+    } else {
+      console.log(`[remix] Mureka URL detected, using directly: ${stereo_url.slice(0,80)}`)
     }
-    const audioBytes = await audioFetch.arrayBuffer()
-    console.log(`[remix] Fetched ${audioBytes.byteLength} bytes`)
 
-    // Step 2: upload as binary multipart to MusicAPI Sonic /upload
-    // MusicAPI accepts MP3 via file upload even though URL-based upload rejects it.
-    // Detect content type from URL extension.
-    const isWav = stereo_url.toLowerCase().includes('.wav')
-    const mimeType = isWav ? 'audio/wav' : 'audio/mpeg'
-    const fileName = isWav ? 'track.wav' : 'track.mp3'
-
-    const formData = new FormData()
-    formData.append('file', new Blob([audioBytes], { type: mimeType }), fileName)
-
+    // Step 2: upload URL to MusicAPI Sonic /upload → get clip_id
     const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
-      // NOTE: Do NOT set Content-Type manually — let fetch set multipart boundary automatically
-      body: formData
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: uploadUrl })
     })
     if (!uploadRes.ok) {
       const t = await uploadRes.text()
