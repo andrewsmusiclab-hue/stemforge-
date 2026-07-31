@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
+import { MPEGDecoder } from 'mpg123-decoder'
 
 type Bindings = {
   OPENAI_API_KEY: string
@@ -5761,16 +5762,22 @@ app.post('/api/save-full-song/:jobId', async (c) => {
         const origIsWav = origBytes[0] === 0x52 && origBytes[1] === 0x49 && origBytes[2] === 0x46 && origBytes[3] === 0x46
 
         if (origIsWav) {
-          // Original is WAV PCM — decode WAV header then decode ext MP3 into PCM via WAV path
-          // Strategy: fetch ext via download-wav proxy which returns WAV, then PCM-stitch
-          const extWavResp = await fetch(`${siteUrl}/api/download-wav/${jobId}`, {
-            headers: { 'Cookie': c.req.header('Cookie') || '' }
-          })
-          if (!extWavResp.ok) return c.json({ error: `Failed to fetch extended WAV: HTTP ${extWavResp.status}` }, 500)
-          const extWavBuf = await extWavResp.arrayBuffer()
+          // ── WAV + Suno-MP3 stitch ──────────────────────────────────────────────
+          // Original upload: WAV (48000 Hz, 2ch, 24-bit PCM)
+          // Suno extension:  raw MP3 (48000 Hz, 2ch) — returned by download-wav
+          //                  with a lying Content-Type: audio/wav header
+          //
+          // Strategy:
+          //   1. Parse original WAV header → extract 24-bit PCM parameters
+          //   2. Trim original PCM to continue_at_ms (the Suno handoff point)
+          //   3. Decode extension MP3 → Float32 stereo samples via mpg123-decoder (WASM)
+          //   4. Convert Float32 → 24-bit PCM (same bit depth as original)
+          //   5. Build a valid 48000 Hz / 2ch / 24-bit WAV:
+          //        [original 24-bit PCM trim] + [extension 24-bit PCM]
+          //      Result is a single seamless WAV the browser can play in full.
 
-          // PCM stitch: read both WAV headers and concatenate PCM data
-          function readWavHdr(view: DataView) {
+          // ── Step 1: Parse original WAV header ─────────────────────────────────
+          function readWavHdrSave(view: DataView) {
             const numChannels   = view.getUint16(22, true)
             const sampleRate    = view.getUint32(24, true)
             const bitsPerSample = view.getUint16(34, true)
@@ -5784,41 +5791,88 @@ app.post('/api/save-full-song/:jobId', async (c) => {
             return { numChannels, sampleRate, bitsPerSample, dataOffset: 44, dataSize: view.byteLength - 44 }
           }
           const origView = new DataView(origBuf)
-          const extView  = new DataView(extWavBuf)
-          const oHdr = readWavHdr(origView)
-          const eHdr = readWavHdr(extView)
+          const oHdr = readWavHdrSave(origView)
+          // oHdr.bitsPerSample should be 24 for user WAV uploads
 
-          // Trim original to continue_at_ms
+          // ── Step 2: Trim original PCM to continue_at_ms ───────────────────────
           let origDataSize = oHdr.dataSize
           if (extJob.continue_at_ms) {
-            const bps = oHdr.bitsPerSample / 8
-            const bpsec = oHdr.sampleRate * oHdr.numChannels * bps
-            const trim = Math.floor((extJob.continue_at_ms / 1000) * bpsec)
+            const bps     = oHdr.bitsPerSample / 8
+            const bpsec   = oHdr.sampleRate * oHdr.numChannels * bps
+            const trim    = Math.floor((extJob.continue_at_ms / 1000) * bpsec)
             const aligned = trim - (trim % (oHdr.numChannels * bps))
-            origDataSize = Math.min(aligned, oHdr.dataSize)
+            origDataSize  = Math.min(aligned, oHdr.dataSize)
           }
 
-          const totalPcm = origDataSize + eHdr.dataSize
-          const wav = new ArrayBuffer(44 + totalPcm)
-          const dv  = new DataView(wav)
-          const wb  = new Uint8Array(wav)
-          dv.setUint32(0, 0x52494646, false)
-          dv.setUint32(4, 36 + totalPcm, true)
-          dv.setUint32(8, 0x57415645, false)
-          dv.setUint32(12, 0x666d7420, false)
-          dv.setUint32(16, 16, true)
-          dv.setUint16(20, 1, true)
-          dv.setUint16(22, oHdr.numChannels, true)
-          dv.setUint32(24, oHdr.sampleRate, true)
-          dv.setUint32(28, oHdr.sampleRate * oHdr.numChannels * (oHdr.bitsPerSample / 8), true)
-          dv.setUint16(32, oHdr.numChannels * (oHdr.bitsPerSample / 8), true)
-          dv.setUint16(34, oHdr.bitsPerSample, true)
-          dv.setUint32(36, 0x64617461, false)
-          dv.setUint32(40, totalPcm, true)
-          wb.set(new Uint8Array(origBuf, oHdr.dataOffset, origDataSize), 44)
-          wb.set(new Uint8Array(extWavBuf, eHdr.dataOffset, eHdr.dataSize), 44 + origDataSize)
+          // ── Step 3: Decode extension MP3 → Float32 via mpg123-decoder (WASM) ──
+          // MPEGDecoder is WASM-based and works in Cloudflare Workers.
+          // extBuf is the raw Suno extension MP3 bytes.
+          const decoder = new MPEGDecoder()
+          await decoder.ready
+          const decoded = decoder.decode(new Uint8Array(extBuf))
+          decoder.free()
+          // decoded.channelData = [Float32Array(L), Float32Array(R)]
+          // decoded.samplesDecoded = total sample frames
+          // decoded.sampleRate = 48000
+
+          // ── Step 4: Convert Float32 interleaved → 24-bit PCM ─────────────────
+          // Each sample: Math.round(f * 8388607) → clamp to [-8388608, 8388607]
+          // Written as 3 bytes little-endian (signed two's complement)
+          const extSamples   = decoded.samplesDecoded
+          const extChannels  = decoded.channelData.length  // 2
+          const extPcmBytes  = extSamples * extChannels * 3  // 3 bytes per 24-bit sample
+          const extPcm       = new Uint8Array(extPcmBytes)
+          const chL          = decoded.channelData[0]
+          const chR          = decoded.channelData[1] ?? chL  // fallback mono→stereo
+          let ep = 0
+          for (let i = 0; i < extSamples; i++) {
+            // Left channel
+            let sL = Math.max(-8388608, Math.min(8388607, Math.round(chL[i] * 8388607)))
+            if (sL < 0) sL += 16777216  // two's complement for negative
+            extPcm[ep++] = sL & 0xff
+            extPcm[ep++] = (sL >> 8)  & 0xff
+            extPcm[ep++] = (sL >> 16) & 0xff
+            // Right channel
+            let sR = Math.max(-8388608, Math.min(8388607, Math.round(chR[i] * 8388607)))
+            if (sR < 0) sR += 16777216
+            extPcm[ep++] = sR & 0xff
+            extPcm[ep++] = (sR >> 8)  & 0xff
+            extPcm[ep++] = (sR >> 16) & 0xff
+          }
+
+          // ── Step 5: Build output WAV ───────────────────────────────────────────
+          // Format: 48000 Hz, 2ch, 24-bit PCM (matches original)
+          // Layout: RIFF header (12) + fmt chunk (24) + data chunk (8 + pcm)
+          const totalPcm   = origDataSize + extPcmBytes
+          const totalRiff  = 4 + 24 + (8 + totalPcm)  // WAVE + fmt + data
+          const wav        = new ArrayBuffer(8 + totalRiff)
+          const dv         = new DataView(wav)
+          const wb         = new Uint8Array(wav)
+          let woff = 0
+          // RIFF header
+          dv.setUint32(woff, 0x52494646, false); woff += 4  // "RIFF"
+          dv.setUint32(woff, totalRiff,   true);  woff += 4  // RIFF chunk size
+          dv.setUint32(woff, 0x57415645, false); woff += 4  // "WAVE"
+          // fmt chunk (16 bytes, PCM type 1)
+          dv.setUint32(woff, 0x666d7420, false); woff += 4  // "fmt "
+          dv.setUint32(woff, 16, true);           woff += 4  // chunk size
+          dv.setUint16(woff, 1, true);            woff += 2  // PCM audio format
+          dv.setUint16(woff, oHdr.numChannels, true);                              woff += 2
+          dv.setUint32(woff, oHdr.sampleRate, true);                               woff += 4
+          dv.setUint32(woff, oHdr.sampleRate * oHdr.numChannels * (oHdr.bitsPerSample / 8), true); woff += 4
+          dv.setUint16(woff, oHdr.numChannels * (oHdr.bitsPerSample / 8), true);  woff += 2
+          dv.setUint16(woff, oHdr.bitsPerSample, true);                            woff += 2
+          // data chunk: [original PCM trim] + [extension 24-bit PCM]
+          dv.setUint32(woff, 0x64617461, false); woff += 4  // "data"
+          dv.setUint32(woff, totalPcm, true);    woff += 4  // data chunk size
+          wb.set(new Uint8Array(origBuf, oHdr.dataOffset, origDataSize), woff); woff += origDataSize
+          wb.set(extPcm, woff)
+
           mergedBuf = wav
           // isUploadMp3 stays false → saved as .wav
+          const origSec = origDataSize / (oHdr.sampleRate * oHdr.numChannels * (oHdr.bitsPerSample / 8))
+          const extSec  = extSamples / (decoded.sampleRate || oHdr.sampleRate)
+          console.log(`[save-full-song] WAV stitch OK: orig=${origSec.toFixed(2)}s (${oHdr.bitsPerSample}b) + ext=${extSec.toFixed(2)}s decoded from MP3 → total=${(origSec+extSec).toFixed(2)}s, outputSize=${wav.byteLength}B`)
         } else {
           // Original is MP3 — MP3+MP3 stitch with Xing VBR header
           const joined = stitchMp3WithXing(origBuf, extBuf)
