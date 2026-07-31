@@ -6013,13 +6013,15 @@ window.renderEditInstrumentPills = function (bp) {
         throw new Error(errMsg);
       }
       // Invalidate beats + oneshots + trash so they re-fetch
-      _libLoaded.beats    = false;
-      _libLoaded.oneshots = false;
-      _libLoaded.trash    = false;
-      // Reload whichever tab is currently active
+      if (window._libLoaded) {
+        window._libLoaded.beats    = false;
+        window._libLoaded.oneshots = false;
+        window._libLoaded.trash    = false;
+      }
+      // Reload whichever tab is currently active via the global switchLibTab
       var activeBtn = document.querySelector('.lib-tab--active');
       var activeTab = activeBtn ? activeBtn.dataset.tab : 'beats';
-      fetchLibTab(activeTab);
+      if (window.switchLibTab) window.switchLibTab(activeTab);
     } catch(e) { alert('Could not delete item: ' + e.message); }
   };
 
