@@ -5720,9 +5720,9 @@ window.renderEditInstrumentPills = function (bp) {
             if (_btn) { var _b = document.createElement('span'); _b.className = 'lib-tab-count'; _b.textContent = projects.length; _btn.appendChild(_b); }
           }
         }
-        // Make sure the extended panel is visible
-        var panel = document.getElementById('lib-panel-extended');
-        if (panel && panel.style.display === 'none') panel.style.display = '';
+        // NOTE: Do NOT force the extended panel visible here — panel visibility is managed
+        // exclusively by switchLibTab. Forcing it visible while another tab is active is
+        // exactly what caused extended tracks to bleed into the beats tab view.
       })
       .catch(function(err) {
         console.error('[reloadExtendedTab] fetch error:', err);
