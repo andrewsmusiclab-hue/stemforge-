@@ -1506,7 +1506,6 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 //  Three modes matching Suno's UX:
 //    auto          → MusicAPI /sonic/stems/full → 5 stems (vocals, drums, bass, other, instrumental)
 //    split_from_mix → MusicAPI /sonic/stems/basic → 2 stems (vocals + instrumental)
-//    advanced      → MusicAPI /sonic/stems/full → 5 stems (same as auto, Pro only)
 //
 //  Lifecycle: POST /api/job/stems → starts task, returns task_id
 //             GET  /api/job/stems/:jobId → polls / returns cached results
@@ -1549,13 +1548,8 @@ app.post('/api/job/stems', async (c) => {
     if (cached) return c.json({ ok: true, cached: true, task_id: cached.task_id, stems: cached.stems, status: 'ready' })
   }
 
-  // Deduct credits based on mode (Pro Artist only gets advanced, Creator gets auto+split_from_mix)
-  if (mode === 'advanced' && user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Advanced split requires a Pro Artist plan.', locked: true, upgrade: true }, 403)
-  }
-
-  // Deduct points for stem extraction based on mode
-  const stemCost = mode === 'auto' ? 75 : 30 // auto (5-stem)=75pts (MusicAPI full), split_from_mix / advanced=30pts (MusicAPI basic)
+  // Deduct credits based on mode: auto (5-stem full) = 75pts, split_from_mix (2-stem basic) = 30pts
+  const stemCost = mode === 'auto' ? 75 : 30
   const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
   if (!stemFreshUser || stemFreshUser.gens_used + stemCost > stemFreshUser.gens_limit) {
     return c.json({ error: `Not enough points. This operation costs ${stemCost} points and you only have ${stemFreshUser ? Math.max(0, stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0} remaining.`, limit_reached: true }, 403)
@@ -5810,7 +5804,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.38.js"></script>
+<script src="/static/app.v2.39.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
