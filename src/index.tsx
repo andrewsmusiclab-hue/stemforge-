@@ -5375,6 +5375,24 @@ app.get('/api/extend-audio-proxy/:key', async (c) => {
   })
 })
 
+// stripMp3Id3 — remove leading ID3v2 tag from an MP3 ArrayBuffer.
+// When two MP3 files are concatenated the second file's ID3 tag confuses
+// browsers: they see two stream headers, misread the duration, and cut off
+// playback at the seam.  Stripping it gives a single clean bitstream.
+function stripMp3Id3(buf: ArrayBuffer): ArrayBuffer {
+  const view = new Uint8Array(buf)
+  if (view[0] === 0x49 && view[1] === 0x44 && view[2] === 0x33) { // 'ID3'
+    const tagSize =
+      ((view[6] & 0x7f) << 21) |
+      ((view[7] & 0x7f) << 14) |
+      ((view[8] & 0x7f) << 7)  |
+       (view[9] & 0x7f)
+    const headerLen = 10 + tagSize
+    return buf.slice(headerLen)
+  }
+  return buf
+}
+
 // GET /api/get-full-track/:jobId — stitch original + extended WAV into one download
 // Free operation — no credit cost. Fetches both WAVs, concatenates PCM data, returns merged WAV.
 app.get('/api/get-full-track/:jobId', async (c) => {
@@ -5420,10 +5438,12 @@ app.get('/api/get-full-track/:jobId', async (c) => {
 
       const [origBuf2, extBuf2] = await Promise.all([origResp2.arrayBuffer(), extResp2.arrayBuffer()])
 
-      // Simple MP3 concatenation — valid for back-to-back MP3 streams
-      const merged2 = new Uint8Array(origBuf2.byteLength + extBuf2.byteLength)
+      // MP3 concatenation — strip the extension's ID3 tag so the browser sees
+      // one continuous bitstream (two ID3 headers cause duration miscalc & cutoff)
+      const extBuf2Stripped = stripMp3Id3(extBuf2)
+      const merged2 = new Uint8Array(origBuf2.byteLength + extBuf2Stripped.byteLength)
       merged2.set(new Uint8Array(origBuf2), 0)
-      merged2.set(new Uint8Array(extBuf2), origBuf2.byteLength)
+      merged2.set(new Uint8Array(extBuf2Stripped), origBuf2.byteLength)
 
       const safeTitle2 = (extJob.title || 'full-track').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_').slice(0, 80)
       return new Response(merged2.buffer, {
@@ -5622,10 +5642,12 @@ app.post('/api/save-full-song/:jobId', async (c) => {
 
         const [origBuf, extBuf] = await Promise.all([origResp.arrayBuffer(), extResp.arrayBuffer()])
 
-        // Both are MP3 — concatenate raw bytes (valid MP3 streams can be joined directly)
-        const joined = new Uint8Array(origBuf.byteLength + extBuf.byteLength)
+        // MP3 concatenation — strip the extension's ID3 tag so the browser sees
+        // one continuous bitstream (two ID3 headers cause duration miscalc & cutoff)
+        const extBufStripped = stripMp3Id3(extBuf)
+        const joined = new Uint8Array(origBuf.byteLength + extBufStripped.byteLength)
         joined.set(new Uint8Array(origBuf), 0)
-        joined.set(new Uint8Array(extBuf), origBuf.byteLength)
+        joined.set(new Uint8Array(extBufStripped), origBuf.byteLength)
         mergedBuf = joined.buffer
         isUploadMp3 = true
       }
@@ -6143,7 +6165,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.31.js"></script>
+<script src="/static/app.v2.32.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
@@ -7168,7 +7190,7 @@ function generatorPage() {
         <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
       <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"
-        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more. Pro Artist only.">
+        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more.">
         <i class="fas fa-bolt"></i> One Shot Creator <span style="font-size:.65rem;opacity:.6;margin-left:3px">Pro</span>
       </button>
     </div>
