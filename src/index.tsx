@@ -1689,19 +1689,85 @@ app.get('/api/job/stems/:jobId', async (c) => {
       const bgKey    = c.env.MUSICAPI_KEY
       const bgUrl    = stereoUrl
       const bgMode   = stemJob.mode
+      // Re-use the clip_id already stored on the job from generation — skips the upload call entirely.
+      // This avoids a second MusicAPI request (rate limit: 1 req/3s) and speeds up stem submission.
+      const bgClipId = (job as any).clip_id as string | null | undefined
 
       // Fire-and-forget: runs after response is sent, no Worker wall-clock pressure
       c.executionCtx.waitUntil((async () => {
         try {
-          // ── Step 1: Upload audio to MusicAPI to get a clip_id ──────────────
-          // MusicAPI stems require clip_id — upload the stereo URL first.
-          console.log(`[stems/bg] Uploading audio for ${bgTaskId}: ${bgUrl.slice(0,80)}`)
-          const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+          // ── Step 1: Obtain clip_id ─────────────────────────────────────────
+          // Prefer the clip_id already stored on the job from generation (no extra API call).
+          // Falls back to uploading the audio URL when the stored clip_id is missing
+          // (e.g. jobs generated before clip_id was persisted).
+          let clipId: string | undefined = bgClipId || undefined
+
+          if (clipId) {
+            console.log(`[stems/bg] Re-using existing clip_id ${clipId} for ${bgTaskId}`)
+          } else {
+            console.log(`[stems/bg] No clip_id stored — uploading audio for ${bgTaskId}: ${bgUrl.slice(0,80)}`)
+            const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: bgUrl })   // MusicAPI /sonic/upload expects "url", not "audio_url"
+            })
+
+            // Load fresh job state after the upload call
+            let freshJobU = await getJob(bgDb, bgJobId)
+            if (!freshJobU) return
+            let freshStemJobsU = (freshJobU as any).stem_jobs as StemJob[] | undefined
+            if (!freshStemJobsU) return
+            let freshStemU = freshStemJobsU.find((s: StemJob) => s.task_id === bgTaskId)
+            if (!freshStemU) return
+
+            if (!uploadRes.ok) {
+              const errText = await uploadRes.text()
+              let errMsg = `MusicAPI upload error ${uploadRes.status}`
+              try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errText || errMsg } catch {}
+              console.error(`[stems/bg] Upload error: ${errMsg}`)
+              // 429 = rate limit hit (1 req/3s); 403 = insufficient credits
+              if (uploadRes.status === 429) {
+                errMsg = 'MusicAPI rate limit (429) — another request is in flight. Please wait a moment and retry. [credits]'
+              } else if (uploadRes.status === 403) {
+                errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai. [credits]'
+              }
+              freshStemU.status = 'error'
+              freshStemU.error = errMsg
+              const errJobU = { ...freshJobU } as any
+              errJobU.stem_jobs = freshStemJobsU.map((s: StemJob) => s.task_id === bgTaskId ? freshStemU : s)
+              await setJob(bgDb, errJobU)
+              return
+            }
+
+            const uploadData = await uploadRes.json() as any
+            // /sonic/upload returns clip under data array or top-level
+            clipId = uploadData?.data?.[0]?.id
+              || uploadData?.data?.[0]?.clip_id
+              || uploadData?.clip_id
+              || uploadData?.id
+            if (!clipId) {
+              freshStemU.status = 'error'
+              freshStemU.error = 'No clip_id in MusicAPI upload response: ' + JSON.stringify(uploadData).slice(0, 100)
+              const errJobU = { ...freshJobU } as any
+              errJobU.stem_jobs = freshStemJobsU.map((s: StemJob) => s.task_id === bgTaskId ? freshStemU : s)
+              await setJob(bgDb, errJobU)
+              return
+            }
+            console.log(`[stems/bg] Got clip_id from upload: ${clipId}`)
+          }
+
+          // ── Step 2: Submit stems job using clip_id ─────────────────────────
+          const stemEndpoint = (bgMode === 'split_from_mix')
+            ? `${MUSICAPI_SONIC}/stems/basic`
+            : `${MUSICAPI_SONIC}/stems/full`
+          console.log(`[stems/bg] Starting MusicAPI stem (${bgMode}) for task ${bgTaskId} clip_id=${clipId}`)
+          const musicapiRes = await fetch(stemEndpoint, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: bgUrl })   // MusicAPI /sonic/upload expects "url", not "audio_url"
+            body: JSON.stringify({ clip_id: clipId })
           })
 
+          // Re-read job after stems submission
           let freshJob = await getJob(bgDb, bgJobId)
           if (!freshJob) return
           let freshStemJobs = (freshJob as any).stem_jobs as StemJob[] | undefined
@@ -1709,66 +1775,16 @@ app.get('/api/job/stems/:jobId', async (c) => {
           let freshStem = freshStemJobs.find((s: StemJob) => s.task_id === bgTaskId)
           if (!freshStem) return
 
-          if (!uploadRes.ok) {
-            const errText = await uploadRes.text()
-            let errMsg = `MusicAPI upload error ${uploadRes.status}`
-            try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errText || errMsg } catch {}
-            console.error(`[stems/bg] Upload error: ${errMsg}`)
-            // 429 = rate-limited / out of credits on MusicAPI account
-            if (uploadRes.status === 429) {
-              errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai to use stem extraction. [credits]'
-            }
-            freshStem.status = 'error'
-            freshStem.error = errMsg
-            const errJob = { ...freshJob } as any
-            errJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
-            await setJob(bgDb, errJob)
-            return
-          }
-
-          const uploadData = await uploadRes.json() as any
-          // /sonic/upload returns clip under data array or top-level
-          const clipId = uploadData?.data?.[0]?.id
-            || uploadData?.data?.[0]?.clip_id
-            || uploadData?.clip_id
-            || uploadData?.id
-          if (!clipId) {
-            freshStem.status = 'error'
-            freshStem.error = 'No clip_id in MusicAPI upload response: ' + JSON.stringify(uploadData).slice(0, 100)
-            const errJob = { ...freshJob } as any
-            errJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
-            await setJob(bgDb, errJob)
-            return
-          }
-          console.log(`[stems/bg] Got clip_id: ${clipId}`)
-
-          // ── Step 2: Submit stems job using clip_id ─────────────────────────
-          const stemEndpoint = (bgMode === 'split_from_mix')
-            ? `${MUSICAPI_SONIC}/stems/basic`
-            : `${MUSICAPI_SONIC}/stems/full`
-          console.log(`[stems/bg] Starting MusicAPI stem (${bgMode}) for task ${bgTaskId}`)
-          const musicapiRes = await fetch(stemEndpoint, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ clip_id: clipId })
-          })
-
-          // Re-read job again after upload
-          freshJob = await getJob(bgDb, bgJobId)
-          if (!freshJob) return
-          freshStemJobs = (freshJob as any).stem_jobs as StemJob[] | undefined
-          if (!freshStemJobs) return
-          freshStem = freshStemJobs.find((s: StemJob) => s.task_id === bgTaskId)
-          if (!freshStem) return
-
           if (!musicapiRes.ok) {
             const errText = await musicapiRes.text()
             let errMsg = `MusicAPI stem error ${musicapiRes.status}`
             try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || j?.detail || errText || errMsg } catch {}
             console.error(`[stems/bg] MusicAPI error ${musicapiRes.status}: ${errText}`)
-            // 429 = rate-limited / out of credits on MusicAPI account
+            // 429 = rate limit (1 req/3s on Starter plan); 403 = insufficient credits
             if (musicapiRes.status === 429) {
-              errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai to use stem extraction. [credits]'
+              errMsg = 'MusicAPI rate limit (429) — please wait a moment and retry. [credits]'
+            } else if (musicapiRes.status === 403) {
+              errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai. [credits]'
             }
             freshStem.status = 'error'
             freshStem.error = errMsg
