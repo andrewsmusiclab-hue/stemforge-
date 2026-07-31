@@ -1446,11 +1446,13 @@ app.get('/api/job/:id', async (c) => {
       arrangement: job.blueprint.arrangement,
       instrument_count: job.blueprint.instruments?.length || 0,
       instruments: (job.blueprint.instruments || []).map((ins: any) => ({
-        name: ins.name,
-        family: ins.family
+        name: typeof ins === 'object' ? ins.name : ins,
+        family: typeof ins === 'object' ? ins.family : null
       })),
+      instruments_include: Array.isArray((job.blueprint as any).instruments_include) ? (job.blueprint as any).instruments_include : [],
       style_prompt: job.blueprint.style_prompt
     } : null,
+    extend_task_type: (job as any).extend_task_type || null,
     stereo_url: job.stereo_url || null,
     stereo_url_alt: (job as any).stereo_url_alt || null,
     clip_id: (job as any).clip_id || null,
@@ -3727,12 +3729,19 @@ app.get('/api/projects', async (c) => {
             bpm: bp.bpm, key: bp.key, scale: bp.scale,
             genre: bp.genre, mood: bp.mood,
             duration_seconds: bp.duration_seconds,
-            arrangement: bp.arrangement || null
+            arrangement: bp.arrangement || null,
+            // Include instruments array so Edit Info tab can render pills for remix/extend jobs
+            instruments: Array.isArray(bp.instruments) ? bp.instruments.map((ins: any) => ({
+              name: typeof ins === 'object' ? ins.name : ins,
+              family: typeof ins === 'object' ? ins.family : null
+            })) : [],
+            instruments_include: Array.isArray(bp.instruments_include) ? bp.instruments_include : []
           }
         })(),
         // Status field — required by renderExtendedCard and other card renderers
         status: d.status || 'ready',
-        // Extend-specific fields — used by Get Full Track
+        // Extend-specific fields
+        extend_task_type: d.extend_task_type || null,  // 'song_extend' | 'song_generate' | null
         source_job_id: d.source_job_id || null,
         continue_at_ms: d.continue_at_ms || null,
         // One-shot specific fields
@@ -6037,7 +6046,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.30.js"></script>
+<script src="/static/app.v2.31.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
