@@ -2382,17 +2382,38 @@ app.post('/api/job/remix', async (c) => {
     : 'instrumental beat'
 
   // MusicAPI: upload then Producer create with reference_clip_id
-  // Use our own /api/download-wav endpoint as the upload URL — it serves WAV format
-  // which MusicAPI Sonic requires. The raw stereo_url is a Mureka MP3 which Sonic rejects.
-  const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
-  const wavUploadUrl = `${siteUrl2}/api/download-wav/${job_id}`
+  // Strategy: fetch the Mureka MP3 bytes directly inside the Worker (it's publicly accessible),
+  // then POST them as binary multipart FormData to MusicAPI Sonic /upload.
+  // This bypasses the URL-based upload entirely so MusicAPI never sees an auth redirect.
 
   let remixTaskId: string
   try {
+    // Step 1: fetch the audio bytes from wherever they live (Mureka CDN, R2 proxy, etc.)
+    console.log(`[remix] Fetching audio bytes from: ${stereo_url}`)
+    const audioFetch = await fetch(stereo_url)
+    if (!audioFetch.ok) {
+      console.error(`[remix] Could not fetch audio: ${audioFetch.status}`)
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'Could not load your track for remixing. Please try again.' }, 500)
+    }
+    const audioBytes = await audioFetch.arrayBuffer()
+    console.log(`[remix] Fetched ${audioBytes.byteLength} bytes`)
+
+    // Step 2: upload as binary multipart to MusicAPI Sonic /upload
+    // MusicAPI accepts MP3 via file upload even though URL-based upload rejects it.
+    // Detect content type from URL extension.
+    const isWav = stereo_url.toLowerCase().includes('.wav')
+    const mimeType = isWav ? 'audio/wav' : 'audio/mpeg'
+    const fileName = isWav ? 'track.wav' : 'track.mp3'
+
+    const formData = new FormData()
+    formData.append('file', new Blob([audioBytes], { type: mimeType }), fileName)
+
     const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: wavUploadUrl })
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
+      // NOTE: Do NOT set Content-Type manually — let fetch set multipart boundary automatically
+      body: formData
     })
     if (!uploadRes.ok) {
       const t = await uploadRes.text()
@@ -5880,7 +5901,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.28.js"></script>
+<script src="/static/app.v2.29.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
