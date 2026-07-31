@@ -2382,21 +2382,30 @@ app.post('/api/job/remix', async (c) => {
     : 'instrumental beat'
 
   // MusicAPI: upload then Producer create with reference_clip_id
+  // Use our own /api/download-wav endpoint as the upload URL — it serves WAV format
+  // which MusicAPI Sonic requires. The raw stereo_url is a Mureka MP3 which Sonic rejects.
+  const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
+  const wavUploadUrl = `${siteUrl2}/api/download-wav/${job_id}`
+
   let remixTaskId: string
   try {
     const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: stereo_url })
+      body: JSON.stringify({ url: wavUploadUrl })
     })
     if (!uploadRes.ok) {
       const t = await uploadRes.text()
+      console.error(`[remix] upload failed ${uploadRes.status}: ${t.slice(0,300)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: `MusicAPI upload error ${uploadRes.status}: ${t.slice(0,200)}` }, 500)
+      return c.json({ error: 'Could not process your track for remixing. Please try again in a moment.' }, 500)
     }
     const uploadData = await uploadRes.json() as any
     const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
-    if (!uploadTaskId) { await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run(); return c.json({ error: 'No task_id from MusicAPI upload' }, 500) }
+    if (!uploadTaskId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'Remix failed to start — please try again.' }, 500)
+    }
     let clipId = ''
     const dl = Date.now() + 60_000
     while (Date.now() < dl) {
@@ -2408,7 +2417,10 @@ app.post('/api/job/remix', async (c) => {
       if (clips.length && clips[0].state === 'succeeded') { clipId = clips[0].id || ''; break }
       if (clips.length && clips[0].state === 'failed') break
     }
-    if (!clipId) { await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run(); return c.json({ error: 'MusicAPI upload timed out' }, 500) }
+    if (!clipId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'Track upload timed out — please try again.' }, 500)
+    }
     const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -2416,16 +2428,20 @@ app.post('/api/job/remix', async (c) => {
     })
     if (!genRes.ok) {
       const t = await genRes.text()
+      console.error(`[remix] producer failed ${genRes.status}: ${t.slice(0,300)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: `MusicAPI Producer error ${genRes.status}: ${t.slice(0,200)}` }, 500)
+      return c.json({ error: 'Remix generation failed — please try again.' }, 500)
     }
     const genData = await genRes.json() as any
     remixTaskId = genData.task_id || genData.data?.task_id
-    if (!remixTaskId) { await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run(); return c.json({ error: 'No task_id from MusicAPI Producer' }, 500) }
+    if (!remixTaskId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      return c.json({ error: 'Remix failed to start — please try again.' }, 500)
+    }
     console.log(`[remix] Producer started: task=${remixTaskId}`)
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: err?.message || 'Generate request failed' }, 500)
+    return c.json({ error: 'Something went wrong starting your remix — please try again.' }, 500)
   }
 
   const newJobId = makeJobId()
@@ -5864,7 +5880,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.27.js"></script>
+<script src="/static/app.v2.28.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
