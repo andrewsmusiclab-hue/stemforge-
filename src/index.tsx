@@ -2467,16 +2467,6 @@ app.get('/api/stem-mix/:jobId', async (c) => {
 
   const jobId = c.req.param('jobId')
   const fmt  = c.req.query('fmt')  || 'wav'   // 'mp3' | 'wav' — WAV is default output
-  const type = c.req.query('type') || 'mastered'  // 'mastered' | 'unmastered'
-
-  // WAV is now the default and only output format — available on all plans with downloads
-  // (MP3 still supported if explicitly requested via ?fmt=mp3)
-
-  // Unmastered = Pro/developer only
-  if (type === 'unmastered' && user.plan === 'creator') {
-    return c.json({ error: 'Unmastered mix is available on the Pro Artist plan. It gives you the raw mix to process in your own DAW.', upgrade: true }, 403)
-  }
-
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
   if (!job.stereo_url) return c.json({ error: 'Audio not ready' }, 400)
@@ -2488,12 +2478,12 @@ app.get('/api/stem-mix/:jobId', async (c) => {
     const ext      = fmt === 'mp3' ? 'mp3' : 'wav'
     const mime     = fmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
     const safeName = (job.title || jobId).replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
-    const suffix   = type === 'unmastered' ? '_unmastered' : '_mastered'
+    const suffix   = '_mix'
 
     return new Response(upstream.body, {
       headers: {
         'Content-Type': mime,
-        'Content-Disposition': `attachment; filename="${safeName}${suffix}.${ext}"`,
+        'Content-Disposition': `attachment; filename="${safeName}${suffix}.${ext}"`, // suffix = '_mix'
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'private, max-age=300'
       }
@@ -6087,12 +6077,11 @@ function homePage() {
       <div class="feature-card feature-card--hero">
         <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
         <h3>Studio-quality downloads</h3>
-        <p>Download the full stereo mix in lossless WAV — mastered and ready for release, streaming, or your DAW.</p>
+        <p>Download the full stereo mix in lossless WAV — ready for release, streaming, or your DAW.</p>
         <div class="feature-card__tracks">
           <span class="track-pill track-pill--kick">Stereo Mix</span>
           <span class="track-pill track-pill--bass">WAV</span>
           <span class="track-pill track-pill--keys">Lossless</span>
-          <span class="track-pill track-pill--pad">Mastered</span>
           <span class="track-pill track-pill--hats">Commercial rights</span>
         </div>
       </div>
@@ -6108,8 +6097,8 @@ function homePage() {
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
-        <h3>Master + premaster exports</h3>
-        <p>Get a polished mastered stereo mix or the clean premaster for your own engineer.</p>
+        <h3>Lossless WAV exports</h3>
+        <p>Download the full stereo mix as a lossless WAV file — ready for distribution, streaming, or your own DAW workflow.</p>
       </div>
       <div class="feature-card">
         <div class="feature-card__icon"><i class="fas fa-tags"></i></div>
@@ -6184,7 +6173,7 @@ function homePage() {
           <li><i class="fas fa-check"></i> 2,000 points monthly</li>
           <li><i class="fas fa-check"></i> Song Extend</li>
           <li><i class="fas fa-check"></i> All split modes</li>
-          <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
+          <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
@@ -7322,7 +7311,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
-          <li class="muted"><i class="fas fa-times"></i> WAV / mastered downloads</li>
+          <li class="muted"><i class="fas fa-times"></i> WAV downloads</li>
 
           <li class="muted"><i class="fas fa-times"></i> Stem regeneration</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
@@ -7348,7 +7337,7 @@ function pricingPage() {
 
           <li><i class="fas fa-check"></i> Stem regeneration</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
-          <li><i class="fas fa-check"></i> WAV download (mastered &amp; unmastered)</li>
+          <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
@@ -8355,7 +8344,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 2,000 points monthly</li>
-            <li><i class="fas fa-check"></i> Mastered &amp; unmastered WAV</li>
+            <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></li>

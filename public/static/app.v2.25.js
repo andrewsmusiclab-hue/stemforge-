@@ -290,8 +290,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Read plan from URL param
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
-      creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'Mastered stereo mix download', 'Commercial use rights'] },
-      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix', 'WAV output, unmastered + mastered mix, stems bundle', 'Priority queue'] },
+      creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'WAV download', 'Commercial use rights'] },
+      pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix', 'WAV download, stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
 
@@ -2221,12 +2221,12 @@ document.addEventListener('DOMContentLoaded', () => {
               }
             });
 
-            // Build export action buttons — Creator: mastered only; Pro: 3 options
+            // Build export action buttons
             const exportOptionsRow = document.getElementById('export-options-row');
             if (exportOptionsRow) {
               exportOptionsRow.innerHTML = '';
 
-              // Helper: trigger download in WAV (via /api/download-wav) or MP3 (direct)
+              // Helper: trigger WAV download via /api/download-wav
               function doDownload(filename) {
                 const jobIdDl = job.id || currentJobId;
                 const a = document.createElement('a');
@@ -2242,32 +2242,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 lockBtn.innerHTML = '<i class="fas fa-download"></i><span>Download Beat</span><small>Creator+</small>';
                 lockBtn.onclick = () => showUpgradePrompt();
                 exportOptionsRow.appendChild(lockBtn);
-              } else if (userPlan === 'pro' || userPlan === 'developer') {
-                // ── Pro Artist: Unmastered Mix (WAV) + Mastered Mix (WAV) ──
-
-                // (a) Unmastered mix — WAV
-                const unmastBtn = document.createElement('button');
-                unmastBtn.className = 'export-btn export-btn--pro';
-                unmastBtn.title = 'Raw unmastered mix — WAV, ideal for your DAW';
-                unmastBtn.innerHTML = '<i class="fas fa-sliders-h"></i><span>Unmastered Mix</span><small>WAV</small>';
-                unmastBtn.onclick = () => doDownload(safeFilename + '_unmastered');
-
-                // (b) Mastered mix — WAV
-                const mastBtn = document.createElement('button');
-                mastBtn.className = 'export-btn export-btn--pro';
-                mastBtn.title = 'Mastered stereo mix ready for release — WAV';
-                mastBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV</small>';
-                mastBtn.onclick = () => doDownload(safeFilename + '_mastered');
-
-                exportOptionsRow.appendChild(unmastBtn);
-                exportOptionsRow.appendChild(mastBtn);
               } else {
-                // ── Creator: Mastered Mix only (WAV) ──
+                // Creator + Pro: single Download WAV button
                 const dlBtn = document.createElement('button');
-                dlBtn.className = 'export-btn';
-                dlBtn.title = 'Download your mastered stereo mix — WAV';
-                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Mastered Mix</span><small>WAV</small>';
-                dlBtn.onclick = () => doDownload(safeFilename + '_mastered');
+                dlBtn.className = (userPlan === 'pro' || userPlan === 'developer') ? 'export-btn export-btn--pro' : 'export-btn';
+                dlBtn.title = 'Download lossless WAV';
+                dlBtn.innerHTML = '<i class="fas fa-compact-disc"></i><span>Download WAV</span><small>WAV</small>';
+                dlBtn.onclick = () => doDownload(safeFilename);
                 exportOptionsRow.appendChild(dlBtn);
               }
 
@@ -4447,87 +4428,26 @@ document.addEventListener('click', function(e) {
     '</button>';
   }
 
-  // Opens the full-track download popup:
-  //   Creator plan → Mastered Mix only (WAV)
-  //   Pro Artist  → Mastered Mix + Unmastered Mix (WAV each)
+  // Opens the full-track download popup — single WAV download for all paid plans
   window._spOpenDlPopup = function () {
     var existing = document.getElementById('sp-dl-popup-overlay');
     if (existing) { existing.remove(); return; }
 
-    var isPro  = (_userPlan === 'pro' || _userPlan === 'developer');
-    var canWav = isPro;
-
-    // Helper: build a format card
-    function fmtCard(fmt, type, colorClass, icon, label, sublabel, extraStyle) {
-      var borderCol = colorClass === 'blue' ? 'rgba(78,159,255,.5)' : 'rgba(168,85,247,.5)';
-      var bgCol     = colorClass === 'blue' ? 'rgba(78,159,255,.12)' : 'rgba(168,85,247,.12)';
-      var bgHov     = colorClass === 'blue' ? 'rgba(78,159,255,.25)' : 'rgba(168,85,247,.25)';
-      var txtCol    = colorClass === 'blue' ? '#4e9fff' : '#c084fc';
-      return '<button onclick="window._spDownloadMix(\'' + fmt + '\',\'' + type + '\')" style="' +
-                'flex:1;padding:12px 8px;border-radius:10px;cursor:pointer;' +
-                'border:1px solid ' + borderCol + ';background:' + bgCol + ';' +
-                'color:' + txtCol + ';font-size:.78rem;display:flex;flex-direction:column;' +
-                'align-items:center;gap:5px;transition:background .15s;' + (extraStyle || '') + '"' +
-              ' onmouseover="this.style.background=\'' + bgHov + '\'"' +
-              ' onmouseout="this.style.background=\'' + bgCol + '\'">' +
-              '<i class="' + icon + '" style="font-size:1.25rem"></i>' +
-              '<span style="font-weight:700">' + fmt.toUpperCase() + '</span>' +
-              '<span style="font-size:.62rem;opacity:.7">' + sublabel + '</span>' +
-            '</button>';
-    }
-
-    // Mastered section
-    var masteredSection =
-      '<div style="margin-bottom:16px">' +
-        '<div style="display:flex;align-items:center;gap:7px;margin-bottom:8px">' +
-          '<i class="fas fa-star" style="color:#f59e0b;font-size:.75rem"></i>' +
-          '<span style="font-size:.8rem;font-weight:700;color:#f1f5f9">Mastered Mix</span>' +
-        '</div>' +
-        '<div style="display:flex;gap:8px">' +
-          fmtCard('wav', 'mastered', 'blue', 'fas fa-file-audio', 'WAV', 'Lossless') +
-          (canWav
-            ? fmtCard('wav', 'mastered', 'purple', 'fas fa-wave-square', 'WAV', 'Lossless')
-            : '<div style="flex:1;padding:12px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.06);' +
-                'background:rgba(255,255,255,.02);color:rgba(255,255,255,.22);font-size:.78rem;' +
-                'display:flex;flex-direction:column;align-items:center;gap:5px">' +
-                '<i class="fas fa-wave-square" style="font-size:1.25rem"></i>' +
-                '<span style="font-weight:700">WAV</span>' +
-                '<a href="/pricing" style="font-size:.6rem;color:#a855f6;text-decoration:none">Pro only</a>' +
-              '</div>'
-          ) +
-        '</div>' +
+    // Single WAV download card
+    var wavSection =
+      '<div style="display:flex;gap:8px;margin-top:4px">' +
+        '<button onclick="window._spDownloadMix(\'wav\')" style="' +
+          'flex:1;padding:14px 8px;border-radius:10px;cursor:pointer;' +
+          'border:1px solid rgba(78,159,255,.5);background:rgba(78,159,255,.12);' +
+          'color:#4e9fff;font-size:.78rem;display:flex;flex-direction:column;' +
+          'align-items:center;gap:5px;transition:background .15s"' +
+          ' onmouseover="this.style.background=\'rgba(78,159,255,.25)\'"' +
+          ' onmouseout="this.style.background=\'rgba(78,159,255,.12)\'">' +
+          '<i class="fas fa-file-audio" style="font-size:1.4rem"></i>' +
+          '<span style="font-weight:700">WAV</span>' +
+          '<span style="font-size:.62rem;opacity:.7">Lossless</span>' +
+        '</button>' +
       '</div>';
-
-    // Unmastered section (Pro only)
-    var unmasteredSection = isPro
-      ? '<div style="border-top:1px solid rgba(255,255,255,.07);padding-top:14px">' +
-          '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">' +
-            '<i class="fas fa-sliders-h" style="color:#10b981;font-size:.75rem"></i>' +
-            '<span style="font-size:.8rem;font-weight:700;color:#f1f5f9">Unmastered Mix</span>' +
-            '<span style="font-size:.6rem;background:rgba(16,185,129,.15);color:#10b981;' +
-              'border:1px solid rgba(16,185,129,.3);padding:1px 6px;border-radius:99px">Pro</span>' +
-          '</div>' +
-          '<p style="margin:0 0 10px;color:rgba(255,255,255,.38);font-size:.68rem;line-height:1.5">' +
-            'The raw, unprocessed stereo mix — ideal if you want to bring it into your own DAW to apply ' +
-            'your own EQ, compression, reverb, and mastering chain.' +
-          '</p>' +
-          '<div style="display:flex;gap:8px">' +
-            fmtCard('wav', 'unmastered', 'blue', 'fas fa-file-audio', 'WAV', 'Lossless') +
-            fmtCard('wav', 'unmastered', 'purple', 'fas fa-wave-square', 'WAV', 'Lossless') +
-          '</div>' +
-        '</div>'
-      : '<div style="border-top:1px solid rgba(255,255,255,.07);padding-top:14px">' +
-          '<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px">' +
-            '<i class="fas fa-sliders-h" style="color:rgba(255,255,255,.2);font-size:.75rem"></i>' +
-            '<span style="font-size:.8rem;font-weight:700;color:rgba(255,255,255,.3)">Unmastered Mix</span>' +
-            '<span style="font-size:.6rem;background:rgba(168,85,247,.15);color:#c084fc;' +
-              'border:1px solid rgba(168,85,247,.3);padding:1px 6px;border-radius:99px">Pro only</span>' +
-          '</div>' +
-          '<p style="margin:0 0 8px;color:rgba(255,255,255,.28);font-size:.68rem;line-height:1.5">' +
-            'Raw unprocessed mix for your own DAW mastering — available on ' +
-            '<a href="/pricing" style="color:#a855f6;text-decoration:none">Pro Artist plan</a>.' +
-          '</p>' +
-        '</div>';
 
     var overlay = document.createElement('div');
     overlay.id = 'sp-dl-popup-overlay';
@@ -4539,7 +4459,7 @@ document.addEventListener('click', function(e) {
 
     overlay.innerHTML =
       '<div style="background:#0f0f1a;border:1px solid rgba(255,255,255,.12);border-radius:16px;' +
-          'padding:22px;min-width:300px;max-width:380px;box-shadow:0 24px 60px rgba(0,0,0,.9);' +
+          'padding:22px;min-width:280px;max-width:340px;box-shadow:0 24px 60px rgba(0,0,0,.9);' +
           'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif">' +
         '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">' +
           '<h3 style="margin:0;color:#f1f5f9;font-size:.95rem;font-weight:600">' +
@@ -4552,23 +4472,21 @@ document.addEventListener('click', function(e) {
             '&times;' +
           '</button>' +
         '</div>' +
-        masteredSection +
-        unmasteredSection +
+        wavSection +
       '</div>';
 
     overlay.addEventListener('click', function (ev) { if (ev.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);
   };
 
-  window._spDownloadMix = function (fmt, type) {
+  window._spDownloadMix = function (fmt) {
     // Close popup if open
     var popup = document.getElementById('sp-dl-popup-overlay');
     if (popup) popup.remove();
-    var mixType = type || 'mastered'; // 'mastered' | 'unmastered'
     // Trigger download
     var a = document.createElement('a');
-    a.href = '/api/stem-mix/' + _jobId + '?fmt=' + fmt + '&type=' + mixType;
-    a.download = 'stems_mix_' + mixType + '.' + fmt;
+    a.href = '/api/stem-mix/' + _jobId + '?fmt=' + fmt;
+    a.download = 'stems_mix.' + fmt;
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { document.body.removeChild(a); }, 500);
