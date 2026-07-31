@@ -2381,55 +2381,32 @@ app.post('/api/job/remix', async (c) => {
     ? `${bp.genre || 'instrumental'} beat, ${bp.mood || ''} mood, ${bp.bpm || 120}bpm, key of ${bp.key || 'C'}`
     : 'instrumental beat'
 
-  // MusicAPI: upload then Producer create with reference_clip_id
-  // Strategy:
-  //   - Mureka CDN MP3 URLs → pass directly as { url: } to MusicAPI (proven to work)
-  //   - GCS M4A URLs or any non-Mureka URL → fetch bytes, store in R2, serve via our
-  //     public extend-audio-proxy endpoint (no auth required), then pass that URL to MusicAPI
-  // This ensures MusicAPI always gets a publicly accessible MP3 URL it can process.
+  // MusicAPI Producer remix flow (correct approach per docs):
+  // ─────────────────────────────────────────────────────────────
+  // Step 1: POST /producer/upload { audio_url } → task_id (costs 2 credits)
+  // Step 2: Poll /producer/task/:id until clip_id is ready
+  // Step 3: POST /producer/create { task_type: "cover_upload_music", clip_id, instruction, strength }
+  //         → task_id for the remix generation
+  //
+  // NOTE: /sonic/upload is a completely separate system; its clip_ids are NOT
+  // compatible with Producer operations. reference_clip_id is not a valid Producer field.
+  //
+  // Audio URL strategy:
+  //   - Mureka CDN MP3s and GCS M4A are both publicly accessible — pass directly.
+  //   - Producer /upload accepts { audio_url } with any public URL.
 
-  const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
   let remixTaskId: string
   try {
-    // Step 1: resolve a publicly accessible audio URL MusicAPI can process
-    let uploadUrl = stereo_url
-    const isMurekaUrl = stereo_url.includes('cdn.mureka.ai')
-
-    if (!isMurekaUrl) {
-      // Non-Mureka URL (GCS M4A, etc.) — MusicAPI rejects these.
-      // Fetch bytes and re-host via R2 → extend-audio-proxy (public, no auth).
-      console.log(`[remix] Non-Mureka URL detected, re-hosting via R2: ${stereo_url.slice(0,80)}`)
-      const audioFetch = await fetch(stereo_url)
-      if (!audioFetch.ok) {
-        console.error(`[remix] Could not fetch audio: ${audioFetch.status}`)
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-        return c.json({ error: 'Could not load your track for remixing. Please try again.' }, 500)
-      }
-      const audioBytes = await audioFetch.arrayBuffer()
-      console.log(`[remix] Fetched ${audioBytes.byteLength} bytes, storing in R2`)
-      const r2Key = `remix-${job_id}-${Date.now()}.mp3`
-      if (!c.env.IMAGES) {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-        return c.json({ error: 'Storage not configured — cannot remix this track.' }, 500)
-      }
-      await c.env.IMAGES.put(`extend-uploads/${r2Key}`, audioBytes, {
-        httpMetadata: { contentType: 'audio/mpeg' }
-      })
-      uploadUrl = `${siteUrl2}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
-      console.log(`[remix] R2 proxy URL: ${uploadUrl}`)
-    } else {
-      console.log(`[remix] Mureka URL detected, using directly: ${stereo_url.slice(0,80)}`)
-    }
-
-    // Step 2: upload URL to MusicAPI Sonic /upload → get clip_id
-    const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+    // ── Step 1: Upload audio to Producer ──────────────────────────────────────
+    console.log(`[remix] Uploading to Producer: ${stereo_url.slice(0,80)}`)
+    const uploadRes = await fetch(`${MUSICAPI_PRODUCER}/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: uploadUrl })
+      body: JSON.stringify({ audio_url: stereo_url })
     })
     if (!uploadRes.ok) {
       const t = await uploadRes.text()
-      console.error(`[remix] upload failed ${uploadRes.status}: ${t.slice(0,300)}`)
+      console.error(`[remix] producer upload failed ${uploadRes.status}: ${t.slice(0,300)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Could not process your track for remixing. Please try again in a moment.' }, 500)
     }
@@ -2439,29 +2416,52 @@ app.post('/api/job/remix', async (c) => {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again.' }, 500)
     }
+    console.log(`[remix] Producer upload task: ${uploadTaskId}`)
+
+    // ── Step 2: Poll until clip_id is ready (up to 90s) ──────────────────────
     let clipId = ''
-    const dl = Date.now() + 60_000
-    while (Date.now() < dl) {
-      await new Promise(r => setTimeout(r, 2000))
-      const pr = await fetch(`${MUSICAPI_SONIC}/task/${uploadTaskId}`, { headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } })
+    const uploadDeadline = Date.now() + 90_000
+    while (Date.now() < uploadDeadline) {
+      await new Promise(r => setTimeout(r, 3000))
+      const pr = await fetch(`${MUSICAPI_PRODUCER}/task/${uploadTaskId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
       if (!pr.ok) continue
       const pd = await pr.json() as any
-      const clips = Array.isArray(pd) ? pd : (pd.data || [])
-      if (clips.length && clips[0].state === 'succeeded') { clipId = clips[0].id || ''; break }
-      if (clips.length && clips[0].state === 'failed') break
+      const clips = Array.isArray(pd.data) ? pd.data : (Array.isArray(pd) ? pd : [])
+      if (clips.length && clips[0].state === 'succeeded') {
+        clipId = clips[0].clip_id || clips[0].id || ''
+        console.log(`[remix] Upload succeeded, clip_id: ${clipId}`)
+        break
+      }
+      if (clips.length && clips[0].state === 'failed') {
+        console.error(`[remix] Producer upload task failed`)
+        break
+      }
     }
     if (!clipId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Track upload timed out — please try again.' }, 500)
     }
+
+    // ── Step 3: cover_upload_music → generate remix ───────────────────────────
+    // Build a style instruction from the original blueprint
+    const instruction = prompt
+      ? `Remix in the style of: ${prompt}. Keep the energy and feel but create a fresh arrangement.`
+      : 'Create a fresh remix with the same vibe and energy as the original track.'
     const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reference_clip_id: clipId, sound: prompt })
+      body: JSON.stringify({
+        task_type: 'cover_upload_music',
+        clip_id: clipId,
+        instruction,
+        strength: 0.65   // 0=closest to source, 1=most different; 0.65 = clearly different but recognisable
+      })
     })
     if (!genRes.ok) {
       const t = await genRes.text()
-      console.error(`[remix] producer failed ${genRes.status}: ${t.slice(0,300)}`)
+      console.error(`[remix] cover_upload_music failed ${genRes.status}: ${t.slice(0,300)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix generation failed — please try again.' }, 500)
     }
@@ -2471,8 +2471,9 @@ app.post('/api/job/remix', async (c) => {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again.' }, 500)
     }
-    console.log(`[remix] Producer started: task=${remixTaskId}`)
+    console.log(`[remix] cover_upload_music started: task=${remixTaskId}`)
   } catch (err: any) {
+    console.error(`[remix] unexpected error: ${err?.message}`)
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
     return c.json({ error: 'Something went wrong starting your remix — please try again.' }, 500)
   }
