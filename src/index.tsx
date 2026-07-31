@@ -5808,8 +5808,6 @@ app.post('/api/save-full-song/:jobId', async (c) => {
           }
 
           // ── Step 3: Decode extension MP3 → Float32 via mpg123-decoder (WASM) ──
-          // MPEGDecoder is WASM-based and works in Cloudflare Workers.
-          // extBuf is the raw Suno extension MP3 bytes.
           const decoder = new MPEGDecoder()
           await decoder.ready
           const decoded = decoder.decode(new Uint8Array(extBuf))
@@ -5818,64 +5816,78 @@ app.post('/api/save-full-song/:jobId', async (c) => {
           // decoded.samplesDecoded = total sample frames
           // decoded.sampleRate = 48000
 
-          // ── Step 4: Convert Float32 interleaved → 24-bit PCM ─────────────────
-          // Each sample: Math.round(f * 8388607) → clamp to [-8388608, 8388607]
-          // Written as 3 bytes little-endian (signed two's complement)
-          const extSamples   = decoded.samplesDecoded
-          const extChannels  = decoded.channelData.length  // 2
-          const extPcmBytes  = extSamples * extChannels * 3  // 3 bytes per 24-bit sample
-          const extPcm       = new Uint8Array(extPcmBytes)
-          const chL          = decoded.channelData[0]
-          const chR          = decoded.channelData[1] ?? chL  // fallback mono→stereo
-          let ep = 0
+          // ── Step 4: Convert Float32 → 16-bit PCM (interleaved, LE) ──────────
+          // Output is 16-bit throughout — Suno decodes to 16-bit and the original
+          // 24-bit trim is downconverted here too, keeping a single uniform format.
+          // Using Int16Array bulk write (no per-byte loop) to stay well under CF
+          // Workers' CPU time limit on ~4M sample frames.
+          const extSamples  = decoded.samplesDecoded
+          const chL         = decoded.channelData[0]
+          const chR         = decoded.channelData[1] ?? chL  // mono → stereo fallback
+          const extPcm16    = new Int16Array(extSamples * 2)  // interleaved L,R
           for (let i = 0; i < extSamples; i++) {
-            // Left channel
-            let sL = Math.max(-8388608, Math.min(8388607, Math.round(chL[i] * 8388607)))
-            if (sL < 0) sL += 16777216  // two's complement for negative
-            extPcm[ep++] = sL & 0xff
-            extPcm[ep++] = (sL >> 8)  & 0xff
-            extPcm[ep++] = (sL >> 16) & 0xff
-            // Right channel
-            let sR = Math.max(-8388608, Math.min(8388607, Math.round(chR[i] * 8388607)))
-            if (sR < 0) sR += 16777216
-            extPcm[ep++] = sR & 0xff
-            extPcm[ep++] = (sR >> 8)  & 0xff
-            extPcm[ep++] = (sR >> 16) & 0xff
+            extPcm16[i * 2]     = Math.max(-32768, Math.min(32767, chL[i] * 32767 + 0.5 | 0))
+            extPcm16[i * 2 + 1] = Math.max(-32768, Math.min(32767, chR[i] * 32767 + 0.5 | 0))
           }
+          const extPcmBytes = extPcm16.byteLength  // extSamples * 2ch * 2 bytes
 
-          // ── Step 5: Build output WAV ───────────────────────────────────────────
-          // Format: 48000 Hz, 2ch, 24-bit PCM (matches original)
-          // Layout: RIFF header (12) + fmt chunk (24) + data chunk (8 + pcm)
-          const totalPcm   = origDataSize + extPcmBytes
-          const totalRiff  = 4 + 24 + (8 + totalPcm)  // WAVE + fmt + data
+          // Downconvert original 24-bit PCM trim → 16-bit PCM
+          // Read every 3-byte sample, drop the LSB, keep the top 2 bytes as Int16 LE
+          const bps16       = 2  // bytes per sample at 16-bit
+          const origSamples = Math.floor(origDataSize / (oHdr.bitsPerSample / 8))
+          const origPcm16   = new Int16Array(origSamples)
+          const origRaw     = new Uint8Array(origBuf, oHdr.dataOffset, origDataSize)
+          if (oHdr.bitsPerSample === 16) {
+            // Already 16-bit — bulk copy
+            const origRaw16 = new Int16Array(origBuf, oHdr.dataOffset, origSamples)
+            origPcm16.set(origRaw16)
+          } else if (oHdr.bitsPerSample === 24) {
+            // 24-bit → 16-bit: take bytes [1] and [2] of each 3-byte sample (drop LSB)
+            for (let i = 0; i < origSamples; i++) {
+              const b0 = origRaw[i * 3]
+              const b1 = origRaw[i * 3 + 1]
+              const b2 = origRaw[i * 3 + 2]
+              // Reconstruct signed 24-bit value, then shift right 8 to get 16-bit
+              let s24 = b0 | (b1 << 8) | (b2 << 16)
+              if (s24 & 0x800000) s24 |= 0xFF000000  // sign extend to 32-bit
+              origPcm16[i] = s24 >> 8
+            }
+          } else if (oHdr.bitsPerSample === 32) {
+            // 32-bit → 16-bit: take top 2 bytes
+            for (let i = 0; i < origSamples; i++) {
+              origPcm16[i] = new Int16Array(origBuf, oHdr.dataOffset + i * 4 + 2, 1)[0]
+            }
+          }
+          const origPcmBytes = origPcm16.byteLength
+
+          // ── Step 5: Build output WAV (16-bit PCM, 48kHz, 2ch) ────────────────
+          const outBitsPerSample = 16
+          const totalPcm   = origPcmBytes + extPcmBytes
+          const totalRiff  = 4 + 24 + (8 + totalPcm)
           const wav        = new ArrayBuffer(8 + totalRiff)
           const dv         = new DataView(wav)
           const wb         = new Uint8Array(wav)
           let woff = 0
-          // RIFF header
           dv.setUint32(woff, 0x52494646, false); woff += 4  // "RIFF"
-          dv.setUint32(woff, totalRiff,   true);  woff += 4  // RIFF chunk size
+          dv.setUint32(woff, totalRiff,   true);  woff += 4
           dv.setUint32(woff, 0x57415645, false); woff += 4  // "WAVE"
-          // fmt chunk (16 bytes, PCM type 1)
           dv.setUint32(woff, 0x666d7420, false); woff += 4  // "fmt "
-          dv.setUint32(woff, 16, true);           woff += 4  // chunk size
-          dv.setUint16(woff, 1, true);            woff += 2  // PCM audio format
-          dv.setUint16(woff, oHdr.numChannels, true);                              woff += 2
-          dv.setUint32(woff, oHdr.sampleRate, true);                               woff += 4
-          dv.setUint32(woff, oHdr.sampleRate * oHdr.numChannels * (oHdr.bitsPerSample / 8), true); woff += 4
-          dv.setUint16(woff, oHdr.numChannels * (oHdr.bitsPerSample / 8), true);  woff += 2
-          dv.setUint16(woff, oHdr.bitsPerSample, true);                            woff += 2
-          // data chunk: [original PCM trim] + [extension 24-bit PCM]
+          dv.setUint32(woff, 16, true);           woff += 4
+          dv.setUint16(woff, 1, true);            woff += 2  // PCM
+          dv.setUint16(woff, oHdr.numChannels, true);                                    woff += 2
+          dv.setUint32(woff, oHdr.sampleRate, true);                                     woff += 4
+          dv.setUint32(woff, oHdr.sampleRate * oHdr.numChannels * bps16, true);          woff += 4
+          dv.setUint16(woff, oHdr.numChannels * bps16, true);                            woff += 2
+          dv.setUint16(woff, outBitsPerSample, true);                                    woff += 2
           dv.setUint32(woff, 0x64617461, false); woff += 4  // "data"
-          dv.setUint32(woff, totalPcm, true);    woff += 4  // data chunk size
-          wb.set(new Uint8Array(origBuf, oHdr.dataOffset, origDataSize), woff); woff += origDataSize
-          wb.set(extPcm, woff)
+          dv.setUint32(woff, totalPcm, true);    woff += 4
+          wb.set(new Uint8Array(origPcm16.buffer), woff); woff += origPcmBytes
+          wb.set(new Uint8Array(extPcm16.buffer), woff)
 
           mergedBuf = wav
-          // isUploadMp3 stays false → saved as .wav
-          const origSec = origDataSize / (oHdr.sampleRate * oHdr.numChannels * (oHdr.bitsPerSample / 8))
+          const origSec = origSamples / (oHdr.numChannels * oHdr.sampleRate)
           const extSec  = extSamples / (decoded.sampleRate || oHdr.sampleRate)
-          console.log(`[save-full-song] WAV stitch OK: orig=${origSec.toFixed(2)}s (${oHdr.bitsPerSample}b) + ext=${extSec.toFixed(2)}s decoded from MP3 → total=${(origSec+extSec).toFixed(2)}s, outputSize=${wav.byteLength}B`)
+          console.log(`[save-full-song] WAV stitch OK: orig=${origSec.toFixed(2)}s (${oHdr.bitsPerSample}b→16b) + ext=${extSec.toFixed(2)}s → total=${(origSec+extSec).toFixed(2)}s ${wav.byteLength}B`)
         } else {
           // Original is MP3 — MP3+MP3 stitch with Xing VBR header
           const joined = stitchMp3WithXing(origBuf, extBuf)
