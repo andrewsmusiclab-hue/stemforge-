@@ -5397,83 +5397,40 @@ app.get('/api/get-full-track/:jobId', async (c) => {
   if (extJob.extend_task_type !== 'song_extend') return c.json({ error: 'Not an extended track' }, 400)
 
   // Upload-based extend — no source_job_id.
-  // If we have upload_audio_url, stitch original + extension and stream the result.
+  // Concatenate raw MP3 bytes: original upload + extension output.
+  // Both sources are MP3 — concatenating MP3 streams is valid and playable.
   if (!extJob.source_job_id) {
     const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
     const origAudioUrl: string | undefined = extJob.upload_audio_url
 
     if (!origAudioUrl) {
-      // No original URL saved (pre-fix jobs) — just proxy the extension as WAV
+      // No original URL saved (pre-fix jobs) — just redirect to extension alone
       return c.redirect(`${siteUrl2}/api/download-wav/${jobId}`, 302)
     }
 
     try {
+      // Fetch raw MP3 bytes from both sources directly
+      const extMp3Url = extJob.stereo_url as string
       const [origResp2, extResp2] = await Promise.all([
         fetch(origAudioUrl),
-        fetch(`${siteUrl2}/api/download-wav/${jobId}`, {
-          headers: { 'Cookie': c.req.header('Cookie') || '' }
-        })
+        fetch(extMp3Url)
       ])
       if (!origResp2.ok) return c.json({ error: `Failed to fetch original audio: HTTP ${origResp2.status}` }, 500)
       if (!extResp2.ok)  return c.json({ error: `Failed to fetch extended audio: HTTP ${extResp2.status}` }, 500)
 
       const [origBuf2, extBuf2] = await Promise.all([origResp2.arrayBuffer(), extResp2.arrayBuffer()])
 
-      function readWavHdrFT(view: DataView) {
-        const numChannels   = view.getUint16(22, true)
-        const sampleRate    = view.getUint32(24, true)
-        const bitsPerSample = view.getUint16(34, true)
-        let dataOffset = 12
-        while (dataOffset < view.byteLength - 8) {
-          const chunkId   = view.getUint32(dataOffset, false)
-          const chunkSize = view.getUint32(dataOffset + 4, true)
-          if (chunkId === 0x64617461) return { numChannels, sampleRate, bitsPerSample, dataOffset: dataOffset + 8, dataSize: chunkSize }
-          dataOffset += 8 + chunkSize
-        }
-        return { numChannels, sampleRate, bitsPerSample, dataOffset: 44, dataSize: Math.max(0, view.byteLength - 44) }
-      }
-
-      const origHdr2 = readWavHdrFT(new DataView(origBuf2))
-      const extHdr2  = readWavHdrFT(new DataView(extBuf2))
-
-      let origDataSize2 = origHdr2.dataSize
-      if (extJob.continue_at_ms && extJob.continue_at_ms > 0) {
-        const continueAtSec  = extJob.continue_at_ms / 1000
-        const bytesPerSample = origHdr2.bitsPerSample / 8
-        const bytesPerSec    = origHdr2.sampleRate * origHdr2.numChannels * bytesPerSample
-        const trimmedBytes   = Math.floor(continueAtSec * bytesPerSec)
-        const aligned        = trimmedBytes - (trimmedBytes % (origHdr2.numChannels * bytesPerSample))
-        origDataSize2        = Math.min(aligned, origHdr2.dataSize)
-      }
-
-      const totalDataSize2 = origDataSize2 + extHdr2.dataSize
-      const headerSize2    = 44
-      const mergedBuf2     = new ArrayBuffer(headerSize2 + totalDataSize2)
-      const out2           = new DataView(mergedBuf2)
-      const outBytes2      = new Uint8Array(mergedBuf2)
-
-      out2.setUint32(0,  0x52494646, false)
-      out2.setUint32(4,  36 + totalDataSize2, true)
-      out2.setUint32(8,  0x57415645, false)
-      out2.setUint32(12, 0x666d7420, false)
-      out2.setUint32(16, 16, true)
-      out2.setUint16(20, 1, true)
-      out2.setUint16(22, origHdr2.numChannels, true)
-      out2.setUint32(24, origHdr2.sampleRate, true)
-      out2.setUint32(28, origHdr2.sampleRate * origHdr2.numChannels * (origHdr2.bitsPerSample / 8), true)
-      out2.setUint16(32, origHdr2.numChannels * (origHdr2.bitsPerSample / 8), true)
-      out2.setUint16(34, origHdr2.bitsPerSample, true)
-      out2.setUint32(36, 0x64617461, false)
-      out2.setUint32(40, totalDataSize2, true)
-      outBytes2.set(new Uint8Array(origBuf2, origHdr2.dataOffset, origDataSize2), headerSize2)
-      outBytes2.set(new Uint8Array(extBuf2,  extHdr2.dataOffset,  extHdr2.dataSize), headerSize2 + origDataSize2)
+      // Simple MP3 concatenation — valid for back-to-back MP3 streams
+      const merged2 = new Uint8Array(origBuf2.byteLength + extBuf2.byteLength)
+      merged2.set(new Uint8Array(origBuf2), 0)
+      merged2.set(new Uint8Array(extBuf2), origBuf2.byteLength)
 
       const safeTitle2 = (extJob.title || 'full-track').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_').slice(0, 80)
-      return new Response(mergedBuf2, {
+      return new Response(merged2.buffer, {
         headers: {
-          'Content-Type': 'audio/wav',
-          'Content-Disposition': `attachment; filename="${safeTitle2}.wav"`,
-          'Content-Length': String(mergedBuf2.byteLength)
+          'Content-Type': 'audio/mpeg',
+          'Content-Disposition': `attachment; filename="${safeTitle2}.mp3"`,
+          'Content-Length': String(merged2.byteLength)
         }
       })
     } catch (ftErr: any) {
@@ -5637,6 +5594,7 @@ app.post('/api/save-full-song/:jobId', async (c) => {
 
   try {
     let mergedBuf: ArrayBuffer
+    let isUploadMp3 = false  // true when merged bytes are raw MP3 (not WAV PCM)
 
     if (!extJob.source_job_id) {
       // Upload-based extend — no Stemforge source_job_id.
@@ -5653,71 +5611,23 @@ app.post('/api/save-full-song/:jobId', async (c) => {
         if (!resp.ok) return c.json({ error: `Failed to fetch extended audio: HTTP ${resp.status}` }, 500)
         mergedBuf = await resp.arrayBuffer()
       } else {
-        // Fetch original upload + extension in parallel
+        // Fetch raw MP3 bytes directly — original upload URL + extension Suno CDN URL
+        const extMp3Url = extJob.stereo_url as string
         const [origResp, extResp] = await Promise.all([
           fetch(origAudioUrl),
-          fetch(`${siteUrl}/api/download-wav/${jobId}`, {
-            headers: { 'Cookie': c.req.header('Cookie') || '' }
-          })
+          fetch(extMp3Url)
         ])
         if (!origResp.ok) return c.json({ error: `Failed to fetch original audio: HTTP ${origResp.status}` }, 500)
         if (!extResp.ok)  return c.json({ error: `Failed to fetch extended audio: HTTP ${extResp.status}` }, 500)
 
         const [origBuf, extBuf] = await Promise.all([origResp.arrayBuffer(), extResp.arrayBuffer()])
 
-        // WAV concatenation — same logic as source_job_id path below
-        const origView = new DataView(origBuf)
-        const extView  = new DataView(extBuf)
-
-        function readWavHeaderUpload(view: DataView) {
-          const numChannels   = view.getUint16(22, true)
-          const sampleRate    = view.getUint32(24, true)
-          const bitsPerSample = view.getUint16(34, true)
-          let dataOffset = 12
-          while (dataOffset < view.byteLength - 8) {
-            const chunkId   = view.getUint32(dataOffset, false)
-            const chunkSize = view.getUint32(dataOffset + 4, true)
-            if (chunkId === 0x64617461) return { numChannels, sampleRate, bitsPerSample, dataOffset: dataOffset + 8, dataSize: chunkSize }
-            dataOffset += 8 + chunkSize
-          }
-          return { numChannels, sampleRate, bitsPerSample, dataOffset: 44, dataSize: Math.max(0, view.byteLength - 44) }
-        }
-
-        const origHdr = readWavHeaderUpload(origView)
-        const extHdr  = readWavHeaderUpload(extView)
-
-        // Trim original at continue_at_ms if set
-        let origDataSize = origHdr.dataSize
-        if (extJob.continue_at_ms && extJob.continue_at_ms > 0) {
-          const continueAtSec  = extJob.continue_at_ms / 1000
-          const bytesPerSample = origHdr.bitsPerSample / 8
-          const bytesPerSec    = origHdr.sampleRate * origHdr.numChannels * bytesPerSample
-          const trimmedBytes   = Math.floor(continueAtSec * bytesPerSec)
-          const aligned        = trimmedBytes - (trimmedBytes % (origHdr.numChannels * bytesPerSample))
-          origDataSize         = Math.min(aligned, origHdr.dataSize)
-        }
-
-        const totalDataSize = origDataSize + extHdr.dataSize
-        const headerSize    = 44
-        mergedBuf           = new ArrayBuffer(headerSize + totalDataSize)
-        const out           = new DataView(mergedBuf)
-        const outBytes      = new Uint8Array(mergedBuf)
-
-        out.setUint32(0,  0x52494646, false)
-        out.setUint32(4,  36 + totalDataSize, true)
-        out.setUint32(8,  0x57415645, false)
-        out.setUint32(12, 0x666d7420, false)
-        out.setUint32(16, 16, true)
-        out.setUint16(20, 1, true)
-        out.setUint16(22, origHdr.numChannels, true)
-        out.setUint32(24, origHdr.sampleRate, true)
-        out.setUint32(28, origHdr.sampleRate * origHdr.numChannels * (origHdr.bitsPerSample / 8), true)
-        out.setUint16(32, origHdr.numChannels * (origHdr.bitsPerSample / 8), true)
-        out.setUint16(34, origHdr.bitsPerSample, true)
-        out.setUint32(36, 0x64617461, false)
-        out.setUint32(40, totalDataSize, true)
-        outBytes.set(new Uint8Array(origBuf, origHdr.dataOffset, origDataSize), headerSize)
-        outBytes.set(new Uint8Array(extBuf,  extHdr.dataOffset,  extHdr.dataSize), headerSize + origDataSize)
+        // Both are MP3 — concatenate raw bytes (valid MP3 streams can be joined directly)
+        const joined = new Uint8Array(origBuf.byteLength + extBuf.byteLength)
+        joined.set(new Uint8Array(origBuf), 0)
+        joined.set(new Uint8Array(extBuf), origBuf.byteLength)
+        mergedBuf = joined.buffer
+        isUploadMp3 = true
       }
     } else {
       // Load the source job
@@ -5796,11 +5706,13 @@ app.post('/api/save-full-song/:jobId', async (c) => {
       outBytes.set(new Uint8Array(extBuf, extHdr.dataOffset, extHdr.dataSize), headerSize + srcDataSize)
     }
 
-    // Save merged WAV to R2
-    const newJobId  = crypto.randomUUID()
-    const r2Key     = `extend-uploads/full-song-${newJobId}.wav`
-    await c.env.IMAGES.put(r2Key, mergedBuf, { httpMetadata: { contentType: 'audio/wav' } })
-    const audioUrl  = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(`full-song-${newJobId}.wav`)}`
+    // Save merged audio to R2 — MP3 for upload-based stitches, WAV for source_job_id stitches
+    const newJobId   = crypto.randomUUID()
+    const fileExt    = isUploadMp3 ? 'mp3' : 'wav'
+    const mimeType   = isUploadMp3 ? 'audio/mpeg' : 'audio/wav'
+    const r2Key      = `extend-uploads/full-song-${newJobId}.${fileExt}`
+    await c.env.IMAGES.put(r2Key, mergedBuf, { httpMetadata: { contentType: mimeType } })
+    const audioUrl   = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(`full-song-${newJobId}.${fileExt}`)}`
 
     // Build title — strip "(Extended)" suffix if present
     const rawTitle  = extJob.title || 'Full Song'
