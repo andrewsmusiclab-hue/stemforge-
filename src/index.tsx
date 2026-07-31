@@ -5720,7 +5720,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.25.js"></script>
+<script src="/static/app.v2.26.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
