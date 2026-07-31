@@ -856,13 +856,25 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{
   const res = await fetch(`${MUSICAPI_PRODUCER}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
+  const txt = await res.text()
+  // 202 = still processing (not_ready) — normal, return null to retry
+  if (res.status === 202) return null
   if (!res.ok) {
-    // not_ready is normal — task still processing
-    const txt = await res.text()
-    if (txt.includes('not_ready')) return null
+    // 500 with type=failed means the task itself failed upstream (credits refunded)
+    try {
+      const errData = JSON.parse(txt)
+      if (errData.type === 'failed') throw new Error(errData.error || 'MusicAPI task failed')
+    } catch (parseErr: any) {
+      if (parseErr.message !== 'MusicAPI task failed' && !parseErr.message?.startsWith('MusicAPI')) {
+        // JSON parse error — not a known failure shape, treat as not-ready
+        return null
+      }
+      throw parseErr
+    }
     return null
   }
-  const data = await res.json() as any
+  let data: any
+  try { data = JSON.parse(txt) } catch { return null }
   // Producer returns { code: 200, data: [{ clip_id, audio_url, state, ... }, ...] }
   const clips = Array.isArray(data) ? data : (data.data || [])
   if (!clips.length) return null
@@ -1058,66 +1070,9 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   try {
     // Route polling based on task type:
     // - song_extend and song_generate use MusicAPI Sonic task endpoint
-    // - remix_upload: Phase 1 polls Producer upload task; Phase 2 fires cover_upload_music
-    // - Producer (instrumental) uses Producer task endpoint
+    // - Producer (instrumental) + remix use Producer task endpoint (no extend_task_type)
     const taskType = (job as any).extend_task_type
     const useSongQuery = taskType === 'song_extend' || taskType === 'song_generate'
-
-    // ── Remix Phase 1: poll Producer upload task, then fire cover_upload_music ──
-    if (taskType === 'remix_upload') {
-      const pr = await fetch(`${MUSICAPI_PRODUCER}/task/${job.stereo_task_id}`, {
-        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}` }
-      })
-      if (!pr.ok) return job // not ready, try again next poll
-      const pd = await pr.json() as any
-      const clips = Array.isArray(pd.data) ? pd.data : (Array.isArray(pd) ? pd : [])
-      if (!clips.length) return job // still processing
-      const clip = clips[0]
-      if (clip.state === 'failed') {
-        job.status = 'error'
-        job.error = 'Track upload for remix failed'
-        await setJob(db, { ...job })
-        return job
-      }
-      if (clip.state !== 'succeeded') return job // still processing
-      const clipId = clip.clip_id || clip.id || ''
-      if (!clipId) {
-        job.status = 'error'
-        job.error = 'Upload returned no clip_id'
-        await setJob(db, { ...job })
-        return job
-      }
-      // Phase 2: fire cover_upload_music
-      const instruction = (job as any).remix_instruction || 'Create a fresh remix with the same vibe and energy as the original track.'
-      console.log(`[remix_upload] Upload done clip_id=${clipId}, firing cover_upload_music`)
-      const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task_type: 'cover_upload_music', clip_id: clipId, instruction, strength: 0.65 })
-      })
-      if (!genRes.ok) {
-        const t = await genRes.text()
-        console.error(`[remix_upload] cover_upload_music failed ${genRes.status}: ${t.slice(0,200)}`)
-        job.status = 'error'
-        job.error = 'Remix generation failed'
-        await setJob(db, { ...job })
-        return job
-      }
-      const genData = await genRes.json() as any
-      const genTaskId = genData.task_id || genData.data?.task_id
-      if (!genTaskId) {
-        job.status = 'error'
-        job.error = 'Remix returned no task_id'
-        await setJob(db, { ...job })
-        return job
-      }
-      // Transition to Phase 3: normal pollInstrumentalStatus
-      job.stereo_task_id = genTaskId
-      ;(job as any).extend_task_type = undefined  // clears so next poll uses instrumental path
-      await setJob(db, { ...job })
-      console.log(`[remix_upload] cover_upload_music task=${genTaskId}, job transitioning to Phase 3`)
-      return job
-    }
 
     if (!useSongQuery) {
       // Instrumental path — Producer generates 2 clips, we save both
@@ -2420,6 +2375,31 @@ app.post('/api/job/remix', async (c) => {
     return c.json({ error: 'Stemforge Remix requires a paid plan.', upgrade: true }, 403)
   }
 
+  const body = await c.req.json<{ job_id: string; title?: string }>()
+  const { job_id, title } = body
+  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+
+  // Load source job — must belong to this user and be ready
+  const srcRow = await c.env.DB.prepare(
+    `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+  ).bind(job_id, user.id).first<{ data: string }>()
+  if (!srcRow) return c.json({ error: 'Source track not found' }, 404)
+  const srcJob = JSON.parse(srcRow.data) as any
+
+  if (srcJob.status !== 'ready') {
+    return c.json({ error: 'Source track is not ready yet.' }, 400)
+  }
+
+  // clip_id is the MusicAPI Producer clip ID — required for cover_upload_music.
+  // Only jobs generated by MusicAPI Producer have this (GCS storage.googleapis.com URLs).
+  // Old Mureka-based jobs (cdn.mureka.ai) do not have clip_id and cannot be remixed.
+  const sourceClipId: string = srcJob.clip_id || ''
+  if (!sourceClipId) {
+    return c.json({
+      error: 'This track was generated with an older system and cannot be remixed. Please generate a new beat to use the Remix feature.'
+    }, 400)
+  }
+
   // Deduct 20 points
   const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
   if (!fresh || fresh.gens_used + 20 > fresh.gens_limit) {
@@ -2427,81 +2407,72 @@ app.post('/api/job/remix', async (c) => {
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
 
-  const body = await c.req.json<{ job_id: string; stereo_url: string; title?: string }>()
-  const { job_id, stereo_url, title } = body
-  if (!job_id || !stereo_url) return c.json({ error: 'job_id and stereo_url required' }, 400)
+  // Build instruction from source job's blueprint
+  const bp = srcJob.blueprint
+  // Build a rich instruction for cover_music (required by Producer API).
+  // Must be a meaningful music description — vague text causes generation failures.
+  // Do NOT use words like "remix" or "cover" which can trigger content moderation.
+  const genre = bp?.genre || 'instrumental'
+  const mood  = bp?.mood  || 'energetic'
+  const bpm   = bp?.bpm   || 120
+  const key   = bp?.key   || 'C'
+  const scale = bp?.scale || 'minor'
+  const instruction = `${genre} instrumental, no vocals, ${mood} mood, ${bpm} BPM, ${key} ${scale}, fresh variation with new arrangement and different textures`
 
-  // Get the original job's blueprint to build a relevant prompt
-  const srcJob = await getJob(c.env.DB, job_id)
-  const bp = srcJob?.blueprint
-  const prompt = bp
-    ? `${bp.genre || 'instrumental'} beat, ${bp.mood || ''} mood, ${bp.bpm || 120}bpm, key of ${bp.key || 'C'}`
-    : 'instrumental beat'
-
-  // MusicAPI Producer remix flow — fully async (avoids Cloudflare 30s CPU limit):
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Phase 1 (this request): POST /producer/upload { audio_url } → upload_task_id
-  //   Store upload_task_id in job, extend_task_type='remix_upload', return immediately.
-  //
-  // Phase 2 (each client poll via advancePipeline):
-  //   Poll /producer/task/upload_task_id until clip_id ready.
-  //   Then fire /producer/create { task_type:'cover_upload_music', clip_id }.
-  //   Store real stereo_task_id, clear extend_task_type.
-  //
-  // Phase 3 (normal advancePipeline): pollInstrumentalStatus finishes the job.
-
-  let uploadTaskId: string
+  // Call MusicAPI Producer cover_music using the stored clip_id.
+  // clip_id comes from /producer/create (NOT /producer/upload), so we use
+  // cover_music (not cover_upload_music — that's only for /producer/upload clip_ids).
+  let genTaskId: string
   try {
-    console.log(`[remix] Starting Producer upload: ${stereo_url.slice(0,80)}`)
-    const uploadRes = await fetch(`${MUSICAPI_PRODUCER}/upload`, {
+    console.log(`[remix] Firing cover_music for clip_id=${sourceClipId}`)
+    const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url: stereo_url })
+      body: JSON.stringify({
+        task_type: 'cover_music',
+        clip_id: sourceClipId,
+        instruction,
+        strength: 0.65
+      })
     })
-    if (!uploadRes.ok) {
-      const t = await uploadRes.text()
-      console.error(`[remix] producer upload failed ${uploadRes.status}: ${t.slice(0,300)}`)
+    if (!genRes.ok) {
+      const t = await genRes.text()
+      console.error(`[remix] cover_upload_music failed ${genRes.status}: ${t.slice(0,300)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Could not process your track for remixing. Please try again in a moment.' }, 500)
+      return c.json({ error: 'Could not start remix — please try again in a moment.' }, 500)
     }
-    const uploadData = await uploadRes.json() as any
-    uploadTaskId = uploadData.task_id || uploadData.data?.task_id
-    if (!uploadTaskId) {
+    const genData = await genRes.json() as any
+    genTaskId = genData.task_id || genData.data?.task_id || ''
+    if (!genTaskId) {
+      console.error(`[remix] cover_upload_music returned no task_id: ${JSON.stringify(genData).slice(0,200)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again.' }, 500)
     }
-    console.log(`[remix] Producer upload started: ${uploadTaskId}`)
+    console.log(`[remix] cover_upload_music task started: ${genTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
     return c.json({ error: 'Something went wrong starting your remix — please try again.' }, 500)
   }
 
+  // Create the remix job — polls via normal pollInstrumentalStatus (Producer task endpoint)
   const newJobId = makeJobId()
-  const cleanTitle = title ? title.replace(/_/g, ' ') : ''
+  const cleanTitle = (title || srcJob.title || '').replace(/_/g, ' ').trim()
   const remixTitle = cleanTitle ? `${cleanTitle} Remix` : 'Stemforge Remix'
-  // Store upload_task_id as stereo_task_id so advancePipeline can poll it.
-  // extend_task_type='remix_upload' tells advancePipeline to:
-  //   1. Poll /producer/task/upload_task_id for clip_id
-  //   2. Fire cover_upload_music once clip_id is ready
-  //   3. Replace stereo_task_id with the generation task_id and clear extend_task_type
-  const remixPrompt = prompt
-    ? `Remix in the style of: ${prompt}. Keep the energy and feel but create a fresh arrangement.`
-    : 'Create a fresh remix with the same vibe and energy as the original track.'
   const newJob: Job = {
     id: newJobId,
     status: 'generating',
     created_at: Date.now(),
-    prompt: `Stemforge Remix of job ${job_id}`,
+    prompt: `Stemforge Remix of ${job_id}`,
     title: remixTitle,
     thumbnail_seed: Math.floor(Math.random() * 360),
-    stereo_task_id: uploadTaskId   // Phase 1: upload task ID
+    stereo_task_id: genTaskId   // polls via pollInstrumentalStatus (no extend_task_type set)
   }
-  ;(newJob as any).extend_task_type = 'remix_upload'
-  ;(newJob as any).remix_instruction = remixPrompt   // saved for Phase 2
+  // Copy blueprint so the remix can itself be remixed later
+  if (bp) (newJob as any).blueprint = bp
   await setJob(c.env.DB, newJob, user.id)
 
-  console.log(`[remix] Job ${newJobId} created, upload_task=${uploadTaskId}, source=${job_id}`)
+  console.log(`[remix] Job ${newJobId} created, gen_task=${genTaskId}, source_clip=${sourceClipId}`)
   return c.json({ ok: true, job_id: newJobId, status: 'generating' })
 })
 
@@ -4161,7 +4132,7 @@ app.post('/api/debug/sonic-extend', async (c) => {
   return c.json({ status: res.status, ok: res.ok, raw: text })
 })
 
-// POST /api/debug/sonic-task — poll a MusicAPI task (developer only)
+// POST /api/debug/sonic-task — poll a MusicAPI Sonic task (developer only)
 app.get('/api/debug/sonic-task/:task_id', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
   const token = getSessionCookie(c.req.raw)
@@ -4173,6 +4144,109 @@ app.get('/api/debug/sonic-task/:task_id', async (c) => {
   })
   const text = await res.text()
   return c.json({ status: res.status, ok: res.ok, raw: text })
+})
+
+// GET /api/debug/producer-task/:task_id — poll a MusicAPI Producer task (developer only)
+app.get('/api/debug/producer-task/:task_id', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user || (user.plan !== 'developer' && user.plan !== 'pro')) return c.json({ error: 'Unauthorized' }, 401)
+  const taskId = c.req.param('task_id')
+  const res = await fetch(`${MUSICAPI_PRODUCER}/task/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+  })
+  const text = await res.text()
+  return c.json({ status: res.status, ok: res.ok, raw: text })
+})
+
+// POST /api/debug/test-cover — test cover_upload_music with different param combos (developer only)
+// Body: { clip_id: string }
+app.post('/api/debug/test-cover', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user || (user.plan !== 'developer' && user.plan !== 'pro')) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json<{ clip_id: string }>()
+  const { clip_id } = body
+  if (!clip_id) return c.json({ error: 'clip_id required' }, 400)
+
+  // Try several parameter combinations to see which one MusicAPI accepts
+  const variants = [
+    { task_type: 'cover_upload_music', clip_id, strength: 0.7 },
+    { task_type: 'cover_upload_music', clip_id, instruction: 'boom bap hip hop 90 BPM', strength: 0.7 },
+    { task_type: 'cover_upload_music', clip_id, prompt: 'boom bap hip hop 90 BPM', strength: 0.7 },
+    { task_type: 'cover_upload_music', clip_id, gpt_description_prompt: 'boom bap hip hop instrumental', strength: 0.7 },
+    { task_type: 'cover_upload_music', clip_id },
+  ]
+
+  const results: any[] = []
+  for (let i = 0; i < variants.length; i++) {
+    const v = variants[i]
+    const r = await fetch(`${MUSICAPI_PRODUCER}/create`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(v)
+    })
+    const t = await r.text()
+    let parsed: any = {}
+    try { parsed = JSON.parse(t) } catch {}
+    results.push({ variant: i, body: v, status: r.status, ok: r.ok, response: parsed })
+    // Stop on first success
+    if (r.ok && (parsed.task_id || parsed.data?.task_id)) break
+    await new Promise(res => setTimeout(res, 500))
+  }
+  return c.json({ results })
+})
+
+// POST /api/debug/test-upload — test producer upload with a URL (developer only)
+// Body: { audio_url: string }
+app.post('/api/debug/test-upload', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user || (user.plan !== 'developer' && user.plan !== 'pro')) return c.json({ error: 'Unauthorized' }, 401)
+  const body = await c.req.json<{ audio_url: string }>()
+  const { audio_url } = body
+  if (!audio_url) return c.json({ error: 'audio_url required' }, 400)
+
+  // Step 1: upload
+  const uploadRes = await fetch(`${MUSICAPI_PRODUCER}/upload`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio_url })
+  })
+  const uploadText = await uploadRes.text()
+  let uploadData: any = {}
+  try { uploadData = JSON.parse(uploadText) } catch {}
+  const taskId = uploadData.task_id || uploadData.data?.task_id || null
+
+  if (!uploadRes.ok || !taskId) {
+    return c.json({ step: 'upload', status: uploadRes.status, raw: uploadText, task_id: taskId })
+  }
+
+  // Step 2: poll up to 60 seconds (2s intervals × 30 attempts)
+  let pollResult: any = null
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 2000))
+    const pr = await fetch(`${MUSICAPI_PRODUCER}/task/${taskId}`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+    })
+    const pt = await pr.text()
+    let pd: any = {}
+    try { pd = JSON.parse(pt) } catch {}
+    const clips = Array.isArray(pd) ? pd : (Array.isArray(pd.data) ? pd.data : [])
+    if (clips.length && (clips[0].state === 'succeeded' || clips[0].state === 'failed')) {
+      pollResult = { attempt: i+1, status: pr.status, raw: pt, clips }
+      break
+    }
+    // still not_ready — continue
+    if (i === 29) {
+      pollResult = { attempt: i+1, status: pr.status, raw: pt, timed_out: true }
+    }
+  }
+
+  return c.json({ step: 'done', upload_status: uploadRes.status, task_id: taskId, poll: pollResult })
 })
 
 
@@ -5922,7 +5996,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.29.js"></script>
+<script src="/static/app.v2.30.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
