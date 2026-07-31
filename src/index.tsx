@@ -1058,9 +1058,66 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   try {
     // Route polling based on task type:
     // - song_extend and song_generate use MusicAPI Sonic task endpoint
-    // - Producer (instrumental) uses MusicAPI Sonic task endpoint (same polling path)
+    // - remix_upload: Phase 1 polls Producer upload task; Phase 2 fires cover_upload_music
+    // - Producer (instrumental) uses Producer task endpoint
     const taskType = (job as any).extend_task_type
     const useSongQuery = taskType === 'song_extend' || taskType === 'song_generate'
+
+    // ── Remix Phase 1: poll Producer upload task, then fire cover_upload_music ──
+    if (taskType === 'remix_upload') {
+      const pr = await fetch(`${MUSICAPI_PRODUCER}/task/${job.stereo_task_id}`, {
+        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}` }
+      })
+      if (!pr.ok) return job // not ready, try again next poll
+      const pd = await pr.json() as any
+      const clips = Array.isArray(pd.data) ? pd.data : (Array.isArray(pd) ? pd : [])
+      if (!clips.length) return job // still processing
+      const clip = clips[0]
+      if (clip.state === 'failed') {
+        job.status = 'error'
+        job.error = 'Track upload for remix failed'
+        await setJob(db, { ...job })
+        return job
+      }
+      if (clip.state !== 'succeeded') return job // still processing
+      const clipId = clip.clip_id || clip.id || ''
+      if (!clipId) {
+        job.status = 'error'
+        job.error = 'Upload returned no clip_id'
+        await setJob(db, { ...job })
+        return job
+      }
+      // Phase 2: fire cover_upload_music
+      const instruction = (job as any).remix_instruction || 'Create a fresh remix with the same vibe and energy as the original track.'
+      console.log(`[remix_upload] Upload done clip_id=${clipId}, firing cover_upload_music`)
+      const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task_type: 'cover_upload_music', clip_id: clipId, instruction, strength: 0.65 })
+      })
+      if (!genRes.ok) {
+        const t = await genRes.text()
+        console.error(`[remix_upload] cover_upload_music failed ${genRes.status}: ${t.slice(0,200)}`)
+        job.status = 'error'
+        job.error = 'Remix generation failed'
+        await setJob(db, { ...job })
+        return job
+      }
+      const genData = await genRes.json() as any
+      const genTaskId = genData.task_id || genData.data?.task_id
+      if (!genTaskId) {
+        job.status = 'error'
+        job.error = 'Remix returned no task_id'
+        await setJob(db, { ...job })
+        return job
+      }
+      // Transition to Phase 3: normal pollInstrumentalStatus
+      job.stereo_task_id = genTaskId
+      ;(job as any).extend_task_type = undefined  // clears so next poll uses instrumental path
+      await setJob(db, { ...job })
+      console.log(`[remix_upload] cover_upload_music task=${genTaskId}, job transitioning to Phase 3`)
+      return job
+    }
 
     if (!useSongQuery) {
       // Instrumental path — Producer generates 2 clips, we save both
@@ -2381,24 +2438,21 @@ app.post('/api/job/remix', async (c) => {
     ? `${bp.genre || 'instrumental'} beat, ${bp.mood || ''} mood, ${bp.bpm || 120}bpm, key of ${bp.key || 'C'}`
     : 'instrumental beat'
 
-  // MusicAPI Producer remix flow (correct approach per docs):
-  // ─────────────────────────────────────────────────────────────
-  // Step 1: POST /producer/upload { audio_url } → task_id (costs 2 credits)
-  // Step 2: Poll /producer/task/:id until clip_id is ready
-  // Step 3: POST /producer/create { task_type: "cover_upload_music", clip_id, instruction, strength }
-  //         → task_id for the remix generation
+  // MusicAPI Producer remix flow — fully async (avoids Cloudflare 30s CPU limit):
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Phase 1 (this request): POST /producer/upload { audio_url } → upload_task_id
+  //   Store upload_task_id in job, extend_task_type='remix_upload', return immediately.
   //
-  // NOTE: /sonic/upload is a completely separate system; its clip_ids are NOT
-  // compatible with Producer operations. reference_clip_id is not a valid Producer field.
+  // Phase 2 (each client poll via advancePipeline):
+  //   Poll /producer/task/upload_task_id until clip_id ready.
+  //   Then fire /producer/create { task_type:'cover_upload_music', clip_id }.
+  //   Store real stereo_task_id, clear extend_task_type.
   //
-  // Audio URL strategy:
-  //   - Mureka CDN MP3s and GCS M4A are both publicly accessible — pass directly.
-  //   - Producer /upload accepts { audio_url } with any public URL.
+  // Phase 3 (normal advancePipeline): pollInstrumentalStatus finishes the job.
 
-  let remixTaskId: string
+  let uploadTaskId: string
   try {
-    // ── Step 1: Upload audio to Producer ──────────────────────────────────────
-    console.log(`[remix] Uploading to Producer: ${stereo_url.slice(0,80)}`)
+    console.log(`[remix] Starting Producer upload: ${stereo_url.slice(0,80)}`)
     const uploadRes = await fetch(`${MUSICAPI_PRODUCER}/upload`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -2411,67 +2465,12 @@ app.post('/api/job/remix', async (c) => {
       return c.json({ error: 'Could not process your track for remixing. Please try again in a moment.' }, 500)
     }
     const uploadData = await uploadRes.json() as any
-    const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
+    uploadTaskId = uploadData.task_id || uploadData.data?.task_id
     if (!uploadTaskId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again.' }, 500)
     }
-    console.log(`[remix] Producer upload task: ${uploadTaskId}`)
-
-    // ── Step 2: Poll until clip_id is ready (up to 90s) ──────────────────────
-    let clipId = ''
-    const uploadDeadline = Date.now() + 90_000
-    while (Date.now() < uploadDeadline) {
-      await new Promise(r => setTimeout(r, 3000))
-      const pr = await fetch(`${MUSICAPI_PRODUCER}/task/${uploadTaskId}`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-      })
-      if (!pr.ok) continue
-      const pd = await pr.json() as any
-      const clips = Array.isArray(pd.data) ? pd.data : (Array.isArray(pd) ? pd : [])
-      if (clips.length && clips[0].state === 'succeeded') {
-        clipId = clips[0].clip_id || clips[0].id || ''
-        console.log(`[remix] Upload succeeded, clip_id: ${clipId}`)
-        break
-      }
-      if (clips.length && clips[0].state === 'failed') {
-        console.error(`[remix] Producer upload task failed`)
-        break
-      }
-    }
-    if (!clipId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Track upload timed out — please try again.' }, 500)
-    }
-
-    // ── Step 3: cover_upload_music → generate remix ───────────────────────────
-    // Build a style instruction from the original blueprint
-    const instruction = prompt
-      ? `Remix in the style of: ${prompt}. Keep the energy and feel but create a fresh arrangement.`
-      : 'Create a fresh remix with the same vibe and energy as the original track.'
-    const genRes = await fetch(`${MUSICAPI_PRODUCER}/create`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task_type: 'cover_upload_music',
-        clip_id: clipId,
-        instruction,
-        strength: 0.65   // 0=closest to source, 1=most different; 0.65 = clearly different but recognisable
-      })
-    })
-    if (!genRes.ok) {
-      const t = await genRes.text()
-      console.error(`[remix] cover_upload_music failed ${genRes.status}: ${t.slice(0,300)}`)
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Remix generation failed — please try again.' }, 500)
-    }
-    const genData = await genRes.json() as any
-    remixTaskId = genData.task_id || genData.data?.task_id
-    if (!remixTaskId) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Remix failed to start — please try again.' }, 500)
-    }
-    console.log(`[remix] cover_upload_music started: task=${remixTaskId}`)
+    console.log(`[remix] Producer upload started: ${uploadTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
@@ -2481,6 +2480,14 @@ app.post('/api/job/remix', async (c) => {
   const newJobId = makeJobId()
   const cleanTitle = title ? title.replace(/_/g, ' ') : ''
   const remixTitle = cleanTitle ? `${cleanTitle} Remix` : 'Stemforge Remix'
+  // Store upload_task_id as stereo_task_id so advancePipeline can poll it.
+  // extend_task_type='remix_upload' tells advancePipeline to:
+  //   1. Poll /producer/task/upload_task_id for clip_id
+  //   2. Fire cover_upload_music once clip_id is ready
+  //   3. Replace stereo_task_id with the generation task_id and clear extend_task_type
+  const remixPrompt = prompt
+    ? `Remix in the style of: ${prompt}. Keep the energy and feel but create a fresh arrangement.`
+    : 'Create a fresh remix with the same vibe and energy as the original track.'
   const newJob: Job = {
     id: newJobId,
     status: 'generating',
@@ -2488,12 +2495,13 @@ app.post('/api/job/remix', async (c) => {
     prompt: `Stemforge Remix of job ${job_id}`,
     title: remixTitle,
     thumbnail_seed: Math.floor(Math.random() * 360),
-    stereo_task_id: remixTaskId
+    stereo_task_id: uploadTaskId   // Phase 1: upload task ID
   }
-  ;(newJob as any).extend_task_type = undefined
+  ;(newJob as any).extend_task_type = 'remix_upload'
+  ;(newJob as any).remix_instruction = remixPrompt   // saved for Phase 2
   await setJob(c.env.DB, newJob, user.id)
 
-  console.log(`[remix] New job ${newJobId} created, task=${remixTaskId}, source=${job_id}`)
+  console.log(`[remix] Job ${newJobId} created, upload_task=${uploadTaskId}, source=${job_id}`)
   return c.json({ ok: true, job_id: newJobId, status: 'generating' })
 })
 
