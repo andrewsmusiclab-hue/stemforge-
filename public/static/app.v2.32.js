@@ -693,7 +693,13 @@ document.addEventListener('DOMContentLoaded', () => {
         'background:rgba(20,20,30,.92);border:1px solid rgba(168,85,247,.4);backdrop-filter:blur(12px);' +
         'color:#c084fc;padding:10px 18px;border-radius:10px;font-size:.8rem;font-weight:600;' +
         'z-index:99998;display:flex;align-items:center;gap:8px;box-shadow:0 4px 20px rgba(0,0,0,.5)';
-      banner.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span id="sf-pending-msg">Job in progress…</span>';
+      banner.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span id="sf-pending-msg">Job in progress…</span>' +
+        '<button id="sf-pending-cancel-btn" onclick="window._sfCancelAllPending()" ' +
+        'style="margin-left:8px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);' +
+        'color:#f87171;border-radius:6px;padding:3px 10px;font-size:.75rem;font-weight:700;cursor:pointer;' +
+        'line-height:1.4;transition:background .15s" ' +
+        'onmouseover="this.style.background=\'rgba(239,68,68,.3)\'" onmouseout="this.style.background=\'rgba(239,68,68,.15)\'">'+
+        '<i class="fas fa-times" style="margin-right:4px"></i>Cancel</button>';
       document.body.appendChild(banner);
     }
 
@@ -761,6 +767,37 @@ document.addEventListener('DOMContentLoaded', () => {
       if (msgEl2) msgEl2.textContent = remaining + ' job' + (remaining > 1 ? 's' : '') + ' in progress…';
     }
   }
+
+  // Cancel all pending jobs from the banner button
+  window._sfCancelAllPending = function() {
+    var jobs = _sfGetPendingJobs();
+    if (!jobs.length) return;
+    var btn = document.getElementById('sf-pending-cancel-btn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…'; }
+    var promises = jobs.map(function(job) {
+      return fetch('/api/job/cancel', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: job.id })
+      }).catch(function() {});
+    });
+    Promise.all(promises).then(function() {
+      // Clear all pending jobs from localStorage
+      _sfSavePendingJobs([]);
+      // Remove banner
+      var b = document.getElementById('sf-pending-banner');
+      if (b) { b.style.opacity = '0'; b.style.transition = 'opacity .3s'; setTimeout(function() { if (b.parentNode) b.remove(); }, 300); }
+      // Reload extended tab so cancelled cards disappear
+      if (typeof reloadExtendedTab === 'function') reloadExtendedTab();
+      // Reset any extend pipeline UI that may be showing a spinner
+      var pipelineStatus = document.getElementById('pipeline-status');
+      if (pipelineStatus) pipelineStatus.style.display = 'none';
+      var genBtn = document.getElementById('gen-full-btn');
+      if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
+      var extBtn = document.getElementById('ext-submit-btn');
+      if (extBtn) { extBtn.disabled = false; extBtn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+    });
+  };
 
   // Run auto-resume after DOM is ready
   if (document.readyState === 'loading') {
@@ -1966,7 +2003,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (genEmpty) genEmpty.style.display = 'block';
     if (genResult) genResult.style.display = 'none';
     if (genError) genError.style.display = 'none';
-    currentJobId = null;
+    // Hit cancel API to stop server-side job too
+    if (currentJobId) {
+      var jobToCancel = currentJobId;
+      currentJobId = null;
+      fetch('/api/job/cancel', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: jobToCancel })
+      }).catch(function() {});
+      if (window._sfUntrackPendingJob) _sfUntrackPendingJob(jobToCancel);
+    } else {
+      currentJobId = null;
+    }
   };
 
   // ── Scrubber time formatter ───────────────────────────────────
@@ -6109,17 +6158,45 @@ window.renderEditInstrumentPills = function (bp) {
   function _extPollJob(jobId, ui) {
     var maxAttempts = 180; // 15 min max (~900s) — chaining can take up to 15 min
     var attempts    = 0;
+    var cancelled   = false;
     ui = ui || {};
 
     // Track in localStorage so polling survives page navigation
     if (window._sfTrackPendingJob) _sfTrackPendingJob(jobId, 'extend');
 
     // Immediately switch to the extended library tab so user sees progress
-    // Also show a "generating" placeholder card immediately
     var extBtnInit = document.querySelector('.lib-tab[data-tab="extended"]');
     if (extBtnInit) extBtnInit.click();
 
+    // Wire the gen-cancel-btn to cancel THIS extend job
+    var cancelBtn = document.getElementById('gen-cancel-btn');
+    if (cancelBtn) {
+      cancelBtn.style.display = 'block';
+      cancelBtn.onclick = function() {
+        cancelled = true;
+        cancelBtn.disabled = true;
+        cancelBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Cancelling…';
+        fetch('/api/job/cancel', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ job_id: jobId })
+        }).finally(function() {
+          if (window._sfUntrackPendingJob) _sfUntrackPendingJob(jobId);
+          if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
+          if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
+          cancelBtn.style.display = 'none';
+          cancelBtn.disabled = false;
+          cancelBtn.innerHTML = '<i class="fas fa-times"></i> Cancel';
+          // Also reset the ext-submit-btn if present
+          var extBtn = document.getElementById('ext-submit-btn');
+          if (extBtn) { extBtn.disabled = false; extBtn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+          reloadExtendedTab();
+        });
+      };
+    }
+
     function doPoll() {
+      if (cancelled) return;
       if (attempts++ >= maxAttempts) {
         // Timeout — reset creator UI
         if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
@@ -6150,6 +6227,9 @@ window.renderEditInstrumentPills = function (bp) {
 
           if (job.status === 'ready') {
             // ── Done: collapse spinner, show audio player on creator page ──
+            // Hide cancel button — job is done
+            var doneCancelBtn = document.getElementById('gen-cancel-btn');
+            if (doneCancelBtn) { doneCancelBtn.style.display = 'none'; doneCancelBtn.onclick = null; }
             if (ui.pipelineStatus) {
               ui.pipelineStatus.style.transition = 'opacity .4s ease';
               ui.pipelineStatus.style.opacity = '0';
@@ -6191,16 +6271,24 @@ window.renderEditInstrumentPills = function (bp) {
             reloadExtendedTab();
 
           } else if (job.status === 'error') {
+            // Hide cancel button
+            var errCancelBtn = document.getElementById('gen-cancel-btn');
+            if (errCancelBtn) { errCancelBtn.style.display = 'none'; errCancelBtn.onclick = null; }
             if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
             if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
             if (window._sfUntrackPendingJob) _sfUntrackPendingJob(jobId);
-            // Show error toast
+            // Show toast — "Cancelled" vs "failed" depending on error message
+            var errMsg = job.error || 'Generation error';
+            var isCancelled = errMsg === 'Cancelled by user';
             var toast = document.createElement('div');
-            toast.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#ef4444;color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(239,68,68,.4)';
-            toast.textContent = 'Extend failed: ' + (job.error || 'Generation error');
+            toast.style.cssText = 'position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:10px;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(0,0,0,.4);display:flex;align-items:center;gap:8px;color:#fff;' +
+              (isCancelled ? 'background:rgba(107,114,128,.9)' : 'background:#ef4444');
+            toast.innerHTML = '<i class="fas ' + (isCancelled ? 'fa-ban' : 'fa-exclamation-circle') + '"></i><span>' +
+              (isCancelled ? 'Job cancelled' : 'Extend failed: ' + errMsg) + '</span>' +
+              '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">✕</button>';
             document.body.appendChild(toast);
-            setTimeout(function() { toast.remove(); }, 5000);
-            reloadExtendedTab();
+            setTimeout(function() { if (toast.parentNode) toast.remove(); }, 5000);
+            if (!isCancelled) reloadExtendedTab();
 
           } else {
             // Still generating — keep polling

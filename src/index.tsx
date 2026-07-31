@@ -3774,6 +3774,30 @@ app.post('/api/job/delete', async (c) => {
   return c.json({ ok: true })
 })
 
+// POST /api/job/cancel — cancel an in-progress job (stops polling, marks as error)
+app.post('/api/job/cancel', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { job_id } = await c.req.json<{ job_id: string }>()
+  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+  await ensureTable(c.env.DB)
+  const row = await c.env.DB.prepare(
+    `SELECT data FROM jobs WHERE id = ? AND user_id = ?`
+  ).bind(job_id, user.id).first<{ data: string }>()
+  if (!row) return c.json({ error: 'Job not found' }, 404)
+  const job = JSON.parse(row.data) as any
+  // Only cancel if still in progress
+  if (job.status === 'ready') return c.json({ ok: false, error: 'Job already completed' })
+  job.status = 'error'
+  job.error  = 'Cancelled by user'
+  await c.env.DB.prepare(
+    `UPDATE jobs SET data = ?, deleted_at = ? WHERE id = ? AND user_id = ?`
+  ).bind(JSON.stringify(job), Date.now(), job_id, user.id).run()
+  return c.json({ ok: true })
+})
+
 // POST /api/job/restore — restore a job from trash
 app.post('/api/job/restore', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
@@ -5859,6 +5883,29 @@ app.post('/api/save-full-song/:jobId', async (c) => {
             }
           }
           const origPcmBytes = origPcm16.byteLength
+
+          // ── Step 4b: 20ms linear crossfade at stitch point ───────────────────
+          // Without this there is an audible click/chop at the join because the
+          // two signals almost never land at zero simultaneously.
+          // We fade out the last 20ms of the original and fade in the first 20ms
+          // of the extension — both in-place on the Int16Arrays.
+          const xfadeSamples = Math.floor(oHdr.sampleRate * 0.020) * oHdr.numChannels  // 20ms × 2ch
+          const origLen = origPcm16.length
+          const extLen  = extPcm16.length
+          // Fade-out: last xfadeSamples of original
+          if (origLen >= xfadeSamples) {
+            for (let i = 0; i < xfadeSamples; i++) {
+              const gain = 1 - (i / xfadeSamples)  // 1→0
+              origPcm16[origLen - xfadeSamples + i] = origPcm16[origLen - xfadeSamples + i] * gain | 0
+            }
+          }
+          // Fade-in: first xfadeSamples of extension
+          if (extLen >= xfadeSamples) {
+            for (let i = 0; i < xfadeSamples; i++) {
+              const gain = i / xfadeSamples  // 0→1
+              extPcm16[i] = extPcm16[i] * gain | 0
+            }
+          }
 
           // ── Step 5: Build output WAV (16-bit PCM, 48kHz, 2ch) ────────────────
           const outBitsPerSample = 16
