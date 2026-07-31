@@ -1188,13 +1188,10 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   return job
 }
 
-// ── ZIP parser for Mureka stem results ───────────────────────────────────────
-// Mureka song/stem returns a zip_url containing WAV files named: vocals.wav, drums.wav, etc.
-// This minimal parser reads only the ZIP central directory (tail of the file via Range request)
-// to extract file names + offsets — NEVER downloads the full ZIP into memory.
-//
-// zip-entry: URL format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>
-// The proxy resolves dataStart lazily with a 30-byte range fetch at localOff.
+// ── ZIP parser (legacy — kept for zip-entry: proxy in /api/stem-audio) ───────
+// NOTE: parseZipStems / parseZipTailBuffer are no longer called by new code.
+// MusicAPI returns direct stem URLs, not ZIP files. The zip-entry: scheme below
+// is only preserved to serve any legacy stem records already stored in D1.
 async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
   // Step 1: fetch the last 65536 bytes — enough to contain EOCD + central directory
   // for any typical stem ZIP (4-8 files × ~200 bytes each)
@@ -1617,9 +1614,9 @@ app.get('/api/job/stems/:jobId', async (c) => {
   if (!stemJobs?.length) return c.json({ status: 'not_started' })
 
   // Find the matching stem job.
-  // IMPORTANT: waitUntil() mutates task_id from "stemwait:<mode>:<ts>" → "zip:<url>"
-  // after Mureka completes.  The client keeps sending the original stemwait task_id,
-  // so we must fall back to a mode-based lookup when exact task_id no longer matches.
+  // task_id format after upload+submit: "stemtask:<musicapi_task_id>"
+  // Client keeps sending the original stemwait task_id, so fall back to
+  // mode-based lookup when exact task_id no longer matches.
   let stemJob = taskId
     ? stemJobs.find(s => s.task_id === taskId)
     : undefined
@@ -1649,11 +1646,11 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
   // ── stemwait: handler ────────────────────────────────────────────────────
   // POST stored a "stemwait:<mode>:<ts>" task_id to avoid blocking the Worker.
-  // On the FIRST poll (status === 'pending') we fire the Mureka call via
-  // c.executionCtx.waitUntil() — this runs AFTER we return the response, so
-  // the Worker response is sent in < 1 s regardless of how long Mureka takes.
-  // The background task writes 'zip:<zipUrl>' to D1 when complete; subsequent
-  // polls find it and proceed to ZIP parsing.
+  // On the FIRST poll (status === 'pending') we fire the MusicAPI upload+submit
+  // via c.executionCtx.waitUntil() — runs AFTER we return the response, so
+  // the Worker response is sent in < 1 s regardless of how long MusicAPI takes.
+  // The background task writes 'stemtask:<musicapi_task_id>' to D1 when submitted;
+  // subsequent polls find it and proceed to MusicAPI task polling.
   if (stemJob.task_id.startsWith('stemwait:')) {
     const stereoUrl = job.stereo_url
     if (!stereoUrl) {
@@ -1702,7 +1699,52 @@ app.get('/api/job/stems/:jobId', async (c) => {
       // Fire-and-forget: runs after response is sent, no Worker wall-clock pressure
       c.executionCtx.waitUntil((async () => {
         try {
-          // Choose endpoint: basic (2-stem) for split_from_mix, full (5-stem) for auto/advanced
+          // ── Step 1: Upload audio to MusicAPI to get a clip_id ──────────────
+          // MusicAPI stems require clip_id — upload the stereo URL first.
+          console.log(`[stems/bg] Uploading audio for ${bgTaskId}: ${bgUrl.slice(0,80)}`)
+          const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio_url: bgUrl })
+          })
+
+          let freshJob = await getJob(bgDb, bgJobId)
+          if (!freshJob) return
+          let freshStemJobs = (freshJob as any).stem_jobs as StemJob[] | undefined
+          if (!freshStemJobs) return
+          let freshStem = freshStemJobs.find((s: StemJob) => s.task_id === bgTaskId)
+          if (!freshStem) return
+
+          if (!uploadRes.ok) {
+            const errText = await uploadRes.text()
+            let errMsg = `MusicAPI upload error ${uploadRes.status}`
+            try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errText || errMsg } catch {}
+            console.error(`[stems/bg] Upload error: ${errMsg}`)
+            freshStem.status = 'error'
+            freshStem.error = errMsg
+            const errJob = { ...freshJob } as any
+            errJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+            await setJob(bgDb, errJob)
+            return
+          }
+
+          const uploadData = await uploadRes.json() as any
+          // /sonic/upload returns clip under data array or top-level
+          const clipId = uploadData?.data?.[0]?.id
+            || uploadData?.data?.[0]?.clip_id
+            || uploadData?.clip_id
+            || uploadData?.id
+          if (!clipId) {
+            freshStem.status = 'error'
+            freshStem.error = 'No clip_id in MusicAPI upload response: ' + JSON.stringify(uploadData).slice(0, 100)
+            const errJob = { ...freshJob } as any
+            errJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+            await setJob(bgDb, errJob)
+            return
+          }
+          console.log(`[stems/bg] Got clip_id: ${clipId}`)
+
+          // ── Step 2: Submit stems job using clip_id ─────────────────────────
           const stemEndpoint = (bgMode === 'split_from_mix')
             ? `${MUSICAPI_SONIC}/stems/basic`
             : `${MUSICAPI_SONIC}/stems/full`
@@ -1710,15 +1752,15 @@ app.get('/api/job/stems/:jobId', async (c) => {
           const musicapiRes = await fetch(stemEndpoint, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ audio_url: bgUrl })
+            body: JSON.stringify({ clip_id: clipId })
           })
 
-          // Re-read job from D1 to avoid clobbering concurrent writes
-          const freshJob = await getJob(bgDb, bgJobId)
+          // Re-read job again after upload
+          freshJob = await getJob(bgDb, bgJobId)
           if (!freshJob) return
-          const freshStemJobs = (freshJob as any).stem_jobs as StemJob[] | undefined
+          freshStemJobs = (freshJob as any).stem_jobs as StemJob[] | undefined
           if (!freshStemJobs) return
-          const freshStem = freshStemJobs.find((s: StemJob) => s.task_id === bgTaskId)
+          freshStem = freshStemJobs.find((s: StemJob) => s.task_id === bgTaskId)
           if (!freshStem) return
 
           if (!musicapiRes.ok) {
@@ -1735,11 +1777,10 @@ app.get('/api/job/stems/:jobId', async (c) => {
           }
 
           const data = await musicapiRes.json() as any
-          // MusicAPI stems returns { task_id } — store as "stemtask:" for the poll handler
           const stemTaskId = data.task_id || data.data?.task_id
           if (!stemTaskId) {
             freshStem.status = 'error'
-            freshStem.error = 'No task_id in MusicAPI stem response'
+            freshStem.error = 'No task_id in MusicAPI stem response: ' + JSON.stringify(data).slice(0, 100)
             const errJob = { ...freshJob } as any
             errJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
             await setJob(bgDb, errJob)
@@ -1748,7 +1789,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
           console.log(`[stems/bg] Got MusicAPI stem task_id: ${stemTaskId}`)
           freshStem.task_id = 'stemtask:' + stemTaskId
-          freshStem.status  = 'pending'  // reset so stemtask: block polls on next client poll
+          freshStem.status  = 'pending'
           const updJob = { ...freshJob } as any
           updJob.stem_jobs = freshStemJobs.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
           await setJob(bgDb, updJob)
@@ -1775,73 +1816,22 @@ app.get('/api/job/stems/:jobId', async (c) => {
     return c.json({ status: 'processing', task_id: stemJob.task_id })
   }
 
-  // If task_id starts with "zip:" it contains a direct ZIP URL from a legacy call.
-  // We just need to unzip the result and return the stem URLs.
-  if (stemJob.task_id.startsWith('zip:')) {
-    const zipUrl = stemJob.task_id.slice(4)
-    try {
-      // Parse ZIP central directory via range request — never downloads full ZIP into memory
-      const stemTracks: StemTrack[] = await parseZipStems(zipUrl)
-
-      if (!stemTracks.length) throw new Error('No stems found in ZIP')
-
-      // Filter for split_from_mix
-      let finalTracks = stemTracks
-      if (stemJob.mode === 'split_from_mix') {
-        const vocals = finalTracks.find(s => s.name === 'vocals')
-        const instr  = finalTracks.find(s => s.name === 'instrumental' || s.name === 'other')
-        finalTracks = []
-        if (vocals) finalTracks.push(vocals)
-        if (instr)  finalTracks.push({ name: 'instrumental', url: instr.url })
-        if (finalTracks.length === 1) {
-          const ex = finalTracks[0]
-          finalTracks.push({ name: ex.name === 'vocals' ? 'instrumental' : 'vocals', url: ex.url })
-        }
-      }
-
-      stemJob.status = 'ready'
-      stemJob.stems = finalTracks
-      const updatedJob = { ...job } as any
-      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-      await setJob(c.env.DB, updatedJob)
-      return c.json({ status: 'ready', stems: finalTracks, task_id: stemJob.task_id })
-    } catch (zipErr: any) {
-      stemJob.status = 'error'
-      stemJob.error = zipErr.message || 'Failed to parse stem ZIP'
-      const updatedJob = { ...job } as any
-      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-      await setJob(c.env.DB, updatedJob)
-      return c.json({ status: 'error', error: stemJob.error })
-    }
-  }
-
   // Poll MusicAPI stems task — task_id stored as "stemtask:<musicapi_task_id>"
   if (stemJob.task_id.startsWith('stemtask:')) {
     const musicapiTaskId = stemJob.task_id.slice('stemtask:'.length)
     try {
-      const res = await fetch(`${MUSICAPI_SONIC}/stems/task/${musicapiTaskId}`, {
+      const res = await fetch(`${MUSICAPI_SONIC}/task/${musicapiTaskId}`, {
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
       })
       if (!res.ok) return c.json({ status: 'processing' })
       const data = await res.json() as any
 
-      // MusicAPI stems task returns { state: 'succeeded'|'failed'|'pending', stems: {...}, zip_url: ... }
-      // or nested under data
+      // MusicAPI stems task returns { state: 'succeeded'|'failed'|'pending', stems: {...} }
+      // or nested under data.  MusicAPI returns direct CDN URLs — no ZIP handling needed.
       const taskState = data.state || data.data?.state || data.status
       const stemsData = data.stems || data.data?.stems || {}
-      const zipUrl = data.zip_url || data.data?.zip_url
 
       if (taskState === 'succeeded' || taskState === 'completed') {
-        // If we got a zip_url, transition to zip: handling
-        if (zipUrl) {
-          stemJob.task_id = 'zip:' + zipUrl
-          stemJob.status  = 'pending'
-          const updJob = { ...job } as any
-          updJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === 'stemtask:' + musicapiTaskId ? stemJob : s)
-          await setJob(c.env.DB, updJob)
-          return c.json({ status: 'processing', task_id: stemJob.task_id })
-        }
-
         // Direct stems object: { vocals: url, drums: url, ... }
         let stemTracks: StemTrack[] = Object.entries(stemsData)
           .filter(([, url]) => typeof url === 'string' && url)
