@@ -1318,12 +1318,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      // Trigger WAV download
-      var a = document.createElement('a');
-      a.href = '/api/download-wav/' + data.jobId;
-      a.download = (data.title || safeTitle || 'full_song').replace(/[^a-z0-9_\-\s]/gi, '_') + '.wav';
-      document.body.appendChild(a); a.click(); a.remove();
-
       // Invalidate beats cache and reload beats tab so the new card appears
       if (window._libLoaded) window._libLoaded.beats = false;
       if (typeof fetchLibTab === 'function') fetchLibTab('beats');
