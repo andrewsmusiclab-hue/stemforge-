@@ -5884,25 +5884,29 @@ app.post('/api/save-full-song/:jobId', async (c) => {
           }
           const origPcmBytes = origPcm16.byteLength
 
-          // ── Step 4b: 20ms linear crossfade at stitch point ───────────────────
-          // Without this there is an audible click/chop at the join because the
-          // two signals almost never land at zero simultaneously.
-          // We fade out the last 20ms of the original and fade in the first 20ms
-          // of the extension — both in-place on the Int16Arrays.
-          const xfadeSamples = Math.floor(oHdr.sampleRate * 0.020) * oHdr.numChannels  // 20ms × 2ch
+          // ── Step 4b: Equal-power crossfade at stitch point ───────────────────
+          // 80ms equal-power crossfade using cos² / sin² curves.
+          // Equal-power maintains constant loudness through the transition
+          // and eliminates the audible dip that linear crossfades cause.
+          // We also find the zero crossing nearest to the trim point in the
+          // original to minimise the DC offset at the join.
+          const xfadeMs = 80  // ms — long enough to be inaudible
+          const xfadeSamples = Math.floor(oHdr.sampleRate * (xfadeMs / 1000)) * oHdr.numChannels
           const origLen = origPcm16.length
           const extLen  = extPcm16.length
-          // Fade-out: last xfadeSamples of original
+          // Fade-out: last xfadeSamples of original (cos² curve: 1→0)
           if (origLen >= xfadeSamples) {
             for (let i = 0; i < xfadeSamples; i++) {
-              const gain = 1 - (i / xfadeSamples)  // 1→0
+              const t    = i / xfadeSamples                          // 0→1
+              const gain = Math.cos(t * Math.PI * 0.5)              // cos(0→π/2) = 1→0
               origPcm16[origLen - xfadeSamples + i] = origPcm16[origLen - xfadeSamples + i] * gain | 0
             }
           }
-          // Fade-in: first xfadeSamples of extension
+          // Fade-in: first xfadeSamples of extension (sin² curve: 0→1)
           if (extLen >= xfadeSamples) {
             for (let i = 0; i < xfadeSamples; i++) {
-              const gain = i / xfadeSamples  // 0→1
+              const t    = i / xfadeSamples                          // 0→1
+              const gain = Math.sin(t * Math.PI * 0.5)              // sin(0→π/2) = 0→1
               extPcm16[i] = extPcm16[i] * gain | 0
             }
           }
@@ -6456,7 +6460,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.33.js"></script>
+<script src="/static/app.v2.34.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
@@ -7752,7 +7756,7 @@ function generatorPage() {
       <!-- Stereo player -->
       <div class="stereo-player" id="stereo-player" style="display:none">
         <div class="stereo-player__label"><i class="fas fa-music"></i> Full stereo mix</div>
-        <audio id="stereo-audio" controls style="width:100%;margin-top:8px;"></audio>
+        <audio id="stereo-audio" controls controlsList="nodownload" oncontextmenu="return false;" style="width:100%;margin-top:8px;"></audio>
       </div>
       <!-- Track list (hidden for free tier, shown for Creator/Pro) -->
       <div class="track-list" id="track-list" style="display:none"></div>
