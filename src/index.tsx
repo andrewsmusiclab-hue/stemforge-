@@ -589,11 +589,13 @@ function pickRandomKey(): string {
   return ALL_KEYS[Math.floor(Math.random() * ALL_KEYS.length)]
 }
 
-async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string, userPlan?: string, userDurationSec?: number): Promise<Blueprint & { suggested_title?: string }> {
+async function generateBlueprint(prompt: string, apiKey: string, titleHint?: string, userPlan?: string, userDurationSec?: number, explicitGenre?: string): Promise<Blueprint & { suggested_title?: string }> {
   const suggestedKey = pickRandomKey()
 
+  // Use explicit genre if provided (from style chip / gen-style input), otherwise
+  // fall back to extracting the first word/phrase from the prompt
   const genreMatch = prompt.match(/^([^.,]+?)[.,]/)
-  const detectedGenre = genreMatch ? genreMatch[1].trim() : ''
+  const detectedGenre = explicitGenre?.trim() || (genreMatch ? genreMatch[1].trim() : '')
 
   const systemPrompt = `You are a professional music producer AI that creates beat blueprints.
 You STRICTLY follow the user's genre, mood, and style — you NEVER substitute or drift.
@@ -625,6 +627,8 @@ Genre-to-sound mapping examples (follow these exactly for the detected genre):
 - "R&B" → BPM 65–95, silky pad, soft snare, soulful chords, intimate/smooth mood. NO trumpet, NO saxophone unless user asked.
 - "lo-fi" → BPM 70–90, mellow piano, dusty vinyl crackle, boom-bap kit, nostalgic/chill mood
 - "afrobeats" → BPM 100–115, talking drum pattern, afrobeats percussion, melodic guitar, energetic
+- "soca" → BPM 120–145, driving soca rhythm, brass stabs, bouncy percussion, carnival energy, uplifting
+- "dancehall" → BPM 90–110, riddim pattern, heavy bass, skank guitar chops, energetic/danceable
 - "reggaeton" → BPM 95–105, dembow rhythm, heavy bass, perreo energy
 - "jazz" → BPM 90–140, swing feel, walking bass, ride cymbal, trumpet, saxophone, chord voicings
 - "cinematic" → BPM 60–100, orchestral strings, dramatic brass, epic pads, swelling dynamics
@@ -802,7 +806,7 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
 }
 
 // Step 1+2: called once from POST /api/generate (fast — GPT + MusicAPI kick-off only)
-async function startPipeline(jobId: string, env: Bindings, userPlan?: string, userDurationSec?: number, userLyrics?: string) {
+async function startPipeline(jobId: string, env: Bindings, userPlan?: string, userDurationSec?: number, userLyrics?: string, explicitGenre?: string) {
   const db = env.DB
   let job = await getJob(db, jobId)
   if (!job) return
@@ -813,7 +817,7 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
     await setJob(db, { ...job })
 
     const userTitle = (job as any).title as string | undefined
-    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle, userPlan, userDurationSec)
+    const blueprint = await generateBlueprint(job.prompt, env.OPENAI_API_KEY, userTitle, userPlan, userDurationSec, explicitGenre || (job as any).genre)
 
     // Auto-name the track if user left title blank
     if (!userTitle && (blueprint as any).suggested_title) {
@@ -1363,7 +1367,7 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
   // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, userPlan, userDurationSec, lyrics?.trim() || undefined))
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, userPlan, userDurationSec, lyrics?.trim() || undefined, genre || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -5816,7 +5820,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.36.js"></script>
+<script src="/static/app.v2.37.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
@@ -6959,12 +6963,15 @@ function generatorPage() {
           <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
           <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left" disabled><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
+            <button class="suno-chip" data-style="hip hop">Hip Hop</button>
             <button class="suno-chip" data-style="trap">Trap</button>
             <button class="suno-chip" data-style="drill">Drill</button>
             <button class="suno-chip" data-style="R&B">R&B</button>
+            <button class="suno-chip" data-style="soca">Soca</button>
             <button class="suno-chip" data-style="lo-fi">Lo-Fi</button>
             <button class="suno-chip" data-style="boom bap">Boom Bap</button>
             <button class="suno-chip" data-style="afrobeats">Afrobeats</button>
+            <button class="suno-chip" data-style="dancehall">Dancehall</button>
             <button class="suno-chip" data-style="cinematic">Cinematic</button>
             <button class="suno-chip" data-style="reggaeton">Reggaeton</button>
             <button class="suno-chip" data-style="house">House</button>
@@ -6973,25 +6980,6 @@ function generatorPage() {
             <button class="suno-chip" data-style="soul">Soul</button>
           </div>
           <button class="suno-chips-arrow" id="chips-arrow-right" aria-label="Scroll right"><i class="fas fa-chevron-right"></i></button>
-        </div>
-      </div>
-    </div>
-
-    <!-- SECTION 5: More Options (collapsible) -->
-    <div class="suno-card suno-card--collapsed" id="card-more">
-      <div class="suno-card__header" id="more-options-toggle" style="cursor:pointer">
-        <button class="suno-card__collapse suno-card__collapse--right" aria-label="Toggle">
-          <i class="fas fa-chevron-right" id="more-collapse-icon"></i>
-        </button>
-        <span class="suno-card__title">More Options</span>
-      </div>
-      <div class="suno-card__body" id="more-body" style="display:none">
-        <!-- Instruments (prompt-based, optional) -->
-        <div class="suno-option-row">
-          <label class="suno-option-label">Include instruments <span class="suno-optional-tag">Optional</span></label>
-          <textarea class="suno-textarea suno-textarea--sm" id="gen-instruments"
-            rows="2"
-            placeholder="e.g. Rhodes piano, flute, violin, guitar... describe any instruments you want included"></textarea>
         </div>
       </div>
     </div>
