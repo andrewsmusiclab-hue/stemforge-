@@ -770,6 +770,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Cached project arrays per tab (for client-side search)
   const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [] };
+  // Expose on window so external code can inject fresh data after delete/restore
+  window._libData = _libData;
   let   _libActive  = 'beats';
 
   // ── Stable unique hue from any ID string ───────────────────
@@ -1064,7 +1066,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (_libLoaded[tab]) { populateGrid(gridEl, tab, _libData[tab]); return; }
     gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
     try {
-      const res = await fetch('/api/projects?tab=' + tab);
+      const res = await fetch('/api/projects?tab=' + tab, { credentials: 'include' });
       if (!res.ok) {
         if (res.status === 401) {
           gridEl.innerHTML = `<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your projects. <a href="/login">Log in</a></div>`;
@@ -5998,59 +6000,111 @@ window.renderEditInstrumentPills = function (bp) {
     }
   })();
 
-  // ── Base deleteLibItem: soft-delete a card and reload the active tab ────
+  // ── deleteLibItem: soft-delete a card, remove from DOM, reload grids ────
+  // Completely self-contained — no dependency on fetchLibTab, switchLibTab,
+  // or any closure-scoped function. Uses only window-level APIs and direct
+  // fetch calls so it works regardless of which IIFE calls it.
   window.deleteLibItem = async function(jobId) {
-    // Step 1: API call — only this can fail fatally
-    var deleteOk = false;
+    // Step 1: API call — fatal errors shown to user
     try {
-      const r = await fetch('/api/job/delete', {
+      var r = await fetch('/api/job/delete', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId })
       });
       if (!r.ok) {
-        let errMsg = 'HTTP ' + r.status;
-        try { const j = await r.json(); errMsg = j.error || errMsg; } catch {}
+        var errMsg = 'HTTP ' + r.status;
+        try { var j = await r.json(); errMsg = j.error || errMsg; } catch(_) {}
         alert('Could not delete item: ' + errMsg);
         return;
       }
-      deleteOk = true;
     } catch(e) {
       alert('Could not delete item: ' + e.message);
       return;
     }
 
-    // Step 2: UI refresh — best effort, never show an error for this
-    if (!deleteOk) return;
+    // Step 2: Immediately remove the card from whatever grid it's in (instant visual feedback)
     try {
+      // Cards use data-id attribute (see renderBeatCard / renderOneshotCard)
+      var card = document.querySelector('.project-card[data-id="' + jobId + '"]');
+      if (card) card.remove();
+    } catch(_) {}
+
+    // Step 3: Determine active tab and reload grids via direct fetch
+    // This bypasses fetchLibTab/switchLibTab entirely — no closure required
+    try {
+      var activeBtn = document.querySelector('.lib-tab--active');
+      var activeTab = activeBtn ? (activeBtn.dataset.tab || 'beats') : 'beats';
+
+      // Clear caches so next switchLibTab call re-fetches
       if (window._libLoaded) {
         window._libLoaded.beats    = false;
         window._libLoaded.oneshots = false;
         window._libLoaded.trash    = false;
+        window._libLoaded.extended = false;
       }
-      var activeBtn = document.querySelector('.lib-tab--active');
-      var activeTab = activeBtn ? activeBtn.dataset.tab : 'beats';
-      if (window.switchLibTab) window.switchLibTab(activeTab);
-    } catch(_) { /* UI refresh failed — item is deleted, silently ignore */ }
-  };
 
-  // ── Patch deleteLibItem to hard-reload extended tab after deletion ──────
-  // The base deleteLibItem sets _libLoaded.extended = false then calls fetchLibTab
-  // which hits populateGrid with no extended case. Override so extended always uses reloadExtendedTab.
-  (function() {
-    var _baseDeleteLibItem = window.deleteLibItem;
-    window.deleteLibItem = async function(jobId) {
-      // Determine the active tab before deletion
-      var wasExtended = (document.querySelector('.lib-tab--active') || {}).dataset &&
-                        document.querySelector('.lib-tab--active').dataset.tab === 'extended';
-      if (_baseDeleteLibItem) await _baseDeleteLibItem(jobId);
-      if (wasExtended) {
-        // Base already cleared _libLoaded.extended and tried fetchLibTab — now hard-reload
-        setTimeout(reloadExtendedTab, 100);
+      // Handle extended tab — use its own dedicated reloader
+      if (activeTab === 'extended') {
+        if (typeof reloadExtendedTab === 'function') reloadExtendedTab();
+        else if (window.reloadExtendedTab) window.reloadExtendedTab();
+        return;
       }
-    };
-  })();
+
+      // For beats/oneshots/trash/uploads: fetch fresh data and re-render the active grid
+      var activeGrid = document.getElementById('project-grid-' + activeTab);
+      if (activeGrid) {
+        activeGrid.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+      }
+
+      // Re-fetch the active tab data directly with credentials
+      // _libLoaded[activeTab] is already false so fetchLibTab will go to network
+      fetch('/api/projects?tab=' + activeTab, { credentials: 'include' })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          var projects = data.projects || [];
+          // Inject fresh data into the internal cache that fetchLibTab reads from
+          // This ensures switchLibTab → fetchLibTab renders the new list, not stale data
+          if (window._libData) window._libData[activeTab] = projects;
+          if (window._libLoaded) window._libLoaded[activeTab] = true;
+          // Now switchLibTab → fetchLibTab will hit the cache branch with fresh data
+          try {
+            if (window.switchLibTab) window.switchLibTab(activeTab);
+          } catch(_) {
+            // Absolute fallback — just clear the spinner
+            if (activeGrid) activeGrid.innerHTML = '';
+          }
+        })
+        .catch(function() {
+          // Even on error, try to switch back so the grid isn't stuck on spinner
+          if (window._libLoaded) window._libLoaded[activeTab] = false;
+          try { if (window.switchLibTab) window.switchLibTab(activeTab); } catch(_) {}
+        });
+
+      // Also reload trash data in background so the trash tab is up-to-date
+      // when the user clicks it next — no visible re-render, just cache update
+      if (activeTab !== 'trash') {
+        setTimeout(function() {
+          try {
+            fetch('/api/projects?tab=trash', { credentials: 'include' })
+              .then(function(res) { return res.json(); })
+              .then(function(data) {
+                var trashProjects = data.projects || [];
+                if (window._libData)  window._libData.trash  = trashProjects;
+                if (window._libLoaded) window._libLoaded.trash = true;
+                // Update trash count badge if visible
+                if (window.updateTabCount) window.updateTabCount('trash', trashProjects.length);
+              })
+              .catch(function() {
+                // On error just mark trash as stale so next click re-fetches
+                if (window._libLoaded) window._libLoaded.trash = false;
+              });
+          } catch(_) {}
+        }, 300);
+      }
+    } catch(_) { /* UI refresh failed silently — item is already deleted */ }
+  };
 
   function _extPollJob(jobId, ui) {
     var maxAttempts = 180; // 15 min max (~900s) — chaining can take up to 15 min
