@@ -2444,8 +2444,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                   dlBtn.style.cssText = 'margin-top:6px;width:100%;padding:5px;border-radius:8px;border:1px solid rgba(78,159,255,.3);background:rgba(78,159,255,.08);color:var(--primary,#4e9fff);cursor:pointer;font-size:.75rem;font-weight:600';
                   dlBtn.innerHTML = '<i class="fas fa-download"></i> Download' + (hasAlt ? ' V' + n : '');
-                  const dlUrl = url, dlName = safeFilename + (hasAlt ? '_v' + n : '') + '.wav';
-                  dlBtn.onclick = function() { var a=document.createElement('a');a.href=dlUrl;a.download=dlName;document.body.appendChild(a);a.click();a.remove(); };
+                  // Route through /api/download-wav so the file gets the track title
+                  // and is served as a proper WAV — NOT the raw CDN MP3 URL.
+                  const dlJobId = job.id;
+                  const dlName = safeFilename + (hasAlt ? '_v' + n : '') + '.wav';
+                  dlBtn.onclick = function() { var a=document.createElement('a');a.href='/api/download-wav/'+dlJobId;a.download=dlName;document.body.appendChild(a);a.click();a.remove(); };
                 }
                 scrubParent.appendChild(dlBtn);
               }
@@ -5445,6 +5448,7 @@ window.renderEditInstrumentPills = function (bp) {
   var extIsPlaying     = false;
   var extRafId         = null;  // requestAnimationFrame id for playhead updates
   var extWaveData      = null;  // Float32Array of normalised peak amplitudes
+  var extZeroCrossings = null;  // Int32Array of sample indices where audio crosses zero
 
   // ── Drag-and-drop on upload zone ──────────────────────────────────────────
   document.addEventListener('DOMContentLoaded', function () {
@@ -5637,6 +5641,7 @@ window.renderEditInstrumentPills = function (bp) {
         var W = canvas.offsetWidth || 300;
         canvas.width = W * window.devicePixelRatio || W;
         var data = buffer.getChannelData(0);
+        var sampleRate = buffer.sampleRate;
         var step = Math.floor(data.length / W);
         var peaks = new Float32Array(W);
         for (var i = 0; i < W; i++) {
@@ -5648,6 +5653,25 @@ window.renderEditInstrumentPills = function (bp) {
           peaks[i] = max;
         }
         extWaveData = peaks;
+
+        // ── Compute zero crossings ──────────────────────────────────────────
+        // Scan the waveform for sign changes. Only keep crossings that are at
+        // least ~50ms apart (avoid noise) and store as ms timestamps.
+        var minGapSamples = Math.floor(sampleRate * 0.05); // 50ms minimum gap
+        var zcList = [];
+        for (var si = 1; si < data.length; si++) {
+          if ((data[si - 1] >= 0 && data[si] < 0) || (data[si - 1] < 0 && data[si] >= 0)) {
+            if (zcList.length === 0 || si - zcList[zcList.length - 1] > minGapSamples) {
+              zcList.push(si);
+            }
+          }
+        }
+        // Store as ms timestamps
+        extZeroCrossings = new Float32Array(zcList.length);
+        for (var zi = 0; zi < zcList.length; zi++) {
+          extZeroCrossings[zi] = (zcList[zi] / sampleRate) * 1000;
+        }
+
         extPaintWaveform(0);
         ctx.close();
       }, function() { extDrawFlatWaveform(); });
@@ -5683,6 +5707,25 @@ window.renderEditInstrumentPills = function (bp) {
         : 'rgba(255,255,255,0.18)';
       ctx.fillRect(x, (H - barH) / 2, Math.max(1, W / extWaveData.length - 1), barH);
     }
+    // Draw playhead line at the snapped zero-crossing position
+    if (extAudioDuration > 0 && extExtendAtMs > 0 && progress > 0 && progress < 0.999) {
+      var lineX = Math.floor(progress * W);
+      ctx.strokeStyle = 'rgba(78,159,255,1)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(lineX, 0);
+      ctx.lineTo(lineX, H);
+      ctx.stroke();
+      // Small diamond snap indicator at centre
+      ctx.fillStyle = '#4e9fff';
+      ctx.beginPath();
+      ctx.moveTo(lineX, H / 2 - 6);
+      ctx.lineTo(lineX + 5, H / 2);
+      ctx.lineTo(lineX, H / 2 + 6);
+      ctx.lineTo(lineX - 5, H / 2);
+      ctx.closePath();
+      ctx.fill();
+    }
   }
 
   // ── Scrubber interactions ─────────────────────────────────────────────────
@@ -5690,12 +5733,46 @@ window.renderEditInstrumentPills = function (bp) {
     if (!extAudioDuration) return;
     var rect = (wrap || document.getElementById('ext-scrubber-wrap')).getBoundingClientRect();
     var pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    // At the very end (last 1%), treat as "end of track" = default extend behaviour
-    extExtendAtMs = pct >= 0.99 ? 0 : Math.round(pct * extAudioDuration * 1000);
-    extUpdateScrubberUI(pct >= 0.99 ? 1.0 : pct);
-    // Seek the audio element
+
+    // At the very end (last 1%), treat as "end of track"
+    if (pct >= 0.99) {
+      extExtendAtMs = 0;
+      extUpdateScrubberUI(1.0);
+      extPaintWaveform(1.0);
+      return;
+    }
+
+    var rawMs = Math.round(pct * extAudioDuration * 1000);
+
+    // ── Snap to nearest zero crossing within ±300ms ───────────────────────
+    // This ensures the extend always starts on a clean zero so there's no
+    // click/pop at the handoff point regardless of where the user clicks.
+    if (extZeroCrossings && extZeroCrossings.length > 0) {
+      var snapWindowMs = 300;
+      var bestMs = rawMs;
+      var bestDist = snapWindowMs + 1;
+      // Binary search to find the region near rawMs
+      var lo = 0, hi = extZeroCrossings.length - 1;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (extZeroCrossings[mid] < rawMs) lo = mid + 1; else hi = mid;
+      }
+      // Check a window of ±5 candidates around the binary search landing
+      for (var ci = Math.max(0, lo - 5); ci <= Math.min(extZeroCrossings.length - 1, lo + 5); ci++) {
+        var dist = Math.abs(extZeroCrossings[ci] - rawMs);
+        if (dist < bestDist) { bestDist = dist; bestMs = extZeroCrossings[ci]; }
+      }
+      if (bestDist <= snapWindowMs) rawMs = Math.round(bestMs);
+    }
+
+    extExtendAtMs = rawMs;
+    var snappedPct = extAudioDuration > 0 ? (rawMs / (extAudioDuration * 1000)) : pct;
+    extUpdateScrubberUI(snappedPct);
+    extPaintWaveform(snappedPct);
+
+    // Seek the audio element to the snapped position
     var audio = document.getElementById('ext-preview-audio');
-    if (audio && extAudioDuration) audio.currentTime = pct * extAudioDuration;
+    if (audio && extAudioDuration) audio.currentTime = rawMs / 1000;
   };
 
   function extScrubHover(e, wrap) {
@@ -5785,6 +5862,7 @@ window.renderEditInstrumentPills = function (bp) {
     extAudioDuration = 0;
     extIsPlaying     = false;
     extWaveData      = null;
+    extZeroCrossings = null;
     if (extRafId) { cancelAnimationFrame(extRafId); extRafId = null; }
     var audio = document.getElementById('ext-preview-audio');
     if (audio) { try { audio.pause(); } catch(e) {} audio.src = ''; }
