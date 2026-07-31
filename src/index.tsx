@@ -1,7 +1,10 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
-import { MPEGDecoder } from 'mpg123-decoder'
+// Import MPEGDecoder directly from its source file (bypassing the package index)
+// to avoid bundling MPEGDecoderWebWorker, which calls `extends getWorker()` at
+// class-definition time — `globalThis.Worker` is undefined in CF Workers → crash.
+import MPEGDecoder from '../node_modules/mpg123-decoder/src/MPEGDecoder.js'
 
 type Bindings = {
   OPENAI_API_KEY: string
