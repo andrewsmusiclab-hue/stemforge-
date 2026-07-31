@@ -1010,7 +1010,7 @@ async function fireNextChainExtend(
       return taskId
     } else {
       // Fallback — upload audio URL then extend
-      const uploadBody = { audio_url: currentUrl }
+      const uploadBody = { url: currentUrl }   // MusicAPI /sonic/upload expects "url"
       const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -1699,7 +1699,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
           const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${bgKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ audio_url: bgUrl })
+            body: JSON.stringify({ url: bgUrl })   // MusicAPI /sonic/upload expects "url", not "audio_url"
           })
 
           let freshJob = await getJob(bgDb, bgJobId)
