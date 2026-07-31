@@ -1714,6 +1714,10 @@ app.get('/api/job/stems/:jobId', async (c) => {
             let errMsg = `MusicAPI upload error ${uploadRes.status}`
             try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errText || errMsg } catch {}
             console.error(`[stems/bg] Upload error: ${errMsg}`)
+            // 429 = rate-limited / out of credits on MusicAPI account
+            if (uploadRes.status === 429) {
+              errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai to use stem extraction. [credits]'
+            }
             freshStem.status = 'error'
             freshStem.error = errMsg
             const errJob = { ...freshJob } as any
@@ -1762,6 +1766,10 @@ app.get('/api/job/stems/:jobId', async (c) => {
             let errMsg = `MusicAPI stem error ${musicapiRes.status}`
             try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || j?.detail || errText || errMsg } catch {}
             console.error(`[stems/bg] MusicAPI error ${musicapiRes.status}: ${errText}`)
+            // 429 = rate-limited / out of credits on MusicAPI account
+            if (musicapiRes.status === 429) {
+              errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai to use stem extraction. [credits]'
+            }
             freshStem.status = 'error'
             freshStem.error = errMsg
             const errJob = { ...freshJob } as any
@@ -5804,7 +5812,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.39.js"></script>
+<script src="/static/app.v2.40.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
