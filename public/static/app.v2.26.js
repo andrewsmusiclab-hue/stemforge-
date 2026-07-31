@@ -1213,13 +1213,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // Get Full Track — extended cards with a source job only
-    if (isExtended && sourceJobId && stereoUrl) {
-      items.push({ icon: 'fa-link', label: 'Get Full Track', tooltip: 'Stitch original + extended into one WAV file', action: () => {
-        var a = document.createElement('a');
-        a.href = '/api/get-full-track/' + jobId;
-        a.download = safeTitle + '_full.wav';
-        document.body.appendChild(a); a.click(); a.remove();
+    // Get Full Song — extended cards only: stitch + save to beats tab + download
+    if (isExtended && stereoUrl) {
+      items.push({ icon: 'fa-music', label: 'Get Full Song', tooltip: 'Stitch original + extended into one full song and add it to your Beats tab', action: () => {
+        getFullSong(jobId, safeTitle);
       }});
     }
 
@@ -1234,7 +1231,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         });
       } else {
-        items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
+        items.push({ icon: 'fa-download', label: 'Download',
           action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
       }
     }
@@ -1289,7 +1286,72 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 0);
   };
 
-  // ── Dashboard: Download Full Track modal (WAV) ────────────
+  // ── Get Full Song: stitch extended + original, save as beat, download ────────
+  window.getFullSong = async function(jobId, safeTitle) {
+    // Show a toast while processing
+    var toast = document.createElement('div');
+    toast.id = 'gfs-toast';
+    toast.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+      'background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;' +
+      'padding:13px 20px;border-radius:12px;font-size:.85rem;font-weight:600;' +
+      'box-shadow:0 4px 20px rgba(78,159,255,.4);display:flex;align-items:center;gap:10px;max-width:300px';
+    toast.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>Building full song\u2026</span>';
+    document.body.appendChild(toast);
+
+    try {
+      var res = await fetch('/api/save-full-song/' + jobId, {
+        method: 'POST',
+        credentials: 'include'
+      });
+      var data = await res.json();
+
+      toast.remove();
+
+      if (!res.ok || data.error) {
+        var errToast = document.createElement('div');
+        errToast.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+          'background:#ef4444;color:#fff;padding:12px 18px;border-radius:10px;font-size:.85rem;font-weight:600;' +
+          'box-shadow:0 4px 20px rgba(239,68,68,.4)';
+        errToast.textContent = 'Could not build full song: ' + (data.error || 'Unknown error');
+        document.body.appendChild(errToast);
+        setTimeout(function() { errToast.remove(); }, 5000);
+        return;
+      }
+
+      // Trigger WAV download
+      var a = document.createElement('a');
+      a.href = '/api/download-wav/' + data.jobId;
+      a.download = (data.title || safeTitle || 'full_song').replace(/[^a-z0-9_\-\s]/gi, '_') + '.wav';
+      document.body.appendChild(a); a.click(); a.remove();
+
+      // Invalidate beats cache and reload beats tab so the new card appears
+      if (window._libLoaded) window._libLoaded.beats = false;
+      if (typeof fetchLibTab === 'function') fetchLibTab('beats');
+      // Switch to beats tab so user sees their new full song card
+      if (typeof window.switchLibTab === 'function') window.switchLibTab('beats');
+
+      // Success toast
+      var doneToast = document.createElement('div');
+      doneToast.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+        'background:linear-gradient(135deg,#10b981,#059669);color:#fff;' +
+        'padding:13px 18px;border-radius:12px;font-size:.85rem;font-weight:600;' +
+        'box-shadow:0 4px 20px rgba(16,185,129,.4);display:flex;align-items:center;gap:10px';
+      doneToast.innerHTML = '<i class="fas fa-check-circle" style="font-size:1.1rem"></i>' +
+        '<span>Full song saved to Beats tab!</span>';
+      document.body.appendChild(doneToast);
+      setTimeout(function() {
+        doneToast.style.transition = 'opacity .4s';
+        doneToast.style.opacity = '0';
+        setTimeout(function() { doneToast.remove(); }, 400);
+      }, 4000);
+
+    } catch(e) {
+      toast.remove();
+      alert('Failed to build full song. Please try again.');
+    }
+  };
+
+  // ── Dashboard: Download modal (WAV) ────────────
   window.openDownloadModal = function(jobId, stereoUrl, safeTitle) {
     if (!stereoUrl) {
       alert('No audio available for this track yet. Generate the beat first.');
@@ -1313,7 +1375,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:32px 28px;max-width:360px;width:90%;text-align:center;position:relative">
         <button onclick="document.getElementById('sf-download-modal').remove()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
         <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,var(--primary),#8b5cf6);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.2rem;color:#fff"><i class="fas fa-download"></i></div>
-        <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download Full Track</h3>
+        <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download</h3>
         <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your format:</p>
         <div style="display:flex;flex-direction:column;gap:10px">
           <a href="/api/download-wav/${jobId}" download="${title}.wav"

@@ -5319,6 +5319,150 @@ app.get('/api/get-full-track/:jobId', async (c) => {
   }
 })
 
+// POST /api/save-full-song/:jobId — stitch original + extended WAV, save to R2, create beats-tab job
+// Returns { jobId, title } of the newly created full-song beat entry.
+app.post('/api/save-full-song/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('jobId')
+  await ensureTable(c.env.DB)
+
+  // Load the extended job
+  const extRow = await c.env.DB.prepare(
+    `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+  ).bind(jobId, user.id).first<{ data: string }>()
+  if (!extRow) return c.json({ error: 'Extended track not found' }, 404)
+
+  const extJob = JSON.parse(extRow.data) as any
+  if (!extJob.stereo_url) return c.json({ error: 'Extended track audio not ready yet' }, 400)
+  if (extJob.extend_task_type !== 'song_extend') return c.json({ error: 'Not an extended track' }, 400)
+
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+
+  try {
+    let mergedBuf: ArrayBuffer
+
+    if (!extJob.source_job_id) {
+      // No source to stitch — just use the extension audio as-is
+      const resp = await fetch(`${siteUrl}/api/download-wav/${jobId}`, {
+        headers: { 'Cookie': c.req.header('Cookie') || '' }
+      })
+      if (!resp.ok) return c.json({ error: `Failed to fetch extended audio: HTTP ${resp.status}` }, 500)
+      mergedBuf = await resp.arrayBuffer()
+    } else {
+      // Load the source job
+      const srcRow = await c.env.DB.prepare(
+        `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+      ).bind(extJob.source_job_id, user.id).first<{ data: string }>()
+      if (!srcRow) return c.json({ error: 'Original source track not found' }, 404)
+      const srcJob = JSON.parse(srcRow.data) as any
+      if (!srcJob.stereo_url) return c.json({ error: 'Source track audio not ready' }, 400)
+
+      // Fetch both WAVs
+      const [srcResp, extResp] = await Promise.all([
+        fetch(`${siteUrl}/api/download-wav/${extJob.source_job_id}`, {
+          headers: { 'Cookie': c.req.header('Cookie') || '' }
+        }),
+        fetch(`${siteUrl}/api/download-wav/${jobId}`, {
+          headers: { 'Cookie': c.req.header('Cookie') || '' }
+        })
+      ])
+      if (!srcResp.ok) return c.json({ error: `Failed to fetch source audio: HTTP ${srcResp.status}` }, 500)
+      if (!extResp.ok) return c.json({ error: `Failed to fetch extended audio: HTTP ${extResp.status}` }, 500)
+
+      const [srcBuf, extBuf] = await Promise.all([srcResp.arrayBuffer(), extResp.arrayBuffer()])
+
+      // WAV concatenation (same logic as get-full-track)
+      const srcView = new DataView(srcBuf)
+      const extView = new DataView(extBuf)
+
+      function readWavHeader2(view: DataView) {
+        const numChannels   = view.getUint16(22, true)
+        const sampleRate    = view.getUint32(24, true)
+        const bitsPerSample = view.getUint16(34, true)
+        let dataOffset = 12
+        while (dataOffset < view.byteLength - 8) {
+          const chunkId   = view.getUint32(dataOffset, false)
+          const chunkSize = view.getUint32(dataOffset + 4, true)
+          if (chunkId === 0x64617461) return { numChannels, sampleRate, bitsPerSample, dataOffset: dataOffset + 8, dataSize: chunkSize }
+          dataOffset += 8 + chunkSize
+        }
+        return { numChannels, sampleRate, bitsPerSample, dataOffset: 44, dataSize: view.byteLength - 44 }
+      }
+
+      const srcHdr = readWavHeader2(srcView)
+      const extHdr = readWavHeader2(extView)
+
+      let srcDataSize = srcHdr.dataSize
+      if (extJob.continue_at_ms) {
+        const continueAtSec  = extJob.continue_at_ms / 1000
+        const bytesPerSample = srcHdr.bitsPerSample / 8
+        const bytesPerSec    = srcHdr.sampleRate * srcHdr.numChannels * bytesPerSample
+        const trimmedBytes   = Math.floor(continueAtSec * bytesPerSec)
+        const aligned        = trimmedBytes - (trimmedBytes % (srcHdr.numChannels * bytesPerSample))
+        srcDataSize          = Math.min(aligned, srcHdr.dataSize)
+      }
+
+      const totalDataSize = srcDataSize + extHdr.dataSize
+      const headerSize    = 44
+      mergedBuf           = new ArrayBuffer(headerSize + totalDataSize)
+      const out           = new DataView(mergedBuf)
+      const outBytes      = new Uint8Array(mergedBuf)
+
+      out.setUint32(0,  0x52494646, false)
+      out.setUint32(4,  36 + totalDataSize, true)
+      out.setUint32(8,  0x57415645, false)
+      out.setUint32(12, 0x666d7420, false)
+      out.setUint32(16, 16, true)
+      out.setUint16(20, 1, true)
+      out.setUint16(22, srcHdr.numChannels, true)
+      out.setUint32(24, srcHdr.sampleRate, true)
+      out.setUint32(28, srcHdr.sampleRate * srcHdr.numChannels * (srcHdr.bitsPerSample / 8), true)
+      out.setUint16(32, srcHdr.numChannels * (srcHdr.bitsPerSample / 8), true)
+      out.setUint16(34, srcHdr.bitsPerSample, true)
+      out.setUint32(36, 0x64617461, false)
+      out.setUint32(40, totalDataSize, true)
+      outBytes.set(new Uint8Array(srcBuf, srcHdr.dataOffset, srcDataSize), headerSize)
+      outBytes.set(new Uint8Array(extBuf, extHdr.dataOffset, extHdr.dataSize), headerSize + srcDataSize)
+    }
+
+    // Save merged WAV to R2
+    const newJobId  = crypto.randomUUID()
+    const r2Key     = `extend-uploads/full-song-${newJobId}.wav`
+    await c.env.IMAGES.put(r2Key, mergedBuf, { httpMetadata: { contentType: 'audio/wav' } })
+    const audioUrl  = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(`full-song-${newJobId}.wav`)}`
+
+    // Build title — strip "(Extended)" suffix if present
+    const rawTitle  = extJob.title || 'Full Song'
+    const cleanTitle = rawTitle.replace(/\s*\(Extended\)\s*/i, '').trim() + ' (Full Song)'
+
+    // Create a new beats-tab job entry (no extend_task_type = treated as regular beat)
+    const now      = Date.now()
+    const newJob: any = {
+      id:          newJobId,
+      user_id:     user.id,
+      status:      'ready',
+      stereo_url:  audioUrl,
+      title:       cleanTitle,
+      prompt:      extJob.prompt || '',
+      blueprint:   extJob.blueprint || null,
+      created_at:  now,
+      // No extend_task_type → appears in beats tab
+    }
+    await c.env.DB.prepare(
+      `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
+    ).bind(newJobId, user.id, JSON.stringify(newJob), now).run()
+
+    return c.json({ jobId: newJobId, title: cleanTitle, audio_url: audioUrl })
+  } catch (e: any) {
+    console.error('[save-full-song] error:', e?.message)
+    return c.json({ error: e?.message || 'Failed to build full song' }, 500)
+  }
+})
+
 // POST /api/upload-extend-audio — upload audio for Song Extend
 // Accepts: multipart { file } or multipart/JSON { url }
 // Stores the file in R2 and returns the public proxy URL.
