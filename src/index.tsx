@@ -5538,29 +5538,35 @@ app.get('/api/get-full-track/:jobId', async (c) => {
     }
 
     try {
-      // Fetch raw MP3 bytes from both sources directly
       const extMp3Url = extJob.stereo_url as string
       const [origResp2, extResp2] = await Promise.all([
-        fetch(origAudioUrl),
+        fetch(origAudioUrl, { cache: 'no-store' }),
         fetch(extMp3Url)
       ])
       if (!origResp2.ok) return c.json({ error: `Failed to fetch original audio: HTTP ${origResp2.status}` }, 500)
       if (!extResp2.ok)  return c.json({ error: `Failed to fetch extended audio: HTTP ${extResp2.status}` }, 500)
 
       const [origBuf2, extBuf2] = await Promise.all([origResp2.arrayBuffer(), extResp2.arrayBuffer()])
-
-      // MP3 stitch with Xing VBR header — handles 44100Hz original + 48000Hz
-      // extension: browser counts frames instead of using CBR bitrate math.
-      const merged2 = stitchMp3WithXing(origBuf2, extBuf2)
+      const origBytes2 = new Uint8Array(origBuf2)
+      const origIsWav2 = origBytes2[0] === 0x52 && origBytes2[1] === 0x49 && origBytes2[2] === 0x46 && origBytes2[3] === 0x46
 
       const safeTitle2 = (extJob.title || 'full-track').replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '_').slice(0, 80)
-      return new Response(merged2.buffer, {
-        headers: {
-          'Content-Type': 'audio/mpeg',
-          'Content-Disposition': `attachment; filename="${safeTitle2}.mp3"`,
-          'Content-Length': String(merged2.byteLength)
-        }
-      })
+
+      if (origIsWav2) {
+        // Original is WAV — redirect to save-full-song which handles WAV+WAV PCM stitch
+        // For download (get-full-track), re-use the saved R2 file if it exists
+        return c.redirect(`${siteUrl2}/api/download-wav/${jobId}`, 302)
+      } else {
+        // Both are MP3 — stitch with Xing VBR header for correct duration display
+        const merged2 = stitchMp3WithXing(origBuf2, extBuf2)
+        return new Response(merged2.buffer, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Content-Disposition': `attachment; filename="${safeTitle2}.mp3"`,
+            'Content-Length': String(merged2.byteLength)
+          }
+        })
+      }
     } catch (ftErr: any) {
       console.error('[get-full-track] upload stitch error:', ftErr?.message)
       return c.json({ error: ftErr?.message || 'Stitch failed' }, 500)
@@ -5739,22 +5745,86 @@ app.post('/api/save-full-song/:jobId', async (c) => {
         if (!resp.ok) return c.json({ error: `Failed to fetch extended audio: HTTP ${resp.status}` }, 500)
         mergedBuf = await resp.arrayBuffer()
       } else {
-        // Fetch raw MP3 bytes directly — original upload URL + extension Suno CDN URL
+        // Fetch both files: original upload (may be WAV or MP3) + Suno extension (always MP3)
         const extMp3Url = extJob.stereo_url as string
         const [origResp, extResp] = await Promise.all([
-          fetch(origAudioUrl),
+          fetch(origAudioUrl, { cache: 'no-store' }),
           fetch(extMp3Url)
         ])
         if (!origResp.ok) return c.json({ error: `Failed to fetch original audio: HTTP ${origResp.status}` }, 500)
         if (!extResp.ok)  return c.json({ error: `Failed to fetch extended audio: HTTP ${extResp.status}` }, 500)
 
         const [origBuf, extBuf] = await Promise.all([origResp.arrayBuffer(), extResp.arrayBuffer()])
+        const origBytes = new Uint8Array(origBuf)
 
-        // MP3 stitch with Xing VBR header — handles 44100Hz original + 48000Hz
-        // extension: browser counts frames instead of using CBR bitrate math.
-        const joined = stitchMp3WithXing(origBuf, extBuf)
-        mergedBuf = joined.buffer
-        isUploadMp3 = true
+        // Detect whether original is WAV (RIFF) or MP3 (ID3 / sync word)
+        const origIsWav = origBytes[0] === 0x52 && origBytes[1] === 0x49 && origBytes[2] === 0x46 && origBytes[3] === 0x46
+
+        if (origIsWav) {
+          // Original is WAV PCM — decode WAV header then decode ext MP3 into PCM via WAV path
+          // Strategy: fetch ext via download-wav proxy which returns WAV, then PCM-stitch
+          const extWavResp = await fetch(`${siteUrl}/api/download-wav/${jobId}`, {
+            headers: { 'Cookie': c.req.header('Cookie') || '' }
+          })
+          if (!extWavResp.ok) return c.json({ error: `Failed to fetch extended WAV: HTTP ${extWavResp.status}` }, 500)
+          const extWavBuf = await extWavResp.arrayBuffer()
+
+          // PCM stitch: read both WAV headers and concatenate PCM data
+          function readWavHdr(view: DataView) {
+            const numChannels   = view.getUint16(22, true)
+            const sampleRate    = view.getUint32(24, true)
+            const bitsPerSample = view.getUint16(34, true)
+            let off = 12
+            while (off < view.byteLength - 8) {
+              const id   = view.getUint32(off, false)
+              const size = view.getUint32(off + 4, true)
+              if (id === 0x64617461) return { numChannels, sampleRate, bitsPerSample, dataOffset: off + 8, dataSize: size }
+              off += 8 + size
+            }
+            return { numChannels, sampleRate, bitsPerSample, dataOffset: 44, dataSize: view.byteLength - 44 }
+          }
+          const origView = new DataView(origBuf)
+          const extView  = new DataView(extWavBuf)
+          const oHdr = readWavHdr(origView)
+          const eHdr = readWavHdr(extView)
+
+          // Trim original to continue_at_ms
+          let origDataSize = oHdr.dataSize
+          if (extJob.continue_at_ms) {
+            const bps = oHdr.bitsPerSample / 8
+            const bpsec = oHdr.sampleRate * oHdr.numChannels * bps
+            const trim = Math.floor((extJob.continue_at_ms / 1000) * bpsec)
+            const aligned = trim - (trim % (oHdr.numChannels * bps))
+            origDataSize = Math.min(aligned, oHdr.dataSize)
+          }
+
+          const totalPcm = origDataSize + eHdr.dataSize
+          const wav = new ArrayBuffer(44 + totalPcm)
+          const dv  = new DataView(wav)
+          const wb  = new Uint8Array(wav)
+          dv.setUint32(0, 0x52494646, false)
+          dv.setUint32(4, 36 + totalPcm, true)
+          dv.setUint32(8, 0x57415645, false)
+          dv.setUint32(12, 0x666d7420, false)
+          dv.setUint32(16, 16, true)
+          dv.setUint16(20, 1, true)
+          dv.setUint16(22, oHdr.numChannels, true)
+          dv.setUint32(24, oHdr.sampleRate, true)
+          dv.setUint32(28, oHdr.sampleRate * oHdr.numChannels * (oHdr.bitsPerSample / 8), true)
+          dv.setUint16(32, oHdr.numChannels * (oHdr.bitsPerSample / 8), true)
+          dv.setUint16(34, oHdr.bitsPerSample, true)
+          dv.setUint32(36, 0x64617461, false)
+          dv.setUint32(40, totalPcm, true)
+          wb.set(new Uint8Array(origBuf, oHdr.dataOffset, origDataSize), 44)
+          wb.set(new Uint8Array(extWavBuf, eHdr.dataOffset, eHdr.dataSize), 44 + origDataSize)
+          mergedBuf = wav
+          // isUploadMp3 stays false → saved as .wav
+        } else {
+          // Original is MP3 — MP3+MP3 stitch with Xing VBR header
+          const joined = stitchMp3WithXing(origBuf, extBuf)
+          mergedBuf = joined.buffer
+          isUploadMp3 = true
+        }
       }
     } else {
       // Load the source job

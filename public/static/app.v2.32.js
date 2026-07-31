@@ -6121,9 +6121,11 @@ window.renderEditInstrumentPills = function (bp) {
                   ui.stereoDownload.style.opacity = '0.7';
                 } else {
                   var safeTitle = (job.title || 'extended_track').replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'extended_track';
-                  ui.stereoDownload.href = job.stereo_url;
+                  // Route through our WAV proxy so download gets the proper title and WAV format
+                  ui.stereoDownload.href = '/api/download-wav/' + job.id;
                   ui.stereoDownload.setAttribute('download', safeTitle + '_extended.wav');
-                  ui.stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download';
+                  ui.stereoDownload.removeAttribute('target');
+                  ui.stereoDownload.innerHTML = '<i class="fas fa-download"></i> Download WAV';
                   ui.stereoDownload.style.opacity = '';
                 }
               }
