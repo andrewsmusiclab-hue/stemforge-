@@ -554,16 +554,13 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) {}
   })();
 
-  // ── One Shot: Pro Artist only — show/hide tab + creator button ──
-  // Called once after user data loads; also called on plan change.
+  // ── One Shot tab — always visible for all logged-in users ──
+  // The tab is always shown so generated shots are always accessible.
+  // The generator itself (openOneShotGated) enforces Pro-only on the creator popup.
   function applyOneShotVisibility() {
-    const plan = (window._sfUser && window._sfUser.plan) || 'free';
-    const isPro = plan === 'pro' || plan === 'developer';
-    // Library "One Shots" tab
+    // Always show the One Shots tab for any logged-in user
     const oneshotTab = document.getElementById('lib-tab-oneshots');
-    if (oneshotTab) oneshotTab.style.display = isPro ? '' : 'none';
-    // Creator toolbar button — keep it visible but locked for non-Pro so users know it exists
-    // (clicking it calls openOneShotGated which shows the upgrade prompt)
+    if (oneshotTab) oneshotTab.style.display = '';
   }
   // Run on page load (after _sfUser resolves) and on any plan update
   // We use a MutationObserver-free approach: just call after the async block

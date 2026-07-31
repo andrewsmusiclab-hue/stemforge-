@@ -8538,7 +8538,7 @@ function dashboardPage() {
     <button class="lib-tab" data-tab="extended" onclick="switchLibTab('extended')">
       <i class="fas fa-expand-arrows-alt"></i> Extended
     </button>
-    <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')" style="display:none">
+    <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')">
       <i class="fas fa-bolt"></i> One Shots
     </button>
     <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
