@@ -372,6 +372,81 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // ── What's New system ─────────────────────────────────────────
+  // Add new entries here chronologically (newest first).
+  // Each entry: { date, title, body (HTML string), tag }
+  window._sfWhatsNewEntries = [
+    {
+      date: 'August 2025',
+      title: 'Stem Player Upgrades & Credit Rebalance',
+      tag: 'UPDATE',
+      tagColor: '#4fc3f7',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#e2e8f0">Auto Split renamed</b> — "Up to 5 Stems" is now called <b>Auto Split</b> for clarity.</li>
+        <li><b style="color:#e2e8f0">New credit pricing</b> — Auto Split now costs <b>30 pts</b> (down from 75). Vocals &amp; Instrumental now costs <b>70 pts</b> (was 30) to reflect its higher quality output.</li>
+        <li><b style="color:#e2e8f0">Master scrubber</b> — The stem player now has a full timeline scrubber so you can skip to any point in the track instantly.</li>
+        <li><b style="color:#e2e8f0">Solo behaviour fixed</b> — Hitting Solo on a track now lights up the Mute button red on all other tracks, exactly like a DAW.</li>
+        <li><b style="color:#e2e8f0">Full-mix stems removed</b> — "Song" and "Instrumental" stems (which were just the full stereo mix duplicated) no longer appear in the stem player.</li>
+        <li><b style="color:#e2e8f0">MUREKA AI badge removed</b> — Cleaned up the stem player header.</li>
+      </ul>`
+    }
+  ];
+
+  const WHATS_NEW_KEY = 'sf_whats_new_seen_v1';
+  window._sfOpenWhatsNew = function() {
+    const overlay = document.getElementById('whats-new-overlay');
+    if (!overlay) return;
+    // Populate entries
+    const container = overlay.querySelector('#whats-new-entries');
+    if (container && !container.dataset.populated) {
+      container.dataset.populated = '1';
+      container.innerHTML = window._sfWhatsNewEntries.map(e => `
+        <div style="background:#111827;border:1px solid #1e2a3a;border-radius:10px;padding:14px 16px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-size:.6rem;font-weight:800;letter-spacing:.8px;background:${e.tagColor || '#4fc3f7'}22;color:${e.tagColor || '#4fc3f7'};border:1px solid ${e.tagColor || '#4fc3f7'}44;padding:2px 8px;border-radius:999px">${e.tag || 'UPDATE'}</span>
+            <span style="font-size:.68rem;color:#6b7280">${e.date}</span>
+          </div>
+          <div style="font-size:.88rem;font-weight:700;color:#f1f5f9;margin-bottom:4px">${e.title}</div>
+          ${e.body}
+        </div>
+      `).join('');
+    }
+    overlay.style.display = 'flex';
+    // Mark as seen
+    localStorage.setItem(WHATS_NEW_KEY, window._sfWhatsNewEntries[0]?.date || 'seen');
+    const badge = document.getElementById('whats-new-badge');
+    if (badge) badge.style.display = 'none';
+  };
+  window._sfCloseWhatsNew = function() {
+    const overlay = document.getElementById('whats-new-overlay');
+    if (overlay) overlay.style.display = 'none';
+  };
+  // Show NEW badge if user hasn't seen latest entry
+  (function() {
+    const seen = localStorage.getItem(WHATS_NEW_KEY);
+    const latest = window._sfWhatsNewEntries[0]?.date || '';
+    if (seen !== latest) {
+      const badge = document.getElementById('whats-new-badge');
+      if (badge) badge.style.display = 'inline-block';
+    }
+  })();
+
+  // ── Show IP-blocked error on signup/register pages ────────────
+  if (window.location.pathname === '/signup' || window.location.pathname === '/register') {
+    const errParam = new URLSearchParams(window.location.search).get('error');
+    if (errParam === 'ip_blocked') {
+      const el = document.getElementById('auth-error');
+      if (el) {
+        el.innerHTML = '⚠️ <b>Account limit reached.</b> A free account was already created from your network. ' +
+          'StemForge allows one free account per household. ' +
+          'Please <a href="/login" style="color:inherit;text-decoration:underline">log in</a> to your existing account, or ' +
+          '<a href="mailto:stemforgesupport@gmail.com" style="color:inherit;text-decoration:underline">contact support</a> if you think this is a mistake.';
+        el.style.display = 'block';
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+  }
+
   // ── Global auth state: populate sidebar + top nav ─────────────
   window._sfUser = null;
   (async () => {

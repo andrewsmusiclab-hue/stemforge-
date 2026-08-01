@@ -131,6 +131,7 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
       google_id TEXT,
       stripe_customer_id TEXT,
       stripe_subscription_id TEXT,
+      registration_ip TEXT,
       created_at INTEGER NOT NULL
     )`),
     db.prepare(`CREATE TABLE IF NOT EXISTS sessions (
@@ -195,6 +196,9 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     campaign TEXT,
     created_at INTEGER NOT NULL
   )`).run()
+
+  // ── Migrate: add registration_ip column if missing (idempotent) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN registration_ip TEXT`).run() } catch {}
 
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
   // Free users with old download-era limit → 50 pts
@@ -302,16 +306,17 @@ async function getUserByEmail(db: D1Database, email: string): Promise<any | null
 
 async function createUser(db: D1Database, data: {
   id: string, email: string, name: string, avatar?: string,
-  password_hash?: string, google_id?: string, plan?: string
+  password_hash?: string, google_id?: string, plan?: string, registration_ip?: string
 }): Promise<void> {
   await ensureAuthTables(db)
   const planLimits: Record<string, number> = { free:50, creator:600, pro:2000 }
   const plan = data.plan || 'free'
   await db.prepare(
-    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`
+    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
-    planLimits[plan] || 50, data.password_hash || null, data.google_id || null, Date.now()).run()
+    planLimits[plan] || 50, data.password_hash || null, data.google_id || null,
+    data.registration_ip || null, Date.now()).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
@@ -1571,10 +1576,10 @@ app.post('/api/job/stems', async (c) => {
   }
 
   // Deduct credits: 5-stem = 75pts, 2-stem vocals+instrumental = 30pts
-  const stemCost = mode === 'auto' ? 75 : 30
+  const stemCost = mode === 'auto' ? 30 : 70
   const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
   if (!stemFreshUser || stemFreshUser.gens_used + stemCost > stemFreshUser.gens_limit) {
-    return c.json({ error: `Not enough points. This operation costs ${stemCost} points and you only have ${stemFreshUser ? Math.max(0, stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+    return c.json({ error: `Not enough points. ${mode === 'auto' ? 'Auto Split costs 30 points' : 'Vocals & Instrumental costs 70 points'} and you only have ${stemFreshUser ? Math.max(0, stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0} remaining.`, limit_reached: true }, 403)
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
 
@@ -2816,11 +2821,32 @@ app.post('/api/auth/signup', async (c) => {
     const existing = await getUserByEmail(c.env.DB, email.toLowerCase())
     if (existing) return c.json({ error: 'An account with that email already exists' }, 409)
 
+    // ── IP-based duplicate account check ─────────────────────────────────────
+    // Cloudflare sets CF-Connecting-IP on every request — use it to detect
+    // users creating multiple free accounts from the same IP address.
+    const registrationIp = c.req.header('CF-Connecting-IP') ||
+                           c.req.header('X-Forwarded-For')?.split(',')[0]?.trim() ||
+                           c.req.header('X-Real-IP') || null
+    if (registrationIp) {
+      const ipCheck = await c.env.DB.prepare(
+        `SELECT COUNT(*) as cnt FROM users WHERE registration_ip = ? AND plan = 'free'`
+      ).bind(registrationIp).first<{ cnt: number }>()
+      if (ipCheck && ipCheck.cnt >= 1) {
+        return c.json({
+          error: 'It looks like a free account was already created from your network. ' +
+                 'StemForge allows one free account per household to keep the platform fair for everyone. ' +
+                 'If you believe this is a mistake, please contact us at stemforgesupport@gmail.com.',
+          ip_blocked: true
+        }, 409)
+      }
+    }
+
     const passwordHash = await hashPassword(password)
     const userId = generateId()
     await createUser(c.env.DB, {
       id: userId, email: email.toLowerCase(), name: name.trim(),
-      password_hash: passwordHash, plan: plan || 'free'
+      password_hash: passwordHash, plan: plan || 'free',
+      registration_ip: registrationIp || undefined
     })
 
     const token = await createSession(c.env.DB, userId)
@@ -2986,10 +3012,22 @@ app.get('/api/auth/google/callback', async (c) => {
 
     let user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
     if (!user) {
+      const googleIp = c.req.header('CF-Connecting-IP') ||
+                       c.req.header('X-Forwarded-For')?.split(',')[0]?.trim() || null
+      // IP check for Google OAuth new accounts too
+      if (googleIp) {
+        const ipCheckG = await c.env.DB.prepare(
+          `SELECT COUNT(*) as cnt FROM users WHERE registration_ip = ? AND plan = 'free'`
+        ).bind(googleIp).first<{ cnt: number }>()
+        if (ipCheckG && ipCheckG.cnt >= 1) {
+          return c.redirect('/signup?error=ip_blocked')
+        }
+      }
       const userId = generateId()
       await createUser(c.env.DB, {
         id: userId, email: profile.email.toLowerCase(),
-        name: profile.name, avatar: profile.picture, google_id: profile.sub
+        name: profile.name, avatar: profile.picture, google_id: profile.sub,
+        registration_ip: googleIp || undefined
       })
       user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
     } else if (!user.google_id) {
@@ -5854,6 +5892,18 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
+    <!-- What's New button — opens modal -->
+    <button class="gs-sidebar__nav-item" id="sidebar-whats-new-btn" onclick="window._sfOpenWhatsNew && window._sfOpenWhatsNew()" style="background:none;border:none;width:100%;text-align:left;cursor:pointer;position:relative">
+      <i class="fas fa-star" style="color:#f59e0b"></i>
+      <span class="nav-label-full">What's New</span><span class="nav-label-short">New</span>
+      <span id="whats-new-badge" style="
+        position:absolute;top:6px;right:10px;
+        background:#ef4444;color:#fff;
+        font-size:.55rem;font-weight:800;letter-spacing:.3px;
+        border-radius:999px;padding:1px 5px;
+        display:none;
+      ">NEW</span>
+    </button>
     <!-- Admin link — only shown to developer/admin plan via JS -->
     <a href="/admin" class="gs-sidebar__nav-item gs-sidebar__nav-item--admin" data-page="admin" id="sidebar-admin-link" style="display:none">
       <i class="fas fa-shield-alt" style="color:#a78bfa"></i>
@@ -5863,6 +5913,63 @@ function globalSidebar() {
 
   <!-- Spacer -->
   <div class="gs-sidebar__spacer"></div>
+
+  <!-- What's New Modal (rendered here, shown via JS) -->
+  <div id="whats-new-overlay" style="
+    position:fixed;inset:0;z-index:99999;
+    background:rgba(0,0,0,.75);backdrop-filter:blur(8px);
+    display:none;align-items:center;justify-content:center;padding:16px;
+  " onclick="if(event.target===this)window._sfCloseWhatsNew()">
+    <div style="
+      background:#0d1117;border:1px solid #1e2a3a;
+      border-radius:14px;max-width:560px;width:100%;
+      max-height:88vh;overflow-y:auto;
+      box-shadow:0 32px 80px rgba(0,0,0,.9);
+      font-family:Inter,system-ui,sans-serif;
+    ">
+      <!-- Header -->
+      <div style="
+        background:linear-gradient(135deg,#111827,#0d1117);
+        border-bottom:1px solid #1e2a3a;
+        padding:20px 24px 16px;
+        display:flex;align-items:center;gap:12px;
+        border-radius:14px 14px 0 0;
+      ">
+        <div style="
+          width:38px;height:38px;border-radius:10px;
+          background:linear-gradient(135deg,#f59e0b,#d97706);
+          display:flex;align-items:center;justify-content:center;flex-shrink:0;
+        "><i class="fas fa-star" style="color:#fff;font-size:.9rem"></i></div>
+        <div style="flex:1">
+          <div style="font-size:1.05rem;font-weight:800;color:#fff;letter-spacing:.3px">What's New in StemForge</div>
+          <div style="font-size:.72rem;color:#6b7280;margin-top:1px">Updates, improvements & new features</div>
+        </div>
+        <button onclick="window._sfCloseWhatsNew()" style="
+          background:none;border:1px solid #1e2a3a;color:#6b7280;
+          width:30px;height:30px;border-radius:50%;cursor:pointer;
+          font-size:1rem;display:flex;align-items:center;justify-content:center;
+        ">×</button>
+      </div>
+      <!-- Welcome banner -->
+      <div style="
+        margin:20px 24px 0;
+        background:linear-gradient(135deg,rgba(79,195,247,.08),rgba(245,158,11,.06));
+        border:1px solid rgba(79,195,247,.18);border-radius:10px;
+        padding:16px 18px;
+      ">
+        <div style="font-size:.78rem;font-weight:700;color:#4fc3f7;letter-spacing:.5px;margin-bottom:6px;">👋 WELCOME TO WHAT'S NEW</div>
+        <p style="margin:0;font-size:.82rem;color:#cbd5e1;line-height:1.6">
+          This tab is your go-to place for everything happening on StemForge. Whenever we ship a new feature,
+          tweak something, or fix a bug — you'll find it here with a clear description of what changed and why.
+          Check back anytime to stay up to date!
+        </p>
+      </div>
+      <!-- Update entries -->
+      <div id="whats-new-entries" style="padding:16px 24px 24px;display:flex;flex-direction:column;gap:14px">
+        <!-- Entries injected by _sfWhatsNewEntries array -->
+      </div>
+    </div>
+  </div>
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
@@ -6192,7 +6299,7 @@ function homePage() {
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <ul class="plan-card__features">
           <li><i class="fas fa-check"></i> 600 points monthly</li>
-          <li><i class="fas fa-check"></i> Auto-split &amp; Vocal+Instrumental</li>
+          <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
           <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
@@ -7331,8 +7438,8 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
-          <li><i class="fas fa-check"></i> Auto-split — 5 stems</li>
-          <li><i class="fas fa-check"></i> Vocal + Instrumental split</li>
+          <li><i class="fas fa-check"></i> Auto Split (up to 5 stems) — 30 pts</li>
+          <li><i class="fas fa-check"></i> Vocals &amp; Instrumental — 70 pts</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
@@ -7389,8 +7496,8 @@ function pricingPage() {
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto-split (5 stems)</span><span class="credit-val">75 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocal + Instrumental</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -8046,7 +8153,7 @@ function checkoutPage() {
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
           <li><i class="fas fa-check"></i> 600 points monthly</li>
-          <li><i class="fas fa-check"></i> Auto-split &amp; Vocal+Instrumental</li>
+          <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$10.00</strong></div>
@@ -9608,6 +9715,12 @@ function termsPage() {
     <li>Not share your account with others or allow others to access your account</li>
   </ul>
   <p>We reserve the right to suspend or terminate accounts that violate these Terms, at our sole discretion.</p>
+
+  <h3>3.1 One Account Per Person / Household</h3>
+  <p><strong>Each user is permitted one (1) free account.</strong> Creating multiple free accounts to circumvent point limits, trial restrictions, or any other platform limits is a violation of these Terms and grounds for immediate account suspension.</p>
+  <p>To enforce this policy, we record the IP address used at the time of account registration. If our systems detect that a free account has already been created from the same network or IP address, the new registration will be declined with an appropriate notice. If you believe this restriction has been applied in error (e.g., you share a network with a family member or roommate who already has an account), please contact us at <a href="mailto:stemforgesupport@gmail.com">stemforgesupport@gmail.com</a> and we will review your case manually.</p>
+  <p>This restriction applies to free accounts only. There is no limit on the number of paid accounts that may be created from the same household.</p>
+  <p>We may use additional signals — including device fingerprinting, behavioral patterns, and account metadata — to identify and remove accounts that circumvent this policy through the use of VPNs, proxy services, or other technical means.</p>
 </section>
 
 <section>
@@ -9618,7 +9731,7 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, auto-split, vocal+instrumental, WAV download, commercial use rights</li>
+    <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, Auto Split (30 pts), Vocals &amp; Instrumental (70 pts), WAV download, commercial use rights</li>
     <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix, Extend song</li>
   </ul>
 

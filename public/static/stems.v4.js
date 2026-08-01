@@ -1,7 +1,7 @@
 // stems.v4.js — DAW-style Mureka stem player (replaces stems.v3.js)
 // Overrides window.openStemsPanel / closeStemsPanel from app.js.
 // Two modes:
-//   "UP TO 5 STEMS"    → audio-separation-1 (vocals, drums, bass, other + extras)
+//   "AUTO SPLIT"        → audio-separation-1 (vocals, drums, bass, other + extras)
 //   "VOCALS & INST."   → audio-separation-3 (vocals + instrumental)
 // Waveform UI: Pro Tools–inspired multi-track lanes with per-track color, mute/solo/volume.
 ;(function () {
@@ -144,7 +144,7 @@
               'background:#0f2a3a;border:1px solid #29b6f6;color:#4fc3f7;',
               'padding:4px 11px;border-radius:5px;font-size:.7rem;font-weight:700;',
               'cursor:pointer;letter-spacing:.5px;white-space:nowrap;',
-            '">UP TO 5 STEMS</button>',
+            '">AUTO SPLIT</button>',
             '<button class="daw-mode-btn" data-mode="split_from_mix" style="',
               'background:#141418;border:1px solid #2a2a35;color:#666;',
               'padding:4px 11px;border-radius:5px;font-size:.7rem;font-weight:700;',
