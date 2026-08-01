@@ -1826,32 +1826,59 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
       const data = await res.json() as any
 
-      // MusicAPI /sonic/task/:id returns { code: 200, data: [ { state, ... } ] }
-      // data.data is an ARRAY — not an object. We must read data.data[0].
-      // Always log the full response so we can see the real field names.
-      console.log(`[stems] Poll raw response for ${musicapiTaskId}:`, JSON.stringify(data).slice(0, 600))
+      // MusicAPI /sonic/task/:id returns { code: 200, data: [ { state, title, audio_url, ... }, ... ] }
+      // data.data is an ARRAY of clip objects. Stems are identified by title suffix:
+      //   "(Lead Vocal)"           → vocals
+      //   "(Without Lead Vocal)"   → instrumental
+      //   "(Drums)"                → drums
+      //   "(Bass)"                 → bass
+      //   "(Piano)"                → piano
+      //   "(Guitar)"               → guitar
+      //   "(Other)"                → other
+      // MusicAPI returns 2 duplicate copies of each stem — we deduplicate by stem name.
+      console.log(`[stems] Poll raw response for ${musicapiTaskId}:`, JSON.stringify(data).slice(0, 800))
 
-      // Normalise: handle both array and object shapes
-      const dataItem = Array.isArray(data.data) ? data.data[0] : (data.data || data)
-      const taskState = dataItem?.state || dataItem?.status || data.state || data.status
-      // Stems field: could be "stems" object on the item, or top-level
-      // e.g. { vocals: url, drums: url } or { vocals: { url }, drums: { url } }
-      const stemsRaw = dataItem?.stems || data.stems || dataItem?.stem_tracks || data.stem_tracks || {}
+      // Title suffix → canonical stem name mapping
+      const TITLE_TO_STEM: Record<string, string> = {
+        'lead vocal': 'vocals',
+        'vocal': 'vocals',
+        'vocals': 'vocals',
+        'without lead vocal': 'instrumental',
+        'instrumental': 'instrumental',
+        'accompaniment': 'instrumental',
+        'other': 'other',
+        'drums': 'drums',
+        'bass': 'bass',
+        'piano': 'piano',
+        'guitar': 'guitar',
+        'synth': 'synth',
+        'strings': 'strings',
+        'wind': 'wind',
+      }
 
-      console.log(`[stems] taskState=${taskState} stemsKeys=${Object.keys(stemsRaw).join(',')}`)
+      function titleToStemName(title: string): string {
+        const m = title.match(/\(([^)]+)\)\s*$/)
+        if (!m) return ''
+        const suffix = m[1].toLowerCase().trim()
+        return TITLE_TO_STEM[suffix] || suffix.replace(/\s+/g, '_')
+      }
+
+      // All clips in the array — pick the best state from the first item
+      const allClips = Array.isArray(data.data) ? data.data : []
+      const taskState = allClips[0]?.state || allClips[0]?.status || data.state || data.status || ''
+
+      console.log(`[stems] taskState=${taskState} clipCount=${allClips.length} titles=${allClips.map((c: any) => c.title).join(' | ')}`)
 
       if (taskState === 'succeeded' || taskState === 'completed' || taskState === 'complete') {
-        // stemsRaw may be: { vocals: "url", drums: "url" }
-        //              or: { vocals: { url: "..." }, drums: { url: "..." } }
-        let stemTracks: StemTrack[] = Object.entries(stemsRaw)
-          .map(([name, val]) => {
-            const url = typeof val === 'string' ? val : (val as any)?.url || (val as any)?.audio_url || ''
-            return { name, url }
-          })
-          .filter(s => typeof s.url === 'string' && s.url)
+        // Parse stems from title-suffixed clip objects; deduplicate by stem name
+        const seen = new Set<string>()
+        let stemTracks: StemTrack[] = allClips
+          .filter((clip: any) => (clip.state === 'succeeded' || clip.state === 'completed') && clip.audio_url)
+          .map((clip: any) => ({ name: titleToStemName(clip.title || ''), url: clip.audio_url as string }))
+          .filter((s: StemTrack) => s.name && s.url && !seen.has(s.name) && seen.add(s.name))
 
         if (!stemTracks.length) {
-          console.warn(`[stems] succeeded but no stem URLs found in response. Full data: ${JSON.stringify(data).slice(0, 400)}`)
+          console.warn(`[stems] succeeded but no stem URLs parsed. Full data: ${JSON.stringify(data).slice(0, 600)}`)
           return c.json({ status: 'processing' })
         }
 
@@ -1878,7 +1905,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
       if (taskState === 'failed' || taskState === 'error') {
         stemJob.status = 'error'
-        stemJob.error = dataItem?.error || dataItem?.message || data.error || data.message || 'Stem extraction failed'
+        stemJob.error = allClips[0]?.error || allClips[0]?.message || data.error || data.message || 'Stem extraction failed'
         const updatedJob = { ...job } as any
         updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
         await setJob(c.env.DB, updatedJob)
@@ -10090,5 +10117,50 @@ async function submitFeedback() {
 <\/script>
 `)
 }
+
+// ── ADMIN DIAGNOSTIC: test MusicAPI stem task poll raw response ──────────────
+// GET /api/admin/stem-diag?task_id=<musicapi_uuid>&secret=sf_diag_2026
+// Returns the raw JSON from MusicAPI /sonic/task/:id so we can see real field names
+app.get('/api/admin/stem-diag', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not set' }, 500)
+  // Allow either admin session OR a hardcoded diagnostic secret
+  const secret = c.req.query('secret')
+  if (secret !== 'sf_diag_2026') {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  const taskId = c.req.query('task_id')
+  if (!taskId) return c.json({ error: 'task_id param required' }, 400)
+
+  // Try both poll endpoints
+  const sonicUrl = `${MUSICAPI_SONIC}/task/${taskId}`
+  const stemUrl  = `${MUSICAPI_SONIC}/stems/task/${taskId}`
+
+  const [sonicRes, stemRes] = await Promise.all([
+    fetch(sonicUrl, { headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message })),
+    fetch(stemUrl,  { headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message })),
+  ])
+
+  // Also try submitting a fresh basic stems job on a known clip_id if provided
+  const clipId = c.req.query('clip_id')
+  let submitResult: any = null
+  if (clipId) {
+    const subRes = await fetch(`${MUSICAPI_SONIC}/stems/basic`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clip_id: clipId })
+    }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message }))
+    submitResult = subRes
+  }
+
+  return c.json({
+    task_id: taskId,
+    sonic_task_poll: { url: sonicUrl, ...sonicRes },
+    stems_task_poll:  { url: stemUrl,  ...stemRes },
+    submit_basic: submitResult
+  })
+})
 
 export default app
