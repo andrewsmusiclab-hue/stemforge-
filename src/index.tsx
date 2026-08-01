@@ -525,7 +525,7 @@ type StemMode = 'auto' | 'split_from_mix' | 'advanced'
 interface StemTrack {
   name: StemName | string   // stem label
   url: string               // CDN URL for the stem WAV
-  task_id?: string          // Mureka task id
+  task_id?: string          // MusicAPI Sonic stem task id
 }
 
 interface StemJob {
@@ -1365,15 +1365,15 @@ app.post('/api/generate', async (c) => {
     userDurationSec = Math.max(30, Math.min(300, parseInt(String(user_duration), 10) || 0)) || undefined
   }
 
-  // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (Mureka submit)
-  // Both are fast (~3-5 s total). The long Mureka wait is handled client-side via /api/poll/:id
+  // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (MusicAPI submit)
+  // Both are fast (~3-5 s total). The long MusicAPI wait is handled client-side via /api/poll/:id
   c.executionCtx.waitUntil(startPipeline(jobId, c.env, userPlan, userDurationSec, lyrics?.trim() || undefined, genre || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
 
 // POST /api/poll/:id — called by frontend every ~5s while status=generating
-// Does one Mureka status check; sets job to ready with stereo only (stems on-demand).
+// Does one MusicAPI status check; sets job to ready with stereo only (stems on-demand).
 // Returns the same shape as GET /api/job/:id.
 app.post('/api/poll/:id', async (c) => {
   const id = c.req.param('id')
