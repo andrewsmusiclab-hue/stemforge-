@@ -1662,12 +1662,24 @@ app.get('/api/job/stems/:jobId', async (c) => {
     // When that happens the job stays 'processing' forever.
     // Detect: status===processing AND created_at older than 90 s → reset to
     // 'pending' so this poll re-fires waitUntil() and gets another 30-second window.
-    // MusicAPI stems call is idempotent (same URL → same separation); retrying is safe.
+    // Cap retries at 3 (retry_count field) — if still failing, surface error.
     if (stemJob.status === 'processing') {
       const ageMs = Date.now() - (stemJob.created_at || 0)
+      const retryCount = (stemJob as any).retry_count || 0
       if (ageMs > 90_000) {
-        console.warn(`[stems] job ${stemJob.task_id} stuck in processing for ${Math.round(ageMs/1000)}s — resetting to pending`)
+        if (retryCount >= 3) {
+          // Too many retries — give up and surface a real error
+          console.warn(`[stems] job ${stemJob.task_id} exhausted ${retryCount} retries — marking error`)
+          stemJob.status = 'error'
+          ;(stemJob as any).error = 'Stem extraction failed after multiple attempts. Please try again.'
+          const errJob = { ...job } as any
+          errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+          await setJob(c.env.DB, errJob)
+          return c.json({ status: 'error', error: (stemJob as any).error })
+        }
+        console.warn(`[stems] job ${stemJob.task_id} stuck in processing for ${Math.round(ageMs/1000)}s — resetting to pending (retry ${retryCount + 1}/3)`)
         stemJob.status = 'pending'
+        ;(stemJob as any).retry_count = retryCount + 1
         const resetJob = { ...job } as any
         resetJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
         await setJob(c.env.DB, resetJob)
@@ -1836,12 +1848,33 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
   // Poll MusicAPI stems task — task_id stored as "stemtask:<musicapi_task_id>"
   if (stemJob.task_id.startsWith('stemtask:')) {
+    // Server-side timeout: if the task has been running for > 8 minutes, give up
+    const stemAgeMs = Date.now() - (stemJob.created_at || 0)
+    if (stemAgeMs > 8 * 60 * 1000) {
+      stemJob.status = 'error'
+      stemJob.error = 'Stem extraction timed out after 8 minutes. Please try again.'
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'error', error: stemJob.error })
+    }
+
     const musicapiTaskId = stemJob.task_id.slice('stemtask:'.length)
     try {
       const res = await fetch(`${MUSICAPI_SONIC}/task/${musicapiTaskId}`, {
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
       })
-      if (!res.ok) return c.json({ status: 'processing' })
+
+      // Non-200 from MusicAPI poll → surface the error instead of silently staying in processing
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '')
+        let errMsg = `MusicAPI poll error ${res.status}`
+        try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
+        if (res.status === 429) errMsg = 'MusicAPI rate limit — please wait a moment and retry.'
+        // Don't persist as error for transient issues (429/5xx) — let client retry
+        return c.json({ status: 'processing', poll_error: errMsg })
+      }
+
       const data = await res.json() as any
 
       // MusicAPI stems task returns { state: 'succeeded'|'failed'|'pending', stems: {...} }
@@ -5846,7 +5879,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.41.js"></script>
+<script src="/static/app.v2.42.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
