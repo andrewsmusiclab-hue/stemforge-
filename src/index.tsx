@@ -1826,23 +1826,39 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
       const data = await res.json() as any
 
-      // MusicAPI stems task returns { state: 'succeeded'|'failed'|'pending', stems: {...} }
-      // or nested under data.  MusicAPI returns direct CDN URLs — no ZIP handling needed.
-      const taskState = data.state || data.data?.state || data.status
-      const stemsData = data.stems || data.data?.stems || {}
+      // MusicAPI /sonic/task/:id returns { code: 200, data: [ { state, ... } ] }
+      // data.data is an ARRAY — not an object. We must read data.data[0].
+      // Always log the full response so we can see the real field names.
+      console.log(`[stems] Poll raw response for ${musicapiTaskId}:`, JSON.stringify(data).slice(0, 600))
 
-      if (taskState === 'succeeded' || taskState === 'completed') {
-        // Direct stems object: { vocals: url, drums: url, ... }
-        let stemTracks: StemTrack[] = Object.entries(stemsData)
-          .filter(([, url]) => typeof url === 'string' && url)
-          .map(([name, url]) => ({ name, url: url as string }))
+      // Normalise: handle both array and object shapes
+      const dataItem = Array.isArray(data.data) ? data.data[0] : (data.data || data)
+      const taskState = dataItem?.state || dataItem?.status || data.state || data.status
+      // Stems field: could be "stems" object on the item, or top-level
+      // e.g. { vocals: url, drums: url } or { vocals: { url }, drums: { url } }
+      const stemsRaw = dataItem?.stems || data.stems || dataItem?.stem_tracks || data.stem_tracks || {}
 
-        if (!stemTracks.length) return c.json({ status: 'processing' })
+      console.log(`[stems] taskState=${taskState} stemsKeys=${Object.keys(stemsRaw).join(',')}`)
+
+      if (taskState === 'succeeded' || taskState === 'completed' || taskState === 'complete') {
+        // stemsRaw may be: { vocals: "url", drums: "url" }
+        //              or: { vocals: { url: "..." }, drums: { url: "..." } }
+        let stemTracks: StemTrack[] = Object.entries(stemsRaw)
+          .map(([name, val]) => {
+            const url = typeof val === 'string' ? val : (val as any)?.url || (val as any)?.audio_url || ''
+            return { name, url }
+          })
+          .filter(s => typeof s.url === 'string' && s.url)
+
+        if (!stemTracks.length) {
+          console.warn(`[stems] succeeded but no stem URLs found in response. Full data: ${JSON.stringify(data).slice(0, 400)}`)
+          return c.json({ status: 'processing' })
+        }
 
         // For split_from_mix: only show vocals + instrumental
         if (stemJob.mode === 'split_from_mix') {
           const vocals = stemTracks.find(s => s.name === 'vocals')
-          const instrumental = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other')
+          const instrumental = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other' || s.name === 'accompaniment')
           stemTracks = []
           if (vocals) stemTracks.push(vocals)
           if (instrumental) stemTracks.push({ name: 'instrumental', url: instrumental.url })
@@ -1862,7 +1878,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
       if (taskState === 'failed' || taskState === 'error') {
         stemJob.status = 'error'
-        stemJob.error = data.error || data.message || 'Stem extraction failed'
+        stemJob.error = dataItem?.error || dataItem?.message || data.error || data.message || 'Stem extraction failed'
         const updatedJob = { ...job } as any
         updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
         await setJob(c.env.DB, updatedJob)
