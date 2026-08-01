@@ -1704,9 +1704,15 @@ app.get('/api/job/stems/:jobId', async (c) => {
       const bgKey    = c.env.MUSICAPI_KEY
       const bgUrl    = stereoUrl
       const bgMode   = stemJob.mode
-      // Re-use the clip_id already stored on the job from generation — skips the upload call entirely.
-      // This avoids a second MusicAPI request (rate limit: 1 req/3s) and speeds up stem submission.
-      const bgClipId = (job as any).clip_id as string | null | undefined
+
+      // Only reuse clip_id for Sonic-generated tracks — Sonic clip IDs are valid on /sonic/stems/*.
+      // Producer clip IDs (extend_task_type === null/undefined) live in a different namespace
+      // and are NOT recognised by /sonic/stems, causing "Could not find the clip_id" (400).
+      // For Producer beats we must always upload via /sonic/upload first to get a Sonic clip_id.
+      const bgExtendTaskType = (job as any).extend_task_type as string | null | undefined
+      const bgIsSonic = bgExtendTaskType === 'song_generate' || bgExtendTaskType === 'song_extend'
+      const storedClipId = (job as any).clip_id as string | null | undefined
+      const bgClipId = bgIsSonic ? (storedClipId || undefined) : undefined
 
       // Fire-and-forget: runs after response is sent, no Worker wall-clock pressure
       c.executionCtx.waitUntil((async () => {
@@ -5890,7 +5896,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.42.js"></script>
+<script src="/static/app.v2.43.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
