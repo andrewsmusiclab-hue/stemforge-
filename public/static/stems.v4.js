@@ -9,22 +9,32 @@
 
   // ── Track colour palette (DAW / Pro Tools-style) ───────────────────────────
   var COLORS = {
-    vocals:       { bg:'#0d1f35', wave:'#4fc3f7', border:'#29b6f6', label:'#7ed4fa' },
-    drums:        { bg:'#0d2010', wave:'#66bb6a', border:'#4caf50', label:'#91d994' },
-    bass:         { bg:'#200d30', wave:'#ce93d8', border:'#ba68c8', label:'#dca8e8' },
-    other:        { bg:'#251800', wave:'#ffb74d', border:'#ffa726', label:'#ffc870' },
-    instrumental: { bg:'#0d200d', wave:'#a5d6a7', border:'#81c784', label:'#bbdfbc' },
-    def:          { bg:'#0d0d25', wave:'#90caf9', border:'#64b5f6', label:'#a8d3fa' },
+    vocals:         { bg:'#0d1f35', wave:'#4fc3f7', border:'#29b6f6', label:'#7ed4fa' },
+    vocal:          { bg:'#0d1f35', wave:'#4fc3f7', border:'#29b6f6', label:'#7ed4fa' }, // Mureka uses 'vocal'
+    drums:          { bg:'#0d2010', wave:'#66bb6a', border:'#4caf50', label:'#91d994' },
+    bass:           { bg:'#200d30', wave:'#ce93d8', border:'#ba68c8', label:'#dca8e8' },
+    other:          { bg:'#251800', wave:'#ffb74d', border:'#ffa726', label:'#ffc870' },
+    instrumental:   { bg:'#0d200d', wave:'#a5d6a7', border:'#81c784', label:'#bbdfbc' },
+    synth:          { bg:'#1a0d25', wave:'#f48fb1', border:'#f06292', label:'#f8a8c8' },
+    guitar:         { bg:'#1a1000', wave:'#ffcc80', border:'#ffa000', label:'#ffd9a0' },
+    brass_and_winds:{ bg:'#001a1a', wave:'#80deea', border:'#26c6da', label:'#a0e8f0' },
+    piano:          { bg:'#0d0d20', wave:'#b39ddb', border:'#9575cd', label:'#c8b4f0' },
+    def:            { bg:'#0d0d25', wave:'#90caf9', border:'#64b5f6', label:'#a8d3fa' },
   };
 
-  var STEM_ORDER = ['vocals','drums','bass','other','instrumental'];
+  var STEM_ORDER = ['vocals','vocal','drums','bass','other','instrumental','synth','guitar','piano','brass_and_winds'];
 
   var STEM_LABELS = {
-    vocals:       'VOCALS',
-    drums:        'DRUMS',
-    bass:         'BASS',
-    other:        'OTHER',
-    instrumental: 'INSTRUMENTAL',
+    vocals:          'VOCALS',
+    vocal:           'VOCALS',
+    drums:           'DRUMS',
+    bass:            'BASS',
+    other:           'OTHER',
+    instrumental:    'INSTRUMENTAL',
+    synth:           'SYNTH',
+    guitar:          'GUITAR',
+    piano:           'PIANO',
+    brass_and_winds: 'BRASS & WINDS',
   };
 
   // ── State ─────────────────────────────────────────────────────────────────
