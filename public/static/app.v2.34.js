@@ -3537,7 +3537,18 @@ window.generateOneshotSfx = async function() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
+    // Read body as text first so we can show a useful error if it isn't JSON
+    const rawText = await res.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch(_) {
+      resetBtn();
+      if (statusEl) statusEl.style.display = 'none';
+      console.error('[oneshot] non-JSON response HTTP', res.status, rawText.slice(0, 200));
+      alert('Server returned an unexpected response (HTTP ' + res.status + '). Please try refreshing the page and logging in again.');
+      return;
+    }
 
     if (!res.ok) {
       resetBtn();
