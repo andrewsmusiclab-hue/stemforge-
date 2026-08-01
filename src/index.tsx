@@ -5010,6 +5010,24 @@ app.post('/api/admin/user/update', async (c) => {
   return c.json({ ok: true })
 })
 
+// POST /api/admin/user/add-credits — ADD points on top of existing gens_limit (never replace)
+app.post('/api/admin/user/add-credits', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const { user_id, amount } = await c.req.json<any>()
+  if (!user_id) return c.json({ error: 'Missing user_id' }, 400)
+  const amt = parseInt(amount)
+  if (!amt || isNaN(amt)) return c.json({ error: 'Invalid amount' }, 400)
+  // Fetch current values so we can return them
+  const before = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user_id).first<{gens_used:number,gens_limit:number}>()
+  if (!before) return c.json({ error: 'User not found' }, 404)
+  const newLimit = before.gens_limit + amt
+  await c.env.DB.prepare(`UPDATE users SET gens_limit=? WHERE id=?`).bind(newLimit, user_id).run()
+  return c.json({ ok: true, gens_limit: newLimit, gens_used: before.gens_used, remaining: newLimit - before.gens_used })
+})
+
 // GET /api/admin/promos — list all promo codes
 app.get('/api/admin/promos', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
@@ -5828,7 +5846,7 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.40.js"></script>
+<script src="/static/app.v2.41.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
@@ -9356,20 +9374,87 @@ async function deactivatePromo(code){
 }
 
 async function changeUserPlan(userId,email){
-  const plan=prompt('New plan for '+email+'\\n(free / creator / pro / developer):');
-  if(!plan)return;
-  const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,plan})});
-  const data=await res.json();
-  if(data.ok){alert('Plan updated.');window._usersLoaded=false;loadUsers();}else{alert('Error: '+(data.error||'Failed'));}
+  // Populate and show the plan modal
+  document.getElementById('umod-title').textContent = 'Edit Plan — ' + email;
+  document.getElementById('umod-plan-section').style.display = '';
+  document.getElementById('umod-credits-section').style.display = 'none';
+  document.getElementById('umod-user-id').value = userId;
+  document.getElementById('umod-overlay').style.display = 'flex';
+  document.getElementById('umod-plan').focus();
 }
 
 async function addCredits(userId,email){
-  const n=parseInt(prompt('Add how many points to '+email+'?'));
-  if(!n||isNaN(n))return;
-  const res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,gens_limit:n})});
-  alert('Credits updated. Refresh to see new totals.');window._usersLoaded=false;loadUsers();
+  // Populate and show the credits modal
+  document.getElementById('umod-title').textContent = '+Credits — ' + email;
+  document.getElementById('umod-plan-section').style.display = 'none';
+  document.getElementById('umod-credits-section').style.display = '';
+  document.getElementById('umod-user-id').value = userId;
+  document.getElementById('umod-amount').value = '';
+  document.getElementById('umod-overlay').style.display = 'flex';
+  document.getElementById('umod-amount').focus();
 }
-</script>`)
+
+function umodClose(){
+  document.getElementById('umod-overlay').style.display = 'none';
+  document.getElementById('umod-status').textContent = '';
+}
+
+async function umodSave(){
+  const userId = document.getElementById('umod-user-id').value;
+  const isPlan = document.getElementById('umod-plan-section').style.display !== 'none';
+  const statusEl = document.getElementById('umod-status');
+  statusEl.style.color = 'var(--muted)';
+  statusEl.textContent = 'Saving…';
+
+  if(isPlan){
+    const plan = document.getElementById('umod-plan').value.trim().toLowerCase();
+    if(!['free','creator','pro','developer'].includes(plan)){
+      statusEl.style.color='#ef4444'; statusEl.textContent='Invalid plan name.'; return;
+    }
+    const res = await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,plan})});
+    const data = await res.json();
+    if(data.ok){ statusEl.style.color='#10b981'; statusEl.textContent='Plan updated ✓'; window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1000); }
+    else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data.error||'Failed'); }
+  } else {
+    const amt = parseInt(document.getElementById('umod-amount').value);
+    if(!amt||isNaN(amt)||amt<=0){ statusEl.style.color='#ef4444'; statusEl.textContent='Enter a positive number.'; return; }
+    const res = await fetch('/api/admin/user/add-credits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,amount:amt})});
+    const data = await res.json();
+    if(data.ok){
+      statusEl.style.color='#10b981';
+      statusEl.textContent='Added '+amt+' pts → new limit: '+data.gens_limit+' ('+data.remaining+' remaining) ✓';
+      window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1800);
+    } else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data.error||'Failed'); }
+  }
+}
+</script>
+
+<!-- Admin user modal -->
+<div id="umod-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#1a1a2e;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:28px 32px;width:100%;max-width:420px;position:relative">
+    <button onclick="umodClose()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+    <h3 id="umod-title" style="font-size:1.1rem;font-weight:700;margin-bottom:20px"></h3>
+    <input type="hidden" id="umod-user-id"/>
+    <!-- Plan section -->
+    <div id="umod-plan-section">
+      <label style="font-size:.85rem;color:var(--muted);display:block;margin-bottom:6px">New plan</label>
+      <input id="umod-plan" type="text" placeholder="free / creator / pro / developer"
+        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;box-sizing:border-box"/>
+    </div>
+    <!-- Credits section -->
+    <div id="umod-credits-section">
+      <label style="font-size:.85rem;color:var(--muted);display:block;margin-bottom:6px">Points to add</label>
+      <input id="umod-amount" type="number" min="1" placeholder="e.g. 500"
+        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;box-sizing:border-box"/>
+      <p style="font-size:.78rem;color:var(--muted);margin-top:6px">This amount is <strong>added on top</strong> of the user's current limit.</p>
+    </div>
+    <div style="margin-top:20px;display:flex;gap:10px;align-items:center">
+      <button class="btn btn--primary" onclick="umodSave()"><i class="fas fa-check"></i> Save</button>
+      <button class="btn btn--outline" onclick="umodClose()">Cancel</button>
+      <span id="umod-status" style="font-size:.82rem;flex:1;text-align:right"></span>
+    </div>
+  </div>
+</div>`)
 }
 
 function accountPage(user: User) {
