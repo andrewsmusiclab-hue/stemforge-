@@ -1273,6 +1273,14 @@ function parseZipTailBuffer(tailBuf: ArrayBuffer, tailOffset: number, zipUrl = '
     const stemName = base.replace(/\.(wav|mp3|flac|m4a)$/i, '').toLowerCase().replace(/\s+/g, '_')
     if (!stemName) continue
 
+    // Skip full-mix stems — Mureka includes "song.wav" / "accompaniment.wav" in the ZIP but
+    // these are the full stereo mix, not individual stems. Filter them out here so they
+    // never reach the client. ("instrumental" is kept only for split_from_mix mode where
+    // the caller explicitly requests it; filtering at the ZIP level is safe because the
+    // split_from_mix branch re-aliases whatever stems arrive to vocals+instrumental.)
+    const FULL_MIX_NAMES = ['song', 'mix', 'full_mix', 'accompaniment']
+    if (FULL_MIX_NAMES.includes(stemName)) continue
+
     // Store localOff + compression method — proxy resolves exact data offset lazily
     // Format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>|<compMethod>|<uncompSize>
     const stemProxyUrl = `zip-entry:${zipUrl}|${localOff}|${compSize}|${fileName}|${compMethod}|${uncompSize}`

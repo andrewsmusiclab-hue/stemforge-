@@ -1,7 +1,7 @@
 // stems.v4.js — DAW-style Mureka stem player (replaces stems.v3.js)
 // Overrides window.openStemsPanel / closeStemsPanel from app.js.
 // Two modes:
-//   "UP TO 5 STEMS"    → audio-separation-1 (vocals, drums, bass, other, instrumental)
+//   "UP TO 5 STEMS"    → audio-separation-1 (vocals, drums, bass, other + extras)
 //   "VOCALS & INST."   → audio-separation-3 (vocals + instrumental)
 // Waveform UI: Pro Tools–inspired multi-track lanes with per-track color, mute/solo/volume.
 ;(function () {
@@ -22,7 +22,11 @@
     def:            { bg:'#0d0d25', wave:'#90caf9', border:'#64b5f6', label:'#a8d3fa' },
   };
 
-  var STEM_ORDER = ['vocals','vocal','drums','bass','other','instrumental','synth','guitar','piano','brass_and_winds'];
+  // Preferred display order (instrumental & song are filtered out — they are the full mix)
+  var STEM_ORDER = ['vocals','vocal','drums','bass','other','synth','guitar','piano','brass_and_winds'];
+
+  // Stems that are the full stereo mix — ALWAYS filter these out (not individual stems)
+  var FULL_MIX_STEMS = ['song', 'instrumental', 'mix', 'full_mix', 'accompaniment'];
 
   var STEM_LABELS = {
     vocals:          'VOCALS',
@@ -30,7 +34,6 @@
     drums:           'DRUMS',
     bass:            'BASS',
     other:           'OTHER',
-    instrumental:    'INSTRUMENTAL',
     synth:           'SYNTH',
     guitar:          'GUITAR',
     piano:           'PIANO',
@@ -130,15 +133,10 @@
           '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4fc3f7" stroke-width="2" style="flex-shrink:0">',
             '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
           '</svg>',
-          '<span style="font-weight:700;font-size:.9rem;letter-spacing:.5px;color:#fff;flex:1">STEM STUDIO',
-            '<span style="',
-              'background:#0c2a3a;color:#4fc3f7;',
-              'font-size:.6rem;font-weight:700;letter-spacing:1px;',
-              'padding:2px 6px;border-radius:3px;text-transform:uppercase;margin-left:8px;',
-            '">MUREKA AI</span>',
-            '<span style="color:#555;font-size:.75rem;font-weight:400;margin-left:8px;letter-spacing:0">',
-              _esc(title),
-            '</span>',
+          // Title — no MUREKA AI badge
+          '<span style="font-weight:700;font-size:.9rem;letter-spacing:.5px;color:#fff">STEM STUDIO</span>',
+          '<span style="color:#555;font-size:.75rem;font-weight:400;letter-spacing:0;flex:1">',
+            '&nbsp;', _esc(title),
           '</span>',
           // Mode buttons
           '<div id="mode-btns" style="display:flex;gap:6px">',
@@ -172,7 +170,7 @@
         // ── Timeline ruler (hidden until stems load) ──────────────
         '<div id="daw-ruler-wrap" style="',
           'background:#070910;border-bottom:1px solid #111318;',
-          'height:22px;position:relative;overflow:hidden;display:none;flex-shrink:0;',
+          'height:22px;position:relative;overflow:hidden;display:none;flex-shrink:0;cursor:pointer;',
         '">',
           '<canvas id="daw-ruler" style="width:100%;height:22px;display:block"></canvas>',
           '<div id="daw-playhead" style="',
@@ -196,36 +194,46 @@
         // ── Transport bar (hidden until stems load) ──────────────
         '<div id="daw-transport" style="',
           'background:#070910;border-top:1px solid #111318;',
-          'padding:8px 16px;display:none;align-items:center;gap:12px;flex-shrink:0;',
+          'padding:8px 16px;display:none;flex-direction:column;gap:6px;flex-shrink:0;',
         '">',
-          '<button id="daw-play-btn" style="',
-            'width:34px;height:34px;border-radius:50%;',
-            'background:linear-gradient(135deg,#166534,#15803d);',
-            'border:none;cursor:pointer;',
-            'display:flex;align-items:center;justify-content:center;flex-shrink:0;',
-          '">',
-            '<svg id="daw-play-icon" width="12" height="12" viewBox="0 0 24 24" fill="#fff">',
-              '<polygon points="5,3 19,12 5,21"/>',
-            '</svg>',
-            '<svg id="daw-stop-icon" width="10" height="10" viewBox="0 0 24 24" fill="#fff" style="display:none">',
-              '<rect x="4" y="4" width="16" height="16" rx="2"/>',
-            '</svg>',
-          '</button>',
-          '<div id="daw-timecode" style="',
-            'font-family:Courier New,monospace;font-size:.82rem;',
-            'color:#f59e0b;letter-spacing:1px;font-weight:700;',
-            'background:#070910;padding:4px 10px;border-radius:4px;',
-            'border:1px solid #1f1200;min-width:75px;text-align:center;',
-          '">0:00.0</div>',
-          '<div style="display:flex;align-items:center;gap:6px;margin-left:auto">',
-            '<span style="font-size:.65rem;color:#444;letter-spacing:.5px">MASTER</span>',
-            '<input type="range" id="daw-master-vol" min="0" max="100" value="80"',
-              'style="width:70px;accent-color:#4fc3f7;cursor:pointer">',
+          // Scrubber row
+          '<div style="display:flex;align-items:center;gap:8px">',
+            '<span style="font-size:.6rem;color:#444;font-family:monospace;min-width:40px;text-align:right" id="daw-tc-left">0:00</span>',
+            '<input type="range" id="daw-scrubber" min="0" max="1000" value="0"',
+              'style="flex:1;accent-color:#f59e0b;cursor:pointer;height:4px">',
+            '<span style="font-size:.6rem;color:#444;font-family:monospace;min-width:40px" id="daw-tc-right">0:00</span>',
           '</div>',
-          '<button id="daw-dl-all-btn" style="',
-            'background:#111318;border:1px solid #1e2130;color:#666;',
-            'padding:4px 10px;border-radius:5px;font-size:.7rem;cursor:pointer;',
-          '">⬇ DL ALL</button>',
+          // Controls row
+          '<div style="display:flex;align-items:center;gap:12px">',
+            '<button id="daw-play-btn" style="',
+              'width:34px;height:34px;border-radius:50%;',
+              'background:linear-gradient(135deg,#166534,#15803d);',
+              'border:none;cursor:pointer;',
+              'display:flex;align-items:center;justify-content:center;flex-shrink:0;',
+            '">',
+              '<svg id="daw-play-icon" width="12" height="12" viewBox="0 0 24 24" fill="#fff">',
+                '<polygon points="5,3 19,12 5,21"/>',
+              '</svg>',
+              '<svg id="daw-stop-icon" width="10" height="10" viewBox="0 0 24 24" fill="#fff" style="display:none">',
+                '<rect x="4" y="4" width="16" height="16" rx="2"/>',
+              '</svg>',
+            '</button>',
+            '<div id="daw-timecode" style="',
+              'font-family:Courier New,monospace;font-size:.82rem;',
+              'color:#f59e0b;letter-spacing:1px;font-weight:700;',
+              'background:#070910;padding:4px 10px;border-radius:4px;',
+              'border:1px solid #1f1200;min-width:75px;text-align:center;',
+            '">0:00.0</div>',
+            '<div style="display:flex;align-items:center;gap:6px;margin-left:auto">',
+              '<span style="font-size:.65rem;color:#444;letter-spacing:.5px">MASTER</span>',
+              '<input type="range" id="daw-master-vol" min="0" max="100" value="80"',
+                'style="width:70px;accent-color:#4fc3f7;cursor:pointer">',
+            '</div>',
+            '<button id="daw-dl-all-btn" style="',
+              'background:#111318;border:1px solid #1e2130;color:#666;',
+              'padding:4px 10px;border-radius:5px;font-size:.7rem;cursor:pointer;',
+            '">⬇ DL ALL</button>',
+          '</div>',
         '</div>',
       '</div>',
     ].join('');
@@ -260,6 +268,52 @@
     var masterVol = _panel.querySelector('#daw-master-vol');
     if (masterVol) masterVol.addEventListener('input', function (e) {
       if (_masterGain) _masterGain.gain.value = e.target.value / 100;
+    });
+
+    // Master scrubber
+    var scrubber = _panel.querySelector('#daw-scrubber');
+    if (scrubber) {
+      scrubber.addEventListener('mousedown', function () {
+        // Pause ticking while scrubbing but keep audio state
+        if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
+      });
+      scrubber.addEventListener('input', function (e) {
+        if (_duration <= 0) return;
+        var frac = e.target.value / 1000;
+        _offset = frac * _duration;
+        _updateTC(_offset);
+        _updateScrubber(frac);
+        _redrawAll(Math.round(frac * _getTrackWidth()));
+      });
+      scrubber.addEventListener('change', function (e) {
+        if (_duration <= 0) return;
+        var frac = e.target.value / 1000;
+        _offset = frac * _duration;
+        if (_playing) { _stopAll(); _startPlay(); }
+        else {
+          _updateTC(_offset);
+          _updateScrubber(frac);
+          _redrawAll(Math.round(frac * _getTrackWidth()));
+        }
+      });
+    }
+
+    // Ruler click to seek
+    var rulerWrap = _panel.querySelector('#daw-ruler-wrap');
+    if (rulerWrap) rulerWrap.addEventListener('click', function (e) {
+      if (_duration <= 0) return;
+      var rect = rulerWrap.getBoundingClientRect();
+      var frac = (e.clientX - rect.left) / rect.width;
+      frac = Math.max(0, Math.min(1, frac));
+      _offset = frac * _duration;
+      if (_playing) { _stopAll(); _startPlay(); }
+      else {
+        _updateTC(_offset);
+        _updateScrubber(frac);
+        _redrawAll(Math.round(frac * _getTrackWidth()));
+        var ph = _panel.querySelector('#daw-playhead');
+        if (ph && rulerWrap) ph.style.left = (frac * rulerWrap.offsetWidth) + 'px';
+      }
     });
 
     // DL All
@@ -362,8 +416,13 @@
     if (!_panel) return;
     _setExtractBtn('⚡ RE-EXTRACT', false);
 
+    // Filter out full-mix stems (song, instrumental, etc.) — these are NOT individual stems
+    var filtered = stems.filter(function (s) {
+      return FULL_MIX_STEMS.indexOf(s.name.toLowerCase()) === -1;
+    });
+
     // Sort stems by preferred order
-    var ordered = stems.slice().sort(function (a, b) {
+    var ordered = filtered.slice().sort(function (a, b) {
       var ai = STEM_ORDER.indexOf(a.name), bi = STEM_ORDER.indexOf(b.name);
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
     });
@@ -438,11 +497,8 @@
             '<input type="range" class="daw-v-sl" data-track="' + stem.name + '"',
               'min="0" max="100" value="80" style="flex:1;min-width:0;accent-color:' + col.border + ';cursor:pointer">',
           '</div>',
-          // dB readout + dl
-          '<div style="display:flex;align-items:center;justify-content:space-between">',
-            '<span class="daw-db-lbl" data-track="' + stem.name + '" style="',
-              'font-size:.6rem;color:' + col.label + ';font-weight:700;',
-            '">0.0 dB</span>',
+          // Download only (no dB readout)
+          '<div style="display:flex;align-items:center;justify-content:flex-end">',
             '<button class="daw-dl-btn" data-track="' + stem.name + '"',
               'title="Download ' + label + '" style="',
               'background:none;border:1px solid #1e2130;color:#555;',
@@ -522,6 +578,9 @@
 
       if (_tracks.every(function (t) { return t.loaded; })) {
         _drawRuler();
+        // Update scrubber end-time label
+        var tc = _panel && _panel.querySelector('#daw-tc-right');
+        if (tc) tc.textContent = _fmtTC(_duration);
       }
     })
     .catch(function (err) {
@@ -570,7 +629,8 @@
     var muted  = track ? track.muted : false;
     var soloed = track ? track.soloed : false;
     var hasSolo = _tracks.some(function (t) { return t.soloed; });
-    var dimmed = muted || (hasSolo && !soloed);
+    // Track is effectively silenced if: muted, OR solo mode active and this track is not soloed
+    var silenced = muted || (hasSolo && !soloed);
 
     // BG
     ctx.fillStyle = col.bg;
@@ -594,7 +654,7 @@
       var x = i * barW;
       var played = i < playPx;
 
-      if (dimmed) {
+      if (silenced) {
         ctx.fillStyle = 'rgba(60,60,60,.35)';
       } else if (played) {
         ctx.fillStyle = _hexRgba(col.wave, 1.0);
@@ -610,7 +670,7 @@
       ctx.fillRect(playPx - 1, 0, 2, H);
     }
 
-    // Muted overlay
+    // Muted overlay — shown if track is explicitly muted OR silenced by solo
     if (muted) {
       ctx.fillStyle = 'rgba(0,0,0,.55)';
       ctx.fillRect(0, 0, W, H);
@@ -618,6 +678,10 @@
       ctx.font = 'bold 10px Inter,sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('MUTED', W / 2, H / 2 + 4);
+    } else if (hasSolo && !soloed) {
+      // Silenced by solo — show dimmed state, no text (M button will be red)
+      ctx.fillStyle = 'rgba(0,0,0,.35)';
+      ctx.fillRect(0, 0, W, H);
     }
   }
 
@@ -650,7 +714,6 @@
     var ctx = el.getContext('2d');
     ctx.fillStyle = '#070910'; ctx.fillRect(0, 0, W, H);
     if (_duration <= 0) return;
-    var secPerPx = _duration / W;
     var tickEvery = Math.ceil(_duration / (W / 60)); // ~60px between ticks
     for (var t = 0; t <= _duration; t += tickEvery) {
       var x = Math.round(t / _duration * W);
@@ -712,13 +775,14 @@
     var elapsed = _audioCtx.currentTime - _playStart;
     if (elapsed >= _duration && _duration > 0) {
       _stopAll(); _offset = 0;
-      _updateTC(0); _redrawAll(0);
+      _updateTC(0); _updateScrubber(0); _redrawAll(0);
       return;
     }
     _updateTC(elapsed);
     var frac = _duration > 0 ? elapsed / _duration : 0;
+    _updateScrubber(frac);
 
-    // Playhead bar
+    // Playhead bar on ruler
     var ph = _panel.querySelector('#daw-playhead');
     var rw = _panel.querySelector('#daw-ruler-wrap');
     if (ph && rw) ph.style.left = (frac * rw.offsetWidth) + 'px';
@@ -740,6 +804,7 @@
     if (_playing) { _stopAll(); _startPlay(); }
     else {
       _updateTC(_offset);
+      _updateScrubber(frac);
       var ph = _panel && _panel.querySelector('#daw-playhead');
       var rw = _panel && _panel.querySelector('#daw-ruler-wrap');
       if (ph && rw) ph.style.left = (frac * rw.offsetWidth) + 'px';
@@ -767,11 +832,31 @@
 
   function _updateTC (sec) {
     var el = _panel && _panel.querySelector('#daw-timecode');
-    if (!el) return;
+    if (el) el.textContent = _fmtTC(sec);
+    var left = _panel && _panel.querySelector('#daw-tc-left');
+    if (left) left.textContent = _fmtTC(sec, true);
+  }
+
+  function _updateScrubber (frac) {
+    var sc = _panel && _panel.querySelector('#daw-scrubber');
+    if (sc) sc.value = Math.round(frac * 1000);
+    var ph = _panel && _panel.querySelector('#daw-playhead');
+    var rw = _panel && _panel.querySelector('#daw-ruler-wrap');
+    if (ph && rw) ph.style.left = (frac * rw.offsetWidth) + 'px';
+  }
+
+  function _fmtTC (sec, short) {
     var m = Math.floor(sec / 60);
     var s = Math.floor(sec % 60);
+    if (short) return m + ':' + (s < 10 ? '0' : '') + s;
     var t = Math.floor((sec % 1) * 10);
-    el.textContent = m + ':' + (s < 10 ? '0' : '') + s + '.' + t;
+    return m + ':' + (s < 10 ? '0' : '') + s + '.' + t;
+  }
+
+  function _getTrackWidth () {
+    if (!_panel) return 640;
+    var cv = _panel.querySelector('.daw-cv');
+    return (cv && cv.offsetWidth) || 640;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -795,14 +880,41 @@
     var t = _tracks.find(function (x) { return x.name === name; });
     if (!t) return;
     t.soloed = !t.soloed;
+    var hasSolo = _tracks.some(function (x) { return x.soloed; });
+
     _tracks.forEach(function (x) {
       _applyGain(x);
-      var btn = _panel && _panel.querySelector('.daw-s-btn[data-track="' + x.name + '"]');
-      if (btn) {
-        btn.style.background = x.soloed ? '#d97706' : '#0e1017';
-        btn.style.borderColor = x.soloed ? '#d97706' : '#2a2a35';
-        btn.style.color       = x.soloed ? '#fff'    : '#666';
+
+      // Solo button — amber when soloed
+      var sBtn = _panel && _panel.querySelector('.daw-s-btn[data-track="' + x.name + '"]');
+      if (sBtn) {
+        sBtn.style.background = x.soloed ? '#d97706' : '#0e1017';
+        sBtn.style.borderColor = x.soloed ? '#d97706' : '#2a2a35';
+        sBtn.style.color       = x.soloed ? '#fff'    : '#666';
       }
+
+      // Mute button — turns red when this track is silenced by solo (but not explicitly muted)
+      var mBtn = _panel && _panel.querySelector('.daw-m-btn[data-track="' + x.name + '"]');
+      if (mBtn) {
+        var silencedBySolo = hasSolo && !x.soloed && !x.muted;
+        if (x.muted) {
+          // Explicitly muted — stays red
+          mBtn.style.background = '#dc2626';
+          mBtn.style.borderColor = '#dc2626';
+          mBtn.style.color = '#fff';
+        } else if (silencedBySolo) {
+          // Silenced by solo — show red mute indicator
+          mBtn.style.background = '#dc2626';
+          mBtn.style.borderColor = '#dc2626';
+          mBtn.style.color = '#fff';
+        } else {
+          // Active / normal
+          mBtn.style.background = '#0e1017';
+          mBtn.style.borderColor = '#2a2a35';
+          mBtn.style.color = '#666';
+        }
+      }
+
       if (_peakReady[x.name]) _drawWave(x.name, _curPx(x.name));
     });
   }
@@ -812,11 +924,6 @@
     if (!t) return;
     t.vol = val;
     _applyGain(t);
-    var lbl = _panel && _panel.querySelector('.daw-db-lbl[data-track="' + name + '"]');
-    if (lbl) {
-      var db = val <= 0 ? '-∞' : (20 * Math.log10(val / 100)).toFixed(1);
-      lbl.textContent = db + ' dB';
-    }
   }
 
   function _applyGain (t) {
@@ -924,8 +1031,32 @@
       '.daw-s-btn:hover{border-color:#d97706;color:#d97706}',
       '.daw-cv{cursor:pointer}',
       '.daw-cv:hover{opacity:.9}',
+      '#daw-scrubber{',
+        '-webkit-appearance:none;appearance:none;',
+        'height:4px;border-radius:2px;',
+        'background:linear-gradient(to right,#f59e0b 0%,#f59e0b 0%,#1e2130 0%);',
+        'outline:none;cursor:pointer;',
+      '}',
+      '#daw-scrubber::-webkit-slider-thumb{',
+        '-webkit-appearance:none;appearance:none;',
+        'width:14px;height:14px;border-radius:50%;',
+        'background:#f59e0b;cursor:pointer;',
+        'box-shadow:0 0 4px rgba(245,158,11,.6);',
+      '}',
+      '#daw-scrubber::-moz-range-thumb{',
+        'width:14px;height:14px;border-radius:50%;',
+        'background:#f59e0b;cursor:pointer;border:none;',
+      '}',
     ].join('');
     document.head.appendChild(s);
+
+    // Update scrubber gradient on input (progress fill effect)
+    document.addEventListener('input', function (e) {
+      if (e.target && e.target.id === 'daw-scrubber') {
+        var pct = (e.target.value / 1000 * 100).toFixed(1);
+        e.target.style.background = 'linear-gradient(to right,#f59e0b 0%,#f59e0b ' + pct + '%,#1e2130 ' + pct + '%)';
+      }
+    });
   }
 
 })();
