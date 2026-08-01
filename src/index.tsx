@@ -1549,6 +1549,18 @@ app.post('/api/job/stems', async (c) => {
       return key === cacheKey && s.status === 'ready'
     })
     if (cached) return c.json({ ok: true, cached: true, task_id: cached.task_id, stems: cached.stems, status: 'ready' })
+
+    // ── GUARD: already pending/processing for this mode — don't charge again ──
+    // If the user clicks Extract while a job is already running, return the
+    // in-flight task_id instead of deducting credits a second time.
+    const inFlight = existingStems.find(s => {
+      const key = s.mode === 'auto' ? s.mode : `${s.mode}_${s.target_instrument || ''}`
+      return key === cacheKey && (s.status === 'pending' || s.status === 'processing')
+    })
+    if (inFlight) {
+      console.log(`[stems] Already in-flight for ${job_id} mode=${mode} — returning existing task_id without charging`)
+      return c.json({ ok: true, cached: false, task_id: inFlight.task_id, status: inFlight.status })
+    }
   }
 
   // Deduct credits based on mode: auto (5-stem full) = 75pts, split_from_mix (2-stem basic) = 30pts
@@ -1642,12 +1654,10 @@ app.get('/api/job/stems/:jobId', async (c) => {
   }
 
   // ── stemwait: handler ────────────────────────────────────────────────────
-  // POST stored a "stemwait:<mode>:<ts>" task_id to avoid blocking the Worker.
-  // On the FIRST poll (status === 'pending') we fire the MusicAPI upload+submit
-  // via c.executionCtx.waitUntil() — runs AFTER we return the response, so
-  // the Worker response is sent in < 1 s regardless of how long MusicAPI takes.
-  // The background task writes 'stemtask:<musicapi_task_id>' to D1 when submitted;
-  // subsequent polls find it and proceed to MusicAPI task polling.
+  // POST stored a "stemwait:<mode>:<ts>" task_id.
+  // On the first poll (status === 'pending') we do the MusicAPI upload+submit
+  // inline and store the real 'stemtask:<id>' back to D1.
+  // Subsequent polls hit the stemtask: branch below — we NEVER re-submit.
   if (stemJob.task_id.startsWith('stemwait:')) {
     const stereoUrl = job.stereo_url
     if (!stereoUrl) {
@@ -1659,35 +1669,11 @@ app.get('/api/job/stems/:jobId', async (c) => {
       return c.json({ status: 'error', error: stemJob.error })
     }
 
-    // ── Stuck-in-processing recovery ──────────────────────────────────────
-    // waitUntil() on Genspark-hosted Workers may be terminated early if the
-    // MusicAPI stems call exceeds the platform's wall-clock budget (~30 s).
-    // When that happens the job stays 'processing' forever.
-    // Detect: status===processing AND created_at older than 90 s → reset to
-    // 'pending' so this poll re-fires waitUntil() and gets another 30-second window.
-    // Cap retries at 3 (retry_count field) — if still failing, surface error.
-    if (stemJob.status === 'processing') {
-      const ageMs = Date.now() - (stemJob.created_at || 0)
-      const retryCount = (stemJob as any).retry_count || 0
-      if (ageMs > 90_000) {
-        if (retryCount >= 3) {
-          // Too many retries — give up and surface a real error
-          console.warn(`[stems] job ${stemJob.task_id} exhausted ${retryCount} retries — marking error`)
-          stemJob.status = 'error'
-          ;(stemJob as any).error = 'Stem extraction failed after multiple attempts. Please try again.'
-          const errJob = { ...job } as any
-          errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
-          await setJob(c.env.DB, errJob)
-          return c.json({ status: 'error', error: (stemJob as any).error })
-        }
-        console.warn(`[stems] job ${stemJob.task_id} stuck in processing for ${Math.round(ageMs/1000)}s — resetting to pending (retry ${retryCount + 1}/3)`)
-        stemJob.status = 'pending'
-        ;(stemJob as any).retry_count = retryCount + 1
-        const resetJob = { ...job } as any
-        resetJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
-        await setJob(c.env.DB, resetJob)
-        // fall through to the if(stemJob.status === 'pending') block below
-      }
+    // If status is already processing/ready here it means the task_id was
+    // updated to stemtask: by a previous poll but the client is still sending
+    // the old stemwait: id. Just report processing — do NOT re-submit.
+    if (stemJob.status === 'processing' || stemJob.status === 'ready') {
+      return c.json({ status: stemJob.status, task_id: stemJob.task_id })
     }
 
     if (stemJob.status === 'pending') {
@@ -1796,12 +1782,13 @@ app.get('/api/job/stems/:jobId', async (c) => {
   }
 
   // Poll MusicAPI stems task — task_id stored as "stemtask:<musicapi_task_id>"
+  // This branch ONLY polls — it never re-submits or charges MusicAPI again.
   if (stemJob.task_id.startsWith('stemtask:')) {
-    // Server-side timeout: if the task has been running for > 8 minutes, give up
+    // Server-side timeout: if the task has been running for > 10 minutes, give up
     const stemAgeMs = Date.now() - (stemJob.created_at || 0)
-    if (stemAgeMs > 8 * 60 * 1000) {
+    if (stemAgeMs > 10 * 60 * 1000) {
       stemJob.status = 'error'
-      stemJob.error = 'Stem extraction timed out after 8 minutes. Please try again.'
+      stemJob.error = 'Stem extraction timed out. MusicAPI did not return results within 10 minutes. Click Re-extract to try again (this will use credits).'
       const updatedJob = { ...job } as any
       updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
       await setJob(c.env.DB, updatedJob)
@@ -10132,8 +10119,22 @@ app.get('/api/admin/stem-diag', async (c) => {
     if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
   }
 
+  // Balance-only mode: ?balance=1 skips task poll and just returns MusicAPI account balance
+  if (c.req.query('balance') === '1') {
+    const balRes = await fetch(`${MUSICAPI_BASE}/user/me`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+    }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message }))
+    const balRes2 = await fetch(`https://api.musicapi.ai/api/v1/credits`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+    }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message }))
+    const balRes3 = await fetch(`https://api.musicapi.ai/api/v1/sonic/credits`, {
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+    }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message }))
+    return c.json({ user_me: balRes, credits_v1: balRes2, sonic_credits: balRes3 })
+  }
+
   const taskId = c.req.query('task_id')
-  if (!taskId) return c.json({ error: 'task_id param required' }, 400)
+  if (!taskId) return c.json({ error: 'task_id param required. Use ?balance=1 to check MusicAPI balance only.' }, 400)
 
   // Try both poll endpoints
   const sonicUrl = `${MUSICAPI_SONIC}/task/${taskId}`
