@@ -1173,6 +1173,9 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     job.stereo_url = stereoUrl
     // Sonic returns 2 clip variations — surface the alt for remix/cover jobs
     if (stereoUrlAlt) (job as any).stereo_url_alt = stereoUrlAlt
+    // Save clip_id from Sonic so stems can skip the /sonic/upload call entirely
+    // (mirrors the Producer path at line ~1098; without this, stems always fell back to upload)
+    if (resultClipId) (job as any).clip_id = resultClipId
     if (resultDurationMs > 0) {
       (job as any).chain_final_duration_ms = resultDurationMs
     }
