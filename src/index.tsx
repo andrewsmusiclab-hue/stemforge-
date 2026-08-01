@@ -5872,6 +5872,7 @@ ${globalSidebar()}
 ${body}
 </div>
 <script src="/static/app.v2.43.js"></script>
+<script src="/static/stems.v3.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
