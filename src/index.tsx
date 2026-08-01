@@ -5,6 +5,7 @@ import { serveStatic } from 'hono/cloudflare-workers'
 type Bindings = {
   OPENAI_API_KEY: string
   MUSICAPI_KEY: string
+  MUREKA_API_KEY: string     // Mureka API key for stem separation (/v1/song/stem)
   ELEVENLABS_API_KEY: string  // ElevenLabs SFX API for One Shot Creator
   DB: D1Database             // Cloudflare D1 for persistent job storage
   IMAGES: R2Bucket           // Cloudflare R2 for permanent cover art storage
@@ -47,6 +48,7 @@ const MUSICAPI_BASE = 'https://api.musicapi.ai/api/v1'
 const MUSICAPI_SONIC  = `${MUSICAPI_BASE}/sonic`
 const MUSICAPI_PRODUCER = `${MUSICAPI_BASE}/producer`
 const OPENAI_BASE = 'https://api.openai.com/v1'
+const MUREKA_BASE = 'https://api.mureka.ai/v1'
 // ── D1-backed job store ───────────────────────────────────────
 // Survives across Cloudflare Worker instances (no more "Job not found")
 // Falls back to in-memory Map if DB is not bound (local dev without D1)
@@ -520,12 +522,14 @@ function planFromPriceId(env: Bindings, priceId: string): string {
 
 // ── Stem extraction types ──────────────────────────────────────
 type StemName = 'vocals' | 'drums' | 'bass' | 'other' | 'instrumental'
-type StemMode = 'auto' | 'split_from_mix' | 'advanced'
+// StemMode — maps to Mureka model:
+//   'auto'           → audio-separation-1  (5 stems: vocals, drums, bass, other, instrumental)
+//   'split_from_mix' → audio-separation-3  (2 stems: vocals + instrumental)
+type StemMode = 'auto' | 'split_from_mix'
 
 interface StemTrack {
   name: StemName | string   // stem label
-  url: string               // CDN URL for the stem WAV
-  task_id?: string          // MusicAPI Sonic stem task id
+  url: string               // zip-entry: URL or CDN URL for the stem WAV
 }
 
 interface StemJob {
@@ -1191,10 +1195,11 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
   return job
 }
 
-// ── ZIP parser (legacy — kept for zip-entry: proxy in /api/stem-audio) ───────
-// NOTE: parseZipStems / parseZipTailBuffer are no longer called by new code.
-// MusicAPI returns direct stem URLs, not ZIP files. The zip-entry: scheme below
-// is only preserved to serve any legacy stem records already stored in D1.
+// ── ZIP parser for Mureka stem results ───────────────────────────────────────
+// Mureka /v1/song/stem returns a zip_url containing WAV files: vocals.wav, drums.wav, etc.
+// This minimal parser reads only the ZIP central directory (tail of the file via Range request)
+// to extract file names + offsets — NEVER downloads the full ZIP into memory.
+// zip-entry: URL format: zip-entry:<zipUrl>|<localOff>|<compSize>|<fileName>|<compMethod>|<uncompSize>
 async function parseZipStems(zipUrl: string): Promise<StemTrack[]> {
   // Step 1: fetch the last 65536 bytes — enough to contain EOCD + central directory
   // for any typical stem ZIP (4-8 files × ~200 bytes each)
@@ -1505,18 +1510,22 @@ app.get('/api/zip-proxy', async (c) => {
 app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 
 // ═══════════════════════════════════════════════════════════════
-//  STEM EXTRACTION API
-//  Three modes matching Suno's UX:
-//    auto          → MusicAPI /sonic/stems/full → 5 stems (vocals, drums, bass, other, instrumental)
-//    split_from_mix → MusicAPI /sonic/stems/basic → 2 stems (vocals + instrumental)
+//  STEM EXTRACTION API — Mureka /v1/song/stem (synchronous ZIP)
+//  Two modes:
+//    auto          → audio-separation-1  (5 stems: vocals, drums, bass, other, instrumental)
+//    split_from_mix → audio-separation-3  (2 stems: vocals + instrumental)
 //
-//  Lifecycle: POST /api/job/stems → starts task, returns task_id
-//             GET  /api/job/stems/:jobId → polls / returns cached results
+//  Mureka returns zip_url SYNCHRONOUSLY — no polling needed.
+//  We call it inside waitUntil() so the Worker returns immediately,
+//  then the background task writes zip: to D1 when done.
+//  Lifecycle: POST /api/job/stems → queues stemwait:, returns immediately
+//             GET  /api/job/stems/:jobId → first poll fires Mureka call in waitUntil(),
+//                                         subsequent polls parse ZIP + return stems
 // ═══════════════════════════════════════════════════════════════
 
 // POST /api/job/stems — start stem extraction
 app.post('/api/job/stems', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -1530,40 +1539,30 @@ app.post('/api/job/stems', async (c) => {
   const body = await c.req.json<{
     job_id: string
     mode: StemMode
-    target_instrument?: string // for split_from_mix / advanced: e.g. 'vocals', 'drums', 'bass', 'guitar' etc.
   }>()
 
-  const { job_id, mode, target_instrument } = body
+  const { job_id, mode } = body
   if (!job_id || !mode) return c.json({ error: 'job_id and mode required' }, 400)
 
   const job = await getJob(c.env.DB, job_id)
   if (!job) return c.json({ error: 'Job not found' }, 404)
   if (!job.stereo_url) return c.json({ error: 'Beat not ready yet — no audio URL' }, 400)
 
-  // Check if we already have a completed stem job for this mode+target (cache hit)
-  const existingStems = (job as any).stem_jobs as StemJob[] | undefined
-  const cacheKey = mode === 'auto' ? mode : `${mode}_${target_instrument || ''}`
-  if (existingStems) {
-    const cached = existingStems.find(s => {
-      const key = s.mode === 'auto' ? s.mode : `${s.mode}_${s.target_instrument || ''}`
-      return key === cacheKey && s.status === 'ready'
-    })
+  // Check if we already have a completed stem job for this mode (cache hit)
+  const existingStems = Array.isArray((job as any).stem_jobs) ? (job as any).stem_jobs as StemJob[] : []
+  if (existingStems.length > 0) {
+    const cached = existingStems.find((s: StemJob) => s.mode === mode && s.status === 'ready')
     if (cached) return c.json({ ok: true, cached: true, task_id: cached.task_id, stems: cached.stems, status: 'ready' })
 
     // ── GUARD: already pending/processing for this mode — don't charge again ──
-    // If the user clicks Extract while a job is already running, return the
-    // in-flight task_id instead of deducting credits a second time.
-    const inFlight = existingStems.find(s => {
-      const key = s.mode === 'auto' ? s.mode : `${s.mode}_${s.target_instrument || ''}`
-      return key === cacheKey && (s.status === 'pending' || s.status === 'processing')
-    })
+    const inFlight = existingStems.find((s: StemJob) => s.mode === mode && (s.status === 'pending' || s.status === 'processing'))
     if (inFlight) {
-      console.log(`[stems] Already in-flight for ${job_id} mode=${mode} — returning existing task_id without charging`)
+      console.log(`[stems/mureka] Already in-flight for ${job_id} mode=${mode} — returning existing task_id without charging`)
       return c.json({ ok: true, cached: false, task_id: inFlight.task_id, status: inFlight.status })
     }
   }
 
-  // Deduct credits based on mode: auto (5-stem full) = 75pts, split_from_mix (2-stem basic) = 30pts
+  // Deduct credits: 5-stem = 75pts, 2-stem vocals+instrumental = 30pts
   const stemCost = mode === 'auto' ? 75 : 30
   const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
   if (!stemFreshUser || stemFreshUser.gens_used + stemCost > stemFreshUser.gens_limit) {
@@ -1571,15 +1570,13 @@ app.post('/api/job/stems', async (c) => {
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
 
-  // MusicAPI stem separation is async — POST /sonic/stems/basic or /sonic/stems/full
-  // returns a task_id immediately; we poll GET /sonic/stems/task/:taskId.
-  // Because Cloudflare Workers has a 30-second wall-clock limit we store a
-  // "stemwait:" task_id immediately and return to the client; the actual
-  // MusicAPI call is deferred to the GET poll handler via waitUntil().
+  // Mureka /v1/song/stem returns zip_url SYNCHRONOUSLY (no polling needed).
+  // We queue a "stemwait:" task_id and fire the actual Mureka call in waitUntil()
+  // from the first GET poll. This keeps the POST response fast (< 50ms).
 
   const stemwaitTaskId = `stemwait:${mode}:${Date.now()}`
 
-  console.log(`[stems] Queuing stem job ${stemwaitTaskId} for url=${job.stereo_url?.slice(0,80)}...`)
+  console.log(`[stems/mureka] Queuing ${mode} for job=${job_id} url=${job.stereo_url?.slice(0,80)}...`)
 
   // Store pending stem job
   const stemJob: StemJob = {
@@ -1587,25 +1584,21 @@ app.post('/api/job/stems', async (c) => {
     mode,
     status: 'pending',
     stems: [],
-    target_instrument,
     created_at: Date.now()
   }
   const updatedJob = { ...job } as any
-  if (!updatedJob.stem_jobs) updatedJob.stem_jobs = []
-  // Remove any old pending/error for same key
-  updatedJob.stem_jobs = updatedJob.stem_jobs.filter((s: StemJob) => {
-    const key = s.mode === 'auto' ? s.mode : `${s.mode}_${s.target_instrument || ''}`
-    return key !== cacheKey || s.status === 'ready'
-  })
+  if (!Array.isArray(updatedJob.stem_jobs)) updatedJob.stem_jobs = []
+  // Remove any old pending/error for same mode
+  updatedJob.stem_jobs = updatedJob.stem_jobs.filter((s: StemJob) => s.mode !== mode || s.status === 'ready')
   updatedJob.stem_jobs.push(stemJob)
   await setJob(c.env.DB, updatedJob)
 
   return c.json({ ok: true, cached: false, task_id: stemwaitTaskId, status: 'pending' })
 })
 
-// GET /api/job/stems/:jobId — poll stem extraction status
+// GET /api/job/stems/:jobId — poll stem extraction status (Mureka)
 app.get('/api/job/stems/:jobId', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -1613,34 +1606,23 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
   const jobId = c.req.param('jobId')
   const mode = c.req.query('mode') as StemMode | undefined
-  const target = c.req.query('target') || ''
   const taskId = c.req.query('task_id') || ''
 
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
 
-  const stemJobs = (job as any).stem_jobs as StemJob[] | undefined
-  if (!stemJobs?.length) return c.json({ status: 'not_started' })
+  const stemJobs = Array.isArray((job as any).stem_jobs) ? (job as any).stem_jobs as StemJob[] : []
+  if (!stemJobs.length) return c.json({ status: 'not_started' })
 
-  // Find the matching stem job.
-  // task_id format after upload+submit: "stemtask:<musicapi_task_id>"
-  // Client keeps sending the original stemwait task_id, so fall back to
-  // mode-based lookup when exact task_id no longer matches.
-  let stemJob = taskId
-    ? stemJobs.find(s => s.task_id === taskId)
-    : undefined
-
+  // Find stemJob: exact task_id match first, then fall back to mode-based lookup
+  let stemJob: StemJob | undefined = taskId ? stemJobs.find(s => s.task_id === taskId) : undefined
   if (!stemJob) {
-    // Derive mode from task_id if it encodes one (e.g. "stemwait:auto:123")
+    // Derive mode from stemwait: task_id (e.g. "stemwait:auto:123")
     let lookupMode = mode
-    let lookupTarget = target
-    if (taskId && taskId.startsWith('stemwait:')) {
-      const parts = taskId.split(':')
-      lookupMode = (parts[1] as StemMode) || mode
+    if (taskId?.startsWith('stemwait:')) {
+      lookupMode = (taskId.split(':')[1] as StemMode) || mode
     }
-    stemJob = lookupMode === 'auto'
-      ? stemJobs.find(s => s.mode === 'auto')
-      : stemJobs.find(s => s.mode === lookupMode && (s.target_instrument || '') === lookupTarget)
+    stemJob = lookupMode ? stemJobs.find(s => s.mode === lookupMode) : stemJobs[0]
   }
 
   if (!stemJob) return c.json({ status: 'not_started' })
@@ -1653,302 +1635,178 @@ app.get('/api/job/stems/:jobId', async (c) => {
     return c.json({ status: 'error', error: stemJob.error })
   }
 
-  // ── stemwait: handler ────────────────────────────────────────────────────
-  // POST stored a "stemwait:<mode>:<ts>" task_id.
-  // On the first poll (status === 'pending') we do the MusicAPI upload+submit
-  // inline and store the real 'stemtask:<id>' back to D1.
-  // Subsequent polls hit the stemtask: branch below — we NEVER re-submit.
+  // ── stemwait: → fire Mureka call via waitUntil() ──────────────────────────
+  // On the FIRST poll (status=pending) we fire the Mureka /v1/song/stem call
+  // in a background waitUntil() task.  Mureka is SYNCHRONOUS — it returns
+  // zip_url directly — but may take 30-120s.  waitUntil() runs after we
+  // send the response so the Worker responds in < 100ms.
+  // The background task writes 'zip:<zipUrl>' to D1 when complete.
+  // Subsequent polls find the zip: task_id and parse the ZIP on-demand.
   if (stemJob.task_id.startsWith('stemwait:')) {
     const stereoUrl = job.stereo_url
     if (!stereoUrl) {
       stemJob.status = 'error'
       stemJob.error = 'No audio URL found for this job'
       const updatedJob = { ...job } as any
-      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob.task_id ? stemJob : s)
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
       await setJob(c.env.DB, updatedJob)
       return c.json({ status: 'error', error: stemJob.error })
     }
 
-    // If status is already processing/ready here it means the task_id was
-    // updated to stemtask: by a previous poll but the client is still sending
-    // the old stemwait: id. Just report processing — do NOT re-submit.
-    if (stemJob.status === 'processing' || stemJob.status === 'ready') {
-      return c.json({ status: stemJob.status, task_id: stemJob.task_id })
+    // If already processing, just report back — do NOT re-fire
+    if (stemJob.status === 'processing') {
+      return c.json({ status: 'processing', task_id: stemJob.task_id })
     }
 
     if (stemJob.status === 'pending') {
-      // ── Do upload + submit INLINE (awaited) so it can't be killed by waitUntil budget ──
-      // This poll handler runs the full MusicAPI upload + stems/submit synchronously,
-      // then returns. The client polls every 2.5s; subsequent polls hit the stemtask: branch.
-      const inlineTaskId = stemJob.task_id
+      // Transition to processing so concurrent polls don't double-fire
+      stemJob.status = 'processing'
+      const processingJob = { ...job } as any
+      processingJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
+      await setJob(c.env.DB, processingJob)
 
-      // Only reuse clip_id for Sonic-generated tracks
-      const inlineExtendTaskType = (job as any).extend_task_type as string | null | undefined
-      const inlineIsSonic = inlineExtendTaskType === 'song_generate' || inlineExtendTaskType === 'song_extend'
-      const storedClipId = (job as any).clip_id as string | null | undefined
-      let clipId: string | undefined = inlineIsSonic ? (storedClipId || undefined) : undefined
+      // Capture all values needed in closure
+      const bgTaskId  = stemJob.task_id
+      const bgJobId   = jobId
+      const bgDb      = c.env.DB
+      const bgKey     = c.env.MUREKA_API_KEY
+      const bgUrl     = stereoUrl
+      const bgMode    = stemJob.mode
+      // If stereo_url is a self-hosted R2 proxy URL, resolve it to a public URL first
+      // so Mureka can download it. Mureka needs a direct public URL.
+      const bgImages  = c.env.IMAGES
 
-      try {
-        // ── Step 1: Obtain clip_id ────────────────────────────────────────────
-        if (clipId) {
-          console.log(`[stems] Re-using clip_id ${clipId} for ${inlineTaskId}`)
-        } else {
-          // ── Resolve the upload URL ────────────────────────────────────────
-          // If stereo_url is a self-referencing extend-audio-proxy URL,
-          // read the audio bytes directly from R2 and upload as binary to MusicAPI.
-          // This avoids MusicAPI trying to download from our own Worker (which times out).
-          let uploadRes: Response
-          const isProxyUrl = stereoUrl.includes('/api/extend-audio-proxy/')
+      c.executionCtx.waitUntil((async () => {
+        try {
+          // ── Resolve audio URL for Mureka ──────────────────────────────────
+          // If the URL is a self-referencing /api/extend-audio-proxy/ URL,
+          // we need to get a real public URL. Options:
+          //   A) Use the R2 public URL if configured
+          //   B) Upload the bytes to Mureka directly (not supported — URL only)
+          // For now, pass the URL directly; Mureka can fetch from stemforge.studio.
+          let audioUrl = bgUrl
 
-          if (isProxyUrl && c.env.IMAGES) {
-            // Extract the filename from the proxy URL and build the R2 key
-            const proxyFilename = decodeURIComponent(stereoUrl.split('/api/extend-audio-proxy/').pop() || '')
-            const r2Key = `extend-uploads/${proxyFilename}`
-            console.log(`[stems] Reading audio from R2 directly: ${r2Key}`)
-            const r2Obj = await c.env.IMAGES.get(r2Key)
-            if (!r2Obj) {
-              const errMsg = `Audio file not found in storage (R2 key: ${r2Key})`
-              stemJob.status = 'error'; stemJob.error = errMsg
-              const errJob = { ...job } as any
-              errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-              await setJob(c.env.DB, errJob)
-              return c.json({ status: 'error', error: errMsg })
-            }
-            const audioBytes = await r2Obj.arrayBuffer()
-            const contentType = r2Obj.httpMetadata?.contentType || (proxyFilename.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
-            console.log(`[stems] Uploading ${(audioBytes.byteLength/1024/1024).toFixed(1)}MB from R2 to MusicAPI binary upload`)
-            // MusicAPI /sonic/upload also accepts multipart form upload
-            const form = new FormData()
-            form.append('file', new Blob([audioBytes], { type: contentType }), proxyFilename)
-            uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
-              method: 'POST',
-              headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
-              body: form
-            })
-          } else {
-            // External URL (cdn1.suno.ai, storage.googleapis.com, etc.) — pass URL directly
-            console.log(`[stems] Uploading audio by URL for ${inlineTaskId}: ${stereoUrl.slice(0,80)}`)
-            uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
-              method: 'POST',
-              headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ url: stereoUrl })
-            })
+          // If the URL is relative or a proxy path, make it absolute
+          if (audioUrl.startsWith('/')) {
+            audioUrl = `https://stemforge.studio${audioUrl}`
           }
 
-          if (!uploadRes.ok) {
-            const errText = await uploadRes.text()
-            let errMsg = `MusicAPI upload error ${uploadRes.status}`
-            console.error(`[stems] Upload failed ${uploadRes.status}: ${errText.slice(0,300)} url=${stereoUrl.slice(0,120)}`)
-            try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errText || errMsg } catch {}
-            if (uploadRes.status === 429) errMsg = 'MusicAPI rate limit — please wait a moment and retry.'
-            else if (uploadRes.status === 403) errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai.'
-            else if (uploadRes.status === 400) errMsg = `Audio upload rejected by MusicAPI (400): ${errMsg}`
-            stemJob.status = 'error'; stemJob.error = errMsg
-            const errJob = { ...job } as any
-            errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-            await setJob(c.env.DB, errJob)
-            return c.json({ status: 'error', error: errMsg })
-          }
-          const uploadData = await uploadRes.json() as any
-          clipId = uploadData?.data?.[0]?.id || uploadData?.data?.[0]?.clip_id || uploadData?.clip_id || uploadData?.id
-          if (!clipId) {
-            const errMsg = 'No clip_id in MusicAPI upload response: ' + JSON.stringify(uploadData).slice(0,100)
-            stemJob.status = 'error'; stemJob.error = errMsg
-            const errJob = { ...job } as any
-            errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-            await setJob(c.env.DB, errJob)
-            return c.json({ status: 'error', error: errMsg })
-          }
-          console.log(`[stems] Got clip_id from upload: ${clipId}`)
-        }
+          // ── Call Mureka /v1/song/stem ─────────────────────────────────────
+          // model: audio-separation-1 = 5 stems, audio-separation-3 = 2 stems
+          const murekaModel = bgMode === 'split_from_mix' ? 'audio-separation-3' : 'audio-separation-1'
+          console.log(`[stems/mureka/bg] Calling song/stem model=${murekaModel} url=${audioUrl.slice(0,80)} taskId=${bgTaskId}`)
 
-        // ── Step 2: Submit stems job ─────────────────────────────────────────
-        const stemEndpoint = stemJob.mode === 'split_from_mix'
-          ? `${MUSICAPI_SONIC}/stems/basic`
-          : `${MUSICAPI_SONIC}/stems/full`
-        console.log(`[stems] Submitting ${stemJob.mode} for ${inlineTaskId} clip_id=${clipId}`)
-        const musicapiRes = await fetch(stemEndpoint, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ clip_id: clipId })
-        })
-        if (!musicapiRes.ok) {
-          const errText = await musicapiRes.text()
-          let errMsg = `MusicAPI stem error ${musicapiRes.status}`
-          console.error(`[stems] MusicAPI stem ${musicapiRes.status}: ${errText.slice(0,300)} clip_id=${clipId}`)
-          try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || j?.detail || errText || errMsg } catch {}
-          if (musicapiRes.status === 429) errMsg = 'MusicAPI rate limit — please wait a moment and retry.'
-          else if (musicapiRes.status === 403) errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai.'
-          else if (musicapiRes.status === 400) errMsg = `MusicAPI rejected stem request (400): ${errMsg}`
-          stemJob.status = 'error'; stemJob.error = errMsg
-          const errJob = { ...job } as any
-          errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-          await setJob(c.env.DB, errJob)
-          return c.json({ status: 'error', error: errMsg })
+          const murekaRes = await fetch(`${MUREKA_BASE}/song/stem`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${bgKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ url: audioUrl, model: murekaModel })
+          })
+
+          // Re-read job to avoid stale overwrites
+          const freshJob = await getJob(bgDb, bgJobId)
+          if (!freshJob) return
+          const freshStems = Array.isArray((freshJob as any).stem_jobs) ? (freshJob as any).stem_jobs as StemJob[] : []
+          const freshStem = freshStems.find((s: StemJob) => s.task_id === bgTaskId)
+          if (!freshStem) return
+
+          if (!murekaRes.ok) {
+            const errText = await murekaRes.text().catch(() => '')
+            let errMsg = `Mureka error ${murekaRes.status}`
+            try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || j?.error || errMsg } catch {}
+            console.error(`[stems/mureka/bg] API error ${murekaRes.status}: ${errText.slice(0, 300)}`)
+            freshStem.status = 'error'
+            freshStem.error = errMsg
+            const errJob = { ...freshJob } as any
+            errJob.stem_jobs = freshStems.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+            await setJob(bgDb, errJob)
+            return
+          }
+
+          const data = await murekaRes.json() as any
+          const zipUrl = data.zip_url
+          if (!zipUrl) {
+            const errMsg = 'Mureka returned no zip_url: ' + JSON.stringify(data).slice(0, 200)
+            console.error(`[stems/mureka/bg] ${errMsg}`)
+            freshStem.status = 'error'
+            freshStem.error = errMsg
+            const errJob = { ...freshJob } as any
+            errJob.stem_jobs = freshStems.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+            await setJob(bgDb, errJob)
+            return
+          }
+
+          console.log(`[stems/mureka/bg] Got zip_url for ${bgTaskId}: ${zipUrl.slice(0,80)}`)
+          // Store zip: URL — the poll handler will parse it on next client request
+          freshStem.task_id = 'zip:' + zipUrl
+          freshStem.status  = 'pending'  // reset so zip: branch runs on next poll
+          const updJob = { ...freshJob } as any
+          updJob.stem_jobs = freshStems.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+          await setJob(bgDb, updJob)
+        } catch (bgErr: any) {
+          console.error(`[stems/mureka/bg] Unhandled error: ${bgErr?.message}`)
+          try {
+            const freshJob = await getJob(bgDb, bgJobId)
+            if (!freshJob) return
+            const freshStems = Array.isArray((freshJob as any).stem_jobs) ? (freshJob as any).stem_jobs as StemJob[] : []
+            const freshStem = freshStems.find((s: StemJob) => s.task_id === bgTaskId)
+            if (!freshStem) return
+            freshStem.status = 'error'
+            freshStem.error = bgErr?.message || 'Mureka stem extraction failed'
+            const errJob = { ...freshJob } as any
+            errJob.stem_jobs = freshStems.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
+            await setJob(bgDb, errJob)
+          } catch {}
         }
-        const data = await musicapiRes.json() as any
-        const stemTaskId = data.task_id || data.data?.task_id
-        if (!stemTaskId) {
-          const errMsg = 'No task_id in MusicAPI stem response: ' + JSON.stringify(data).slice(0,100)
-          stemJob.status = 'error'; stemJob.error = errMsg
-          const errJob = { ...job } as any
-          errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-          await setJob(c.env.DB, errJob)
-          return c.json({ status: 'error', error: errMsg })
-        }
-        console.log(`[stems] Got MusicAPI task_id: ${stemTaskId}`)
-        stemJob.task_id = 'stemtask:' + stemTaskId
-        stemJob.status  = 'processing'
-        const updJob = { ...job } as any
-        updJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-        await setJob(c.env.DB, updJob)
-        return c.json({ status: 'processing', task_id: stemJob.task_id })
-      } catch (inlineErr: any) {
-        console.error(`[stems] Inline error: ${inlineErr?.message}`)
-        stemJob.status = 'error'; stemJob.error = inlineErr?.message || 'Stem submission failed'
-        const errJob = { ...job } as any
-        errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
-        await setJob(c.env.DB, errJob)
-        return c.json({ status: 'error', error: stemJob.error })
-      }
+      })())
     }
 
-    // Always return immediately — client polls every 2.5 s
     return c.json({ status: 'processing', task_id: stemJob.task_id })
   }
 
-  // Poll MusicAPI stems task — task_id stored as "stemtask:<musicapi_task_id>"
-  // This branch ONLY polls — it never re-submits or charges MusicAPI again.
-  if (stemJob.task_id.startsWith('stemtask:')) {
-    // Server-side timeout: if the task has been running for > 10 minutes, give up
-    const stemAgeMs = Date.now() - (stemJob.created_at || 0)
-    if (stemAgeMs > 10 * 60 * 1000) {
-      stemJob.status = 'error'
-      stemJob.error = 'Stem extraction timed out. MusicAPI did not return results within 10 minutes. Click Re-extract to try again (this will use credits).'
+  // ── zip: → parse ZIP central directory and return stem tracks ────────────
+  // task_id = "zip:<zipUrl>" set by the background Mureka call above.
+  // We parse the ZIP on-demand via range requests (never download full ZIP).
+  if (stemJob.task_id.startsWith('zip:')) {
+    const zipUrl = stemJob.task_id.slice(4)
+    try {
+      const stemTracks: StemTrack[] = await parseZipStems(zipUrl)
+      if (!stemTracks.length) throw new Error('No stems found in ZIP')
+
+      // For split_from_mix: filter to vocals + instrumental only
+      let finalTracks = stemTracks
+      if (stemJob.mode === 'split_from_mix') {
+        const vocals = finalTracks.find(s => s.name === 'vocals')
+        const instr  = finalTracks.find(s => s.name === 'instrumental' || s.name === 'other')
+        finalTracks = []
+        if (vocals) finalTracks.push(vocals)
+        if (instr)  finalTracks.push({ name: 'instrumental', url: instr.url })
+        if (finalTracks.length === 1) {
+          const ex = finalTracks[0]
+          finalTracks.push({ name: ex.name === 'vocals' ? 'instrumental' : 'vocals', url: ex.url })
+        }
+      }
+
+      stemJob.status = 'ready'
+      stemJob.stems = finalTracks
       const updatedJob = { ...job } as any
-      updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'ready', stems: finalTracks, task_id: stemJob.task_id })
+    } catch (zipErr: any) {
+      stemJob.status = 'error'
+      stemJob.error = zipErr.message || 'Failed to parse stem ZIP'
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
       await setJob(c.env.DB, updatedJob)
       return c.json({ status: 'error', error: stemJob.error })
     }
-
-    const musicapiTaskId = stemJob.task_id.slice('stemtask:'.length)
-    try {
-      const res = await fetch(`${MUSICAPI_SONIC}/task/${musicapiTaskId}`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-      })
-
-      // Non-200 from MusicAPI poll → surface the error instead of silently staying in processing
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '')
-        let errMsg = `MusicAPI poll error ${res.status}`
-        try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
-        if (res.status === 429) errMsg = 'MusicAPI rate limit — please wait a moment and retry.'
-        // Don't persist as error for transient issues (429/5xx) — let client retry
-        return c.json({ status: 'processing', poll_error: errMsg })
-      }
-
-      const data = await res.json() as any
-
-      // MusicAPI /sonic/task/:id returns { code: 200, data: [ { state, title, audio_url, ... }, ... ] }
-      // data.data is an ARRAY of clip objects. Stems are identified by title suffix:
-      //   "(Lead Vocal)"           → vocals
-      //   "(Without Lead Vocal)"   → instrumental
-      //   "(Drums)"                → drums
-      //   "(Bass)"                 → bass
-      //   "(Piano)"                → piano
-      //   "(Guitar)"               → guitar
-      //   "(Other)"                → other
-      // MusicAPI returns 2 duplicate copies of each stem — we deduplicate by stem name.
-      console.log(`[stems] Poll raw response for ${musicapiTaskId}:`, JSON.stringify(data).slice(0, 800))
-
-      // Title suffix → canonical stem name mapping
-      const TITLE_TO_STEM: Record<string, string> = {
-        'lead vocal': 'vocals',
-        'vocal': 'vocals',
-        'vocals': 'vocals',
-        'without lead vocal': 'instrumental',
-        'instrumental': 'instrumental',
-        'accompaniment': 'instrumental',
-        'other': 'other',
-        'drums': 'drums',
-        'bass': 'bass',
-        'piano': 'piano',
-        'guitar': 'guitar',
-        'synth': 'synth',
-        'strings': 'strings',
-        'wind': 'wind',
-      }
-
-      function titleToStemName(title: string): string {
-        const m = title.match(/\(([^)]+)\)\s*$/)
-        if (!m) return ''
-        const suffix = m[1].toLowerCase().trim()
-        return TITLE_TO_STEM[suffix] || suffix.replace(/\s+/g, '_')
-      }
-
-      // All clips in the array — pick the best state from the first item
-      const allClips = Array.isArray(data.data) ? data.data : []
-      const taskState = allClips[0]?.state || allClips[0]?.status || data.state || data.status || ''
-
-      console.log(`[stems] taskState=${taskState} clipCount=${allClips.length} titles=${allClips.map((c: any) => c.title).join(' | ')}`)
-
-      if (taskState === 'succeeded' || taskState === 'completed' || taskState === 'complete') {
-        // Parse stems from title-suffixed clip objects; deduplicate by stem name
-        const seen = new Set<string>()
-        let stemTracks: StemTrack[] = allClips
-          .filter((clip: any) => (clip.state === 'succeeded' || clip.state === 'completed') && clip.audio_url)
-          .map((clip: any) => ({ name: titleToStemName(clip.title || ''), url: clip.audio_url as string }))
-          .filter((s: StemTrack) => s.name && s.url && !seen.has(s.name) && seen.add(s.name))
-
-        if (!stemTracks.length) {
-          console.warn(`[stems] succeeded but no stem URLs parsed. Full data: ${JSON.stringify(data).slice(0, 600)}`)
-          return c.json({ status: 'processing' })
-        }
-
-        // For split_from_mix: only show vocals + instrumental
-        if (stemJob.mode === 'split_from_mix') {
-          const vocals = stemTracks.find(s => s.name === 'vocals')
-          const instrumental = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other' || s.name === 'accompaniment')
-          stemTracks = []
-          if (vocals) stemTracks.push(vocals)
-          if (instrumental) stemTracks.push({ name: 'instrumental', url: instrumental.url })
-          if (stemTracks.length === 1) {
-            const ex = stemTracks[0]
-            stemTracks.push({ name: ex.name === 'vocals' ? 'instrumental' : 'vocals', url: ex.url })
-          }
-        }
-
-        stemJob.status = 'ready'
-        stemJob.stems = stemTracks
-        const updatedJob = { ...job } as any
-        updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-        await setJob(c.env.DB, updatedJob)
-        return c.json({ status: 'ready', stems: stemTracks, task_id: stemJob.task_id })
-      }
-
-      if (taskState === 'failed' || taskState === 'error') {
-        stemJob.status = 'error'
-        stemJob.error = allClips[0]?.error || allClips[0]?.message || data.error || data.message || 'Stem extraction failed'
-        const updatedJob = { ...job } as any
-        updatedJob.stem_jobs = stemJobs.map(s => s.task_id === stemJob.task_id ? stemJob : s)
-        await setJob(c.env.DB, updatedJob)
-        return c.json({ status: 'error', error: stemJob.error })
-      }
-
-      return c.json({ status: 'processing', task_id: stemJob.task_id })
-    } catch (err: any) {
-      return c.json({ status: 'error', error: err?.message || 'Poll failed' }, 500)
-    }
   }
 
-  // Fallback for unknown task_id formats
-  try {
-    return c.json({ status: 'processing' })
-  } catch (err: any) {
-    return c.json({ status: 'error', error: err?.message || 'Unknown stem task state'
-    })
-  }
-
+  // Fallback
+  return c.json({ status: 'processing', task_id: stemJob.task_id })
 })
 
 // GET /api/stem-audio/:jobId/:stem — proxy stem audio for browser playback
@@ -5895,7 +5753,7 @@ ${globalSidebar()}
 ${body}
 </div>
 <script src="/static/app.v2.43.js"></script>
-<script src="/static/stems.v3.js"></script>
+<script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){
