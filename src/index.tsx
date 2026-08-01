@@ -1693,12 +1693,48 @@ app.get('/api/job/stems/:jobId', async (c) => {
         if (clipId) {
           console.log(`[stems] Re-using clip_id ${clipId} for ${inlineTaskId}`)
         } else {
-          console.log(`[stems] Uploading audio for ${inlineTaskId}: ${stereoUrl.slice(0,80)}`)
-          const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: stereoUrl })
-          })
+          // ── Resolve the upload URL ────────────────────────────────────────
+          // If stereo_url is a self-referencing extend-audio-proxy URL,
+          // read the audio bytes directly from R2 and upload as binary to MusicAPI.
+          // This avoids MusicAPI trying to download from our own Worker (which times out).
+          let uploadRes: Response
+          const isProxyUrl = stereoUrl.includes('/api/extend-audio-proxy/')
+
+          if (isProxyUrl && c.env.IMAGES) {
+            // Extract the filename from the proxy URL and build the R2 key
+            const proxyFilename = decodeURIComponent(stereoUrl.split('/api/extend-audio-proxy/').pop() || '')
+            const r2Key = `extend-uploads/${proxyFilename}`
+            console.log(`[stems] Reading audio from R2 directly: ${r2Key}`)
+            const r2Obj = await c.env.IMAGES.get(r2Key)
+            if (!r2Obj) {
+              const errMsg = `Audio file not found in storage (R2 key: ${r2Key})`
+              stemJob.status = 'error'; stemJob.error = errMsg
+              const errJob = { ...job } as any
+              errJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === inlineTaskId ? stemJob : s)
+              await setJob(c.env.DB, errJob)
+              return c.json({ status: 'error', error: errMsg })
+            }
+            const audioBytes = await r2Obj.arrayBuffer()
+            const contentType = r2Obj.httpMetadata?.contentType || (proxyFilename.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
+            console.log(`[stems] Uploading ${(audioBytes.byteLength/1024/1024).toFixed(1)}MB from R2 to MusicAPI binary upload`)
+            // MusicAPI /sonic/upload also accepts multipart form upload
+            const form = new FormData()
+            form.append('file', new Blob([audioBytes], { type: contentType }), proxyFilename)
+            uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
+              body: form
+            })
+          } else {
+            // External URL (cdn1.suno.ai, storage.googleapis.com, etc.) — pass URL directly
+            console.log(`[stems] Uploading audio by URL for ${inlineTaskId}: ${stereoUrl.slice(0,80)}`)
+            uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: stereoUrl })
+            })
+          }
+
           if (!uploadRes.ok) {
             const errText = await uploadRes.text()
             let errMsg = `MusicAPI upload error ${uploadRes.status}`
