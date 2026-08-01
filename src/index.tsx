@@ -856,7 +856,7 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
 // ── MusicAPI polling helpers ──────────────────────────────────────────────────
 // Poll MusicAPI Producer task/:taskId — used for instrumental generation (beat creation)
 // Returns { url1, url2, clipId1, clipId2 } when both clips ready, or null if still running
-async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{ url1: string; url2: string | null; clipId1: string; clipId2: string | null } | null> {
+async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{ url1: string; url2: string | null; clipId1: string | null; clipId2: string | null } | null> {
   const res = await fetch(`${MUSICAPI_PRODUCER}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
@@ -892,8 +892,8 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{
   return {
     url1: clip1.audio_url || clip1.wav_url,
     url2: clip2 ? (clip2.audio_url || clip2.wav_url) : null,
-    clipId1: clip1.clip_id || clip1.id || '',
-    clipId2: clip2 ? (clip2.clip_id || clip2.id || '') : null
+    clipId1: clip1.clip_id || clip1.id || null,
+    clipId2: clip2 ? (clip2.clip_id || clip2.id || null) : null
   }
 }
 
@@ -1735,13 +1735,18 @@ app.get('/api/job/stems/:jobId', async (c) => {
             if (!uploadRes.ok) {
               const errText = await uploadRes.text()
               let errMsg = `MusicAPI upload error ${uploadRes.status}`
+              // Log full response body to help diagnose MusicAPI 400 rejections
+              console.error(`[stems/bg] Upload failed ${uploadRes.status}: body=${errText.slice(0, 300)} url=${bgUrl.slice(0,120)}`)
               try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errText || errMsg } catch {}
-              console.error(`[stems/bg] Upload error: ${errMsg}`)
-              // 429 = rate limit hit (1 req/3s); 403 = insufficient credits
+              // 429 = rate limit hit (1 req/3s); 403 = insufficient credits; 400 = bad URL / expired clip
               if (uploadRes.status === 429) {
                 errMsg = 'MusicAPI rate limit (429) — another request is in flight. Please wait a moment and retry. [credits]'
               } else if (uploadRes.status === 403) {
                 errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai. [credits]'
+              } else if (uploadRes.status === 400) {
+                // MusicAPI 400 usually means: audio URL is not publicly accessible, expired, or rejected.
+                // Surface a clear message + log the URL for debugging.
+                errMsg = `Audio upload rejected by MusicAPI (400): ${errMsg}. The track URL may have expired — please regenerate the track.`
               }
               freshStemU.status = 'error'
               freshStemU.error = errMsg
@@ -1790,13 +1795,16 @@ app.get('/api/job/stems/:jobId', async (c) => {
           if (!musicapiRes.ok) {
             const errText = await musicapiRes.text()
             let errMsg = `MusicAPI stem error ${musicapiRes.status}`
+            console.error(`[stems/bg] MusicAPI stem ${musicapiRes.status}: body=${errText.slice(0, 300)} clip_id=${clipId}`)
             try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || j?.detail || errText || errMsg } catch {}
-            console.error(`[stems/bg] MusicAPI error ${musicapiRes.status}: ${errText}`)
             // 429 = rate limit (1 req/3s on Starter plan); 403 = insufficient credits
+            // 400 = clip_id expired or unrecognised — MusicAPI drops clips after ~24h
             if (musicapiRes.status === 429) {
               errMsg = 'MusicAPI rate limit (429) — please wait a moment and retry. [credits]'
             } else if (musicapiRes.status === 403) {
               errMsg = 'Insufficient MusicAPI credits. Please top up at musicapi.ai. [credits]'
+            } else if (musicapiRes.status === 400) {
+              errMsg = `MusicAPI rejected stem request (400): ${errMsg}. The track may have expired on MusicAPI's servers — please regenerate the track and try again.`
             }
             freshStem.status = 'error'
             freshStem.error = errMsg
