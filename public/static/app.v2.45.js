@@ -7676,9 +7676,9 @@ function showProUpgradeModal(featureName) {
     var nCh = audioBuffer.numberOfChannels;
     var sr  = audioBuffer.sampleRate;
     // Cap at 60 seconds — MusicAPI only needs a reference snippet and has a file size limit
-    var maxSamples = sr * 60;
+    var maxSamples = sr * 30;
     var totalSamples = Math.min(audioBuffer.length, maxSamples);
-    // 96kbps keeps file small while preserving enough quality for MusicAPI reference
+    // 96kbps × 30s = ~353KB — proven working window for MusicAPI /upload-cover
     var lame = new lamejs.Mp3Encoder(Math.min(nCh, 2), sr, 96);
     var blockSize = 1152;
     var mp3Chunks = [];
@@ -7735,7 +7735,10 @@ function showProUpgradeModal(featureName) {
   }
 
   // ── Internal: upload file to R2 via /api/upload-remix-audio ────────────────
-  // WAV files are converted to MP3 first (MusicAPI /upload-cover requires MP3/M4A).
+  // WAV files are always decoded + trimmed to 30s + re-encoded at 96kbps.
+  // MP3 files >400KB are also decoded + trimmed (MusicAPI /upload-cover has a size limit).
+  // MP3 files <=400KB are uploaded directly.
+  var REMIX_MAX_BYTES = 400 * 1024; // 400KB — MusicAPI proven limit
   function _remixUploadFile(file) {
     var errEl = document.getElementById('remix-upload-error');
     if (errEl) errEl.style.display = 'none';
@@ -7745,9 +7748,10 @@ function showProUpgradeModal(featureName) {
 
     var ext = (name).split('.').pop().toLowerCase();
     var isWav = ext === 'wav' || file.type === 'audio/wav' || file.type === 'audio/wave' || file.type === 'audio/x-wav';
+    var isSmallMp3 = !isWav && file.size <= REMIX_MAX_BYTES;
 
-    if (!isWav) {
-      // MP3 — upload directly
+    if (isSmallMp3) {
+      // Small MP3 (<=400KB) — upload directly, no re-encoding needed
       var fd = new FormData();
       fd.append('file', file);
       fetch('/api/upload-remix-audio', { method: 'POST', credentials: 'include', body: fd })

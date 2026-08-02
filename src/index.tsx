@@ -2387,9 +2387,12 @@ app.post('/api/job/remix', async (c) => {
   const genre = bp?.genre || 'instrumental'
   const mood  = bp?.mood  || ''
   const bpm   = bp?.bpm   || ''
-  const tagParts = [genre, 'instrumental', 'no vocals']
-  if (mood) tagParts.push(mood)
-  if (bpm)  tagParts.push(`${bpm} BPM`)
+  // Build tags without duplicates — genre defaults to 'instrumental' so don't add it twice
+  const tagParts: string[] = []
+  if (genre && genre.toLowerCase() !== 'instrumental') tagParts.push(genre)
+  tagParts.push('instrumental', 'no vocals', 'energetic')
+  if (mood && !tagParts.includes(mood)) tagParts.push(mood)
+  if (bpm) tagParts.push(`${bpm} BPM`)
   const tags = tagParts.join(', ')
 
   // Use /sonic/upload-cover — the correct endpoint for AI remixing.
@@ -2434,7 +2437,7 @@ app.post('/api/job/remix', async (c) => {
         mv: 'sonic-v5',
         tags,
         custom_mode: false,
-        gpt_description_prompt: `Instrumental ${genre} beat, no vocals, ${mood || 'energetic'} mood${bpm ? `, ${bpm} BPM` : ''}. Keep the same energy and style.`,
+        gpt_description_prompt: `Instrumental beat${genre && genre.toLowerCase() !== 'instrumental' ? ` in ${genre} style` : ''}, no vocals, ${mood || 'energetic'} mood${bpm ? `, ${bpm} BPM` : ''}. Keep the same energy and style.`,
         make_instrumental: true
       })
     })
@@ -2446,7 +2449,11 @@ app.post('/api/job/remix', async (c) => {
       try { coverErrData = JSON.parse(coverText) } catch {}
       const apiErrMsg = coverErrData.message || coverErrData.error || coverText.slice(0, 200)
       console.error(`[remix] MusicAPI /upload-cover error: ${apiErrMsg}`)
-      return c.json({ error: `Could not start remix: ${apiErrMsg}`, api_status: coverRes.status }, 500)
+      // "Upload failed" from MusicAPI usually means the track was rejected (copyright/fingerprint detection)
+      const userMsg = apiErrMsg.toLowerCase().includes('upload failed')
+        ? 'Track could not be remixed — this track may be copyright-protected. Try uploading an original or royalty-free track.'
+        : `Could not start remix: ${apiErrMsg}`
+      return c.json({ error: userMsg, api_status: coverRes.status }, 500)
     }
     let coverData: any = {}
     try { coverData = JSON.parse(coverText) } catch {}
@@ -5958,7 +5965,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-02'
+const ASSET_VER = '20260802-04'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
