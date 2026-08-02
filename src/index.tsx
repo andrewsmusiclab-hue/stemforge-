@@ -3717,7 +3717,7 @@ app.get('/api/projects', async (c) => {
       ).bind(user.id).all<any>()
       rows = res.results || []
     } else {
-      // beats tab: regular beats (not one-shots, not extended), not deleted
+      // beats tab: regular beats (not one-shots, not extended, not remixes), not deleted
       // Note: song_generate ext_type is a relic of the old two-song feature — those are valid beats
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
@@ -3725,6 +3725,8 @@ app.get('/api/projects', async (c) => {
          AND json_extract(data,'$.status') = 'ready'
          AND (json_extract(data,'$.extend_task_type') IS NULL
               OR json_extract(data,'$.extend_task_type') = 'song_generate')
+         AND (json_extract(data,'$.is_remix') IS NULL OR json_extract(data,'$.is_remix') != 1)
+         AND (json_extract(data,'$.prompt') NOT LIKE 'Stemforge Remix of%')
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
@@ -6192,7 +6194,7 @@ function globalSidebar() {
         border:1px solid rgba(79,195,247,.18);border-radius:10px;
         padding:16px 18px;
       ">
-        <div style="font-size:.78rem;font-weight:700;color:#4fc3f7;letter-spacing:.5px;margin-bottom:6px;">👋 WELCOME TO WHAT'S NEW</div>
+        <div style="font-size:.78rem;font-weight:700;color:#4fc3f7;letter-spacing:.5px;margin-bottom:6px;">👋 WELCOME TO WHAT'S NEW TAB</div>
         <p style="margin:0;font-size:.82rem;color:#cbd5e1;line-height:1.6">
           This tab is your go-to place for everything happening on StemForge. Whenever we ship a new feature,
           tweak something, or fix a bug — you'll find it here with a clear description of what changed and why.
@@ -7460,10 +7462,9 @@ function generatorPage() {
     <div style="margin-top:18px;display:flex;gap:10px">
       <button onclick="window.closeRemixUploadModal()" style="flex:1;padding:11px;background:none;border:1px solid #1e2a3a;border-radius:10px;color:#6b7280;cursor:pointer;font-size:.88rem;font-weight:600">Cancel</button>
       <button id="remix-go-btn" onclick="window.startRemixFromUpload()" disabled style="flex:2;padding:11px;background:linear-gradient(135deg,#7c3aed,#a855f7);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;opacity:.4;transition:opacity .2s">
-        <i class="fas fa-wand-magic-sparkles"></i> Remix It — 20 pts
+        <i class="fas fa-wand-magic-sparkles"></i> Remix It
       </button>
     </div>
-    <div style="font-size:.72rem;color:#4b5563;text-align:center;margin-top:10px">Pro Artist plan required · 20 points per remix</div>
   </div>
 </div>
 
@@ -9274,6 +9275,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
       <button class="admin-tab" data-tab="elevenlabs" onclick="adminTab('elevenlabs')"><i class="fas fa-bolt" style="color:#f59e0b"></i> ElevenLabs</button>
+      <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
     </div>
 
     <!-- ══════════════════════════════════════════════════════════ -->
@@ -9391,7 +9393,33 @@ function adminPage(user: User) {
       </div>
     </div>
 
-    <!-- PROMOS TAB REMOVED -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- PROMOS TAB                                               -->
+    <!-- ══════════════════════════════════════════════════════════ -->
+    <div id="admin-tab-promos" style="display:none">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
+        <h3 style="margin:0 0 20px"><i class="fas fa-tag"></i> Promo Codes</h3>
+        <!-- Create new promo -->
+        <div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:20px">
+          <h4 style="margin:0 0 14px;font-size:.9rem">Create New Code</h4>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
+            <input id="new-code" placeholder="CODE" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem;font-family:monospace;text-transform:uppercase"/>
+            <input id="new-desc" placeholder="Description" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
+            <input id="new-credits" type="number" placeholder="Bonus Credits" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
+            <input id="new-maxuses" type="number" placeholder="Max Uses (0=unlimited)" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
+            <input id="new-terms" placeholder="Terms (optional)" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <button onclick="createPromo()" class="btn btn--primary btn--sm"><i class="fas fa-plus"></i> Create Code</button>
+            <span id="promo-create-status" style="font-size:.82rem;color:var(--muted)"></span>
+          </div>
+        </div>
+        <!-- List -->
+        <div id="admin-promos-list" style="overflow-x:auto">
+          <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p>
+        </div>
+      </div>
+    </div>
 
     <!-- ══════════════════════════════════════════════════════════ -->
     <!-- ELEVENLABS CREDITS TAB                                    -->
@@ -9466,7 +9494,7 @@ function adminPage(user: User) {
 })();
 
 // ── Tab switcher ───────────────────────────────────────────
-const adminTabs = ['analytics','revenue','users','elevenlabs'];
+const adminTabs = ['analytics','revenue','users','elevenlabs','promos'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(t=>t.classList.remove('admin-tab--active'));
   const btn = document.querySelector(\`[data-tab="\${tab}"]\`);
@@ -9475,7 +9503,7 @@ function adminTab(tab){
   if(tab==='analytics' && !window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue' && !window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users' && !window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
-  // promos tab removed
+  if(tab==='promos' && !window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
   if(tab==='elevenlabs'){ loadElevenLabsCredits(); }
 }
 
@@ -9615,21 +9643,23 @@ async function loadRevenue(){
   try{
     const res = await fetch('/api/admin/revenue');
     const d = await res.json();
-    document.getElementById('rv-mrr').textContent = '\$'+d.mrr.toLocaleString();
-    document.getElementById('rv-pro').textContent = d.pro_count;
-    document.getElementById('rv-creator').textContent = d.creator_count;
-    document.getElementById('rv-free').textContent = d.free_count;
-    document.getElementById('stat-mrr').textContent = '\$'+d.mrr;
-    document.getElementById('rv-pl-mrr').textContent = '\$'+d.mrr.toLocaleString();
+    if(d.error){ console.warn('[admin revenue]', d.error); return; }
+    const mrr = d.mrr || 0;
+    document.getElementById('rv-mrr').textContent = '\$'+(mrr).toLocaleString();
+    document.getElementById('rv-pro').textContent = d.pro_count||0;
+    document.getElementById('rv-creator').textContent = d.creator_count||0;
+    document.getElementById('rv-free').textContent = d.free_count||0;
+    document.getElementById('stat-mrr').textContent = '\$'+mrr;
+    document.getElementById('rv-pl-mrr').textContent = '\$'+(mrr).toLocaleString();
     document.getElementById('rv-pl-credits').textContent = d.credit_pack_revenue ? '\$'+parseFloat(d.credit_pack_revenue).toFixed(2) : '\$0';
-    document.getElementById('rv-pl-musicapi').textContent = '-\$'+d.estimated_musicapi_cost.toFixed(2)+' ('+d.jobs_this_month+' jobs)';
-    const profit = d.estimated_profit;
+    document.getElementById('rv-pl-musicapi').textContent = '-\$'+(d.estimated_musicapi_cost||0).toFixed(2)+' ('+(d.jobs_this_month||0)+' jobs)';
+    const profit = d.estimated_profit||0;
     const profitEl = document.getElementById('rv-pl-profit');
     profitEl.textContent = (profit>=0?'+':'')+'\$'+profit.toFixed(2);
     profitEl.style.color = profit>=0 ? '#10b981' : '#ef4444';
 
     // Revenue pie bars
-    const total = d.mrr + (d.credit_pack_revenue||0);
+    const total = mrr + (d.credit_pack_revenue||0);
     const pieEl = document.getElementById('rv-pie');
     if(!total){ pieEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No revenue yet</p>'; }
     else {
