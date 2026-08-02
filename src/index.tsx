@@ -4926,7 +4926,7 @@ app.get('/api/admin/analytics', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  await ensureAuthTables(c.env.DB)
+  // ensureAuthTables omitted — tables already exist in production; calling it on every request adds ~200ms latency
   const now = Date.now()
   const dayMs = 86400000
   const todayStart = now - (now % dayMs)
@@ -4958,7 +4958,6 @@ app.get('/api/admin/revenue', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  await ensureAuthTables(c.env.DB)
 
   const [plansRow, jobsRow, creditPacksRow, recentSubsRow] = await Promise.all([
     c.env.DB.prepare(`SELECT plan, COUNT(*) as cnt FROM users GROUP BY plan`).all<any>(),
@@ -5007,7 +5006,6 @@ app.get('/api/admin/stats', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  await ensureAuthTables(c.env.DB)
   const [usersRow, jobsRow] = await Promise.all([
     c.env.DB.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN plan='pro' THEN 1 ELSE 0 END) as pro_count, SUM(CASE WHEN plan='creator' THEN 1 ELSE 0 END) as creator_count, SUM(CASE WHEN plan='free' THEN 1 ELSE 0 END) as free_count FROM users`).first<any>(),
     c.env.DB.prepare(`SELECT COUNT(*) as total FROM jobs`).first<any>(),
@@ -5021,7 +5019,6 @@ app.get('/api/admin/users', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  await ensureAuthTables(c.env.DB)
   const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
   return c.json({ users: rows.results || [] })
 })
@@ -5085,6 +5082,7 @@ app.delete('/api/admin/user/:id', async (c) => {
 
 // GET /api/admin/promos — list all promo codes
 app.get('/api/admin/promos', async (c) => {
+  // No ensureAuthTables — tables exist in production already
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -9485,12 +9483,27 @@ function adminPage(user: User) {
 // ── Load global stats ──────────────────────────────────────
 (async()=>{
   try {
-    const res = await fetch('/api/admin/stats');
+    const ctrl = new AbortController();
+    const tid = setTimeout(()=>ctrl.abort(), 8000); // 8s timeout
+    const res = await fetch('/api/admin/stats', { signal: ctrl.signal });
+    clearTimeout(tid);
     if (!res.ok) throw new Error('HTTP '+res.status);
     const data = await res.json();
-    if(data.users){ document.getElementById('stat-users').textContent=data.users.total||0; document.getElementById('stat-pro').textContent=data.users.pro_count||0; document.getElementById('stat-creator').textContent=data.users.creator_count||0; }
-    if(data.jobs){ document.getElementById('stat-jobs').textContent=data.jobs.total||0; }
-  } catch(e) { console.warn('[admin stats]', e); }
+    if(data.error) throw new Error(data.error);
+    if(data.users){
+      document.getElementById('stat-users').textContent = data.users.total||0;
+      document.getElementById('stat-pro').textContent   = data.users.pro_count||0;
+      document.getElementById('stat-creator').textContent = data.users.creator_count||0;
+    }
+    if(data.jobs){ document.getElementById('stat-jobs').textContent = data.jobs.total||0; }
+  } catch(e) {
+    console.warn('[admin stats]', e);
+    // Show error in stats bar so it doesn't stay as "—" forever
+    ['stat-users','stat-pro','stat-creator','stat-jobs','stat-mrr'].forEach(id=>{
+      const el = document.getElementById(id);
+      if(el && el.textContent==='—') el.textContent = 'err';
+    });
+  }
 })();
 
 // ── Tab switcher ───────────────────────────────────────────
@@ -9567,8 +9580,13 @@ const SOCIAL_ICONS = {
 
 async function loadAnalytics(){
   try{
-    const res = await fetch('/api/admin/analytics');
+    const ctrl = new AbortController();
+    const tid = setTimeout(()=>ctrl.abort(), 10000);
+    const res = await fetch('/api/admin/analytics', { signal: ctrl.signal });
+    clearTimeout(tid);
+    if(!res.ok) throw new Error('HTTP '+res.status);
     const d = await res.json();
+    if(d.error) throw new Error(d.error);
     document.getElementById('an-today').textContent = d.today||0;
     document.getElementById('an-week').textContent = d.week||0;
     document.getElementById('an-month').textContent = d.month||0;
@@ -9695,9 +9713,14 @@ async function loadRevenue(){
 
 // ── USERS TAB ──────────────────────────────────────────────
 async function loadUsers(){
-  const res = await fetch('/api/admin/users');
-  const data = await res.json();
   const el = document.getElementById('admin-users-list');
+  try {
+  const ctrl = new AbortController();
+  const tid = setTimeout(()=>ctrl.abort(), 10000);
+  const res = await fetch('/api/admin/users', { signal: ctrl.signal });
+  clearTimeout(tid);
+  const data = await res.json();
+  if(data.error){ el.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
   if(!data.users?.length){el.innerHTML='<p style="color:var(--muted)">No users yet.</p>';return;}
   el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Extra</th><th>Actions</th></tr></thead><tbody>'+
     data.users.map(u=>{
@@ -9722,6 +9745,9 @@ async function loadUsers(){
       </tr>\`;
     }).join('')+'</tbody></table>';
   window._usersLoaded = true;
+  } catch(e) {
+    if(el) el.innerHTML = '<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load users: '+(e.message||'timeout')+'</p>';
+  }
 }
 
 async function toggleLockUser(userId, email, currentlyLocked){
