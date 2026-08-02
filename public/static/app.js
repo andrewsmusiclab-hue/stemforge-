@@ -704,6 +704,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setTimeout(applyFreeTierVisibility, 600);
 
+  // openRemixGated — Pro Artist only, blocks free and creator plans
+  window.openRemixGated = function() {
+    var plan = (window._sfUser && window._sfUser.plan) || 'free';
+    if (plan !== 'pro' && plan !== 'developer') {
+      var t = document.createElement('div');
+      t.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e1e3a;border:1px solid rgba(167,139,250,.4);color:#a78bfa;padding:12px 20px;border-radius:10px;font-size:.88rem;font-weight:600;z-index:9999;display:flex;align-items:center;gap:10px;box-shadow:0 8px 24px rgba(0,0,0,.4)';
+      t.innerHTML = '<i class="fas fa-crown"></i> AI Remix is a Pro Artist feature. <a href="/pricing" style="color:#fff;text-decoration:underline;margin-left:8px">Upgrade</a>';
+      document.body.appendChild(t);
+      setTimeout(function() { t.remove(); }, 4000);
+      return;
+    }
+    if (typeof window.openRemixUploadModal === 'function') window.openRemixUploadModal();
+  };
+
   // openOneShotGated — checks plan before opening the One Shot popup
   window.openOneShotGated = function() {
     const plan = (window._sfUser && window._sfUser.plan) || 'free';

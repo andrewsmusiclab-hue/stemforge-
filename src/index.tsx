@@ -2340,9 +2340,9 @@ app.post('/api/job/remix', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
 
-  // Require paid plan
-  if (user.plan === 'free') {
-    return c.json({ error: 'Stemforge Remix requires a paid plan.', upgrade: true }, 403)
+  // Require Pro Artist plan (free and creator are both blocked)
+  if (user.plan !== 'pro' && user.plan !== 'developer') {
+    return c.json({ error: 'AI Remix is a Pro Artist feature. Upgrade to unlock.', upgrade: true }, 403)
   }
 
   const body = await c.req.json<{ job_id?: string; audio_url?: string; title?: string }>()
@@ -5966,7 +5966,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-08'
+const ASSET_VER = '20260802-09'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7167,7 +7167,7 @@ function generatorPage() {
 
     <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
     <div class="creator-tabs-row" id="creator-tabs-row">
-      <button class="creator-tab-btn" id="ctab-remix" onclick="window.openRemixUploadModal && window.openRemixUploadModal()"
+      <button class="creator-tab-btn" id="ctab-remix" onclick="openRemixGated()"
         data-tooltip="Upload an MP3 or WAV and AI Remix it into a fresh new track.">
         <i class="fas fa-wand-magic-sparkles"></i> Remix
       </button>
