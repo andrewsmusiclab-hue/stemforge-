@@ -223,6 +223,10 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'pro'       AND gens_limit < 2000`).run()
   // Developer users below 2000 → 2000 pts
   await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'developer' AND gens_limit < 2000`).run()
+  // ── Performance indexes (idempotent) ──
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at)`).run() } catch {}
 }
 
 // ── Crypto helpers (Web Crypto API — works in CF Workers) ─────
@@ -4987,7 +4991,7 @@ app.get('/api/admin/analytics', async (c) => {
     c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 })),
     c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
     c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
-    c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
+    c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC LIMIT 30`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
   ])
 
   return c.json({
@@ -5046,6 +5050,24 @@ app.get('/api/admin/revenue', async (c) => {
     jobs_this_month: jobsThisMonth,
     recent_subscribers: recentSubsRow.results || [],
   })
+})
+
+// GET /api/admin/fix-indexes — one-shot: create missing DB indexes for performance
+app.get('/api/admin/fix-indexes', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const results: string[] = []
+  const run = async (label: string, sql: string) => {
+    try { await c.env.DB.prepare(sql).run(); results.push(`✅ ${label}`) }
+    catch (e: any) { results.push(`⚠️ ${label}: ${e?.message || e}`) }
+  }
+  await run('idx_page_views_created_at', `CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`)
+  await run('idx_jobs_user_id',          `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`)
+  await run('idx_jobs_created_at',       `CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at)`)
+  await run('idx_sessions_user_id',      `CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id)`)
+  return c.json({ ok: true, results })
 })
 
 // GET /api/admin/stats — overview stats
@@ -5966,7 +5988,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-10'
+const ASSET_VER = '20260802-11'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
