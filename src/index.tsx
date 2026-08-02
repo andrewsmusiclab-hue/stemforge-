@@ -2345,19 +2345,26 @@ app.post('/api/job/remix', async (c) => {
     return c.json({ error: 'Stemforge Remix requires a paid plan.', upgrade: true }, 403)
   }
 
-  const body = await c.req.json<{ job_id: string; title?: string }>()
-  const { job_id, title } = body
-  if (!job_id) return c.json({ error: 'job_id required' }, 400)
+  const body = await c.req.json<{ job_id?: string; audio_url?: string; title?: string }>()
+  const { job_id, audio_url: directAudioUrl, title } = body
 
-  // Load source job — must belong to this user and be ready
-  const srcRow = await c.env.DB.prepare(
-    `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
-  ).bind(job_id, user.id).first<{ data: string }>()
-  if (!srcRow) return c.json({ error: 'Source track not found' }, 404)
-  const srcJob = JSON.parse(srcRow.data) as any
-
-  if (srcJob.status !== 'ready' || !srcJob.stereo_url) {
-    return c.json({ error: 'Source track is not ready yet.' }, 400)
+  // Support two modes: (1) remix a library job by job_id, (2) remix a directly uploaded audio URL
+  let srcJob: any = {}
+  if (job_id) {
+    // Load source job — must belong to this user and be ready
+    const srcRow = await c.env.DB.prepare(
+      `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL`
+    ).bind(job_id, user.id).first<{ data: string }>()
+    if (!srcRow) return c.json({ error: 'Source track not found' }, 404)
+    srcJob = JSON.parse(srcRow.data) as any
+    if (srcJob.status !== 'ready' || !srcJob.stereo_url) {
+      return c.json({ error: 'Source track is not ready yet.' }, 400)
+    }
+  } else if (directAudioUrl) {
+    // Direct upload mode — audio_url is the R2 proxy URL from /api/upload-remix-audio
+    srcJob = { stereo_url: directAudioUrl, title: title || 'Uploaded Track', blueprint: null }
+  } else {
+    return c.json({ error: 'job_id or audio_url required' }, 400)
   }
 
   // Deduct 20 points — bonus_credits consumed first
@@ -2462,6 +2469,7 @@ app.post('/api/job/remix', async (c) => {
     stereo_task_id: genTaskId
   }
   ;(newJob as any).extend_task_type = 'song_generate'  // polls via pollSongExtendStatus
+  ;(newJob as any).is_remix = 1  // flags job for Remixes tab in library
   if (bp) (newJob as any).blueprint = bp
   await setJob(c.env.DB, newJob, user.id)
 
@@ -3682,6 +3690,18 @@ app.get('/api/projects', async (c) => {
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 1 AND deleted_at IS NULL
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
+    } else if (tab === 'remixes') {
+      // Remix tracks: jobs with is_remix=1 flag OR prompt starts with "Stemforge Remix of"
+      // Include generating + ready so in-progress remixes show as spinner cards.
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
+         AND (json_extract(data,'$.is_remix') = 1
+              OR json_extract(data,'$.prompt') LIKE 'Stemforge Remix of%')
+         AND json_extract(data,'$.status') IN ('ready','generating','error')
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
@@ -4912,21 +4932,21 @@ app.get('/api/admin/analytics', async (c) => {
   const monthStart = todayStart - 29 * dayMs
 
   const [todayRow, weekRow, monthRow, sourcesRow, topPagesRow, dailyRows] = await Promise.all([
-    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>(),
-    c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC`).bind(monthStart).all<any>(),
-    c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>(),
-    c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC`).bind(monthStart).all<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 })),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>().catch(() => ({ cnt: 0 })),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 })),
+    c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
+    c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
+    c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
   ])
 
   return c.json({
-    today: todayRow?.cnt || 0,
-    week: weekRow?.cnt || 0,
-    month: monthRow?.cnt || 0,
-    sources: sourcesRow.results || [],
-    top_pages: topPagesRow.results || [],
-    daily: dailyRows.results || [],
+    today: (todayRow as any)?.cnt || 0,
+    week: (weekRow as any)?.cnt || 0,
+    month: (monthRow as any)?.cnt || 0,
+    sources: (sourcesRow as any)?.results || [],
+    top_pages: (topPagesRow as any)?.results || [],
+    daily: (dailyRows as any)?.results || [],
   })
 })
 
@@ -5443,12 +5463,14 @@ app.post('/api/generate-lyrics', async (c) => {
   return c.json({ lyrics })
 })
 
-// GET /api/extend-audio-proxy/:key — serve R2-stored extend audio files
-// Used by the upload-extend-audio route to give MusicAPI a public URL for file blobs
+// GET /api/extend-audio-proxy/:key — serve R2-stored audio files (extend + remix uploads)
+// Used by upload-extend-audio and upload-remix-audio routes to give MusicAPI a public URL
 app.get('/api/extend-audio-proxy/:key', async (c) => {
   if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
-  const key = `extend-uploads/${c.req.param('key')}`
-  const obj = await c.env.IMAGES.get(key)
+  const rawKey = c.req.param('key')
+  // Try extend-uploads/ first (original extend flow), then remix-uploads/ (new remix flow)
+  let obj = await c.env.IMAGES.get(`extend-uploads/${rawKey}`)
+  if (!obj) obj = await c.env.IMAGES.get(`remix-uploads/${rawKey}`)
   if (!obj) return c.json({ error: 'Not found' }, 404)
   return new Response(obj.body, {
     headers: {
@@ -5520,6 +5542,44 @@ app.post('/api/upload-extend-audio', async (c) => {
   })
   const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
   console.log(`[upload-extend-audio] Stored in R2, proxy URL: ${audioUrl}`)
+  return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
+})
+
+// POST /api/upload-remix-audio — upload audio for AI Remix (parallel to upload-extend-audio)
+// Accepts: multipart { file } — stores in R2 under remix-uploads/ prefix
+// Returns: { ok: true, audio_url: "<proxy_url>", status: "ready" }
+// The audio_url is then passed to /api/job/remix as the directAudioUrl.
+app.post('/api/upload-remix-audio', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+  const contentType = c.req.header('content-type') || ''
+
+  // JSON body: { audio_url } — caller providing URL directly
+  if (contentType.includes('application/json')) {
+    const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
+    const directUrl = body.audio_url || body.url || null
+    if (!directUrl) return c.json({ error: 'audio_url required' }, 400)
+    console.log(`[upload-remix-audio] Using direct URL: ${directUrl.slice(0, 80)}`)
+    return c.json({ ok: true, audio_url: directUrl, status: 'ready' })
+  }
+
+  // Multipart: file blob
+  const formData = await c.req.formData()
+  const file = formData.get('file') as File | null
+  if (!file) return c.json({ error: 'No file provided' }, 400)
+  if (!c.env.IMAGES) return c.json({ error: 'File storage not configured' }, 500)
+
+  const safeFilename = (file.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '_')
+  const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
+  await c.env.IMAGES.put(`remix-uploads/${r2Key}`, await file.arrayBuffer(), {
+    httpMetadata: { contentType: file.type || 'audio/mpeg' }
+  })
+  // Serve via the same extend-audio-proxy since it just reads from R2 by key
+  const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
+  console.log(`[upload-remix-audio] Stored in R2, proxy URL: ${audioUrl}`)
   return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
 })
 
@@ -6037,10 +6097,6 @@ function globalSidebar() {
       <i class="fas fa-th-large"></i>
       <span>Library</span>
     </a>
-    <a href="/promos" class="gs-sidebar__nav-item" data-page="promos">
-      <i class="fas fa-tag"></i>
-      <span class="nav-label-full">Promo Codes</span><span class="nav-label-short">Promos</span>
-    </a>
     <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
@@ -6068,25 +6124,28 @@ function globalSidebar() {
   <!-- Spacer -->
   <div class="gs-sidebar__spacer"></div>
 
-  <!-- What's New button — above credits, below spacer -->
+  <!-- What's New button — styled as a glowing button above credits -->
   <button id="sidebar-whats-new-btn" onclick="window._sfOpenWhatsNew && window._sfOpenWhatsNew()" style="
     display:none;
-    background:none;border:none;width:calc(100% - 24px);
-    margin:0 12px 4px;
-    text-align:left;cursor:pointer;position:relative;
-    padding:9px 12px;border-radius:10px;
-    color:var(--text);font-size:.85rem;font-weight:600;
-    transition:background .15s;
+    width:calc(100% - 24px);margin:0 12px 8px;
+    background:linear-gradient(135deg,rgba(245,158,11,.15),rgba(239,68,68,.10));
+    border:1px solid rgba(245,158,11,.35);
+    border-radius:10px;cursor:pointer;
+    padding:10px 14px;
+    text-align:left;
     align-items:center;gap:10px;
-  " onmouseover="this.style.background='rgba(255,255,255,.07)'" onmouseout="this.style.background='none'">
-    <i class="fas fa-star" style="color:#f59e0b;width:18px;text-align:center;flex-shrink:0"></i>
-    <span class="nav-label-full" style="flex:1">What's New</span>
-    <span class="nav-label-short" style="flex:1;display:none">New</span>
+    transition:all .18s;
+    box-shadow:0 0 12px rgba(245,158,11,.08);
+  " onmouseover="this.style.background='linear-gradient(135deg,rgba(245,158,11,.22),rgba(239,68,68,.15))';this.style.borderColor='rgba(245,158,11,.6)';this.style.boxShadow='0 0 18px rgba(245,158,11,.18)'" onmouseout="this.style.background='linear-gradient(135deg,rgba(245,158,11,.15),rgba(239,68,68,.10))';this.style.borderColor='rgba(245,158,11,.35)';this.style.boxShadow='0 0 12px rgba(245,158,11,.08)'">
+    <i class="fas fa-star" style="color:#f59e0b;width:18px;text-align:center;flex-shrink:0;font-size:.9rem"></i>
+    <span class="nav-label-full" style="flex:1;font-size:.84rem;font-weight:700;color:#fcd34d">What's New</span>
+    <span class="nav-label-short" style="flex:1;display:none;font-size:.84rem;font-weight:700;color:#fcd34d">New</span>
     <span id="whats-new-badge" style="
       background:#ef4444;color:#fff;
-      font-size:.55rem;font-weight:800;letter-spacing:.3px;
-      border-radius:999px;padding:1px 5px;
+      font-size:.55rem;font-weight:800;letter-spacing:.5px;
+      border-radius:999px;padding:2px 6px;
       display:none;flex-shrink:0;
+      animation:pulse 1.8s infinite;
     ">NEW</span>
   </button>
 
@@ -6149,17 +6208,9 @@ function globalSidebar() {
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
-    <!-- Main Credits block -->
-    <div style="margin-bottom:0px">
-      <div class="gs-credits__label" id="gs-credits-label" style="font-size:.65rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Main Credits</div>
-      <div class="gs-credits__val" id="gs-gens-val" style="font-size:1.35rem;font-weight:800;color:var(--primary);line-height:1.1">0 <small style="font-size:.7rem;font-weight:500;color:var(--muted)">available now</small></div>
-      <div class="gs-credits__bar" style="margin-top:5px"><div id="gs-gens-bar" style="width:0%"></div></div>
-    </div>
-    <!-- Extra Credits block (bonus — shown only when > 0) -->
-    <div id="gs-bonus-block" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border10)">
-      <div style="font-size:.65rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Extra Credits</div>
-      <div id="gs-bonus-val" style="font-size:1.15rem;font-weight:800;color:#e2e8f0;line-height:1.1">0 <small style="font-size:.68rem;font-weight:500;color:var(--muted)">bonus</small></div>
-    </div>
+    <div class="gs-credits__label" id="gs-credits-label">Points</div>
+    <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
+    <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
   </div>
 
   <!-- Bottom links -->
@@ -7068,8 +7119,8 @@ function generatorPage() {
 
     <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
     <div class="creator-tabs-row" id="creator-tabs-row">
-      <button class="creator-tab-btn" id="ctab-remix" onclick="window.openRemixCard && window.openRemixCard()"
-        data-tooltip="AI Remix: reinvent any beat from your library with a fresh take.">
+      <button class="creator-tab-btn" id="ctab-remix" onclick="window.openRemixUploadModal && window.openRemixUploadModal()"
+        data-tooltip="Upload an MP3 or WAV and AI Remix it into a fresh new track.">
         <i class="fas fa-wand-magic-sparkles"></i> Remix
       </button>
       <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
@@ -7365,6 +7416,56 @@ function generatorPage() {
 </div><!-- /suno-gen-page -->
 
 <!-- ── Creator Tab Popups ──────────────────────────────────── -->
+
+<!-- ── Remix Upload Modal ────────────────────────────────────────────── -->
+<div id="remix-upload-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)window.closeRemixUploadModal()">
+  <div style="background:#0d1117;border:1px solid #1e2a3a;border-radius:16px;max-width:480px;width:100%;padding:28px 28px 24px;box-shadow:0 32px 80px rgba(0,0,0,.9);font-family:Inter,system-ui,sans-serif">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#7c3aed,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="fas fa-wand-magic-sparkles" style="color:#fff;font-size:.9rem"></i>
+      </div>
+      <div style="flex:1">
+        <div style="font-size:1.05rem;font-weight:800;color:#fff">AI Remix</div>
+        <div style="font-size:.75rem;color:#6b7280">Upload a track and reimagine it with AI</div>
+      </div>
+      <button onclick="window.closeRemixUploadModal()" style="background:none;border:1px solid #1e2a3a;color:#6b7280;width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center">×</button>
+    </div>
+
+    <!-- Drop zone -->
+    <div id="remix-drop-zone" style="border:2px dashed rgba(139,92,246,.4);border-radius:12px;padding:28px 20px;text-align:center;cursor:pointer;transition:all .2s;background:rgba(139,92,246,.04)"
+      onclick="document.getElementById('remix-file-input').click()"
+      ondragover="event.preventDefault();this.style.borderColor='rgba(139,92,246,.8)';this.style.background='rgba(139,92,246,.1)'"
+      ondragleave="this.style.borderColor='rgba(139,92,246,.4)';this.style.background='rgba(139,92,246,.04)'"
+      ondrop="event.preventDefault();this.style.borderColor='rgba(139,92,246,.4)';this.style.background='rgba(139,92,246,.04)';window.handleRemixFileDrop(event)">
+      <div id="remix-drop-idle">
+        <i class="fas fa-cloud-upload-alt" style="font-size:2rem;color:#7c3aed;margin-bottom:10px"></i>
+        <div style="font-size:.9rem;font-weight:600;color:#e2e8f0">Drop your track here</div>
+        <div style="font-size:.78rem;color:#6b7280;margin-top:4px">MP3 or WAV · Max 50MB</div>
+        <button style="margin-top:14px;background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#a78bfa;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.82rem;font-weight:600">Browse files</button>
+      </div>
+      <div id="remix-drop-loading" style="display:none">
+        <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:#7c3aed;margin-bottom:8px"></i>
+        <div style="font-size:.88rem;color:#a78bfa" id="remix-upload-status">Uploading…</div>
+      </div>
+      <div id="remix-drop-done" style="display:none">
+        <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:8px"></i>
+        <div style="font-size:.88rem;font-weight:700;color:#e2e8f0" id="remix-file-name">track.mp3</div>
+        <div style="font-size:.75rem;color:#6b7280;margin-top:3px">Ready to remix</div>
+      </div>
+    </div>
+    <input type="file" id="remix-file-input" accept=".mp3,.wav,audio/mpeg,audio/wav" style="display:none" onchange="window.handleRemixFileSelect(this)"/>
+
+    <div id="remix-upload-error" style="display:none;color:#ef4444;font-size:.82rem;margin-top:10px;padding:8px 12px;background:rgba(239,68,68,.08);border-radius:8px;border:1px solid rgba(239,68,68,.2)"></div>
+
+    <div style="margin-top:18px;display:flex;gap:10px">
+      <button onclick="window.closeRemixUploadModal()" style="flex:1;padding:11px;background:none;border:1px solid #1e2a3a;border-radius:10px;color:#6b7280;cursor:pointer;font-size:.88rem;font-weight:600">Cancel</button>
+      <button id="remix-go-btn" onclick="window.startRemixFromUpload()" disabled style="flex:2;padding:11px;background:linear-gradient(135deg,#7c3aed,#a855f7);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;opacity:.4;transition:opacity .2s">
+        <i class="fas fa-wand-magic-sparkles"></i> Remix It — 20 pts
+      </button>
+    </div>
+    <div style="font-size:.72rem;color:#4b5563;text-align:center;margin-top:10px">Pro Artist plan required · 20 points per remix</div>
+  </div>
+</div>
 
 <!-- Song Extend Popup -->
 <div id="creator-popup-extend" class="creator-popup" style="display:none">
@@ -8114,6 +8215,9 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--active" data-tab="beats" onclick="switchLibTab('beats')">
       <i class="fas fa-music"></i> Beats / Songs
     </button>
+    <button class="lib-tab" data-tab="remixes" onclick="switchLibTab('remixes')">
+      <i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc">Remixes</span>
+    </button>
     <button class="lib-tab" data-tab="extended" onclick="switchLibTab('extended')">
       <i class="fas fa-expand-arrows-alt"></i> Extended
     </button>
@@ -8137,6 +8241,14 @@ function dashboardPage() {
   <!-- Grid per tab -->
   <div id="lib-panel-beats">
     <div class="project-grid" id="project-grid-beats">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-remixes" style="display:none">
+    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc">Tracks you've remixed using AI Remix.</span>
+    </div>
+    <div class="project-grid" id="project-grid-remixes">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>

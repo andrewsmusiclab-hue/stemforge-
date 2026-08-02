@@ -467,8 +467,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const gsCredits   = document.getElementById('gs-credits-block');
       const gsGensVal   = document.getElementById('gs-gens-val');
       const gsGensBar   = document.getElementById('gs-gens-bar');
-      const gsBonusBlock = document.getElementById('gs-bonus-block');
-      const gsBonusVal   = document.getElementById('gs-bonus-val');
 
       if (gsUserBlock) gsUserBlock.style.display = 'flex';
       if (gsCredits) gsCredits.style.display = 'block';
@@ -526,15 +524,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const limitMap = { free: 50, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
       const remaining = Math.max(0, displayLimit - user.gens_used);
-      const bonusCreds = user.bonus_credits || 0;
-      if (gsGensVal) gsGensVal.innerHTML = `${remaining} <small style="font-size:.7rem;font-weight:500;color:var(--muted)">available now</small>`;
+      if (creditsLabel) creditsLabel.textContent = 'Points Remaining';
+      if (gsGensVal) gsGensVal.innerHTML = `${remaining} <small>/ ${displayLimit}</small>`;
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         gsGensBar.style.width = pct + '%';
       }
-      // Show Extra Credits block if bonus > 0
-      if (gsBonusBlock) gsBonusBlock.style.display = bonusCreds > 0 ? 'block' : 'none';
-      if (gsBonusVal) gsBonusVal.innerHTML = `${bonusCreds} <small style="font-size:.68rem;font-weight:500;color:var(--muted)">bonus</small>`;
 
       // ── Sidebar user dropdown toggle ──────────────────────────
       const gsUserBtn      = document.getElementById('gs-user-btn');
@@ -752,11 +747,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════
 
   // Track which tabs have been fetched so we only fetch once per session
-  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false };
+  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false };
   // Expose on window so external code (generator, extend) can invalidate cache
   window._libLoaded = _libLoaded;
   // Cached project arrays per tab (for client-side search)
-  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [] };
+  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [] };
   let   _libActive  = 'beats';
 
   // ── Stable unique hue from any ID string ───────────────────
@@ -1033,6 +1028,7 @@ document.addEventListener('DOMContentLoaded', () => {
         beats:    '<i class="fas fa-music" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No beats yet. <a href="/generator">Generate your first beat!</a></p>',
         oneshots: '<i class="fas fa-bolt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No one shots yet. Head to the <a href="/generator">Generator</a> to create some!</p>',
         trash:    '<i class="fas fa-trash-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>Trash is empty.</p>',
+        remixes:  '<i class="fas fa-wand-magic-sparkles" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#a855f7"></i><p>No remixes yet. Upload a track on the Create page to remix it!</p>',
       };
       gridEl.innerHTML = `<div class="project-grid-empty">${emptyMsgs[tab]||''}</div>`;
       return;
@@ -1046,6 +1042,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'beats')    html += renderBeatCard(p, i);
       else if (tab === 'oneshots') html += renderOneshotCard(p, i);
       else if (tab === 'trash')    html += renderTrashCard(p, i);
+      else if (tab === 'remixes')  html += renderBeatCard(p, i); // remixes use same card layout as beats
     });
     if (tab === 'beats') {
       html += `<div class="project-card project-card--new"><a href="/generator" class="project-card__new-inner"><i class="fas fa-plus-circle"></i><span>New beat</span></a></div>`;
@@ -1107,14 +1104,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
     });
     // Show/hide panels
-    ['beats','extended','oneshots','uploads','trash'].forEach(t => {
+    ['beats','extended','oneshots','uploads','trash','remixes'].forEach(t => {
       const panel = document.getElementById('lib-panel-' + t);
       if (panel) panel.style.display = t === tab ? '' : 'none';
     });
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -1123,6 +1120,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load data — extended and uploads have their own dedicated loaders
     if (tab === 'uploads') {
       fetchUploadsTab();
+    } else if (tab === 'remixes') {
+      fetchLibTab('remixes');
     } else if (tab === 'extended') {
       // Always hard-reload extended tab — bypasses stale _libLoaded cache
       if (window.reloadExtendedTab) {
@@ -6669,13 +6668,13 @@ window.renderEditInstrumentPills = function (bp) {
 
       // Shared: manually switch panels + tab buttons
       function manualSwitchUI(tab) {
-        var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…' };
+        var placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…' };
         document.querySelectorAll('.lib-tab').forEach(function(btn) {
           btn.classList.toggle('lib-tab--active', btn.dataset.tab === tab);
           btn.classList.toggle('lib-tab--trash', tab === 'trash' && btn.dataset.tab === tab);
           if (tab !== 'trash') btn.classList.remove('lib-tab--trash');
         });
-        ['beats', 'extended', 'oneshots', 'uploads', 'trash'].forEach(function(t) {
+        ['beats', 'extended', 'oneshots', 'uploads', 'trash', 'remixes'].forEach(function(t) {
           var panel = document.getElementById('lib-panel-' + t);
           if (panel) panel.style.display = t === tab ? '' : 'none';
         });
@@ -6707,6 +6706,12 @@ window.renderEditInstrumentPills = function (bp) {
             setTimeout(function() { if (window.fetchUploadsTab) window.fetchUploadsTab(); }, 200);
           }
 
+        } else if (tab === 'remixes') {
+          manualSwitchUI('remixes');
+          // fetchLibTab handles remixes via the base — just need to ensure _libLoaded.remixes is cleared on switch
+          if (window._libLoaded) window._libLoaded.remixes = false;
+          if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
+
         } else {
           if (_baseSwitchLibTab) _baseSwitchLibTab(tab);
         }
@@ -6720,6 +6725,10 @@ window.renderEditInstrumentPills = function (bp) {
       var uploadsTabBtn = document.querySelector('.lib-tab[data-tab="uploads"]');
       if (uploadsTabBtn) {
         uploadsTabBtn.onclick = function() { window.switchLibTab('uploads'); };
+      }
+      var remixesTabBtn = document.querySelector('.lib-tab[data-tab="remixes"]');
+      if (remixesTabBtn) {
+        remixesTabBtn.onclick = function() { window.switchLibTab('remixes'); };
       }
 
       // ── Also override window.filterLibrary so search bar can't wipe extended grid ──
@@ -7563,6 +7572,257 @@ function showProUpgradeModal(featureName) {
   modal.addEventListener('click', function(e){ if (e.target === modal) modal.style.display = 'none'; });
   document.body.appendChild(modal);
 }
+
+// ══ Remix Upload Modal — upload MP3/WAV and apply AI Remix ════════════════════
+(function initRemixUploadModal() {
+  var remixUploadAudioUrl = null;  // R2 proxy URL of uploaded file
+  var remixUploadTitle    = '';    // filename without extension
+
+  // ── State helpers ──────────────────────────────────────────────────────────
+  // IDs match the HTML: remix-drop-idle / remix-drop-loading / remix-drop-done / remix-file-name / remix-go-btn
+  function setRemixZoneState(state, filename) {
+    var idle     = document.getElementById('remix-drop-idle');
+    var loading  = document.getElementById('remix-drop-loading');
+    var done     = document.getElementById('remix-drop-done');
+    var nameEl   = document.getElementById('remix-file-name');
+    var errEl    = document.getElementById('remix-upload-error');
+    var remixBtn = document.getElementById('remix-go-btn');
+    if (idle)    idle.style.display    = (state === 'idle')    ? '' : 'none';
+    if (loading) loading.style.display = (state === 'loading') ? '' : 'none';
+    if (done)    done.style.display    = (state === 'done')    ? '' : 'none';
+    if (errEl)   errEl.style.display   = 'none';
+    if (nameEl && filename) nameEl.textContent = filename;
+    if (remixBtn) {
+      remixBtn.disabled = (state !== 'done');
+      remixBtn.style.opacity = (state === 'done') ? '1' : '0.4';
+      remixBtn.style.cursor  = (state === 'done') ? 'pointer' : 'not-allowed';
+    }
+  }
+
+  // ── Open modal ──────────────────────────────────────────────────────────────
+  window.openRemixUploadModal = function() {
+    var overlay = document.getElementById('remix-upload-overlay');
+    if (!overlay) return;
+    // Reset state
+    remixUploadAudioUrl = null;
+    remixUploadTitle    = '';
+    setRemixZoneState('idle');
+    var fileInput = document.getElementById('remix-file-input');
+    if (fileInput) fileInput.value = '';
+    overlay.style.display = 'flex';
+  };
+
+  // ── Close modal ─────────────────────────────────────────────────────────────
+  window.closeRemixUploadModal = function() {
+    var overlay = document.getElementById('remix-upload-overlay');
+    if (overlay) overlay.style.display = 'none';
+  };
+
+  // ── Drag-drop handler ───────────────────────────────────────────────────────
+  window.handleRemixFileDrop = function(event) {
+    event.preventDefault();
+    var zone = document.getElementById('remix-drop-zone');
+    if (zone) { zone.style.borderColor = ''; zone.style.background = ''; }
+    var file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (!file) return;
+    var ext    = (file.name || '').split('.').pop().toLowerCase();
+    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3'
+              || file.type === 'audio/wav'  || file.type === 'audio/wave' || file.type === 'audio/x-wav';
+    var extOk  = ext === 'mp3' || ext === 'wav';
+    if (!mimeOk && !extOk) {
+      var errEl = document.getElementById('remix-upload-error');
+      if (errEl) { errEl.textContent = 'Only MP3 or WAV files are supported.'; errEl.style.display = 'block'; }
+      return;
+    }
+    _remixUploadFile(file);
+  };
+
+  // ── File input handler ──────────────────────────────────────────────────────
+  window.handleRemixFileSelect = function(input) {
+    var file = input && input.files && input.files[0];
+    if (!file) return;
+    var ext    = (file.name || '').split('.').pop().toLowerCase();
+    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3'
+              || file.type === 'audio/wav'  || file.type === 'audio/wave' || file.type === 'audio/x-wav';
+    var extOk  = ext === 'mp3' || ext === 'wav';
+    if (!mimeOk && !extOk) {
+      var errEl = document.getElementById('remix-upload-error');
+      if (errEl) { errEl.textContent = 'Only MP3 or WAV files are supported.'; errEl.style.display = 'block'; }
+      if (input) input.value = '';
+      return;
+    }
+    _remixUploadFile(file);
+  };
+
+  // ── Internal: upload file to R2 via /api/upload-remix-audio ────────────────
+  function _remixUploadFile(file) {
+    var errEl = document.getElementById('remix-upload-error');
+    if (errEl) errEl.style.display = 'none';
+    setRemixZoneState('loading');
+    var name = file.name || 'track';
+    remixUploadTitle = name.replace(/\.[^.]+$/, '');
+
+    var fd = new FormData();
+    fd.append('file', file);
+
+    fetch('/api/upload-remix-audio', { method: 'POST', credentials: 'include', body: fd })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) throw new Error(data.error);
+        if (data.audio_url || data.status === 'ready') {
+          remixUploadAudioUrl = data.audio_url;
+          setRemixZoneState('done', name);
+          return;
+        }
+        throw new Error('Upload failed — please try again.');
+      })
+      .catch(function(err) {
+        setRemixZoneState('idle');
+        var errEl2 = document.getElementById('remix-upload-error');
+        if (errEl2) {
+          errEl2.textContent = 'Upload failed: ' + (err.message || 'Unknown error');
+          errEl2.style.display = 'block';
+        }
+      });
+  }
+
+  // ── Start remix: close modal, show placeholder in Remixes tab, poll ─────────
+  window.startRemixFromUpload = function() {
+    if (!remixUploadAudioUrl) return;
+    var audioUrl = remixUploadAudioUrl;
+    var title    = remixUploadTitle || 'Uploaded Track';
+
+    // Close the modal
+    window.closeRemixUploadModal();
+
+    // Switch to library → Remixes tab and show a placeholder card
+    var libLink = document.querySelector('.gs-sidebar__nav-item[data-page="library"]');
+    if (libLink) libLink.click();
+    setTimeout(function() {
+      var remixesTabBtn = document.querySelector('.lib-tab[data-tab="remixes"]');
+      if (remixesTabBtn) remixesTabBtn.click();
+    }, 150);
+
+    // Inject placeholder card in remixes grid
+    var gridEl = document.getElementById('project-grid-remixes');
+    var placeholderId = 'remix-placeholder-' + Date.now();
+    var placeholder = document.createElement('div');
+    placeholder.id = placeholderId;
+    placeholder.className = 'project-card';
+    placeholder.style.cssText = 'position:relative;overflow:hidden;opacity:.9;border:1px solid rgba(168,85,247,.35);background:linear-gradient(135deg,rgba(168,85,247,.08),rgba(236,72,153,.05))';
+    placeholder.innerHTML =
+      '<div style="padding:16px;display:flex;flex-direction:column;gap:10px;min-height:120px;justify-content:center;align-items:center;text-align:center">' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:1.1rem;animation:sf-pulse 1.5s ease-in-out infinite"></i>' +
+          '<span style="font-weight:700;font-size:.9rem;color:#c084fc">Remixing\u2026</span>' +
+        '</div>' +
+        '<p style="margin:0;font-size:.75rem;color:rgba(255,255,255,.45);line-height:1.4">Applying AI Remix to<br><b style="color:rgba(255,255,255,.65)">' + title + '</b></p>' +
+        '<div style="width:100%;height:3px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden;margin-top:4px">' +
+          '<div style="height:100%;width:10%;background:linear-gradient(90deg,#a855f7,#ec4899);border-radius:3px;animation:sf-progress-bar 90s linear forwards"></div>' +
+        '</div>' +
+      '</div>';
+
+    // Inject pulse animation if not present
+    if (!document.getElementById('sf-remix-styles')) {
+      var styleEl = document.createElement('style');
+      styleEl.id = 'sf-remix-styles';
+      styleEl.textContent = '@keyframes sf-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(1.2)}}' +
+        '@keyframes sf-progress-bar{0%{width:10%}50%{width:75%}90%{width:90%}100%{width:92%}}';
+      document.head.appendChild(styleEl);
+    }
+
+    // Insert placeholder at top of remixes grid (after short delay so tab switch completes)
+    setTimeout(function() {
+      var grid = document.getElementById('project-grid-remixes');
+      if (grid) grid.insertBefore(placeholder, grid.firstChild);
+    }, 300);
+
+    // POST to /api/job/remix with audio_url (direct upload mode)
+    fetch('/api/job/remix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ audio_url: audioUrl, title: title })
+    })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(result) {
+        if (!result.ok) {
+          placeholder.remove();
+          _remixShowError(result.data.error || 'Remix failed');
+          return;
+        }
+        var newJobId = result.data.job_id;
+        if (!newJobId) { placeholder.remove(); return; }
+
+        // Poll until ready
+        var pollCount = 0;
+        var pollInterval = setInterval(function() {
+          if (++pollCount > 84) { // 7 min max
+            clearInterval(pollInterval);
+            placeholder.remove();
+            return;
+          }
+          fetch('/api/poll/' + newJobId, { method: 'POST', credentials: 'include' })
+            .then(function(r) { return r.json(); })
+            .then(function(pd) {
+              if (pd.status === 'ready' || pd.status === 'error') {
+                clearInterval(pollInterval);
+                placeholder.remove();
+                // Refresh Remixes tab
+                if (window._libLoaded) window._libLoaded.remixes = false;
+                if (window.switchLibTab) window.switchLibTab('remixes');
+                if (pd.status === 'ready') {
+                  var done = document.createElement('div');
+                  done.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+                    'background:linear-gradient(135deg,#10b981,#059669);color:#fff;' +
+                    'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
+                    'box-shadow:0 8px 32px rgba(16,185,129,.35);display:flex;align-items:center;gap:10px';
+                  done.innerHTML = '<i class="fas fa-check-circle"></i><span>Remix ready! Check the Remixes tab.</span>' +
+                    '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
+                    'color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">\u2715</button>';
+                  document.body.appendChild(done);
+                  setTimeout(function() { if (done.parentNode) done.remove(); }, 7000);
+                }
+              }
+            })
+            .catch(function() { /* transient poll error — keep retrying */ });
+        }, 5000);
+      })
+      .catch(function(err) {
+        placeholder.remove();
+        _remixShowError('Remix request failed: ' + (err.message || 'Unknown error'));
+      });
+  };
+
+  // ── Show error toast ────────────────────────────────────────────────────────
+  function _remixShowError(msg) {
+    var errDiv = document.createElement('div');
+    errDiv.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
+      'background:#1a0a0a;border:1px solid rgba(239,68,68,.5);color:#f87171;' +
+      'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
+      'box-shadow:0 8px 32px rgba(0,0,0,.55);display:flex;align-items:center;gap:10px';
+    errDiv.innerHTML = '<i class="fas fa-exclamation-circle"></i><span>' + msg + '</span>' +
+      '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
+      'color:rgba(255,255,255,.4);cursor:pointer;font-size:.9rem;padding:0">\u2715</button>';
+    document.body.appendChild(errDiv);
+    setTimeout(function() { if (errDiv.parentNode) errDiv.remove(); }, 8000);
+  }
+
+  // ── Drag-over/leave for drop zone ────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', function() {
+    var zone = document.getElementById('remix-drop-zone');
+    if (!zone) return;
+    zone.addEventListener('dragover', function(e) {
+      e.preventDefault();
+      zone.style.borderColor = 'rgba(168,85,247,.7)';
+      zone.style.background  = 'rgba(168,85,247,.08)';
+    });
+    zone.addEventListener('dragleave', function() {
+      zone.style.borderColor = '';
+      zone.style.background  = '';
+    });
+  });
+})();
 
 // ── Reference Track Dropdown toggle ──────────────────────────────────────────
 // Closes any open popup/overlay first, then toggles the ref inline panel.
