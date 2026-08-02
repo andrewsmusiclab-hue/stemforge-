@@ -227,6 +227,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_users_plan ON users (plan)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id)`).run() } catch {}
 }
 
 // ── Crypto helpers (Web Crypto API — works in CF Workers) ─────
@@ -4985,14 +4987,14 @@ app.get('/api/admin/analytics', async (c) => {
   const weekStart = todayStart - 6 * dayMs
   const monthStart = todayStart - 29 * dayMs
 
-  const [todayRow, weekRow, monthRow, sourcesRow, topPagesRow, dailyRows] = await Promise.all([
-    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 })),
-    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>().catch(() => ({ cnt: 0 })),
-    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 })),
-    c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
-    c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
-    c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC LIMIT 30`).bind(monthStart).all<any>().catch(() => ({ results: [] })),
-  ])
+  // Run analytics queries sequentially to avoid overwhelming D1 with parallel scans
+  // Each query has a catch so one failure doesn't break the whole response
+  const todayRow   = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 }))
+  const weekRow    = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>().catch(() => ({ cnt: 0 }))
+  const monthRow   = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 }))
+  const sourcesRow = await c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC LIMIT 20`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const topPagesRow = await c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const dailyRows  = await c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC LIMIT 30`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
 
   return c.json({
     today: (todayRow as any)?.cnt || 0,
@@ -5067,6 +5069,7 @@ app.get('/api/admin/fix-indexes', async (c) => {
   await run('idx_jobs_user_id',          `CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`)
   await run('idx_jobs_created_at',       `CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at)`)
   await run('idx_sessions_user_id',      `CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id)`)
+  await run('idx_users_plan',            `CREATE INDEX IF NOT EXISTS idx_users_plan ON users (plan)`)
   return c.json({ ok: true, results })
 })
 
@@ -5076,11 +5079,23 @@ app.get('/api/admin/stats', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  const [usersRow, jobsRow] = await Promise.all([
-    c.env.DB.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN plan='pro' THEN 1 ELSE 0 END) as pro_count, SUM(CASE WHEN plan='creator' THEN 1 ELSE 0 END) as creator_count, SUM(CASE WHEN plan='free' THEN 1 ELSE 0 END) as free_count FROM users`).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(*) as total FROM jobs`).first<any>(),
+  // Run as individual fast queries — avoid slow SUM(CASE WHEN) full scan
+  const [totalRow, proRow, creatorRow, freeRow, jobsRow] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) as total FROM users`).first<any>().catch(() => ({ total: 0 })),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM users WHERE plan='pro'`).first<any>().catch(() => ({ cnt: 0 })),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM users WHERE plan='creator'`).first<any>().catch(() => ({ cnt: 0 })),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM users WHERE plan='free'`).first<any>().catch(() => ({ cnt: 0 })),
+    c.env.DB.prepare(`SELECT COUNT(*) as total FROM jobs`).first<any>().catch(() => ({ total: 0 })),
   ])
-  return c.json({ users: usersRow, jobs: jobsRow })
+  return c.json({
+    users: {
+      total: (totalRow as any)?.total || 0,
+      pro_count: (proRow as any)?.cnt || 0,
+      creator_count: (creatorRow as any)?.cnt || 0,
+      free_count: (freeRow as any)?.cnt || 0,
+    },
+    jobs: { total: (jobsRow as any)?.total || 0 }
+  })
 })
 
 // GET /api/admin/users — list all users
@@ -5988,7 +6003,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-11'
+const ASSET_VER = '20260802-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9458,7 +9473,7 @@ function adminPage(user: User) {
 (function loadAdminStats(){
   var errEl=document.getElementById('admin-stats-err');
   function showErr(msg){ if(errEl){ errEl.textContent='Stats error: '+msg; errEl.style.display='block'; } ['stat-users','stat-pro','stat-creator','stat-jobs'].forEach(function(id){ var el=document.getElementById(id); if(el) el.textContent='—'; }); }
-  var ctrl=new AbortController(), tid=setTimeout(function(){ ctrl.abort(); },15000);
+  var ctrl=new AbortController(), tid=setTimeout(function(){ ctrl.abort(); },8000);
   fetch('/api/admin/stats',{signal:ctrl.signal,credentials:'include'})
     .then(function(res){ clearTimeout(tid); if(!res.ok) return res.text().then(function(t){ throw new Error('HTTP '+res.status+' '+t.slice(0,100)); }); return res.json(); })
     .then(function(data){
