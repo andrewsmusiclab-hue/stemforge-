@@ -2388,10 +2388,11 @@ app.post('/api/job/remix', async (c) => {
   const mood  = bp?.mood  || ''
   const bpm   = bp?.bpm   || ''
   // Build tags without duplicates — genre defaults to 'instrumental' so don't add it twice
+  // Do NOT hardcode mood/energy words (e.g. 'energetic') — let the actual mood/blueprint drive it
   const tagParts: string[] = []
   if (genre && genre.toLowerCase() !== 'instrumental') tagParts.push(genre)
-  tagParts.push('instrumental', 'no vocals', 'energetic')
-  if (mood && !tagParts.includes(mood)) tagParts.push(mood)
+  tagParts.push('instrumental', 'no vocals')
+  if (mood && !tagParts.includes(mood.toLowerCase())) tagParts.push(mood)
   if (bpm) tagParts.push(`${bpm} BPM`)
   const tags = tagParts.join(', ')
 
@@ -2437,7 +2438,7 @@ app.post('/api/job/remix', async (c) => {
         mv: 'sonic-v5',
         tags,
         custom_mode: false,
-        gpt_description_prompt: `Instrumental beat${genre && genre.toLowerCase() !== 'instrumental' ? ` in ${genre} style` : ''}, no vocals, ${mood || 'energetic'} mood${bpm ? `, ${bpm} BPM` : ''}. Keep the same energy and style.`,
+        gpt_description_prompt: `Instrumental beat${genre && genre.toLowerCase() !== 'instrumental' ? ` in ${genre} style` : ''}, no vocals${mood ? `, ${mood} mood` : ''}${bpm ? `, ${bpm} BPM` : ''}. Keep the same energy and style.`,
         make_instrumental: true
       })
     })
@@ -5965,7 +5966,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-04'
+const ASSET_VER = '20260802-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7392,9 +7393,14 @@ function generatorPage() {
       <!-- Status line -->
       <p class="pipeline-gen-status-sub" id="pipeline-status-sub">Stemforge is forging your beats…</p>
 
-      <!-- Cancel button -->
+      <!-- Cancel button (shown while generating) -->
       <button id="gen-cancel-btn" onclick="cancelGeneration()" class="pipeline-gen-cancel-btn">
         <i class="fas fa-times" style="margin-right:5px"></i>Cancel
+      </button>
+
+      <!-- Close/dismiss button (shown once ready, hidden during generation) -->
+      <button id="pipeline-close-btn" onclick="closePipelinePlayer()" style="display:none;position:absolute;top:10px;right:12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:50%;width:30px;height:30px;cursor:pointer;color:rgba(255,255,255,.6);font-size:14px;display:none;align-items:center;justify-content:center;transition:all .15s;z-index:10" onmouseover="this.style.background='rgba(255,255,255,.18)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.color='rgba(255,255,255,.6)'">
+        <i class="fas fa-times"></i>
       </button>
 
       <!-- hidden step trackers for JS logic only (not shown to user) -->

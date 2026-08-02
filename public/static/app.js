@@ -2060,13 +2060,26 @@ document.addEventListener('DOMContentLoaded', () => {
       range.style.background = 'linear-gradient(to right, #a78bfa 0%, #a78bfa ' + pct + '%, rgba(255,255,255,.15) ' + pct + '%, rgba(255,255,255,.15) 100%)';
     }
 
-    // Duration: set once metadata loads
-    audio.addEventListener('loadedmetadata', function() {
-      if (durEl) durEl.textContent = _pipelineFmtTime(audio.duration);
-    });
+    // Duration: set immediately if already loaded (readyState >= 1), OR wait for event.
+    // This fixes the race where src is set then wireScrubber is called — loadedmetadata
+    // may have already fired before the listener is attached.
+    function _applyDuration() {
+      if (durEl && isFinite(audio.duration) && audio.duration > 0)
+        durEl.textContent = _pipelineFmtTime(audio.duration);
+    }
+    if (audio.readyState >= 1) {
+      _applyDuration();
+    } else {
+      audio.addEventListener('loadedmetadata', _applyDuration);
+    }
+    // Also handle the case where metadata loads slightly after wiring
+    audio.addEventListener('loadedmetadata', _applyDuration);
 
     // Tick: update position while playing (skip if user is scrubbing)
+    // Also refreshes duration in case it wasn't set yet on first tick
     audio.addEventListener('timeupdate', function() {
+      if (durEl && (!durEl.textContent || durEl.textContent === '0:00') && isFinite(audio.duration) && audio.duration > 0)
+        durEl.textContent = _pipelineFmtTime(audio.duration);
       if (range._seeking) return;
       var pct = audio.duration > 0 ? (audio.currentTime / audio.duration) * 100 : 0;
       range.value = pct;
@@ -2417,6 +2430,11 @@ document.addEventListener('DOMContentLoaded', () => {
               if (titleEl) titleEl.textContent = (finalTitle.replace(/_/g,' ') + (hasAlt ? (n === 1 ? ' — V1' : ' — V2') : ''));
               if (msgEl)   { msgEl.textContent = 'Ready · tap to play'; msgEl.classList.add('is-done'); }
               if (audio)   { audio.src = url; audio.preload = 'auto'; }
+              // Show X close button on first card ready
+              if (n === 1) {
+                var closeBtnEl2 = document.getElementById('pipeline-close-btn');
+                if (closeBtnEl2) { closeBtnEl2.style.display = 'flex'; }
+              }
 
               // Wire scrubber
               _pipelineWireScrubber(n);
@@ -7804,6 +7822,45 @@ function showProUpgradeModal(featureName) {
     reader.readAsArrayBuffer(file);
   }
 
+  // ── Close / dismiss the pipeline player after it's done ─────────────────────
+  window.closePipelinePlayer = function() {
+    var pipelineEl = document.getElementById('pipeline-status');
+    if (!pipelineEl) return;
+    // Pause any playing audio
+    [1, 2].forEach(function(n) {
+      var a = document.getElementById('pipeline-audio-' + n);
+      if (a && !a.paused) { a.pause(); a.currentTime = 0; }
+      var playBtn = document.getElementById('pipeline-card-' + n + '-play');
+      if (playBtn) { playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
+    });
+    // Hide the close button itself
+    var closeBtn = document.getElementById('pipeline-close-btn');
+    if (closeBtn) closeBtn.style.display = 'none';
+    // Fade out and hide the player
+    pipelineEl.style.transition = 'opacity .3s';
+    pipelineEl.style.opacity = '0';
+    setTimeout(function() {
+      pipelineEl.style.display = 'none';
+      pipelineEl.style.opacity = '';
+      pipelineEl.style.transition = '';
+      // Reset cards for next generation
+      [1, 2].forEach(function(n) {
+        var card = document.getElementById('pipeline-card-' + n);
+        if (card) card.classList.remove('is-ready');
+        var overlay = document.getElementById('pipeline-card-' + n + '-overlay');
+        if (overlay) { overlay.style.display = 'flex'; overlay.style.opacity = '1'; overlay.style.transition = ''; }
+        var playBtnEl = document.getElementById('pipeline-card-' + n + '-play');
+        if (playBtnEl) playBtnEl.style.display = 'none';
+        var scrubber = document.getElementById('pipeline-scrubber-' + n);
+        if (scrubber) scrubber.style.display = 'none';
+        var msgEl = document.getElementById('pipeline-card-' + n + '-msg');
+        if (msgEl) { msgEl.textContent = 'Generating\u2026'; msgEl.classList.remove('is-done'); }
+        var titleEl = document.getElementById('pipeline-card-' + n + '-title');
+        if (titleEl) titleEl.textContent = 'Your Beat';
+      });
+    }, 300);
+  };
+
   // ── Start remix: close modal, show pipeline wave player, stay on Create page ─
   // When done: wire up playback just like regular beat generation, also save to Remixes tab.
   window.startRemixFromUpload = function() {
@@ -7902,6 +7959,9 @@ function showProUpgradeModal(featureName) {
                 if (msgEl)   { msgEl.textContent = 'Ready \u00b7 tap to play'; msgEl.classList.add('is-done'); }
                 if (statusSubEl) statusSubEl.style.display = 'none';
                 if (cancelBtnEl) cancelBtnEl.style.display = 'none';
+                // Show X close button now that it's ready
+                var closeBtnEl = document.getElementById('pipeline-close-btn');
+                if (closeBtnEl) { closeBtnEl.style.display = 'flex'; }
 
                 // Wire audio element
                 if (audioEl && stereoUrl) {
