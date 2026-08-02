@@ -2382,36 +2382,34 @@ app.post('/api/job/remix', async (c) => {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
   }
 
-  // Build style tags from the source job's blueprint for Sonic
+  // Build style description from the source job's blueprint for Sonic
   const bp = srcJob.blueprint
   const genre = bp?.genre || 'instrumental'
   const mood  = bp?.mood  || ''
   const bpm   = bp?.bpm   || ''
-  const tagParts = [genre, 'instrumental', 'no vocals']
-  if (mood) tagParts.push(mood)
-  if (bpm)  tagParts.push(`${bpm} BPM`)
-  const tags = tagParts.join(', ')
+  const styleDesc = `Instrumental ${genre} beat, no vocals${mood ? `, ${mood} mood` : ''}${bpm ? `, ${bpm} BPM` : ''}. Same energy and style as the original.`
 
-  // Use /sonic/upload-cover — takes a raw audio URL + style tags, returns a Sonic task_id.
-  // Mirror the audio to R2 first so Sonic can download it quickly (same edge, <1s).
+  // Use /sonic/upload-extend — the same proven endpoint used by Song Extend.
+  // continue_at:0 tells Sonic to regenerate from the very start using the uploaded
+  // audio as a style reference, producing a fresh remix of the track.
   let genTaskId: string
   try {
     const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
     let audioUrl = srcJob.stereo_url as string
 
-    // Mirror to R2 so Sonic can fetch it from our edge without timeout issues
-    if (c.env.IMAGES) {
+    // If the audio URL is a self-hosted proxy URL, it's already accessible.
+    // For external CDN URLs (Mureka etc.) mirror to R2 so Sonic can reach it reliably.
+    if (c.env.IMAGES && !audioUrl.includes(siteUrl)) {
       try {
         const audioFetch = await fetch(audioUrl)
         if (audioFetch.ok) {
           const buf = await audioFetch.arrayBuffer()
           const ext = audioUrl.includes('.mp3') ? 'mp3' : 'm4a'
-          const r2Key = `extend-uploads/${Date.now()}-${Math.random().toString(36).slice(2,8)}-remix.${ext}`
+          const r2Key = `remix-uploads/${Date.now()}-${Math.random().toString(36).slice(2,8)}-remix.${ext}`
           await c.env.IMAGES.put(r2Key, buf, {
             httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
           })
-          const filename = r2Key.replace('extend-uploads/', '')
-          audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(filename)}`
+          audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
           console.log(`[remix] mirrored to R2: ${r2Key}`)
         }
       } catch (mirrorErr: any) {
@@ -2419,35 +2417,37 @@ app.post('/api/job/remix', async (c) => {
       }
     }
 
-    console.log(`[remix] Calling /sonic/upload-cover url=${audioUrl.slice(0,80)} tags=${tags}`)
-    const coverRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+    // POST /sonic/upload-extend — same API as Song Extend, continue_at:0 = regenerate from start
+    const uploadExtBody: Record<string, any> = {
+      url: audioUrl,
+      mv: 'sonic-v5',
+      continue_at: 0,
+      custom_mode: false,
+      gpt_description_prompt: styleDesc,
+      make_instrumental: true
+    }
+    console.log(`[remix] Calling /sonic/upload-extend url=${audioUrl.slice(0,80)} style="${styleDesc.slice(0,80)}"`)
+    const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: audioUrl,
-        mv: 'sonic-v5',
-        tags,
-        custom_mode: false,
-        gpt_description_prompt: `Instrumental ${genre} beat, no vocals, ${mood || 'energetic'} mood${bpm ? `, ${bpm} BPM` : ''}. Keep the same energy and style.`,
-        make_instrumental: true
-      })
+      body: JSON.stringify(uploadExtBody)
     })
-    const coverText = await coverRes.text()
-    console.log(`[remix] /sonic/upload-cover HTTP ${coverRes.status}: ${coverText.slice(0,300)}`)
-    if (!coverRes.ok) {
+    const sonicText = await sonicRes.text()
+    console.log(`[remix] /sonic/upload-extend HTTP ${sonicRes.status}: ${sonicText.slice(0,400)}`)
+    if (!sonicRes.ok) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Could not start remix — please try again in a moment.' }, 500)
     }
-    let coverData: any = {}
-    try { coverData = JSON.parse(coverText) } catch {}
-    // /sonic/upload-cover returns { task_id } or { steps: { cover: { task_id } } }
-    genTaskId = coverData.task_id || coverData.steps?.cover?.task_id || coverData.data?.[0]?.id || ''
+    let sonicData: any = {}
+    try { sonicData = JSON.parse(sonicText) } catch {}
+    // upload-extend returns: { task_id } or { steps: { extend: { task_id } } } or { data: [{ id }] }
+    genTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id || ''
     if (!genTaskId) {
-      console.error(`[remix] upload-cover returned no task_id: ${coverText.slice(0,200)}`)
+      console.error(`[remix] upload-extend returned no task_id: ${sonicText.slice(0,200)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again.' }, 500)
     }
-    console.log(`[remix] upload-cover task started: ${genTaskId}`)
+    console.log(`[remix] upload-extend task started: ${genTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
@@ -9484,10 +9484,10 @@ function adminPage(user: User) {
 (async()=>{
   try {
     const ctrl = new AbortController();
-    const tid = setTimeout(()=>ctrl.abort(), 8000); // 8s timeout
-    const res = await fetch('/api/admin/stats', { signal: ctrl.signal });
+    const tid = setTimeout(()=>ctrl.abort(), 12000); // 12s timeout
+    const res = await fetch('/api/admin/stats', { signal: ctrl.signal, credentials: 'include' });
     clearTimeout(tid);
-    if (!res.ok) throw new Error('HTTP '+res.status);
+    if (!res.ok) throw new Error('HTTP '+res.status+' '+res.statusText);
     const data = await res.json();
     if(data.error) throw new Error(data.error);
     if(data.users){
@@ -9497,11 +9497,12 @@ function adminPage(user: User) {
     }
     if(data.jobs){ document.getElementById('stat-jobs').textContent = data.jobs.total||0; }
   } catch(e) {
-    console.warn('[admin stats]', e);
-    // Show error in stats bar so it doesn't stay as "—" forever
+    console.error('[admin stats]', e.message||e);
+    // Show the actual error message in the stats bar
+    const errMsg = String(e.message||e).slice(0,12);
     ['stat-users','stat-pro','stat-creator','stat-jobs','stat-mrr'].forEach(id=>{
       const el = document.getElementById(id);
-      if(el && el.textContent==='—') el.textContent = 'err';
+      if(el && el.textContent==='—') el.textContent = errMsg;
     });
   }
 })();
@@ -9581,10 +9582,10 @@ const SOCIAL_ICONS = {
 async function loadAnalytics(){
   try{
     const ctrl = new AbortController();
-    const tid = setTimeout(()=>ctrl.abort(), 10000);
-    const res = await fetch('/api/admin/analytics', { signal: ctrl.signal });
+    const tid = setTimeout(()=>ctrl.abort(), 12000);
+    const res = await fetch('/api/admin/analytics', { signal: ctrl.signal, credentials: 'include' });
     clearTimeout(tid);
-    if(!res.ok) throw new Error('HTTP '+res.status);
+    if(!res.ok) throw new Error('HTTP '+res.status+' '+res.statusText);
     const d = await res.json();
     if(d.error) throw new Error(d.error);
     document.getElementById('an-today').textContent = d.today||0;
@@ -9659,9 +9660,10 @@ async function loadAnalytics(){
 // ── REVENUE TAB ────────────────────────────────────────────
 async function loadRevenue(){
   try{
-    const res = await fetch('/api/admin/revenue');
+    const res = await fetch('/api/admin/revenue', { credentials: 'include' });
+    if(!res.ok) throw new Error('HTTP '+res.status);
     const d = await res.json();
-    if(d.error){ console.warn('[admin revenue]', d.error); return; }
+    if(d.error){ console.warn('[admin revenue]', d.error); document.getElementById('rv-mrr').textContent='Error: '+d.error.slice(0,20); return; }
     const mrr = d.mrr || 0;
     document.getElementById('rv-mrr').textContent = '\$'+(mrr).toLocaleString();
     document.getElementById('rv-pro').textContent = d.pro_count||0;
@@ -9717,7 +9719,7 @@ async function loadUsers(){
   try {
   const ctrl = new AbortController();
   const tid = setTimeout(()=>ctrl.abort(), 10000);
-  const res = await fetch('/api/admin/users', { signal: ctrl.signal });
+  const res = await fetch('/api/admin/users', { signal: ctrl.signal, credentials: 'include' });
   clearTimeout(tid);
   const data = await res.json();
   if(data.error){ el.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }

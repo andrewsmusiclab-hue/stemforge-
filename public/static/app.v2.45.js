@@ -815,18 +815,22 @@ document.addEventListener('DOMContentLoaded', () => {
         ctx.restore();
       }
 
-      // ── LAYER 3: Solid black top band (genre label area) ──
-      ctx.fillStyle = 'rgba(0,0,0,0.95)';
+      // ── LAYER 3: Solid dark top band (title label area) ──
+      ctx.fillStyle = 'rgba(0,0,0,0.82)';
       ctx.fillRect(0, 0, W, 46);
 
-      // ── LAYER 4: Genre label — bright white, letter-spaced ──
-      const genreText = (genre||'music').toUpperCase().slice(0,16);
-      ctx.font = '700 13px system-ui,sans-serif';
+      // ── LAYER 4: Song title — bright white, letter-spaced ──
+      // Show song title (preferred) — fall back to genre if title is blank or junk
+      const _badLabel = /instrumental\s+only|no\s+vocals|include\s+instruments/i;
+      const _rawLabel = (title && !_badLabel.test(title)) ? title : (genre || 'music');
+      // Truncate to fit the band: uppercase, max 18 chars
+      const labelText = _rawLabel.toUpperCase().replace(/_/g,' ').slice(0,18);
+      ctx.font = '700 12px system-ui,sans-serif';
       ctx.fillStyle = '#ffffff';
       ctx.globalAlpha = 1.0;
       ctx.textAlign = 'center';
-      ctx.letterSpacing = '3px';
-      ctx.fillText(genreText, W/2, 29);
+      ctx.letterSpacing = '2px';
+      ctx.fillText(labelText, W/2, 29);
       ctx.letterSpacing = '0';
 
       // ── LAYER 5: Faint watermark ──
@@ -7694,7 +7698,8 @@ function showProUpgradeModal(featureName) {
       });
   }
 
-  // ── Start remix: close modal, show pipeline wave player, poll, then nav to library ─────────
+  // ── Start remix: close modal, show pipeline wave player, stay on Create page ─
+  // When done: wire up playback just like regular beat generation, also save to Remixes tab.
   window.startRemixFromUpload = function() {
     if (!remixUploadAudioUrl) return;
     var audioUrl = remixUploadAudioUrl;
@@ -7703,7 +7708,7 @@ function showProUpgradeModal(featureName) {
     // Close the modal
     window.closeRemixUploadModal();
 
-    // ── Show pipeline wave video player (same as regular beat generation) ──────
+    // ── Grab pipeline elements (same ones used by regular beat generation) ──────
     var pipelineEl   = document.getElementById('pipeline-status');
     var msgEl        = document.getElementById('pipeline-card-1-msg');
     var titleEl      = document.getElementById('pipeline-card-1-title');
@@ -7711,29 +7716,24 @@ function showProUpgradeModal(featureName) {
     var cancelBtnEl  = document.getElementById('gen-cancel-btn');
     var overlayEl    = document.getElementById('pipeline-card-1-overlay');
     var playBtnEl    = document.getElementById('pipeline-card-1-play');
+    var audioEl      = document.getElementById('pipeline-audio-1');
+    var scrubberEl   = document.getElementById('pipeline-scrubber-1');
+
+    // ── Reset card 2 (dummy, hide it) ──────────────────────────────────────────
+    var card2 = document.getElementById('pipeline-card-2');
+    if (card2) card2.style.display = 'none';
+
+    // Show pipeline player in generating state
     if (pipelineEl) {
       if (titleEl)     titleEl.textContent  = title;
-      if (msgEl)       msgEl.textContent    = 'Applying AI Remix…';
-      if (statusSubEl) statusSubEl.textContent = 'StemForge is remixing your track…';
-      if (cancelBtnEl) cancelBtnEl.style.display = 'none'; // no cancel for remix jobs
-      if (overlayEl)   overlayEl.style.display = 'flex';   // spinner on
-      if (playBtnEl)   playBtnEl.style.display = 'none';    // play off
+      if (msgEl)       { msgEl.textContent = 'Applying AI Remix\u2026'; msgEl.classList.remove('is-done'); }
+      if (statusSubEl) { statusSubEl.textContent = 'StemForge is remixing your track\u2026'; statusSubEl.style.display = ''; }
+      if (cancelBtnEl) cancelBtnEl.style.display = 'none'; // no cancel for remix
+      if (overlayEl)   overlayEl.style.display = 'flex';   // spinner visible
+      if (playBtnEl)   playBtnEl.style.display = 'none';   // play hidden until ready
+      if (scrubberEl)  scrubberEl.style.display = 'none';
       pipelineEl.style.opacity = '1';
       pipelineEl.style.display = 'block';
-    }
-
-    // Stay on Create page with pipeline player visible — navigate to Remixes tab only when done
-
-    // Helper: hide pipeline player and restore cancel button
-    function _hidePipeline() {
-      if (pipelineEl) {
-        pipelineEl.style.transition = 'opacity .4s ease';
-        pipelineEl.style.opacity = '0';
-        setTimeout(function() {
-          if (pipelineEl) { pipelineEl.style.display = 'none'; pipelineEl.style.opacity = '1'; }
-        }, 400);
-      }
-      if (cancelBtnEl) cancelBtnEl.style.display = ''; // restore cancel button
     }
 
     // POST to /api/job/remix with audio_url (direct upload mode)
@@ -7746,55 +7746,86 @@ function showProUpgradeModal(featureName) {
       .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
       .then(function(result) {
         if (!result.ok) {
-          _hidePipeline();
-          _remixShowError(result.data.error || 'Remix failed');
+          // Error — hide pipeline, show error toast
+          if (pipelineEl) pipelineEl.style.display = 'none';
+          if (cancelBtnEl) cancelBtnEl.style.display = '';
+          _remixShowError(result.data.error || 'Remix failed — please try again.');
           return;
         }
         var newJobId = result.data.job_id;
-        if (!newJobId) { _hidePipeline(); return; }
+        if (!newJobId) {
+          if (pipelineEl) pipelineEl.style.display = 'none';
+          if (cancelBtnEl) cancelBtnEl.style.display = '';
+          return;
+        }
 
-        // Poll until ready
+        // ── Poll until ready — stays on Create page the whole time ──────────────
         var pollCount = 0;
         var pollInterval = setInterval(function() {
           if (++pollCount > 84) { // 7 min max
             clearInterval(pollInterval);
-            _hidePipeline();
+            if (pipelineEl) pipelineEl.style.display = 'none';
+            if (cancelBtnEl) cancelBtnEl.style.display = '';
             return;
           }
           fetch('/api/poll/' + newJobId, { method: 'POST', credentials: 'include' })
             .then(function(r) { return r.json(); })
             .then(function(pd) {
-              if (pd.status === 'ready' || pd.status === 'error') {
+              if (pd.status === 'ready') {
                 clearInterval(pollInterval);
-                _hidePipeline();
-                // Navigate to library → Remixes tab
-                if (window._libLoaded) window._libLoaded.remixes = false;
-                var libLink = document.querySelector('.gs-sidebar__nav-item[data-page="library"]');
-                if (libLink) libLink.click();
-                setTimeout(function() {
-                  if (window.switchLibTab) window.switchLibTab('remixes');
-                }, 200);
-                if (pd.status === 'ready') {
-                  setTimeout(function() {
-                    var done = document.createElement('div');
-                    done.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:99999;' +
-                      'background:linear-gradient(135deg,#10b981,#059669);color:#fff;' +
-                      'border-radius:10px;padding:12px 18px;font-size:.82rem;font-weight:600;' +
-                      'box-shadow:0 8px 32px rgba(16,185,129,.35);display:flex;align-items:center;gap:10px';
-                    done.innerHTML = '<i class="fas fa-check-circle"></i><span>Remix ready!</span>' +
-                      '<button onclick="this.parentNode.remove()" style="margin-left:8px;background:none;border:none;' +
-                      'color:rgba(255,255,255,.6);cursor:pointer;font-size:.9rem;padding:0">\u2715</button>';
-                    document.body.appendChild(done);
-                    setTimeout(function() { if (done.parentNode) done.remove(); }, 7000);
-                  }, 300);
+
+                // ── Transition pipeline card to READY state (playable) ──────────
+                // Exactly mirrors what the regular generator does when job is ready.
+                var stereoUrl = pd.stereo_url || '';
+                window._pipelineAudioUrl = [null, stereoUrl, stereoUrl];
+
+                // Hide spinner overlay, show play button
+                if (overlayEl) {
+                  overlayEl.style.transition = 'opacity .4s';
+                  overlayEl.style.opacity = '0';
+                  setTimeout(function() { overlayEl.style.display = 'none'; }, 400);
                 }
+                if (playBtnEl) playBtnEl.style.display = 'flex';
+
+                // Update title and message
+                var remixLabel = (pd.title || title).replace(/_/g,' ');
+                // Highlight "Remix" suffix in purple neon
+                var displayLabel = remixLabel.replace(/\s*Remix\s*$/i,
+                  ' <span style="color:#c084fc;font-weight:700;text-shadow:0 0 8px rgba(192,132,252,.6)">Remix</span>');
+                if (titleEl) titleEl.innerHTML = displayLabel;
+                if (msgEl)   { msgEl.textContent = 'Ready \u00b7 tap to play'; msgEl.classList.add('is-done'); }
+                if (statusSubEl) statusSubEl.style.display = 'none';
+                if (cancelBtnEl) cancelBtnEl.style.display = 'none';
+
+                // Wire audio element
+                if (audioEl && stereoUrl) {
+                  audioEl.src = stereoUrl;
+                  audioEl.preload = 'auto';
+                }
+                // Wire scrubber
+                if (scrubberEl) scrubberEl.style.display = '';
+                if (window._pipelineWireScrubber) window._pipelineWireScrubber(1);
+
+                // Mark card ready
+                var card1 = document.getElementById('pipeline-card-1');
+                if (card1) card1.classList.add('is-ready');
+
+                // Mark remixes tab cache stale so it reloads next time user opens it
+                if (window._libLoaded) window._libLoaded.remixes = false;
+
+              } else if (pd.status === 'error') {
+                clearInterval(pollInterval);
+                if (pipelineEl) pipelineEl.style.display = 'none';
+                if (cancelBtnEl) cancelBtnEl.style.display = '';
+                _remixShowError('Remix failed — please try again.');
               }
             })
             .catch(function() { /* transient poll error — keep retrying */ });
         }, 5000);
       })
       .catch(function(err) {
-        _hidePipeline();
+        if (pipelineEl) pipelineEl.style.display = 'none';
+        if (cancelBtnEl) cancelBtnEl.style.display = '';
         _remixShowError('Remix request failed: ' + (err.message || 'Unknown error'));
       });
   };
