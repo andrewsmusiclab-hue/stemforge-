@@ -6014,7 +6014,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-14'
+const ASSET_VER = '20260802-15'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9502,6 +9502,9 @@ function diagSet(id, ok, msg){
   el.style.border='1px solid '+(ok?'rgba(16,185,129,.3)':'rgba(239,68,68,.4)');
 }
 async function runDiag(){
+  // Immediately mark as running so we know the function executed
+  var diagEl=document.getElementById('admin-diag');
+  if(diagEl){ var ts=document.createElement('span'); ts.style.cssText='margin-left:8px;font-size:.75rem;color:#f59e0b'; ts.id='diag-ts'; ts.textContent='running @ '+new Date().toLocaleTimeString(); diagEl.appendChild(ts); }
   ['ping','stats','analytics','revenue','users'].forEach(function(id){
     var el=document.getElementById('diag-'+id);
     if(el){el.textContent=id+'…';el.style.background='#1e293b';el.style.color='#94a3b8';el.style.border='none';}
