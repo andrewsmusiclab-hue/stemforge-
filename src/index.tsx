@@ -4893,7 +4893,10 @@ app.post('/api/promo/redeem', async (c) => {
 
 function isAdmin(user: User | null, env: Bindings): boolean {
   if (!user) return false
-  if (env.ADMIN_EMAIL && user.email === env.ADMIN_EMAIL) return true
+  // Check env secret first, then fallback hardcoded email, then developer plan
+  const adminEmail = env.ADMIN_EMAIL || 'andrewsmusiclab@gmail.com'
+  if (user.email === adminEmail) return true
+  if (user.plan === 'developer') return true
   return false
 }
 
@@ -5052,6 +5055,14 @@ app.get('/api/admin/revenue', async (c) => {
     jobs_this_month: jobsThisMonth,
     recent_subscribers: recentSubsRow.results || [],
   })
+})
+
+// GET /api/admin/ping — zero-DB health check, confirms Worker is alive and auth cookie works
+app.get('/api/admin/ping', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB/secret', admin: false })
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  return c.json({ ok: true, admin: isAdmin(user, c.env), email: user?.email || null, plan: user?.plan || null, ts: Date.now() })
 })
 
 // GET /api/admin/fix-indexes — one-shot: create missing DB indexes for performance
@@ -6003,7 +6014,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-12'
+const ASSET_VER = '20260802-13'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9501,7 +9512,7 @@ var SOCIAL_ICONS={tiktok:'<i class="fab fa-tiktok" style="color:#69C9D0"></i>',f
 
 async function loadAnalytics(){
   try{
-    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},12000);
+    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},6000);
     var res=await fetch('/api/admin/analytics',{signal:ctrl.signal,credentials:'include'});
     clearTimeout(tid);
     if(!res.ok) throw new Error('HTTP '+res.status);
