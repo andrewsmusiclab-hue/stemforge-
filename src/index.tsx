@@ -110,7 +110,8 @@ interface User {
   avatar?: string
   plan: 'free' | 'creator' | 'pro' | 'developer'
   gens_used: number
-  gens_limit: number
+  gens_limit: number       // base plan limit (resets on billing cycle)
+  bonus_credits: number    // extra purchased credits (consumed FIRST, don't reset)
   stripe_customer_id?: string
   stripe_subscription_id?: string
   account_locked?: number   // 1 = locked, 0/null = active
@@ -204,6 +205,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // ── Migrate: add account_locked + lock_reason columns (idempotent) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN account_locked INTEGER NOT NULL DEFAULT 0`).run() } catch {}
   try { await db.prepare(`ALTER TABLE users ADD COLUMN lock_reason TEXT`).run() } catch {}
+  // ── Migrate: add bonus_credits column (tracks purchased extra credits separately) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN bonus_credits INTEGER NOT NULL DEFAULT 0`).run() } catch {}
   // ── Lock specific policy-violating accounts (idempotent) ──
   try {
     await db.prepare(
@@ -288,6 +291,7 @@ async function getSessionUser(db: D1Database, token: string): Promise<User | nul
     return {
       id: row.id, email: row.email, name: row.name, avatar: row.avatar,
       plan: row.plan, gens_used: row.gens_used, gens_limit: row.gens_limit,
+      bonus_credits: row.bonus_credits ?? 0,
       stripe_customer_id: row.stripe_customer_id,
       stripe_subscription_id: row.stripe_subscription_id,
       account_locked: row.account_locked ?? 0,
@@ -1335,10 +1339,11 @@ app.post('/api/generate', async (c) => {
     return c.json({ error: 'Session expired — please log in again to generate beats.', login_required: true }, 401)
   }
 
-  // Enforce per-plan generation limit
-  if (authUser.gens_used + 20 > authUser.gens_limit) {
+  // Enforce per-plan generation limit (bonus_credits consumed first)
+  const totalAvailable20 = (authUser.gens_limit - authUser.gens_used) + authUser.bonus_credits
+  if (totalAvailable20 < 20) {
     return c.json({
-      error: `Points limit reached. You have used all ${authUser.gens_limit} points for this month. Upgrade your plan to continue.`,
+      error: `Points limit reached. You have used all your points for this month. Upgrade your plan or get more credits to continue.`,
       limit_reached: true
     }, 403)
   }
@@ -1346,10 +1351,16 @@ app.post('/api/generate', async (c) => {
   const userId: string = authUser.id
   const userPlan: string = authUser.plan
 
-  // Deduct 10 pts immediately to prevent concurrent races past the limit
-  await c.env.DB.prepare(
-    `UPDATE users SET gens_used = gens_used + 20 WHERE id = ?`
-  ).bind(authUser.id).run()
+  // Deduct 20 pts — consume bonus_credits first, then gens_used
+  if (authUser.bonus_credits >= 20) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 20 WHERE id = ?`).bind(authUser.id).run()
+  } else if (authUser.bonus_credits > 0) {
+    const fromBonus = authUser.bonus_credits
+    const fromMain = 20 - fromBonus
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(fromMain, authUser.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id = ?`).bind(authUser.id).run()
+  }
 
   // Build enriched prompt from all UI inputs
   const parts: string[] = []
@@ -1590,11 +1601,19 @@ app.post('/api/job/stems', async (c) => {
 
   // Deduct credits: 5-stem = 75pts, 2-stem vocals+instrumental = 30pts
   const stemCost = mode === 'auto' ? 30 : 70
-  const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
-  if (!stemFreshUser || stemFreshUser.gens_used + stemCost > stemFreshUser.gens_limit) {
-    return c.json({ error: `Not enough points. ${mode === 'auto' ? 'Auto Split costs 30 points' : 'Vocals & Instrumental costs 70 points'} and you only have ${stemFreshUser ? Math.max(0, stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+  const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
+  const stemBonus = stemFreshUser?.bonus_credits ?? 0
+  const stemMain = stemFreshUser ? (stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0
+  if (!stemFreshUser || stemMain + stemBonus < stemCost) {
+    return c.json({ error: `Not enough points. ${mode === 'auto' ? 'Auto Split costs 30 points' : 'Vocals & Instrumental costs 70 points'} and you only have ${Math.max(0, stemMain + stemBonus)} remaining.`, limit_reached: true }, 403)
   }
-  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
+  if (stemBonus >= stemCost) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id=?`).bind(stemCost, user.id).run()
+  } else if (stemBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(stemCost - stemBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
+  }
 
   // Mureka /v1/song/stem returns zip_url SYNCHRONOUSLY (no polling needed).
   // We queue a "stemwait:" task_id and fire the actual Mureka call in waitUntil()
@@ -2341,12 +2360,20 @@ app.post('/api/job/remix', async (c) => {
     return c.json({ error: 'Source track is not ready yet.' }, 400)
   }
 
-  // Deduct 20 points
-  const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number}>()
-  if (!fresh || fresh.gens_used + 20 > fresh.gens_limit) {
-    return c.json({ error: `Not enough points. Stemforge Remix costs 20 points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+  // Deduct 20 points — bonus_credits consumed first
+  const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
+  const freshBonus = fresh?.bonus_credits ?? 0
+  const freshMain = fresh ? (fresh.gens_limit - fresh.gens_used) : 0
+  if (!fresh || freshMain + freshBonus < 20) {
+    return c.json({ error: `Not enough points. Stemforge Remix costs 20 points and you only have ${Math.max(0, freshMain + freshBonus)} remaining.`, limit_reached: true }, 403)
   }
-  await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
+  if (freshBonus >= 20) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 20 WHERE id=?`).bind(user.id).run()
+  } else if (freshBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(20 - freshBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
+  }
 
   // Build style tags from the source job's blueprint for Sonic
   const bp = srcJob.blueprint
@@ -2967,8 +2994,8 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number }>()
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
   return c.json({
@@ -2978,6 +3005,7 @@ app.get('/api/auth/me', async (c) => {
       plan: fresh?.plan ?? user.plan,
       gens_used: fresh?.gens_used ?? user.gens_used,
       gens_limit: fresh?.gens_limit ?? user.gens_limit,
+      bonus_credits: fresh?.bonus_credits ?? user.bonus_credits ?? 0,
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null
     }
@@ -3116,7 +3144,7 @@ app.post('/api/stripe/webhook', async (c) => {
       if (metaType === 'credit_pack' && userId) {
         const credits = parseInt(session.metadata?.credits || '0', 10)
         if (credits > 0) {
-          await c.env.DB.prepare(`UPDATE users SET gens_limit=gens_limit+? WHERE id=?`).bind(credits, userId).run()
+          await c.env.DB.prepare(`UPDATE users SET bonus_credits=bonus_credits+? WHERE id=?`).bind(credits, userId).run()
         }
       } else if (userId && subId) {
         // Subscription purchase
@@ -3826,18 +3854,24 @@ app.post('/api/job/extend-upload', async (c) => {
   // ── credit deduction ──────────────────────────────────────────────────
   const EXTEND_COST = 15
   const freshUser = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
+    `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
   if (!freshUser) return c.json({ error: 'User not found' }, 401)
-  if (freshUser.gens_used + EXTEND_COST > freshUser.gens_limit) {
+  const extUpBonus = freshUser.bonus_credits ?? 0
+  const extUpMain = freshUser.gens_limit - freshUser.gens_used
+  if (extUpMain + extUpBonus < EXTEND_COST) {
     return c.json({
-      error: `Not enough points. Extend costs ${EXTEND_COST} points and you only have ${freshUser.gens_limit - freshUser.gens_used} remaining.`,
+      error: `Not enough points. Extend costs ${EXTEND_COST} points and you only have ${Math.max(0, extUpMain + extUpBonus)} remaining.`,
       code: 'insufficient_credits'
     }, 402)
   }
-  await c.env.DB.prepare(
-    `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
-  ).bind(EXTEND_COST, user.id).run()
+  if (extUpBonus >= EXTEND_COST) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(EXTEND_COST, user.id).run()
+  } else if (extUpBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(EXTEND_COST - extUpBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(EXTEND_COST, user.id).run()
+  }
 
   try {
     // upload_audio_id is now always the full R2 proxy URL returned by /api/upload-extend-audio
@@ -3983,19 +4017,25 @@ app.post('/api/job/extend', async (c) => {
   // ── credit deduction ──────────────────────────────────────────────────
   const EXTEND_COST = 15
   const freshUser = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number }>()
+    `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
   if (!freshUser) return c.json({ error: 'User not found' }, 401)
-  if (freshUser.gens_used + EXTEND_COST > freshUser.gens_limit) {
+  const extLibBonus = freshUser.bonus_credits ?? 0
+  const extLibMain = freshUser.gens_limit - freshUser.gens_used
+  if (extLibMain + extLibBonus < EXTEND_COST) {
     return c.json({
-      error: `Not enough points. Extend costs ${EXTEND_COST} points and you only have ${freshUser.gens_limit - freshUser.gens_used} remaining.`,
+      error: `Not enough points. Extend costs ${EXTEND_COST} points and you only have ${Math.max(0, extLibMain + extLibBonus)} remaining.`,
       code: 'insufficient_credits'
     }, 402)
   }
-  // Deduct up-front so concurrent requests can't race
-  await c.env.DB.prepare(
-    `UPDATE users SET gens_used = gens_used + ? WHERE id = ?`
-  ).bind(EXTEND_COST, user.id).run()
+  // Deduct up-front so concurrent requests can't race — bonus first
+  if (extLibBonus >= EXTEND_COST) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(EXTEND_COST, user.id).run()
+  } else if (extLibBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(EXTEND_COST - extLibBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(EXTEND_COST, user.id).run()
+  }
 
   const isInstrumental = make_instrumental === true
 
@@ -4946,12 +4986,11 @@ app.get('/api/admin/stats', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
   await ensureAuthTables(c.env.DB)
-  const [usersRow, jobsRow, promoRow] = await Promise.all([
+  const [usersRow, jobsRow] = await Promise.all([
     c.env.DB.prepare(`SELECT COUNT(*) as total, SUM(CASE WHEN plan='pro' THEN 1 ELSE 0 END) as pro_count, SUM(CASE WHEN plan='creator' THEN 1 ELSE 0 END) as creator_count, SUM(CASE WHEN plan='free' THEN 1 ELSE 0 END) as free_count FROM users`).first<any>(),
     c.env.DB.prepare(`SELECT COUNT(*) as total FROM jobs`).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(*) as total FROM promo_codes WHERE active=1`).first<any>(),
   ])
-  return c.json({ users: usersRow, jobs: jobsRow, promos: promoRow })
+  return c.json({ users: usersRow, jobs: jobsRow })
 })
 
 // GET /api/admin/users — list all users
@@ -4961,7 +5000,7 @@ app.get('/api/admin/users', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
   await ensureAuthTables(c.env.DB)
-  const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,account_locked,lock_reason,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
+  const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
   return c.json({ users: rows.results || [] })
 })
 
@@ -4987,12 +5026,12 @@ app.post('/api/admin/user/add-credits', async (c) => {
   if (!user_id) return c.json({ error: 'Missing user_id' }, 400)
   const amt = parseInt(amount)
   if (!amt || isNaN(amt)) return c.json({ error: 'Invalid amount' }, 400)
-  // Fetch current values so we can return them
-  const before = await c.env.DB.prepare(`SELECT gens_used, gens_limit FROM users WHERE id=?`).bind(user_id).first<{gens_used:number,gens_limit:number}>()
+  // Fetch current values so we can return them — admin-added credits go to bonus_credits
+  const before = await c.env.DB.prepare(`SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`).bind(user_id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
   if (!before) return c.json({ error: 'User not found' }, 404)
-  const newLimit = before.gens_limit + amt
-  await c.env.DB.prepare(`UPDATE users SET gens_limit=? WHERE id=?`).bind(newLimit, user_id).run()
-  return c.json({ ok: true, gens_limit: newLimit, gens_used: before.gens_used, remaining: newLimit - before.gens_used })
+  const newBonus = (before.bonus_credits ?? 0) + amt
+  await c.env.DB.prepare(`UPDATE users SET bonus_credits=? WHERE id=?`).bind(newBonus, user_id).run()
+  return c.json({ ok: true, bonus_credits: newBonus, gens_used: before.gens_used, gens_limit: before.gens_limit, remaining: (before.gens_limit - before.gens_used) + newBonus })
 })
 
 // POST /api/admin/user/lock — lock or unlock a user account
@@ -5624,14 +5663,22 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     return c.json({ error: 'One Shot Creator requires the Pro Artist plan.', upgrade: true }, 403)
   }
 
-  // Deduct 5 pts before generation (refunded on hard API error)
+  // Deduct 10 pts before generation (refunded on hard API error) — bonus first
   const SFX_COST = 10
   if (c.env.DB) {
-    const fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number}>()
-    if (!fresh || fresh.gens_used + SFX_COST > fresh.gens_limit) {
-      return c.json({ error: `Not enough points. One Shot Creator costs ${SFX_COST} points and you only have ${fresh ? Math.max(0, fresh.gens_limit - fresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
+    const fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
+    const sfxBonus = fresh?.bonus_credits ?? 0
+    const sfxMain = fresh ? (fresh.gens_limit - fresh.gens_used) : 0
+    if (!fresh || sfxMain + sfxBonus < SFX_COST) {
+      return c.json({ error: `Not enough points. One Shot Creator costs ${SFX_COST} points and you only have ${Math.max(0, sfxMain + sfxBonus)} remaining.`, limit_reached: true }, 403)
     }
-    await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
+    if (sfxBonus >= SFX_COST) {
+      await c.env.DB.prepare('UPDATE users SET bonus_credits = bonus_credits - ? WHERE id=?').bind(SFX_COST, user.id).run()
+    } else if (sfxBonus > 0) {
+      await c.env.DB.prepare('UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?').bind(SFX_COST - sfxBonus, user.id).run()
+    } else {
+      await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
+    }
   }
 
   const { prompt, duration_seconds } = await c.req.json<{ prompt: string; duration_seconds?: number }>()
@@ -5904,7 +5951,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.44.js"></script>
+<script src="/static/app.v2.45.js"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -5998,6 +6045,19 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
+    <!-- Get More Credits — inside nav, below Feedback, logged-in only -->
+    <a href="/subscription" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" style="
+      display:none;
+      background:linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10));
+      border:1px solid rgba(78,159,255,.25);
+      color:#4e9fff;font-weight:700;
+      transition:background .15s,border-color .15s;
+      text-decoration:none;
+    " onmouseover="this.style.borderColor='rgba(78,159,255,.5)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.15))'" onmouseout="this.style.borderColor='rgba(78,159,255,.25)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10))'">
+      <i class="fas fa-plus-circle" style="width:18px;text-align:center;flex-shrink:0;color:#4e9fff"></i>
+      <span class="nav-label-full">Get More Credits</span>
+      <span class="nav-label-short" style="display:none">Credits</span>
+    </a>
     <!-- Admin link — only shown to developer/admin plan via JS -->
     <a href="/admin" class="gs-sidebar__nav-item gs-sidebar__nav-item--admin" data-page="admin" id="sidebar-admin-link" style="display:none">
       <i class="fas fa-shield-alt" style="color:#a78bfa"></i>
@@ -6029,25 +6089,6 @@ function globalSidebar() {
       display:none;flex-shrink:0;
     ">NEW</span>
   </button>
-
-  <!-- Get More Credits button — only shown when logged in -->
-  <a href="/subscription" id="sidebar-get-credits-btn" style="
-    display:none;
-    background:linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10));
-    border:1px solid rgba(78,159,255,.25);
-    width:calc(100% - 24px);
-    margin:0 12px 10px;
-    text-align:left;cursor:pointer;position:relative;
-    padding:9px 12px;border-radius:10px;
-    color:#4e9fff;font-size:.82rem;font-weight:700;
-    text-decoration:none;
-    align-items:center;gap:8px;
-    transition:background .15s,border-color .15s;
-  " onmouseover="this.style.borderColor='rgba(78,159,255,.5)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.15))'" onmouseout="this.style.borderColor='rgba(78,159,255,.25)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10))'">
-    <i class="fas fa-plus-circle" style="width:18px;text-align:center;flex-shrink:0"></i>
-    <span class="nav-label-full">Get More Credits</span>
-    <span class="nav-label-short" style="display:none">Credits</span>
-  </a>
 
   <!-- What's New Modal (rendered here, shown via JS) -->
   <div id="whats-new-overlay" style="
@@ -6108,9 +6149,17 @@ function globalSidebar() {
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
-    <div class="gs-credits__label" id="gs-credits-label">Points</div>
-    <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
-    <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
+    <!-- Main Credits block -->
+    <div style="margin-bottom:0px">
+      <div class="gs-credits__label" id="gs-credits-label" style="font-size:.65rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Main Credits</div>
+      <div class="gs-credits__val" id="gs-gens-val" style="font-size:1.35rem;font-weight:800;color:var(--primary);line-height:1.1">0 <small style="font-size:.7rem;font-weight:500;color:var(--muted)">available now</small></div>
+      <div class="gs-credits__bar" style="margin-top:5px"><div id="gs-gens-bar" style="width:0%"></div></div>
+    </div>
+    <!-- Extra Credits block (bonus — shown only when > 0) -->
+    <div id="gs-bonus-block" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border10)">
+      <div style="font-size:.65rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-bottom:3px">Extra Credits</div>
+      <div id="gs-bonus-val" style="font-size:1.15rem;font-weight:800;color:#e2e8f0;line-height:1.1">0 <small style="font-size:.68rem;font-weight:500;color:var(--muted)">bonus</small></div>
+    </div>
   </div>
 
   <!-- Bottom links -->
@@ -7634,7 +7683,6 @@ function pricingPage() {
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
@@ -8675,7 +8723,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
           <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
           <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+
           <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track upload</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -9113,7 +9161,6 @@ function adminPage(user: User) {
       <button class="admin-tab admin-tab--active" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
-      <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
       <button class="admin-tab" data-tab="elevenlabs" onclick="adminTab('elevenlabs')"><i class="fas fa-bolt" style="color:#f59e0b"></i> ElevenLabs</button>
     </div>
 
@@ -9232,26 +9279,7 @@ function adminPage(user: User) {
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- PROMOS TAB                                                -->
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <div id="admin-tab-promos" style="display:none">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
-        <h3 style="margin-bottom:16px"><i class="fas fa-plus-circle" style="color:var(--primary)"></i> Create Promo Code</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div><label style="font-size:.85rem;color:var(--muted)">Code *</label><input id="new-code" type="text" placeholder="WELCOME20" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"/></div>
-          <div><label style="font-size:.85rem;color:var(--muted)">Description</label><input id="new-desc" type="text" placeholder="20% off for new users" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
-          <div><label style="font-size:.85rem;color:var(--muted)">Bonus Points</label><input id="new-credits" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
-          <div><label style="font-size:.85rem;color:var(--muted)">Max Uses (0=unlimited)</label><input id="new-maxuses" type="number" value="0" min="0" style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"/></div>
-          <div style="grid-column:1/-1"><label style="font-size:.85rem;color:var(--muted)">Terms &amp; Conditions shown to user</label><textarea id="new-terms" rows="2" placeholder="Valid for new users only. One use per account." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text)"></textarea></div>
-        </div>
-        <div style="margin-top:12px;display:flex;gap:10px">
-          <button class="btn btn--primary" onclick="createPromo()"><i class="fas fa-plus"></i> Create Code</button>
-          <span id="promo-create-status" style="color:var(--muted);align-self:center;font-size:.9rem"></span>
-        </div>
-      </div>
-      <div id="admin-promos-list"><p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p></div>
-    </div>
+    <!-- PROMOS TAB REMOVED -->
 
     <!-- ══════════════════════════════════════════════════════════ -->
     <!-- ELEVENLABS CREDITS TAB                                    -->
@@ -9316,14 +9344,17 @@ function adminPage(user: User) {
 <script>
 // ── Load global stats ──────────────────────────────────────
 (async()=>{
-  const res = await fetch('/api/admin/stats');
-  const data = await res.json();
-  if(data.users){ document.getElementById('stat-users').textContent=data.users.total||0; document.getElementById('stat-pro').textContent=data.users.pro_count||0; document.getElementById('stat-creator').textContent=data.users.creator_count||0; }
-  if(data.jobs){ document.getElementById('stat-jobs').textContent=data.jobs.total||0; }
+  try {
+    const res = await fetch('/api/admin/stats');
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    if(data.users){ document.getElementById('stat-users').textContent=data.users.total||0; document.getElementById('stat-pro').textContent=data.users.pro_count||0; document.getElementById('stat-creator').textContent=data.users.creator_count||0; }
+    if(data.jobs){ document.getElementById('stat-jobs').textContent=data.jobs.total||0; }
+  } catch(e) { console.warn('[admin stats]', e); }
 })();
 
 // ── Tab switcher ───────────────────────────────────────────
-const adminTabs = ['analytics','revenue','users','promos','elevenlabs'];
+const adminTabs = ['analytics','revenue','users','elevenlabs'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(t=>t.classList.remove('admin-tab--active'));
   const btn = document.querySelector(\`[data-tab="\${tab}"]\`);
@@ -9332,7 +9363,7 @@ function adminTab(tab){
   if(tab==='analytics' && !window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue' && !window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users' && !window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
-  if(tab==='promos' && !window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
+  // promos tab removed
   if(tab==='elevenlabs'){ loadElevenLabsCredits(); }
 }
 
@@ -9526,10 +9557,11 @@ async function loadUsers(){
   const data = await res.json();
   const el = document.getElementById('admin-users-list');
   if(!data.users?.length){el.innerHTML='<p style="color:var(--muted)">No users yet.</p>';return;}
-  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Actions</th></tr></thead><tbody>'+
+  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Extra</th><th>Actions</th></tr></thead><tbody>'+
     data.users.map(u=>{
       const rem=Math.max(0,u.gens_limit-u.gens_used);
       const remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981';
+      const bonus = u.bonus_credits || 0;
       const isLocked = u.account_locked === 1;
       const lockBadge = isLocked ? '<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>' : '<span style="color:#10b981;font-size:.75rem">Active</span>';
       return \`<tr style="\${isLocked?'background:rgba(239,68,68,.04)':''}">
@@ -9538,6 +9570,7 @@ async function loadUsers(){
         <td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td>
         <td>\${lockBadge}</td>
         <td style="font-weight:700;color:\${remColor}">\${rem} <small style="font-weight:400;color:var(--muted)">/ \${u.gens_limit}</small></td>
+        <td style="font-weight:700;color:\${bonus>0?'#a78bfa':'var(--muted)'}">\${bonus>0?'+'+bonus:'—'}</td>
         <td style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
           <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.75rem">Edit Plan</button>
           <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.75rem">+Credits</button>

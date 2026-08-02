@@ -467,6 +467,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const gsCredits   = document.getElementById('gs-credits-block');
       const gsGensVal   = document.getElementById('gs-gens-val');
       const gsGensBar   = document.getElementById('gs-gens-bar');
+      const gsBonusBlock = document.getElementById('gs-bonus-block');
+      const gsBonusVal   = document.getElementById('gs-bonus-val');
 
       if (gsUserBlock) gsUserBlock.style.display = 'flex';
       if (gsCredits) gsCredits.style.display = 'block';
@@ -499,7 +501,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const whatsNewBtn = document.getElementById('sidebar-whats-new-btn');
       if (whatsNewBtn) whatsNewBtn.style.display = 'flex';
       const getCreditsBtn = document.getElementById('sidebar-get-credits-btn');
-      if (getCreditsBtn) getCreditsBtn.style.display = 'flex';
+      if (getCreditsBtn) getCreditsBtn.style.display = 'flex'; // show inside nav
       // Re-check badge now that button is visible
       if (typeof window._sfCheckWhatsNewBadge === 'function') window._sfCheckWhatsNewBadge();
 
@@ -524,12 +526,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const limitMap = { free: 50, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
       const remaining = Math.max(0, displayLimit - user.gens_used);
-      if (creditsLabel) creditsLabel.textContent = 'Points Remaining';
-      if (gsGensVal) gsGensVal.innerHTML = `${remaining} <small>/ ${displayLimit}</small>`;
+      const bonusCreds = user.bonus_credits || 0;
+      if (gsGensVal) gsGensVal.innerHTML = `${remaining} <small style="font-size:.7rem;font-weight:500;color:var(--muted)">available now</small>`;
       if (gsGensBar) {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         gsGensBar.style.width = pct + '%';
       }
+      // Show Extra Credits block if bonus > 0
+      if (gsBonusBlock) gsBonusBlock.style.display = bonusCreds > 0 ? 'block' : 'none';
+      if (gsBonusVal) gsBonusVal.innerHTML = `${bonusCreds} <small style="font-size:.68rem;font-weight:500;color:var(--muted)">bonus</small>`;
 
       // ── Sidebar user dropdown toggle ──────────────────────────
       const gsUserBtn      = document.getElementById('gs-user-btn');
@@ -6103,12 +6108,12 @@ window.renderEditInstrumentPills = function (bp) {
       var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
       if (!file) return;
       var ext = (file.name || '').split('.').pop().toLowerCase();
-      var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3';
-      var extOk  = ext === 'mp3';
+      var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3' || file.type === 'audio/wav' || file.type === 'audio/wave' || file.type === 'audio/x-wav';
+      var extOk  = ext === 'mp3' || ext === 'wav';
       if (!mimeOk && !extOk) {
         var errEl = document.getElementById('ext-upload-error');
         if (errEl) {
-          errEl.textContent = 'Only MP3 files are supported. Please convert your file to MP3 first.';
+          errEl.textContent = 'Only MP3 or WAV files are supported.';
           errEl.style.display = 'block';
         }
         return;
@@ -6136,14 +6141,14 @@ window.renderEditInstrumentPills = function (bp) {
   window.extHandleFileSelect = function(input) {
     var file = input && input.files && input.files[0];
     if (!file) return;
-    // Validate MP3 only — WAV/FLAC are not supported by Mureka's audio upload endpoint
+    // Validate MP3 or WAV
     var ext = (file.name || '').split('.').pop().toLowerCase();
-    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3';
-    var extOk  = ext === 'mp3';
+    var mimeOk = file.type === 'audio/mpeg' || file.type === 'audio/mp3' || file.type === 'audio/wav' || file.type === 'audio/wave' || file.type === 'audio/x-wav';
+    var extOk  = ext === 'mp3' || ext === 'wav';
     if (!mimeOk && !extOk) {
       var errEl = document.getElementById('ext-upload-error');
       if (errEl) {
-        errEl.textContent = 'Only MP3 files are supported. Please convert your file to MP3 first.';
+        errEl.textContent = 'Only MP3 or WAV files are supported.';
         errEl.style.display = 'block';
       }
       // Reset the input so user can try again
@@ -6200,7 +6205,13 @@ window.renderEditInstrumentPills = function (bp) {
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (data.error) throw new Error(data.error);
-        // MusicAPI /sonic/upload is SYNC — returns clip_id directly (no polling needed)
+        // R2 proxy flow — backend returns audio_url directly (current flow)
+        if (data.audio_url || data.status === 'ready') {
+          extUploadAudioId = data.audio_url || data.clip_id;
+          setExtZoneState('done', name);
+          return;
+        }
+        // Legacy: clip_id returned directly
         if (data.clip_id) {
           extUploadAudioId = data.clip_id;
           setExtZoneState('done', name);
@@ -6213,7 +6224,7 @@ window.renderEditInstrumentPills = function (bp) {
           _extPollUploadTask(taskId, name, 0);
           return;
         }
-        throw new Error('Upload failed — no clip_id returned. Please try again.');
+        throw new Error('Upload failed — please try again.');
       })
       .catch(function(err) {
         setExtZoneState('idle');
@@ -6628,8 +6639,12 @@ window.renderEditInstrumentPills = function (bp) {
         });
         gridEl.innerHTML = html;
         // Update the tab badge count (show total including in-progress)
-        var badge = document.querySelector('.lib-tab[data-tab="extended"] .lib-tab-count');
-        if (badge) badge.textContent = projects.length;
+        var extBtn = document.querySelector('.lib-tab[data-tab="extended"]');
+        if (extBtn) {
+          var badge = extBtn.querySelector('.lib-tab-count');
+          if (!badge) { badge = document.createElement('span'); badge.className = 'lib-tab-count'; extBtn.appendChild(badge); }
+          badge.textContent = projects.length;
+        }
         // Make sure the extended panel is visible
         var panel = document.getElementById('lib-panel-extended');
         if (panel && panel.style.display === 'none') panel.style.display = '';
