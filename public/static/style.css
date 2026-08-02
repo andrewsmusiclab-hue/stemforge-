@@ -1360,6 +1360,8 @@ p  { color: var(--sub); }
 .sub-stat:last-child { border-right: none; }
 .sub-stat__label { font-size: .75rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .sub-stat__val { font-size: 1rem; font-weight: 700; }
+.sub-stat__bonus { display:inline-flex; align-items:center; gap:4px; margin-top:4px; font-size:.72rem; font-weight:700; color:#f59e0b; background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.25); border-radius:999px; padding:2px 8px; }
+.sub-stat__bonus i { font-size:.6rem; }
 .sub-stat--manage { position: relative; }
 .sub-manage-dropdown {
   position: absolute; top: calc(100% - 8px); left: 24px;
@@ -2280,6 +2282,27 @@ body.light .legal-body td {
   background: var(--primary);
   border-radius: 4px;
   transition: width .5s ease;
+}
+/* Bonus credits section */
+.gs-credits__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 10px 0 8px;
+  opacity: .6;
+}
+.gs-credits__bonus-label {
+  color: #f59e0b !important;
+}
+.gs-credits__bonus-val {
+  font-size: .95rem;
+  font-weight: 700;
+  color: #fcd34d;
+  margin-top: 2px;
+}
+.gs-credits__bonus-val small {
+  font-size: .72rem;
+  color: #d97706;
+  font-weight: 400;
 }
 
 /* Footer links */

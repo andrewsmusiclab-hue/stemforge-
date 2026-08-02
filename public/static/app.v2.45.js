@@ -4,6 +4,23 @@
 ═══════════════════════════════════════════════════════════════ */
 
 /**
+ * _sfUpdateSidebarBonus(bonusCredits)
+ * Shows/hides the bonus points row in the sidebar credits widget.
+ * Bonus points are purchased top-up credits (consumed FIRST before subscription points).
+ */
+window._sfUpdateSidebarBonus = function(bonusCredits) {
+  const row = document.getElementById('gs-bonus-row');
+  const val = document.getElementById('gs-bonus-val');
+  if (!row) return;
+  if (bonusCredits > 0) {
+    row.style.display = 'block';
+    if (val) val.innerHTML = `${bonusCredits} <small>bonus</small>`;
+  } else {
+    row.style.display = 'none';
+  }
+};
+
+/**
  * safeJson(res) — safely parse a fetch Response as JSON.
  * If the body is not valid JSON (e.g. Cloudflare "Internal Server Error" plain text),
  * returns { error: <status text>, _raw: <body text> } instead of throwing.
@@ -530,6 +547,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
         gsGensBar.style.width = pct + '%';
       }
+      // Show bonus points row
+      window._sfUpdateSidebarBonus(user.bonus_credits || 0);
 
       // ── Sidebar user dropdown toggle ──────────────────────────
       const gsUserBtn      = document.getElementById('gs-user-btn');
@@ -2661,6 +2680,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0;
                 gb.style.width = pct + '%';
               }
+              window._sfUpdateSidebarBonus(user.bonus_credits || 0);
             }).catch(() => {});
             // Show 3-dot edit button on result
             const dotsBtn = document.getElementById('gen-result-dots');
@@ -3876,7 +3896,7 @@ window.generateOneshotSfx = async function() {
     // Refresh sidebar points
     fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
       if (!user) return;
-      if (window._sfUser) { window._sfUser.gens_used = user.gens_used; window._sfUser.gens_limit = user.gens_limit; }
+      if (window._sfUser) { window._sfUser.gens_used = user.gens_used; window._sfUser.gens_limit = user.gens_limit; window._sfUser.bonus_credits = user.bonus_credits || 0; }
       const gv = document.getElementById('gs-gens-val');
       const gb = document.getElementById('gs-gens-bar');
       const cl = document.getElementById('gs-credits-label');
@@ -3886,6 +3906,7 @@ window.generateOneshotSfx = async function() {
       if (cl) cl.textContent = 'Points Remaining';
       if (gv) gv.innerHTML = `${remaining} <small>/ ${displayLimit}</small>`;
       if (gb) { const pct = user.gens_limit > 0 ? Math.min(100, Math.round(user.gens_used / user.gens_limit * 100)) : 0; gb.style.width = pct + '%'; }
+      window._sfUpdateSidebarBonus(user.bonus_credits || 0);
     }).catch(() => {});
 
   } catch(err) {

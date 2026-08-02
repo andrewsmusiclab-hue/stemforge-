@@ -6304,9 +6304,18 @@ function globalSidebar() {
 
   <!-- Generation credits (shown when logged in) -->
   <div class="gs-sidebar__credits" id="gs-credits-block" style="display:none">
-    <div class="gs-credits__label" id="gs-credits-label">Points</div>
+    <!-- Main subscription points row -->
+    <div class="gs-credits__label" id="gs-credits-label">Points Remaining</div>
     <div class="gs-credits__val" id="gs-gens-val">0 <small>/ 3</small></div>
     <div class="gs-credits__bar"><div id="gs-gens-bar" style="width:0%"></div></div>
+    <!-- Bonus points row (only visible when bonus_credits > 0) -->
+    <div id="gs-bonus-row" style="display:none">
+      <div class="gs-credits__divider"></div>
+      <div class="gs-credits__label gs-credits__bonus-label">
+        <i class="fas fa-bolt" style="color:#f59e0b;margin-right:4px;font-size:.65rem"></i>Bonus Points
+      </div>
+      <div class="gs-credits__bonus-val" id="gs-bonus-val">0 <small>bonus</small></div>
+    </div>
   </div>
 
   <!-- Bottom links -->
@@ -8685,6 +8694,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <div class="sub-stat">
         <span class="sub-stat__label">Points Remaining</span>
         <span class="sub-stat__val" id="sub-remaining-val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit}</span>
+        ${user.bonus_credits > 0 ? `<span class="sub-stat__bonus" id="sub-bonus-val"><i class="fas fa-bolt"></i> ${user.bonus_credits} bonus pts</span>` : `<span class="sub-stat__bonus" id="sub-bonus-val" style="display:none"></span>`}
       </div>
 
     </div>
