@@ -422,14 +422,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (overlay) overlay.style.display = 'none';
   };
   // Show NEW badge if user hasn't seen latest entry
-  (function() {
-    const seen = localStorage.getItem(WHATS_NEW_KEY);
+  // (runs on DOMContentLoaded so element is guaranteed present)
+  window._sfCheckWhatsNewBadge = function() {
+    const seen   = localStorage.getItem(WHATS_NEW_KEY);
     const latest = window._sfWhatsNewEntries[0]?.date || '';
     if (seen !== latest) {
       const badge = document.getElementById('whats-new-badge');
-      if (badge) badge.style.display = 'inline-block';
+      if (badge) badge.style.display = 'inline-flex';
     }
-  })();
+  };
+  window._sfCheckWhatsNewBadge();
 
   // ── Show IP-blocked error on signup/register pages ────────────
   if (window.location.pathname === '/signup' || window.location.pathname === '/register') {
@@ -492,6 +494,29 @@ document.addEventListener('DOMContentLoaded', () => {
       if (user.plan === 'developer') {
         const adminLink = document.getElementById('sidebar-admin-link');
         if (adminLink) adminLink.style.display = 'flex';
+      }
+      // Show What's New button + Get More Credits (logged-in only)
+      const whatsNewBtn = document.getElementById('sidebar-whats-new-btn');
+      if (whatsNewBtn) whatsNewBtn.style.display = 'flex';
+      const getCreditsBtn = document.getElementById('sidebar-get-credits-btn');
+      if (getCreditsBtn) getCreditsBtn.style.display = 'flex';
+      // Re-check badge now that button is visible
+      if (typeof window._sfCheckWhatsNewBadge === 'function') window._sfCheckWhatsNewBadge();
+
+      // ── Account locked overlay ────────────────────────────────
+      if (user.account_locked) {
+        const overlay = document.getElementById('account-locked-overlay');
+        if (overlay) {
+          // Populate reason text
+          const reasonEl = document.getElementById('lock-reason-text');
+          if (reasonEl && user.lock_reason) reasonEl.textContent = user.lock_reason;
+          // Pre-fill support email with user's email
+          const mailLink = overlay.querySelector('a[href^="mailto:"]');
+          if (mailLink && user.email) {
+            mailLink.href = mailLink.href + encodeURIComponent(user.email);
+          }
+          overlay.style.display = 'flex';
+        }
       }
       // Show remaining points clearly: "X pts remaining" with used/limit below
       const plan = user.plan || 'free';
@@ -6231,31 +6256,36 @@ window.renderEditInstrumentPills = function (bp) {
   // ── Draw waveform on canvas using Web Audio API ───────────────────────────
   function extDrawWaveform(file) {
     var canvas = document.getElementById('ext-waveform-canvas');
-    if (!canvas || !window.AudioContext && !window.webkitAudioContext) {
+    if (!canvas || (!window.AudioContext && !window.webkitAudioContext)) {
       extDrawFlatWaveform();
       return;
     }
     var reader = new FileReader();
     reader.onload = function(e) {
-      var ctx = new (window.AudioContext || window.webkitAudioContext)();
-      ctx.decodeAudioData(e.target.result, function(buffer) {
-        // Downsample to canvas width for peaks
-        var W = canvas.offsetWidth || 300;
-        canvas.width = W * window.devicePixelRatio || W;
+      var actx = new (window.AudioContext || window.webkitAudioContext)();
+      actx.decodeAudioData(e.target.result.slice(0), function(buffer) {
+        // Downsample to bar count for peaks
+        var dpr  = window.devicePixelRatio || 1;
+        var W    = Math.round((canvas.offsetWidth || 300) * dpr);
+        var H    = Math.round((canvas.offsetHeight || 54) * dpr);
+        canvas.width  = W;
+        canvas.height = H;
+        // Use 3px bar pitch (same as stem player)
+        var n    = Math.floor(W / 3);
         var data = buffer.getChannelData(0);
-        var step = Math.floor(data.length / W);
-        var peaks = new Float32Array(W);
-        for (var i = 0; i < W; i++) {
+        var step = Math.max(1, Math.floor(data.length / n));
+        var peaks = new Float32Array(n);
+        for (var i = 0; i < n; i++) {
           var max = 0;
           for (var j = 0; j < step; j++) {
-            var v = Math.abs(data[i * step + j]);
+            var v = Math.abs(data[i * step + j] || 0);
             if (v > max) max = v;
           }
           peaks[i] = max;
         }
         extWaveData = peaks;
         extPaintWaveform(0);
-        ctx.close();
+        actx.close();
       }, function() { extDrawFlatWaveform(); });
     };
     reader.readAsArrayBuffer(file);
@@ -6264,10 +6294,19 @@ window.renderEditInstrumentPills = function (bp) {
   function extDrawFlatWaveform() {
     var canvas = document.getElementById('ext-waveform-canvas');
     if (!canvas) return;
-    var W = canvas.offsetWidth || 300;
-    canvas.width = W;
-    var peaks = new Float32Array(W);
-    for (var i = 0; i < W; i++) peaks[i] = 0.3 + 0.5 * Math.random();
+    var dpr = window.devicePixelRatio || 1;
+    var W   = Math.round((canvas.offsetWidth || 300) * dpr);
+    canvas.width  = W;
+    canvas.height = Math.round(canvas.offsetHeight || 54) * dpr;
+    // Smooth pseudo-waveform (sin + noise, looks realistic)
+    var n     = Math.floor(W / 3);
+    var peaks = new Float32Array(n);
+    var phase = Math.random() * Math.PI * 2;
+    for (var i = 0; i < n; i++) {
+      var t   = i / n;
+      var env = Math.sin(Math.PI * t);   // fade in+out at edges
+      peaks[i] = env * (0.35 + 0.45 * Math.abs(Math.sin(t * 18 + phase)) + 0.2 * Math.random());
+    }
     extWaveData = peaks;
     extPaintWaveform(0);
   }
@@ -6275,19 +6314,63 @@ window.renderEditInstrumentPills = function (bp) {
   function extPaintWaveform(progress) {
     var canvas = document.getElementById('ext-waveform-canvas');
     if (!canvas || !extWaveData) return;
+    var dpr = window.devicePixelRatio || 1;
     var W = canvas.width;
     var H = canvas.height;
     var ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, W, H);
+
+    // ── Match stem player style: rounded bars, gradient fill ──
+    var n     = extWaveData.length;
+    var gap   = Math.max(1, Math.floor(W / n * 0.18));
+    var barW  = Math.max(1, Math.floor(W / n) - gap);
     var split = Math.floor(progress * W);
-    for (var i = 0; i < extWaveData.length; i++) {
-      var amp = extWaveData[i];
-      var barH = Math.max(3, amp * H * 0.85);
-      var x = Math.floor((i / extWaveData.length) * W);
-      ctx.fillStyle = (i < split)
-        ? 'rgba(78,159,255,0.85)'
-        : 'rgba(255,255,255,0.18)';
-      ctx.fillRect(x, (H - barH) / 2, Math.max(1, W / extWaveData.length - 1), barH);
+
+    // Played gradient (cyan-blue)
+    var gradPlayed = ctx.createLinearGradient(0, 0, 0, H);
+    gradPlayed.addColorStop(0,   'rgba(79,195,247,1.0)');
+    gradPlayed.addColorStop(0.5, 'rgba(78,159,255,0.85)');
+    gradPlayed.addColorStop(1,   'rgba(78,159,255,0.5)');
+
+    // Unplayed gradient (white muted)
+    var gradRest = ctx.createLinearGradient(0, 0, 0, H);
+    gradRest.addColorStop(0,   'rgba(255,255,255,0.30)');
+    gradRest.addColorStop(0.5, 'rgba(255,255,255,0.18)');
+    gradRest.addColorStop(1,   'rgba(255,255,255,0.10)');
+
+    for (var i = 0; i < n; i++) {
+      var amp  = extWaveData[i];
+      // Taller bars — 90% max height, 4px min
+      var barH = Math.max(4, amp * H * 0.90);
+      var x    = Math.floor((i / n) * W);
+      var y    = Math.floor((H - barH) / 2);
+      var r    = Math.min(barW / 2, 3); // corner radius
+
+      ctx.fillStyle = (x < split) ? gradPlayed : gradRest;
+
+      // Rounded rect
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, barW, barH, r);
+        ctx.fill();
+      } else {
+        ctx.fillRect(x, y, barW, barH);
+      }
+    }
+
+    // ── Extend-marker line (where user set the split point) ──
+    if (extExtendAtMs > 0 && extAudioDuration > 0) {
+      var markerPct = extExtendAtMs / (extAudioDuration * 1000);
+      var mx = Math.floor(markerPct * W);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(245,158,11,0.9)';
+      ctx.lineWidth   = 2 * dpr;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(mx, 0);
+      ctx.lineTo(mx, H);
+      ctx.stroke();
+      ctx.restore();
     }
   }
 

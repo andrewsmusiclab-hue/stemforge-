@@ -113,6 +113,8 @@ interface User {
   gens_limit: number
   stripe_customer_id?: string
   stripe_subscription_id?: string
+  account_locked?: number   // 1 = locked, 0/null = active
+  lock_reason?: string
   created_at: number
 }
 
@@ -199,6 +201,15 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
 
   // ── Migrate: add registration_ip column if missing (idempotent) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN registration_ip TEXT`).run() } catch {}
+  // ── Migrate: add account_locked + lock_reason columns (idempotent) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN account_locked INTEGER NOT NULL DEFAULT 0`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN lock_reason TEXT`).run() } catch {}
+  // ── Lock specific policy-violating accounts (idempotent) ──
+  try {
+    await db.prepare(
+      `UPDATE users SET account_locked=1, lock_reason='Duplicate account — your household already has a free StemForge account. Only one free account is allowed per household. Contact support@stemforge.studio to appeal.' WHERE email='miriamsreality@gmail.com' AND account_locked=0`
+    ).run()
+  } catch {}
 
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
   // Free users with old download-era limit → 50 pts
@@ -279,6 +290,8 @@ async function getSessionUser(db: D1Database, token: string): Promise<User | nul
       plan: row.plan, gens_used: row.gens_used, gens_limit: row.gens_limit,
       stripe_customer_id: row.stripe_customer_id,
       stripe_subscription_id: row.stripe_subscription_id,
+      account_locked: row.account_locked ?? 0,
+      lock_reason: row.lock_reason ?? null,
       created_at: row.created_at
     }
   } catch { return null }
@@ -2954,8 +2967,8 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null }>()
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
   return c.json({
@@ -2964,7 +2977,9 @@ app.get('/api/auth/me', async (c) => {
       avatar: user.avatar,
       plan: fresh?.plan ?? user.plan,
       gens_used: fresh?.gens_used ?? user.gens_used,
-      gens_limit: fresh?.gens_limit ?? user.gens_limit
+      gens_limit: fresh?.gens_limit ?? user.gens_limit,
+      account_locked: fresh?.account_locked ?? 0,
+      lock_reason: fresh?.lock_reason ?? null
     }
   })
 })
@@ -4946,7 +4961,7 @@ app.get('/api/admin/users', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
   await ensureAuthTables(c.env.DB)
-  const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
+  const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,account_locked,lock_reason,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
   return c.json({ users: rows.results || [] })
 })
 
@@ -4978,6 +4993,33 @@ app.post('/api/admin/user/add-credits', async (c) => {
   const newLimit = before.gens_limit + amt
   await c.env.DB.prepare(`UPDATE users SET gens_limit=? WHERE id=?`).bind(newLimit, user_id).run()
   return c.json({ ok: true, gens_limit: newLimit, gens_used: before.gens_used, remaining: newLimit - before.gens_used })
+})
+
+// POST /api/admin/user/lock — lock or unlock a user account
+app.post('/api/admin/user/lock', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const { user_id, locked, reason } = await c.req.json<any>()
+  if (!user_id) return c.json({ error: 'Missing user_id' }, 400)
+  await c.env.DB.prepare(`UPDATE users SET account_locked=?, lock_reason=? WHERE id=?`)
+    .bind(locked ? 1 : 0, locked ? (reason || 'Account disabled by admin') : null, user_id).run()
+  return c.json({ ok: true, locked: !!locked })
+})
+
+// DELETE /api/admin/user/:id — permanently delete a user account
+app.delete('/api/admin/user/:id', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const adminUser = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(adminUser, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const userId = c.req.param('id')
+  if (!userId) return c.json({ error: 'Missing user id' }, 400)
+  // Delete sessions first, then the user
+  await c.env.DB.prepare(`DELETE FROM sessions WHERE user_id=?`).bind(userId).run()
+  const result = await c.env.DB.prepare(`DELETE FROM users WHERE id=?`).bind(userId).run()
+  return c.json({ ok: true, deleted: result.meta?.changes ?? 0 })
 })
 
 // GET /api/admin/promos — list all promo codes
@@ -5798,7 +5840,71 @@ ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
 </div>
-<script src="/static/app.v2.43.js"></script>
+<!-- Account Locked Overlay — shown globally when account_locked=1 -->
+<div id="account-locked-overlay" style="
+  display:none;position:fixed;inset:0;z-index:999999;
+  background:rgba(0,0,0,.92);backdrop-filter:blur(12px);
+  align-items:center;justify-content:center;padding:24px;
+  font-family:Inter,system-ui,sans-serif;
+">
+  <div style="
+    background:#0d1117;border:1px solid rgba(239,68,68,.35);
+    border-radius:18px;max-width:520px;width:100%;
+    box-shadow:0 40px 100px rgba(0,0,0,.95),0 0 0 1px rgba(239,68,68,.1);
+    overflow:hidden;
+  ">
+    <!-- Red header bar -->
+    <div style="background:linear-gradient(135deg,#7f1d1d,#450a0a);padding:24px 28px 20px;border-bottom:1px solid rgba(239,68,68,.2)">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="width:44px;height:44px;border-radius:12px;background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.4);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-ban" style="color:#ef4444;font-size:1.1rem"></i>
+        </div>
+        <div>
+          <div style="font-size:1.1rem;font-weight:800;color:#fff;letter-spacing:.2px">Account Access Restricted</div>
+          <div style="font-size:.75rem;color:rgba(255,255,255,.5);margin-top:2px">StemForge Account Policy Violation</div>
+        </div>
+      </div>
+    </div>
+    <!-- Body -->
+    <div style="padding:24px 28px">
+      <p style="margin:0 0 14px;font-size:.92rem;color:#e2e8f0;line-height:1.65">
+        Your account has been <strong style="color:#ef4444">disabled</strong> due to a violation of StemForge's
+        <strong>One Account Per Person / Household</strong> policy.
+      </p>
+      <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:14px 16px;margin-bottom:18px">
+        <div style="font-size:.78rem;font-weight:700;color:#ef4444;letter-spacing:.4px;margin-bottom:6px">⚠ REASON</div>
+        <p id="lock-reason-text" style="margin:0;font-size:.84rem;color:#94a3b8;line-height:1.6">
+          Multiple accounts were detected from the same network. Only one free account is permitted per household.
+        </p>
+      </div>
+      <p style="margin:0 0 20px;font-size:.82rem;color:#64748b;line-height:1.6">
+        You can still view your account details but <strong style="color:#cbd5e1">all beat generation, stem splitting, and premium features are disabled</strong>.
+        If you believe this is a mistake, please contact our support team.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a href="mailto:support@stemforge.studio?subject=Account%20Access%20Restricted&body=My%20email%20is%3A%20" style="
+          display:inline-flex;align-items:center;gap:7px;
+          padding:10px 18px;border-radius:9px;
+          background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);
+          color:#4e9fff;font-size:.85rem;font-weight:600;text-decoration:none;
+          transition:background .15s;
+        ">
+          <i class="fas fa-envelope"></i> Contact Support
+        </a>
+        <a href="/logout" style="
+          display:inline-flex;align-items:center;gap:7px;
+          padding:10px 18px;border-radius:9px;
+          background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+          color:#94a3b8;font-size:.85rem;font-weight:600;text-decoration:none;
+        ">
+          <i class="fas fa-sign-out-alt"></i> Log Out
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.v2.44.js"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -5892,18 +5998,6 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- What's New button — opens modal -->
-    <button class="gs-sidebar__nav-item" id="sidebar-whats-new-btn" onclick="window._sfOpenWhatsNew && window._sfOpenWhatsNew()" style="background:none;border:none;width:100%;text-align:left;cursor:pointer;position:relative">
-      <i class="fas fa-star" style="color:#f59e0b"></i>
-      <span class="nav-label-full">What's New</span><span class="nav-label-short">New</span>
-      <span id="whats-new-badge" style="
-        position:absolute;top:6px;right:10px;
-        background:#ef4444;color:#fff;
-        font-size:.55rem;font-weight:800;letter-spacing:.3px;
-        border-radius:999px;padding:1px 5px;
-        display:none;
-      ">NEW</span>
-    </button>
     <!-- Admin link — only shown to developer/admin plan via JS -->
     <a href="/admin" class="gs-sidebar__nav-item gs-sidebar__nav-item--admin" data-page="admin" id="sidebar-admin-link" style="display:none">
       <i class="fas fa-shield-alt" style="color:#a78bfa"></i>
@@ -5913,6 +6007,47 @@ function globalSidebar() {
 
   <!-- Spacer -->
   <div class="gs-sidebar__spacer"></div>
+
+  <!-- What's New button — above credits, below spacer -->
+  <button id="sidebar-whats-new-btn" onclick="window._sfOpenWhatsNew && window._sfOpenWhatsNew()" style="
+    display:none;
+    background:none;border:none;width:calc(100% - 24px);
+    margin:0 12px 4px;
+    text-align:left;cursor:pointer;position:relative;
+    padding:9px 12px;border-radius:10px;
+    color:var(--text);font-size:.85rem;font-weight:600;
+    transition:background .15s;
+    align-items:center;gap:10px;
+  " onmouseover="this.style.background='rgba(255,255,255,.07)'" onmouseout="this.style.background='none'">
+    <i class="fas fa-star" style="color:#f59e0b;width:18px;text-align:center;flex-shrink:0"></i>
+    <span class="nav-label-full" style="flex:1">What's New</span>
+    <span class="nav-label-short" style="flex:1;display:none">New</span>
+    <span id="whats-new-badge" style="
+      background:#ef4444;color:#fff;
+      font-size:.55rem;font-weight:800;letter-spacing:.3px;
+      border-radius:999px;padding:1px 5px;
+      display:none;flex-shrink:0;
+    ">NEW</span>
+  </button>
+
+  <!-- Get More Credits button — only shown when logged in -->
+  <a href="/subscription" id="sidebar-get-credits-btn" style="
+    display:none;
+    background:linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10));
+    border:1px solid rgba(78,159,255,.25);
+    width:calc(100% - 24px);
+    margin:0 12px 10px;
+    text-align:left;cursor:pointer;position:relative;
+    padding:9px 12px;border-radius:10px;
+    color:#4e9fff;font-size:.82rem;font-weight:700;
+    text-decoration:none;
+    align-items:center;gap:8px;
+    transition:background .15s,border-color .15s;
+  " onmouseover="this.style.borderColor='rgba(78,159,255,.5)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.15))'" onmouseout="this.style.borderColor='rgba(78,159,255,.25)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10))'">
+    <i class="fas fa-plus-circle" style="width:18px;text-align:center;flex-shrink:0"></i>
+    <span class="nav-label-full">Get More Credits</span>
+    <span class="nav-label-short" style="display:none">Credits</span>
+  </a>
 
   <!-- What's New Modal (rendered here, shown via JS) -->
   <div id="whats-new-overlay" style="
@@ -8521,6 +8656,38 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         </div>` : ''}
       </div>
     </div>
+
+    <!-- ── Points Cost Reference Table ──────────────────────── -->
+    <div style="margin-top:40px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+        <div style="width:34px;height:34px;background:linear-gradient(135deg,#6c3aff,#a855f7);border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-table" style="color:#fff;font-size:.85rem"></i>
+        </div>
+        <div>
+          <h3 style="margin:0;font-size:1.1rem;font-weight:700">What You Get</h3>
+          <p style="margin:0;font-size:.8rem;color:var(--muted)">Points cost per action — applies to all plans</p>
+        </div>
+      </div>
+      <div class="credit-table-wrap" style="overflow-x:auto">
+        <div class="credit-table">
+          <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Points Cost</span><span>Available On</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-redo"></i> Stem regeneration</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track upload</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val" style="color:#10b981">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+        </div>
+      </div>
+      <p style="margin:10px 0 0;font-size:.75rem;color:var(--muted);text-align:center">
+        <i class="fas fa-info-circle" style="margin-right:4px"></i>
+        Points reset on your billing date. <a href="/pricing" style="color:var(--primary)">See plan details →</a>
+      </p>
+    </div>
+
   </div>
 </main>
 <!-- Downgrade confirm modal -->
@@ -9359,12 +9526,55 @@ async function loadUsers(){
   const data = await res.json();
   const el = document.getElementById('admin-users-list');
   if(!data.users?.length){el.innerHTML='<p style="color:var(--muted)">No users yet.</p>';return;}
-  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Points (used / limit)</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>'+
-    data.users.map(u=>{const rem=Math.max(0,u.gens_limit-u.gens_used);const remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981';return \`<tr><td>\${u.email}</td><td>\${u.name}</td><td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td><td>\${u.gens_used} / \${u.gens_limit}</td><td style="font-weight:700;color:\${remColor}">\${rem}</td><td>
-    <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">Edit Plan</button>
-    <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.78rem">+Credits</button>
-    </td></tr>\`;}).join('')+'</tbody></table>';
+  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Actions</th></tr></thead><tbody>'+
+    data.users.map(u=>{
+      const rem=Math.max(0,u.gens_limit-u.gens_used);
+      const remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981';
+      const isLocked = u.account_locked === 1;
+      const lockBadge = isLocked ? '<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>' : '<span style="color:#10b981;font-size:.75rem">Active</span>';
+      return \`<tr style="\${isLocked?'background:rgba(239,68,68,.04)':''}">
+        <td>\${u.email}</td>
+        <td>\${u.name}</td>
+        <td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td>
+        <td>\${lockBadge}</td>
+        <td style="font-weight:700;color:\${remColor}">\${rem} <small style="font-weight:400;color:var(--muted)">/ \${u.gens_limit}</small></td>
+        <td style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+          <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.75rem">Edit Plan</button>
+          <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.75rem">+Credits</button>
+          <button onclick="toggleLockUser('\${u.id}','\${u.email}',\${isLocked?1:0})" class="btn btn--sm" style="font-size:.75rem;background:\${isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};border:1px solid \${isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)'};color:\${isLocked?'#10b981':'#ef4444'}">\${isLocked?'🔓 Unlock':'🔒 Lock'}</button>
+          <button onclick="deleteUserAccount('\${u.id}','\${u.email}')" class="btn btn--sm" style="font-size:.75rem;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i> Delete</button>
+        </td>
+      </tr>\`;
+    }).join('')+'</tbody></table>';
   window._usersLoaded = true;
+}
+
+async function toggleLockUser(userId, email, currentlyLocked){
+  const lock = !currentlyLocked;
+  let reason = '';
+  if(lock){
+    reason = prompt('Reason for locking "'+email+'" (shown to user):', 'Multiple accounts detected from the same network. Only one free account is permitted per household.');
+    if(reason === null) return; // cancelled
+  } else {
+    if(!confirm('Unlock account for "'+email+'"?')) return;
+  }
+  const res = await fetch('/api/admin/user/lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,locked:lock,reason})});
+  const data = await res.json();
+  if(data.ok){ window._usersLoaded=false; loadUsers(); }
+  else { alert('Error: '+(data.error||'Failed')); }
+}
+
+async function deleteUserAccount(userId, email){
+  // First confirmation
+  const first = confirm('⚠️ Delete account for "'+email+'"?\n\nThis will permanently remove their account and all sessions.\nThis cannot be undone.');
+  if(!first) return;
+  // Second confirmation
+  const second = confirm('Are you absolutely sure?\n\nType-checking: deleting "'+email+'" is permanent and irreversible.\n\nClick OK to confirm deletion.');
+  if(!second) return;
+  const res = await fetch('/api/admin/user/'+userId,{method:'DELETE'});
+  const data = await res.json();
+  if(data.ok){ window._usersLoaded=false; loadUsers(); alert('Account deleted.'); }
+  else { alert('Error: '+(data.error||'Failed')); }
 }
 
 // ── PROMOS TAB ─────────────────────────────────────────────
