@@ -391,9 +391,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── What's New system ─────────────────────────────────────────
   // Add new entries here chronologically (newest first).
-  // Each entry: { date, title, body (HTML string), tag }
+  // IMPORTANT: Each entry MUST have a unique `id` string.
+  // The badge system compares localStorage against entries[0].id —
+  // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'aug2026-bonus-points',
+      date: 'August 2026',
+      title: 'Bonus Points — Now Tracked Separately',
+      tag: 'NEW FEATURE',
+      tagColor: '#f59e0b',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#e2e8f0">Bonus points separated</b> — Points you purchase via Top Up Packs are now shown in their own section in the sidebar and on your Subscription page, so you always know exactly how many subscription points vs. bonus points you have left.</li>
+        <li><b style="color:#e2e8f0">Bonus consumed first</b> — When you use any feature, your bonus (purchased) points are always spent before your monthly subscription points. Your plan allowance lasts longer.</li>
+        <li><b style="color:#e2e8f0">Sidebar upgrade</b> — The sidebar now shows two rows: <b>Points Remaining</b> (your plan allowance) and <b>⚡ Bonus Points</b> (your purchased top-up credits). The bonus row only appears when you have bonus points.</li>
+        <li><b style="color:#e2e8f0">Subscription page upgrade</b> — The Points Remaining cell in the info bar now shows a gold <b>⚡ bonus pts</b> badge underneath when you have purchased credits available.</li>
+      </ul>`
+    },
+    {
+      id: 'aug2025-stem-upgrades',
       date: 'August 2025',
       title: 'Stem Player Upgrades & Credit Rebalance',
       tag: 'UPDATE',
@@ -409,14 +425,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   ];
 
-  const WHATS_NEW_KEY = 'sf_whats_new_seen_v1';
+  // Badge key is based on the latest entry's unique id — every new entry
+  // automatically triggers the NEW badge for all users who haven't seen it yet.
+  const WHATS_NEW_KEY = 'sf_wn_seen_';
   window._sfOpenWhatsNew = function() {
     const overlay = document.getElementById('whats-new-overlay');
     if (!overlay) return;
-    // Populate entries
+    // Populate entries (repopulate each open so new entries always show)
     const container = overlay.querySelector('#whats-new-entries');
-    if (container && !container.dataset.populated) {
-      container.dataset.populated = '1';
+    if (container) {
       container.innerHTML = window._sfWhatsNewEntries.map(e => `
         <div style="background:#111827;border:1px solid #1e2a3a;border-radius:10px;padding:14px 16px">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
@@ -429,8 +446,9 @@ document.addEventListener('DOMContentLoaded', () => {
       `).join('');
     }
     overlay.style.display = 'flex';
-    // Mark as seen
-    localStorage.setItem(WHATS_NEW_KEY, window._sfWhatsNewEntries[0]?.date || 'seen');
+    // Mark latest entry as seen
+    const latestId = window._sfWhatsNewEntries[0]?.id || 'seen';
+    localStorage.setItem(WHATS_NEW_KEY + latestId, '1');
     const badge = document.getElementById('whats-new-badge');
     if (badge) badge.style.display = 'none';
   };
@@ -438,12 +456,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const overlay = document.getElementById('whats-new-overlay');
     if (overlay) overlay.style.display = 'none';
   };
-  // Show NEW badge if user hasn't seen latest entry
-  // (runs on DOMContentLoaded so element is guaranteed present)
+  // Show NEW badge if user hasn't seen the latest entry by its unique id.
+  // This means every time a new entry is added (new id), ALL users see the badge.
   window._sfCheckWhatsNewBadge = function() {
-    const seen   = localStorage.getItem(WHATS_NEW_KEY);
-    const latest = window._sfWhatsNewEntries[0]?.date || '';
-    if (seen !== latest) {
+    const latestId = window._sfWhatsNewEntries[0]?.id || '';
+    const seen = localStorage.getItem(WHATS_NEW_KEY + latestId);
+    if (!seen) {
       const badge = document.getElementById('whats-new-badge');
       if (badge) badge.style.display = 'inline-flex';
     }
