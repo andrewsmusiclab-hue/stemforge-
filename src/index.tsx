@@ -5966,7 +5966,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-07'
+const ASSET_VER = '20260802-08'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7177,7 +7177,7 @@ function generatorPage() {
       </button>
       <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"
         data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more.">
-        <i class="fas fa-bolt"></i> One Shot Creator <span style="font-size:.65rem;opacity:.6;margin-left:3px">Pro</span>
+        <i class="fas fa-bolt"></i> One Shot Creator
       </button>
     </div>
 
