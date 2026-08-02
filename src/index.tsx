@@ -2390,53 +2390,67 @@ app.post('/api/job/remix', async (c) => {
   const styleDesc = `Instrumental ${genre} beat, no vocals${mood ? `, ${mood} mood` : ''}${bpm ? `, ${bpm} BPM` : ''}. Same energy and style as the original.`
 
   // Use /sonic/upload-extend — the same proven endpoint used by Song Extend.
-  // continue_at:0 tells Sonic to regenerate from the very start using the uploaded
-  // audio as a style reference, producing a fresh remix of the track.
+  // continue_at:1 is the minimum valid value (MusicAPI rejects 0).
+  // Using continue_at:1 means "regenerate from 1s in" — essentially a full creative remix.
   let genTaskId: string
   try {
     const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
     let audioUrl = srcJob.stereo_url as string
 
-    // If the audio URL is a self-hosted proxy URL, it's already accessible.
-    // For external CDN URLs (Mureka etc.) mirror to R2 so Sonic can reach it reliably.
+    // Mirror strategy:
+    // - If the URL is already our own proxy URL (self-hosted), it's publicly accessible — skip mirror.
+    // - If it's an external CDN URL (Mureka etc.), mirror to R2 first for reliability.
+    // IMPORTANT: R2 key must NOT include the "remix-uploads/" prefix when building
+    //   the proxy URL, because extend-audio-proxy prepends that prefix itself.
     if (c.env.IMAGES && !audioUrl.includes(siteUrl)) {
       try {
         const audioFetch = await fetch(audioUrl)
         if (audioFetch.ok) {
           const buf = await audioFetch.arrayBuffer()
           const ext = audioUrl.includes('.mp3') ? 'mp3' : 'm4a'
-          const r2Key = `remix-uploads/${Date.now()}-${Math.random().toString(36).slice(2,8)}-remix.${ext}`
-          await c.env.IMAGES.put(r2Key, buf, {
+          // r2FileName must NOT include the "remix-uploads/" prefix —
+          // the IMAGES.put call adds it, and extend-audio-proxy also adds it when looking up.
+          const r2FileName = `${Date.now()}-${Math.random().toString(36).slice(2,8)}-remix.${ext}`
+          await c.env.IMAGES.put(`remix-uploads/${r2FileName}`, buf, {
             httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
           })
-          audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
-          console.log(`[remix] mirrored to R2: ${r2Key}`)
+          // Proxy URL uses r2FileName WITHOUT the prefix (proxy adds "remix-uploads/" itself)
+          audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2FileName)}`
+          console.log(`[remix] mirrored to R2: remix-uploads/${r2FileName}`)
         }
       } catch (mirrorErr: any) {
         console.warn('[remix] R2 mirror failed, using original URL:', mirrorErr?.message)
       }
     }
 
-    // POST /sonic/upload-extend — same API as Song Extend, continue_at:0 = regenerate from start
+    // POST /sonic/upload-extend — same proven API as Song Extend.
+    // continue_at:1 = minimum valid value (MusicAPI rejects 0).
+    // This tells Sonic to treat the uploaded audio as a style reference and
+    // generate a fresh track in the same genre/mood/energy starting from 1s.
     const uploadExtBody: Record<string, any> = {
       url: audioUrl,
       mv: 'sonic-v5',
-      continue_at: 0,
+      continue_at: 1,   // MusicAPI minimum — 0 is invalid
       custom_mode: false,
       gpt_description_prompt: styleDesc,
       make_instrumental: true
     }
-    console.log(`[remix] Calling /sonic/upload-extend url=${audioUrl.slice(0,80)} style="${styleDesc.slice(0,80)}"`)
+    console.log(`[remix] Calling /sonic/upload-extend url=${audioUrl.slice(0,80)} continue_at=1 style="${styleDesc.slice(0,80)}"`)
     const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(uploadExtBody)
     })
     const sonicText = await sonicRes.text()
-    console.log(`[remix] /sonic/upload-extend HTTP ${sonicRes.status}: ${sonicText.slice(0,400)}`)
+    console.log(`[remix] /sonic/upload-extend HTTP ${sonicRes.status}: ${sonicText.slice(0,600)}`)
     if (!sonicRes.ok) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Could not start remix — please try again in a moment.' }, 500)
+      // Return the actual MusicAPI error message so we can diagnose it
+      let sonicErrData: any = {}
+      try { sonicErrData = JSON.parse(sonicText) } catch {}
+      const apiErrMsg = sonicErrData.message || sonicErrData.error || sonicText.slice(0, 200)
+      console.error(`[remix] MusicAPI error: ${apiErrMsg}`)
+      return c.json({ error: `Could not start remix: ${apiErrMsg}`, api_status: sonicRes.status }, 500)
     }
     let sonicData: any = {}
     try { sonicData = JSON.parse(sonicText) } catch {}
@@ -2445,13 +2459,13 @@ app.post('/api/job/remix', async (c) => {
     if (!genTaskId) {
       console.error(`[remix] upload-extend returned no task_id: ${sonicText.slice(0,200)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Remix failed to start — please try again.' }, 500)
+      return c.json({ error: 'Remix failed to start — MusicAPI returned no task ID. Please try again.' }, 500)
     }
     console.log(`[remix] upload-extend task started: ${genTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-    return c.json({ error: 'Something went wrong starting your remix — please try again.' }, 500)
+    return c.json({ error: `Something went wrong starting your remix: ${err?.message || 'unknown error'}` }, 500)
   }
 
   // Create the remix job. extend_task_type='song_generate' tells advancePipeline
@@ -9258,12 +9272,15 @@ function adminPage(user: User) {
       <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
     </div>
 
+    <!-- Stats debug banner — hidden on success, visible on error -->
+    <div id="admin-stats-debug" style="display:none;background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:.82rem;color:#94a3b8;font-family:monospace"></div>
+
     <!-- Stats bar -->
     <div class="sub-stats-bar" id="admin-stats-bar" style="margin-bottom:32px">
-      <div class="sub-stat"><span class="sub-stat__label">Total Users</span><span class="sub-stat__val" id="stat-users">—</span></div>
-      <div class="sub-stat"><span class="sub-stat__label">Pro Users</span><span class="sub-stat__val" id="stat-pro">—</span></div>
-      <div class="sub-stat"><span class="sub-stat__label">Creator Users</span><span class="sub-stat__val" id="stat-creator">—</span></div>
-      <div class="sub-stat"><span class="sub-stat__label">Total Jobs</span><span class="sub-stat__val" id="stat-jobs">—</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Total Users</span><span class="sub-stat__val" id="stat-users">…</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Pro Users</span><span class="sub-stat__val" id="stat-pro">…</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Creator Users</span><span class="sub-stat__val" id="stat-creator">…</span></div>
+      <div class="sub-stat"><span class="sub-stat__label">Total Jobs</span><span class="sub-stat__val" id="stat-jobs">…</span></div>
       <div class="sub-stat"><span class="sub-stat__label">MRR</span><span class="sub-stat__val" id="stat-mrr">—</span></div>
     </div>
 
@@ -9482,28 +9499,48 @@ function adminPage(user: User) {
 <script>
 // ── Load global stats ──────────────────────────────────────
 (async()=>{
-  try {
-    const ctrl = new AbortController();
-    const tid = setTimeout(()=>ctrl.abort(), 12000); // 12s timeout
-    const res = await fetch('/api/admin/stats', { signal: ctrl.signal, credentials: 'include' });
-    clearTimeout(tid);
-    if (!res.ok) throw new Error('HTTP '+res.status+' '+res.statusText);
-    const data = await res.json();
-    if(data.error) throw new Error(data.error);
-    if(data.users){
-      document.getElementById('stat-users').textContent = data.users.total||0;
-      document.getElementById('stat-pro').textContent   = data.users.pro_count||0;
-      document.getElementById('stat-creator').textContent = data.users.creator_count||0;
-    }
-    if(data.jobs){ document.getElementById('stat-jobs').textContent = data.jobs.total||0; }
-  } catch(e) {
-    console.error('[admin stats]', e.message||e);
-    // Show the actual error message in the stats bar
-    const errMsg = String(e.message||e).slice(0,12);
+  const dbgEl = document.getElementById('admin-stats-debug');
+  function dbg(msg){ if(dbgEl){ dbgEl.textContent = msg; dbgEl.style.display='block'; } }
+  function setStats(msg){
     ['stat-users','stat-pro','stat-creator','stat-jobs','stat-mrr'].forEach(id=>{
       const el = document.getElementById(id);
-      if(el && el.textContent==='—') el.textContent = errMsg;
+      if(el) el.textContent = msg;
     });
+  }
+  try {
+    dbg('Fetching stats…');
+    const ctrl = new AbortController();
+    const tid = setTimeout(()=>{ ctrl.abort(); }, 15000);
+    const res = await fetch('/api/admin/stats', { signal: ctrl.signal, credentials: 'include' });
+    clearTimeout(tid);
+    dbg('HTTP '+res.status);
+    if (!res.ok) {
+      const txt = await res.text().catch(()=>'');
+      throw new Error('HTTP '+res.status+' — '+txt.slice(0,100));
+    }
+    const data = await res.json();
+    if(data.error) throw new Error('API error: '+data.error);
+    dbg('OK — populating');
+    if(data.users){
+      const uEl = document.getElementById('stat-users');
+      const pEl = document.getElementById('stat-pro');
+      const cEl = document.getElementById('stat-creator');
+      if(uEl) uEl.textContent = String(data.users.total ?? '?');
+      if(pEl) pEl.textContent = String(data.users.pro_count ?? '?');
+      if(cEl) cEl.textContent = String(data.users.creator_count ?? '?');
+    } else {
+      dbg('Warning: data.users is null/undefined');
+    }
+    if(data.jobs){
+      const jEl = document.getElementById('stat-jobs');
+      if(jEl) jEl.textContent = String(data.jobs.total ?? '?');
+    }
+    if(dbgEl) dbgEl.style.display='none'; // hide debug on success
+  } catch(e) {
+    const msg = String(e.message||e);
+    console.error('[admin stats]', msg);
+    dbg('ERROR: '+msg);
+    setStats('ERR');
   }
 })();
 

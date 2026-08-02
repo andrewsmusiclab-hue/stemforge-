@@ -1382,6 +1382,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       var res = await fetch('/api/job/remix', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ job_id: jobId, stereo_url: stereoUrl, title: safeTitle })
       });
