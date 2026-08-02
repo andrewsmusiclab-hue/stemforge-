@@ -5966,7 +5966,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-06'
+const ASSET_VER = '20260802-07'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7493,7 +7493,7 @@ function generatorPage() {
       <div id="remix-drop-idle">
         <i class="fas fa-cloud-upload-alt" style="font-size:2rem;color:#7c3aed;margin-bottom:10px"></i>
         <div style="font-size:.9rem;font-weight:600;color:#e2e8f0">Drop your track here</div>
-        <div style="font-size:.78rem;color:#6b7280;margin-top:4px">MP3 or WAV · Max 50MB</div>
+        <div style="font-size:.78rem;color:#6b7280;margin-top:4px">MP3 or WAV</div>
         <button style="margin-top:14px;background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#a78bfa;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.82rem;font-weight:600">Browse files</button>
       </div>
       <div id="remix-drop-loading" style="display:none">
@@ -9954,6 +9954,18 @@ function termsPage() {
     <li>Violate any applicable local, national, or international law or regulation</li>
   </ul>
   <p>Violation of these rules may result in immediate account termination without refund.</p>
+</section>
+
+<section>
+  <h2>6a. Audio Upload &amp; Remix Policy</h2>
+  <p>The AI Remix feature allows you to upload original audio recordings for style transformation. By uploading audio to StemForge, you represent and warrant that:</p>
+  <ul>
+    <li>You are the original creator of the uploaded recording, or you hold all necessary rights and licenses to use it for this purpose</li>
+    <li>The uploaded audio does not contain any material protected by third-party copyright, including commercially released recordings, sampled content, or any audio in which you do not hold full ownership or a valid license</li>
+    <li>Your use of the Remix feature complies with all applicable intellectual property laws and does not infringe upon the rights of any artist, record label, publisher, or rights holder</li>
+  </ul>
+  <p>StemForge employs automated content recognition systems to identify audio that may be subject to third-party copyright claims. Uploads that trigger these protections will be declined by the platform. StemForge reserves the right to refuse remix processing for any audio submission that cannot be verified as rights-cleared, without obligation to disclose the specific basis for that determination.</p>
+  <p>Repeated submission of infringing material may result in suspension or permanent termination of your account.</p>
 </section>
 
 <section>
