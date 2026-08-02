@@ -5966,7 +5966,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-09'
+const ASSET_VER = '20260802-10'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9328,7 +9328,6 @@ function adminPage(user: User) {
       <button class="admin-tab admin-tab--active" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
-      <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -9418,29 +9417,7 @@ function adminPage(user: User) {
       </div>
     </div>
 
-    <!-- PROMOS TAB -->
-    <div id="admin-tab-promos" style="display:none">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
-        <h3 style="margin:0 0 20px"><i class="fas fa-tag"></i> Promo Codes</h3>
-        <div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:20px">
-          <h4 style="margin:0 0 14px;font-size:.9rem">Create New Code</h4>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
-            <input id="new-code" placeholder="CODE" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem;font-family:monospace;text-transform:uppercase"/>
-            <input id="new-desc" placeholder="Description" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
-            <input id="new-credits" type="number" placeholder="Bonus Credits" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
-            <input id="new-maxuses" type="number" placeholder="Max Uses (0=unlimited)" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
-            <input id="new-terms" placeholder="Terms (optional)" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:.85rem"/>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <button onclick="createPromo()" class="btn btn--primary btn--sm"><i class="fas fa-plus"></i> Create Code</button>
-            <span id="promo-create-status" style="font-size:.82rem;color:var(--muted)"></span>
-          </div>
-        </div>
-        <div id="admin-promos-list" style="overflow-x:auto">
-          <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p>
-        </div>
-      </div>
-    </div>
+
 
   </div>
 </main>
@@ -9471,7 +9448,7 @@ function adminPage(user: User) {
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','promos'];
+var adminTabs=['analytics','revenue','users'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -9479,7 +9456,7 @@ function adminTab(tab){
   if(tab==='analytics'&&!window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
-  if(tab==='promos'&&!window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
+
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
@@ -9569,28 +9546,7 @@ async function deleteUserAccount(userId,email){
   var data=await res.json(); if(data.ok){ window._usersLoaded=false; loadUsers(); alert('Account deleted.'); } else { alert('Error: '+(data.error||'Failed')); }
 }
 
-async function loadPromos(){
-  var res=await fetch('/api/admin/promos',{credentials:'include'}),data=await res.json(),el=document.getElementById('admin-promos-list');
-  if(!data.promos||!data.promos.length){ el.innerHTML='<p style="color:var(--muted)">No promo codes yet.</p>'; return; }
-  el.innerHTML='<table class="admin-table"><thead><tr><th>Code</th><th>Description</th><th>Bonus Credits</th><th>Uses</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
-    data.promos.map(function(p){ return '<tr><td style="font-family:monospace;font-weight:700">'+p.code+'</td><td>'+(p.description||'—')+'</td><td>'+(p.bonus_credits||0)+'</td><td>'+p.uses_count+(p.max_uses?'/'+p.max_uses:'')+'</td><td>'+(p.active?'<span style="color:#10b981">Active</span>':'<span style="color:var(--muted)">Inactive</span>')+'</td><td><button onclick="deactivatePromo(\''+p.code+'\')" class="btn btn--outline btn--sm" style="font-size:.78rem;color:#ff6464;border-color:#ff646440">Deactivate</button></td></tr>'; }).join('')+'</tbody></table>';
-  window._promosLoaded=true;
-}
 
-async function createPromo(){
-  var code=document.getElementById('new-code').value.trim().toUpperCase(); if(!code){ alert('Enter a code'); return; }
-  var status=document.getElementById('promo-create-status'); status.textContent='Creating…';
-  var res=await fetch('/api/admin/promos',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({code:code,description:document.getElementById('new-desc').value,bonus_credits:parseInt(document.getElementById('new-credits').value)||0,max_uses:parseInt(document.getElementById('new-maxuses').value)||0,terms:document.getElementById('new-terms').value,active:1})});
-  var data=await res.json();
-  if(data.ok){ status.style.color='#10b981'; status.textContent='✓ Code '+code+' created!'; window._promosLoaded=false; loadPromos(); document.getElementById('new-code').value=''; document.getElementById('new-desc').value=''; document.getElementById('new-credits').value=''; document.getElementById('new-terms').value=''; }
-  else { status.style.color='#ef4444'; status.textContent='Error: '+(data.error||'Failed'); }
-}
-
-async function deactivatePromo(code){
-  if(!confirm('Deactivate '+code+'?')) return;
-  await fetch('/api/admin/promos/'+code,{method:'DELETE',credentials:'include'});
-  window._promosLoaded=false; loadPromos();
-}
 
 function changeUserPlan(userId,email){
   document.getElementById('umod-title').textContent='Edit Plan — '+email;
