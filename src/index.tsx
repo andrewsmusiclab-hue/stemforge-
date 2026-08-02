@@ -6014,7 +6014,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-13'
+const ASSET_VER = '20260802-14'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9359,8 +9359,19 @@ function adminPage(user: User) {
       <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
     </div>
 
+    <!-- Diagnostic strip — always visible, shows live API test results -->
+    <div id="admin-diag" style="background:#0f172a;border:1px solid #334155;border-radius:10px;padding:14px 18px;margin-bottom:20px;font-size:.8rem;font-family:monospace;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <span style="color:#94a3b8;margin-right:4px">API checks:</span>
+      <span id="diag-ping"  style="padding:3px 10px;border-radius:999px;background:#1e293b;color:#94a3b8">ping…</span>
+      <span id="diag-stats" style="padding:3px 10px;border-radius:999px;background:#1e293b;color:#94a3b8">stats…</span>
+      <span id="diag-analytics" style="padding:3px 10px;border-radius:999px;background:#1e293b;color:#94a3b8">analytics…</span>
+      <span id="diag-revenue" style="padding:3px 10px;border-radius:999px;background:#1e293b;color:#94a3b8">revenue…</span>
+      <span id="diag-users" style="padding:3px 10px;border-radius:999px;background:#1e293b;color:#94a3b8">users…</span>
+      <button onclick="runDiag()" style="margin-left:auto;padding:3px 12px;border-radius:6px;background:#1e40af;border:none;color:#fff;font-size:.78rem;cursor:pointer">Re-run</button>
+    </div>
+
     <!-- Stats bar -->
-    <div class="sub-stats-bar" id="admin-stats-bar" style="margin-bottom:32px">
+    <div class="sub-stats-bar" id="admin-stats-bar" style="margin-bottom:16px">
       <div class="sub-stat"><span class="sub-stat__label">Total Users</span><span class="sub-stat__val" id="stat-users">…</span></div>
       <div class="sub-stat"><span class="sub-stat__label">Pro Users</span><span class="sub-stat__val" id="stat-pro">…</span></div>
       <div class="sub-stat"><span class="sub-stat__label">Creator Users</span><span class="sub-stat__val" id="stat-creator">…</span></div>
@@ -9368,8 +9379,8 @@ function adminPage(user: User) {
       <div class="sub-stat"><span class="sub-stat__label">MRR</span><span class="sub-stat__val" id="stat-mrr">—</span></div>
     </div>
 
-    <!-- Stats error banner — only shown on failure -->
-    <div id="admin-stats-err" style="display:none;background:#1e293b;border:1px solid #ef444430;border-radius:8px;padding:10px 16px;margin-bottom:16px;font-size:.82rem;color:#fca5a5;font-family:monospace"></div>
+    <!-- Stats error banner — shown on any failure -->
+    <div id="admin-stats-err" style="display:none;background:#450a0a;border:2px solid #ef4444;border-radius:8px;padding:12px 18px;margin-bottom:16px;font-size:.85rem;color:#fca5a5;font-family:monospace"></div>
 
     <!-- Tabs -->
     <div style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;flex-wrap:wrap">
@@ -9481,16 +9492,72 @@ function adminPage(user: User) {
 .rv-bar-fill{height:100%;border-radius:4px;transition:width .5s}
 </style>
 <script>
+// ── Diagnostic strip ─────────────────────────────────────────
+function diagSet(id, ok, msg){
+  var el=document.getElementById('diag-'+id);
+  if(!el) return;
+  el.textContent=(ok?'✅ ':'❌ ')+id+': '+msg;
+  el.style.background=ok?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)';
+  el.style.color=ok?'#6ee7b7':'#fca5a5';
+  el.style.border='1px solid '+(ok?'rgba(16,185,129,.3)':'rgba(239,68,68,.4)');
+}
+async function runDiag(){
+  ['ping','stats','analytics','revenue','users'].forEach(function(id){
+    var el=document.getElementById('diag-'+id);
+    if(el){el.textContent=id+'…';el.style.background='#1e293b';el.style.color='#94a3b8';el.style.border='none';}
+  });
+  // ping
+  try{
+    var r=await fetch('/api/admin/ping',{credentials:'include'});
+    var d=await r.json();
+    if(!d.ok) diagSet('ping',false,'ok=false admin='+d.admin+' email='+d.email);
+    else if(!d.admin) diagSet('ping',false,'NOT ADMIN — email='+d.email+' plan='+d.plan);
+    else diagSet('ping',true,'admin=true email='+d.email);
+  }catch(e){ diagSet('ping',false,String(e.message||e)); }
+  // stats
+  try{
+    var r2=await fetch('/api/admin/stats',{credentials:'include'});
+    if(!r2.ok){ var t=await r2.text(); diagSet('stats',false,'HTTP '+r2.status+' '+t.slice(0,60)); }
+    else{ var d2=await r2.json(); if(d2.error) diagSet('stats',false,d2.error); else diagSet('stats',true,'users='+d2.users.total); }
+  }catch(e){ diagSet('stats',false,String(e.message||e)); }
+  // analytics
+  try{
+    var r3=await fetch('/api/admin/analytics',{credentials:'include'});
+    if(!r3.ok){ var t3=await r3.text(); diagSet('analytics',false,'HTTP '+r3.status+' '+t3.slice(0,60)); }
+    else{ var d3=await r3.json(); if(d3.error) diagSet('analytics',false,d3.error); else diagSet('analytics',true,'today='+d3.today+' month='+d3.month); }
+  }catch(e){ diagSet('analytics',false,String(e.message||e)); }
+  // revenue
+  try{
+    var r4=await fetch('/api/admin/revenue',{credentials:'include'});
+    if(!r4.ok){ var t4=await r4.text(); diagSet('revenue',false,'HTTP '+r4.status+' '+t4.slice(0,60)); }
+    else{ var d4=await r4.json(); if(d4.error) diagSet('revenue',false,d4.error); else diagSet('revenue',true,'mrr=$'+d4.mrr); }
+  }catch(e){ diagSet('revenue',false,String(e.message||e)); }
+  // users
+  try{
+    var r5=await fetch('/api/admin/users',{credentials:'include'});
+    if(!r5.ok){ var t5=await r5.text(); diagSet('users',false,'HTTP '+r5.status+' '+t5.slice(0,60)); }
+    else{ var d5=await r5.json(); if(d5.error) diagSet('users',false,d5.error); else diagSet('users',true,'count='+d5.users.length); }
+  }catch(e){ diagSet('users',false,String(e.message||e)); }
+}
+runDiag();
+
+// ── Stats bar ────────────────────────────────────────────────
 (function loadAdminStats(){
   var errEl=document.getElementById('admin-stats-err');
-  function showErr(msg){ if(errEl){ errEl.textContent='Stats error: '+msg; errEl.style.display='block'; } ['stat-users','stat-pro','stat-creator','stat-jobs'].forEach(function(id){ var el=document.getElementById(id); if(el) el.textContent='—'; }); }
-  var ctrl=new AbortController(), tid=setTimeout(function(){ ctrl.abort(); },8000);
+  function showErr(msg){
+    if(errEl){ errEl.innerHTML='<b>⚠️ Stats error:</b> '+msg; errEl.style.display='block'; }
+    ['stat-users','stat-pro','stat-creator','stat-jobs'].forEach(function(id){ var el=document.getElementById(id); if(el) el.textContent='ERR'; });
+  }
+  var ctrl=new AbortController(), tid=setTimeout(function(){ ctrl.abort(); showErr('Timed out after 8s — check Diagnostic strip above'); },8000);
   fetch('/api/admin/stats',{signal:ctrl.signal,credentials:'include'})
-    .then(function(res){ clearTimeout(tid); if(!res.ok) return res.text().then(function(t){ throw new Error('HTTP '+res.status+' '+t.slice(0,100)); }); return res.json(); })
+    .then(function(res){ clearTimeout(tid); if(!res.ok) return res.text().then(function(t){ throw new Error('HTTP '+res.status+': '+t.slice(0,120)); }); return res.json(); })
     .then(function(data){
       if(data.error) throw new Error(data.error);
-      if(data.users){ var u=document.getElementById('stat-users'),p=document.getElementById('stat-pro'),cr=document.getElementById('stat-creator'); if(u)u.textContent=String(data.users.total||0); if(p)p.textContent=String(data.users.pro_count||0); if(cr)cr.textContent=String(data.users.creator_count||0); }
-      if(data.jobs){ var j=document.getElementById('stat-jobs'); if(j)j.textContent=String(data.jobs.total||0); }
+      var u=document.getElementById('stat-users'),p=document.getElementById('stat-pro'),cr=document.getElementById('stat-creator');
+      if(u)u.textContent=String(data.users?.total||0);
+      if(p)p.textContent=String(data.users?.pro_count||0);
+      if(cr)cr.textContent=String(data.users?.creator_count||0);
+      var j=document.getElementById('stat-jobs'); if(j)j.textContent=String(data.jobs?.total||0);
       if(errEl) errEl.style.display='none';
     })
     .catch(function(e){ showErr(String(e.message||e)); });
@@ -9504,18 +9571,18 @@ function adminTab(tab){
   if(tab==='analytics'&&!window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
-
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
 var SOCIAL_ICONS={tiktok:'<i class="fab fa-tiktok" style="color:#69C9D0"></i>',facebook:'<i class="fab fa-facebook" style="color:#1877F2"></i>',instagram:'<i class="fab fa-instagram" style="color:#E1306C"></i>',youtube:'<i class="fab fa-youtube" style="color:#FF0000"></i>',twitter:'<i class="fab fa-twitter" style="color:#1DA1F2"></i>',snapchat:'<i class="fab fa-snapchat" style="color:#FFFC00"></i>',pinterest:'<i class="fab fa-pinterest" style="color:#E60023"></i>',reddit:'<i class="fab fa-reddit" style="color:#FF4500"></i>',linkedin:'<i class="fab fa-linkedin" style="color:#0A66C2"></i>',google:'<i class="fab fa-google" style="color:#4285F4"></i>',bing:'<i class="fas fa-search" style="color:#008373"></i>',direct:'<i class="fas fa-link" style="color:var(--primary)"></i>',referral:'<i class="fas fa-external-link-alt" style="color:var(--muted)"></i>'};
 
 async function loadAnalytics(){
+  var errHtml=function(msg){ return '<p style="color:#fca5a5;font-size:.82rem;padding:8px;background:rgba(239,68,68,.1);border-radius:6px;border:1px solid rgba(239,68,68,.3)"><b>❌ Error:</b> '+msg+'</p>'; };
   try{
-    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},6000);
+    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},10000);
     var res=await fetch('/api/admin/analytics',{signal:ctrl.signal,credentials:'include'});
     clearTimeout(tid);
-    if(!res.ok) throw new Error('HTTP '+res.status);
+    if(!res.ok){ var errTxt=await res.text(); throw new Error('HTTP '+res.status+': '+errTxt.slice(0,120)); }
     var d=await res.json(); if(d.error) throw new Error(d.error);
     document.getElementById('an-today').textContent=d.today||0;
     document.getElementById('an-week').textContent=d.week||0;
@@ -9532,7 +9599,17 @@ async function loadAnalytics(){
     var pages=d.top_pages||[],pgEl=document.getElementById('top-pages');
     if(!pages.length){ pgEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No data yet</p>'; }
     else { var maxPg=Math.max.apply(null,pages.map(function(p){return p.cnt;}).concat([1])); pgEl.innerHTML='<table class="admin-table"><thead><tr><th>Page</th><th>Views</th><th style="width:200px">Share</th></tr></thead><tbody>'+pages.map(function(p){ var pct=Math.round((p.cnt/maxPg)*100); return '<tr><td><code style="font-size:.85rem">'+p.path+'</code></td><td style="font-weight:700">'+p.cnt+'</td><td><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:#a78bfa"></div></div></td></tr>'; }).join('')+'</tbody></table>'; }
-  }catch(e){ document.getElementById('daily-chart').innerHTML='<p style="color:#ef4444;font-size:.82rem">Error loading analytics: '+(e.message||'unknown')+'</p>'; }
+  }catch(e){
+    var msg=String(e.message||e);
+    var eh=errHtml(msg);
+    var dc=document.getElementById('daily-chart'); if(dc) dc.innerHTML=eh;
+    var sc=document.getElementById('sources-chart'); if(sc) sc.innerHTML=eh;
+    var sb=document.getElementById('social-breakdown'); if(sb) sb.innerHTML='<div style="grid-column:1/-1">'+eh+'</div>';
+    var tp=document.getElementById('top-pages'); if(tp) tp.innerHTML=eh;
+    document.getElementById('an-today').textContent='ERR';
+    document.getElementById('an-week').textContent='ERR';
+    document.getElementById('an-month').textContent='ERR';
+  }
 }
 
 async function loadRevenue(){
@@ -9557,7 +9634,13 @@ async function loadRevenue(){
     var subs=d.recent_subscribers||[],subsEl=document.getElementById('rv-subs');
     if(!subs.length){ subsEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No paid subscribers yet.</p>'; }
     else { subsEl.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Joined</th></tr></thead><tbody>'+subs.map(function(s){ return '<tr><td>'+s.email+'</td><td>'+s.name+'</td><td><span class="plan-badge plan-badge--'+s.plan+'">'+s.plan+'</span></td><td>'+new Date(s.created_at).toLocaleDateString()+'</td></tr>'; }).join('')+'</tbody></table>'; }
-  }catch(e){ document.getElementById('rv-mrr').textContent='Error'; }
+  }catch(e){
+    var msg=String(e.message||e);
+    var eh='<p style="color:#fca5a5;font-size:.82rem;padding:8px;background:rgba(239,68,68,.1);border-radius:6px;border:1px solid rgba(239,68,68,.3)"><b>❌ Error:</b> '+msg+'</p>';
+    document.getElementById('rv-mrr').textContent='ERR';
+    var pie=document.getElementById('rv-pie'); if(pie) pie.innerHTML=eh;
+    var subs=document.getElementById('rv-subs'); if(subs) subs.innerHTML=eh;
+  }
 }
 
 async function loadUsers(){
