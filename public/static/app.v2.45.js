@@ -7667,7 +7667,75 @@ function showProUpgradeModal(featureName) {
     _remixUploadFile(file);
   };
 
+  // ── Internal: convert WAV→MP3 via lamejs then upload ────────────────────────
+  function _remixConvertAndUpload(audioBuffer, fileName) {
+    var errEl = document.getElementById('remix-upload-error');
+    var statusEl = document.getElementById('remix-upload-status');
+    if (statusEl) statusEl.textContent = 'Converting to MP3\u2026';
+
+    var nCh = audioBuffer.numberOfChannels;
+    var sr  = audioBuffer.sampleRate;
+    // Cap at 60 seconds — MusicAPI only needs a reference snippet and has a file size limit
+    var maxSamples = sr * 60;
+    var totalSamples = Math.min(audioBuffer.length, maxSamples);
+    // 96kbps keeps file small while preserving enough quality for MusicAPI reference
+    var lame = new lamejs.Mp3Encoder(Math.min(nCh, 2), sr, 96);
+    var blockSize = 1152;
+    var mp3Chunks = [];
+
+    // Encode all blocks synchronously (Web Worker would be ideal but this works for <10min files)
+    for (var start = 0; start < totalSamples; start += blockSize) {
+      var end = Math.min(start + blockSize, totalSamples);
+      var len = end - start;
+      var leftF  = audioBuffer.getChannelData(0).subarray(start, end);
+      var leftI  = new Int16Array(len);
+      for (var i = 0; i < len; i++) leftI[i] = Math.max(-32768, Math.min(32767, leftF[i] * 32767));
+      var chunk;
+      if (nCh >= 2) {
+        var rightF = audioBuffer.getChannelData(1).subarray(start, end);
+        var rightI = new Int16Array(len);
+        for (var i = 0; i < len; i++) rightI[i] = Math.max(-32768, Math.min(32767, rightF[i] * 32767));
+        chunk = lame.encodeBuffer(leftI, rightI);
+      } else {
+        chunk = lame.encodeBuffer(leftI, leftI);
+      }
+      if (chunk && chunk.length) mp3Chunks.push(new Int8Array(chunk));
+    }
+    var last = lame.flush();
+    if (last && last.length) mp3Chunks.push(new Int8Array(last));
+
+    var totalBytes = 0;
+    for (var i = 0; i < mp3Chunks.length; i++) totalBytes += mp3Chunks[i].length;
+    var mp3Data = new Uint8Array(totalBytes);
+    var offset = 0;
+    for (var i = 0; i < mp3Chunks.length; i++) { mp3Data.set(new Uint8Array(mp3Chunks[i].buffer), offset); offset += mp3Chunks[i].length; }
+
+    var mp3BaseName = fileName.replace(/\.[^.]+$/, '');
+    var mp3File = new File([mp3Data], mp3BaseName + '.mp3', { type: 'audio/mpeg' });
+
+    if (statusEl) statusEl.textContent = 'Uploading\u2026';
+    var fd = new FormData();
+    fd.append('file', mp3File);
+    fetch('/api/upload-remix-audio', { method: 'POST', credentials: 'include', body: fd })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.error) throw new Error(data.error);
+        if (data.audio_url || data.status === 'ready') {
+          remixUploadAudioUrl = data.audio_url;
+          setRemixZoneState('done', mp3BaseName);
+          return;
+        }
+        throw new Error('Upload failed \u2014 please try again.');
+      })
+      .catch(function(err) {
+        setRemixZoneState('idle');
+        var errEl2 = document.getElementById('remix-upload-error');
+        if (errEl2) { errEl2.textContent = 'Upload failed: ' + (err.message || 'Unknown error'); errEl2.style.display = 'block'; }
+      });
+  }
+
   // ── Internal: upload file to R2 via /api/upload-remix-audio ────────────────
+  // WAV files are converted to MP3 first (MusicAPI /upload-cover requires MP3/M4A).
   function _remixUploadFile(file) {
     var errEl = document.getElementById('remix-upload-error');
     if (errEl) errEl.style.display = 'none';
@@ -7675,28 +7743,61 @@ function showProUpgradeModal(featureName) {
     var name = file.name || 'track';
     remixUploadTitle = name.replace(/\.[^.]+$/, '');
 
-    var fd = new FormData();
-    fd.append('file', file);
+    var ext = (name).split('.').pop().toLowerCase();
+    var isWav = ext === 'wav' || file.type === 'audio/wav' || file.type === 'audio/wave' || file.type === 'audio/x-wav';
 
-    fetch('/api/upload-remix-audio', { method: 'POST', credentials: 'include', body: fd })
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (data.error) throw new Error(data.error);
-        if (data.audio_url || data.status === 'ready') {
-          remixUploadAudioUrl = data.audio_url;
-          setRemixZoneState('done', name);
-          return;
+    if (!isWav) {
+      // MP3 — upload directly
+      var fd = new FormData();
+      fd.append('file', file);
+      fetch('/api/upload-remix-audio', { method: 'POST', credentials: 'include', body: fd })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.error) throw new Error(data.error);
+          if (data.audio_url || data.status === 'ready') { remixUploadAudioUrl = data.audio_url; setRemixZoneState('done', name); return; }
+          throw new Error('Upload failed \u2014 please try again.');
+        })
+        .catch(function(err) {
+          setRemixZoneState('idle');
+          var e2 = document.getElementById('remix-upload-error');
+          if (e2) { e2.textContent = 'Upload failed: ' + (err.message || 'Unknown error'); e2.style.display = 'block'; }
+        });
+      return;
+    }
+
+    // WAV: decode audio, convert to MP3 via lamejs, then upload
+    var statusEl = document.getElementById('remix-upload-status');
+    if (statusEl) statusEl.textContent = 'Reading audio\u2026';
+
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      ctx.decodeAudioData(ev.target.result, function(audioBuffer) {
+        ctx.close();
+        // Load lamejs if not already available
+        function runConvert() { _remixConvertAndUpload(audioBuffer, name); }
+        if (window.lamejs) {
+          runConvert();
+        } else {
+          if (statusEl) statusEl.textContent = 'Loading encoder\u2026';
+          var script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js';
+          script.onload = runConvert;
+          script.onerror = function() {
+            setRemixZoneState('idle');
+            var e2 = document.getElementById('remix-upload-error');
+            if (e2) { e2.textContent = 'Could not load MP3 encoder. Please check your connection and try again.'; e2.style.display = 'block'; }
+          };
+          document.head.appendChild(script);
         }
-        throw new Error('Upload failed — please try again.');
-      })
-      .catch(function(err) {
+      }, function() {
+        ctx.close();
         setRemixZoneState('idle');
-        var errEl2 = document.getElementById('remix-upload-error');
-        if (errEl2) {
-          errEl2.textContent = 'Upload failed: ' + (err.message || 'Unknown error');
-          errEl2.style.display = 'block';
-        }
+        var e2 = document.getElementById('remix-upload-error');
+        if (e2) { e2.textContent = 'Could not read audio file. Try converting to MP3 first.'; e2.style.display = 'block'; }
       });
+    };
+    reader.readAsArrayBuffer(file);
   }
 
   // ── Start remix: close modal, show pipeline wave player, stay on Create page ─

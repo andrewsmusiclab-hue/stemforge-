@@ -4275,6 +4275,37 @@ app.get('/api/debug/producer-task/:task_id', async (c) => {
   return c.json({ status: res.status, ok: res.ok, raw: text })
 })
 
+// POST /api/debug/test-cover-url — test /sonic/upload-cover with a direct audio URL (admin only)
+// Body: { url: string, tags?: string }
+app.post('/api/debug/test-cover-url', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Admin only' }, 401)
+  const body = await c.req.json<{ url: string; tags?: string }>()
+  const { url, tags } = body
+  if (!url) return c.json({ error: 'url required' }, 400)
+  const coverBody = {
+    url,
+    mv: 'sonic-v5',
+    tags: tags || 'instrumental, no vocals, energetic',
+    custom_mode: false,
+    gpt_description_prompt: 'Instrumental beat, no vocals, energetic mood. Keep same energy and style.',
+    make_instrumental: true
+  }
+  console.log(`[debug/test-cover-url] url=${url.slice(0,100)} tags="${coverBody.tags}"`)
+  const r = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(coverBody)
+  })
+  const t = await r.text()
+  let parsed: any = {}
+  try { parsed = JSON.parse(t) } catch {}
+  console.log(`[debug/test-cover-url] HTTP ${r.status}: ${t.slice(0,300)}`)
+  return c.json({ status: r.status, ok: r.ok, body_sent: coverBody, response: parsed, raw: t.slice(0,800) })
+})
+
 // POST /api/debug/test-cover — test cover_music variants (admin_key or developer session)
 // Body: { clip_id: string }
 app.post('/api/debug/test-cover', async (c) => {
@@ -5927,7 +5958,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-01'
+const ASSET_VER = '20260802-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
