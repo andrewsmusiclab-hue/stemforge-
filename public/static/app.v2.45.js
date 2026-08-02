@@ -490,8 +490,8 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      // Show Admin sidebar link only to developer/admin users
-      if (user.plan === 'developer') {
+      // Show Admin sidebar link only to admin users (email-gated)
+      if (user.is_admin) {
         const adminLink = document.getElementById('sidebar-admin-link');
         if (adminLink) adminLink.style.display = 'flex';
       }

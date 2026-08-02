@@ -2382,86 +2382,81 @@ app.post('/api/job/remix', async (c) => {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
   }
 
-  // Build style description from the source job's blueprint for Sonic
+  // Build style tags from the source job's blueprint for Sonic /upload-cover
   const bp = srcJob.blueprint
   const genre = bp?.genre || 'instrumental'
   const mood  = bp?.mood  || ''
   const bpm   = bp?.bpm   || ''
-  const styleDesc = `Instrumental ${genre} beat, no vocals${mood ? `, ${mood} mood` : ''}${bpm ? `, ${bpm} BPM` : ''}. Same energy and style as the original.`
+  const tagParts = [genre, 'instrumental', 'no vocals']
+  if (mood) tagParts.push(mood)
+  if (bpm)  tagParts.push(`${bpm} BPM`)
+  const tags = tagParts.join(', ')
 
-  // Use /sonic/upload-extend — the same proven endpoint used by Song Extend.
-  // continue_at:1 is the minimum valid value (MusicAPI rejects 0).
-  // Using continue_at:1 means "regenerate from 1s in" — essentially a full creative remix.
+  // Use /sonic/upload-cover — the correct endpoint for AI remixing.
+  // It takes a reference audio URL + style tags and generates a brand-new track
+  // inspired by the original. This is a "cover/remix" not an "extension".
+  // This was the original working implementation confirmed to produce results.
   let genTaskId: string
   try {
     const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
     let audioUrl = srcJob.stereo_url as string
 
-    // Mirror strategy:
-    // - If the URL is already our own proxy URL (self-hosted), it's publicly accessible — skip mirror.
-    // - If it's an external CDN URL (Mureka etc.), mirror to R2 first for reliability.
-    // IMPORTANT: R2 key must NOT include the "remix-uploads/" prefix when building
-    //   the proxy URL, because extend-audio-proxy prepends that prefix itself.
+    // Mirror external CDN URLs (Mureka etc.) into R2 so Sonic can download quickly.
+    // Self-hosted proxy URLs (already on stemforge.studio) are skipped — already accessible.
+    // R2 key uses extend-uploads/ prefix (same as job/extend) — proxy handles both prefixes.
     if (c.env.IMAGES && !audioUrl.includes(siteUrl)) {
       try {
         const audioFetch = await fetch(audioUrl)
         if (audioFetch.ok) {
           const buf = await audioFetch.arrayBuffer()
           const ext = audioUrl.includes('.mp3') ? 'mp3' : 'm4a'
-          // r2FileName must NOT include the "remix-uploads/" prefix —
-          // the IMAGES.put call adds it, and extend-audio-proxy also adds it when looking up.
+          // Store under extend-uploads/ — the proxy at /api/extend-audio-proxy tries this prefix first
           const r2FileName = `${Date.now()}-${Math.random().toString(36).slice(2,8)}-remix.${ext}`
-          await c.env.IMAGES.put(`remix-uploads/${r2FileName}`, buf, {
+          await c.env.IMAGES.put(`extend-uploads/${r2FileName}`, buf, {
             httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
           })
-          // Proxy URL uses r2FileName WITHOUT the prefix (proxy adds "remix-uploads/" itself)
           audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2FileName)}`
-          console.log(`[remix] mirrored to R2: remix-uploads/${r2FileName}`)
+          console.log(`[remix] mirrored to R2: extend-uploads/${r2FileName}`)
         }
       } catch (mirrorErr: any) {
         console.warn('[remix] R2 mirror failed, using original URL:', mirrorErr?.message)
       }
     }
 
-    // POST /sonic/upload-extend — same proven API as Song Extend.
-    // continue_at:1 = minimum valid value (MusicAPI rejects 0).
-    // This tells Sonic to treat the uploaded audio as a style reference and
-    // generate a fresh track in the same genre/mood/energy starting from 1s.
-    const uploadExtBody: Record<string, any> = {
-      url: audioUrl,
-      mv: 'sonic-v5',
-      continue_at: 1,   // MusicAPI minimum — 0 is invalid
-      custom_mode: false,
-      gpt_description_prompt: styleDesc,
-      make_instrumental: true
-    }
-    console.log(`[remix] Calling /sonic/upload-extend url=${audioUrl.slice(0,80)} continue_at=1 style="${styleDesc.slice(0,80)}"`)
-    const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+    // POST /sonic/upload-cover — give it the audio URL + style tags, get a task_id back.
+    // Response: { task_id } or { steps: { cover: { task_id } } } or { data: [{ id }] }
+    console.log(`[remix] Calling /sonic/upload-cover url=${audioUrl.slice(0,80)} tags="${tags}"`)
+    const coverRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(uploadExtBody)
+      body: JSON.stringify({
+        url: audioUrl,
+        mv: 'sonic-v5',
+        tags,
+        custom_mode: false,
+        gpt_description_prompt: `Instrumental ${genre} beat, no vocals, ${mood || 'energetic'} mood${bpm ? `, ${bpm} BPM` : ''}. Keep the same energy and style.`,
+        make_instrumental: true
+      })
     })
-    const sonicText = await sonicRes.text()
-    console.log(`[remix] /sonic/upload-extend HTTP ${sonicRes.status}: ${sonicText.slice(0,600)}`)
-    if (!sonicRes.ok) {
+    const coverText = await coverRes.text()
+    console.log(`[remix] /sonic/upload-cover HTTP ${coverRes.status}: ${coverText.slice(0,600)}`)
+    if (!coverRes.ok) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      // Return the actual MusicAPI error message so we can diagnose it
-      let sonicErrData: any = {}
-      try { sonicErrData = JSON.parse(sonicText) } catch {}
-      const apiErrMsg = sonicErrData.message || sonicErrData.error || sonicText.slice(0, 200)
-      console.error(`[remix] MusicAPI error: ${apiErrMsg}`)
-      return c.json({ error: `Could not start remix: ${apiErrMsg}`, api_status: sonicRes.status }, 500)
+      let coverErrData: any = {}
+      try { coverErrData = JSON.parse(coverText) } catch {}
+      const apiErrMsg = coverErrData.message || coverErrData.error || coverText.slice(0, 200)
+      console.error(`[remix] MusicAPI /upload-cover error: ${apiErrMsg}`)
+      return c.json({ error: `Could not start remix: ${apiErrMsg}`, api_status: coverRes.status }, 500)
     }
-    let sonicData: any = {}
-    try { sonicData = JSON.parse(sonicText) } catch {}
-    // upload-extend returns: { task_id } or { steps: { extend: { task_id } } } or { data: [{ id }] }
-    genTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id || ''
+    let coverData: any = {}
+    try { coverData = JSON.parse(coverText) } catch {}
+    genTaskId = coverData.task_id || coverData.steps?.cover?.task_id || coverData.data?.[0]?.id || ''
     if (!genTaskId) {
-      console.error(`[remix] upload-extend returned no task_id: ${sonicText.slice(0,200)}`)
+      console.error(`[remix] upload-cover returned no task_id: ${coverText.slice(0,200)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — MusicAPI returned no task ID. Please try again.' }, 500)
     }
-    console.log(`[remix] upload-extend task started: ${genTaskId}`)
+    console.log(`[remix] upload-cover task started: ${genTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
@@ -3029,7 +3024,8 @@ app.get('/api/auth/me', async (c) => {
       gens_limit: fresh?.gens_limit ?? user.gens_limit,
       bonus_credits: fresh?.bonus_credits ?? user.bonus_credits ?? 0,
       account_locked: fresh?.account_locked ?? 0,
-      lock_reason: fresh?.lock_reason ?? null
+      lock_reason: fresh?.lock_reason ?? null,
+      is_admin: isAdmin(user, c.env)
     }
   })
 })
@@ -4852,7 +4848,6 @@ app.post('/api/promo/redeem', async (c) => {
 
 function isAdmin(user: User | null, env: Bindings): boolean {
   if (!user) return false
-  if (user.plan === 'developer') return true
   if (env.ADMIN_EMAIL && user.email === env.ADMIN_EMAIL) return true
   return false
 }
@@ -5932,7 +5927,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260729-18'
+const ASSET_VER = '20260802-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9267,13 +9262,10 @@ function adminPage(user: User) {
     <div class="sub-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
       <div>
         <h1 style="display:flex;align-items:center;gap:10px"><i class="fas fa-shield-alt" style="color:#a78bfa"></i> Admin Panel</h1>
-        <p style="color:var(--muted)">Developer access — logged in as ${user.email}</p>
+        <p style="color:var(--muted)">Logged in as ${user.email}</p>
       </div>
       <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
     </div>
-
-    <!-- Stats debug banner — hidden on success, visible on error -->
-    <div id="admin-stats-debug" style="display:none;background:#1e293b;border:1px solid #334155;border-radius:8px;padding:10px 16px;margin-bottom:12px;font-size:.82rem;color:#94a3b8;font-family:monospace"></div>
 
     <!-- Stats bar -->
     <div class="sub-stats-bar" id="admin-stats-bar" style="margin-bottom:32px">
@@ -9284,67 +9276,50 @@ function adminPage(user: User) {
       <div class="sub-stat"><span class="sub-stat__label">MRR</span><span class="sub-stat__val" id="stat-mrr">—</span></div>
     </div>
 
+    <!-- Stats error banner — only shown on failure -->
+    <div id="admin-stats-err" style="display:none;background:#1e293b;border:1px solid #ef444430;border-radius:8px;padding:10px 16px;margin-bottom:16px;font-size:.82rem;color:#fca5a5;font-family:monospace"></div>
+
     <!-- Tabs -->
     <div style="display:flex;gap:4px;margin-bottom:24px;border-bottom:1px solid var(--border);padding-bottom:0;flex-wrap:wrap">
       <button class="admin-tab admin-tab--active" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
-      <button class="admin-tab" data-tab="elevenlabs" onclick="adminTab('elevenlabs')"><i class="fas fa-bolt" style="color:#f59e0b"></i> ElevenLabs</button>
       <button class="admin-tab" data-tab="promos" onclick="adminTab('promos')"><i class="fas fa-tag"></i> Promos</button>
     </div>
 
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- ANALYTICS TAB                                             -->
-    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- ANALYTICS TAB -->
     <div id="admin-tab-analytics">
-      <!-- Summary stats -->
       <div class="sub-stats-bar" style="margin-bottom:28px">
         <div class="sub-stat"><span class="sub-stat__label">Views Today</span><span class="sub-stat__val" id="an-today">—</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Views This Week</span><span class="sub-stat__val" id="an-week">—</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Views This Month</span><span class="sub-stat__val" id="an-month">—</span></div>
       </div>
-
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
-
-        <!-- Daily bar chart -->
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
           <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-chart-bar" style="color:var(--primary);margin-right:8px"></i>Daily Page Views (30d)</h3>
           <div id="daily-chart" style="display:flex;align-items:flex-end;gap:3px;height:120px;overflow:hidden">
             <p style="color:var(--muted);font-size:.85rem;align-self:center;width:100%;text-align:center"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
           </div>
         </div>
-
-        <!-- Traffic sources -->
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
           <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-share-alt" style="color:#10b981;margin-right:8px"></i>Traffic Sources (30d)</h3>
-          <div id="sources-chart">
-            <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
-          </div>
+          <div id="sources-chart"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
         </div>
       </div>
-
-      <!-- Social media breakdown -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
         <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-hashtag" style="color:#f59e0b;margin-right:8px"></i>Social Media Breakdown</h3>
         <div id="social-breakdown" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">
           <p style="color:var(--muted);font-size:.85rem;grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
         </div>
       </div>
-
-      <!-- Top pages -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
         <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-file-alt" style="color:#a78bfa;margin-right:8px"></i>Top Pages (30d)</h3>
-        <div id="top-pages">
-          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
-        </div>
+        <div id="top-pages"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- REVENUE TAB                                               -->
-    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- REVENUE TAB -->
     <div id="admin-tab-revenue" style="display:none">
-      <!-- MRR headline -->
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;margin-bottom:28px">
         <div style="background:linear-gradient(135deg,rgba(167,139,250,.15),rgba(99,102,241,.1));border:1px solid rgba(167,139,250,.3);border-radius:14px;padding:22px">
           <div style="font-size:.82rem;color:var(--muted);margin-bottom:4px">Monthly Recurring Revenue</div>
@@ -9367,8 +9342,6 @@ function adminPage(user: User) {
           <div style="font-size:.78rem;color:var(--muted);margin-top:4px">no revenue</div>
         </div>
       </div>
-
-      <!-- Profit breakdown -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
           <h3 style="margin-bottom:18px;font-size:.98rem"><i class="fas fa-calculator" style="color:#10b981;margin-right:8px"></i>Estimated Monthly P&amp;L</h3>
@@ -9379,9 +9352,8 @@ function adminPage(user: User) {
             <tr><td style="padding:8px 0;color:var(--muted);border-bottom:1px solid var(--border10)"><span style="color:#ef4444">−</span> Cloudflare Workers</td><td style="text-align:right;font-weight:700;color:#10b981;border-bottom:1px solid var(--border10)">$0 (free tier)</td></tr>
             <tr style="background:rgba(16,185,129,.06)"><td style="padding:10px 0 8px;font-weight:700"><i class="fas fa-chart-line" style="color:#10b981"></i> Estimated net profit</td><td id="rv-pl-profit" style="text-align:right;font-weight:800;font-size:1.1rem">—</td></tr>
           </table>
-          <div style="font-size:.75rem;color:var(--muted);margin-top:12px;line-height:1.4">* MusicAPI cost estimated at ~$0.04/generation (Sonic + Producer combined). Actual varies. Stripe fees (~2.9%+$0.30 per charge) not included.</div>
+          <div style="font-size:.75rem;color:var(--muted);margin-top:12px;line-height:1.4">* MusicAPI cost ~$0.04/generation. Stripe fees not included.</div>
         </div>
-
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
           <h3 style="margin-bottom:18px;font-size:.98rem"><i class="fas fa-chart-pie" style="color:#f59e0b;margin-right:8px"></i>Revenue Split</h3>
           <div id="rv-pie" style="display:flex;flex-direction:column;gap:10px">
@@ -9389,32 +9361,23 @@ function adminPage(user: User) {
           </div>
         </div>
       </div>
-
-      <!-- Recent subscribers -->
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
         <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-user-check" style="color:#a78bfa;margin-right:8px"></i>Recent Paid Subscribers</h3>
-        <div id="rv-subs" style="overflow-x:auto">
-          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
-        </div>
+        <div id="rv-subs" style="overflow-x:auto"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- USERS TAB                                                 -->
-    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- USERS TAB -->
     <div id="admin-tab-users" style="display:none">
       <div id="admin-users-list" style="overflow-x:auto">
         <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading users…</p>
       </div>
     </div>
 
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- PROMOS TAB                                               -->
-    <!-- ══════════════════════════════════════════════════════════ -->
+    <!-- PROMOS TAB -->
     <div id="admin-tab-promos" style="display:none">
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
         <h3 style="margin:0 0 20px"><i class="fas fa-tag"></i> Promo Codes</h3>
-        <!-- Create new promo -->
         <div style="background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:20px">
           <h4 style="margin:0 0 14px;font-size:.9rem">Create New Code</h4>
           <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
@@ -9429,57 +9392,9 @@ function adminPage(user: User) {
             <span id="promo-create-status" style="font-size:.82rem;color:var(--muted)"></span>
           </div>
         </div>
-        <!-- List -->
         <div id="admin-promos-list" style="overflow-x:auto">
           <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading promo codes…</p>
         </div>
-      </div>
-    </div>
-
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <!-- ELEVENLABS CREDITS TAB                                    -->
-    <!-- ══════════════════════════════════════════════════════════ -->
-    <div id="admin-tab-elevenlabs" style="display:none">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px">
-          <h3 style="margin:0"><i class="fas fa-bolt" style="color:#f59e0b"></i> ElevenLabs Credits</h3>
-          <button onclick="loadElevenLabsCredits()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
-        </div>
-        <div id="el-credits-loading" style="color:var(--muted);font-size:.9rem"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
-        <div id="el-credits-data" style="display:none">
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:20px">
-            <div style="background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center">
-              <div style="font-size:1.8rem;font-weight:800;color:var(--primary)" id="el-remaining">—</div>
-              <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Characters Remaining</div>
-            </div>
-            <div style="background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center">
-              <div style="font-size:1.8rem;font-weight:800;color:#f59e0b" id="el-used">—</div>
-              <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Characters Used</div>
-            </div>
-            <div style="background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px;padding:18px;text-align:center">
-              <div style="font-size:1.8rem;font-weight:800;color:var(--text)" id="el-limit">—</div>
-              <div style="font-size:.78rem;color:var(--muted);margin-top:4px">Monthly Limit</div>
-            </div>
-          </div>
-          <!-- Usage bar -->
-          <div style="margin-bottom:12px">
-            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-              <span style="font-size:.8rem;color:var(--muted)">Usage</span>
-              <span style="font-size:.8rem;font-weight:600" id="el-pct">0%</span>
-            </div>
-            <div style="height:10px;background:var(--border);border-radius:5px;overflow:hidden">
-              <div id="el-bar" style="height:100%;border-radius:5px;background:linear-gradient(90deg,#10b981,#f59e0b);transition:width .5s;width:0%"></div>
-            </div>
-          </div>
-          <div style="font-size:.8rem;color:var(--muted);margin-top:10px" id="el-reset-date"></div>
-          <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
-            <div style="font-size:.82rem;color:var(--muted)">One Shots this month: <strong id="el-calls-month" style="color:var(--text)">—</strong></div>
-            <div style="font-size:.82rem;color:var(--muted)">All-time One Shots: <strong id="el-calls-alltime" style="color:var(--text)">—</strong></div>
-            <div style="font-size:.82rem;color:var(--muted)">All-time chars: <strong id="el-chars-alltime" style="color:var(--text)">—</strong></div>
-          </div>
-          <p style="font-size:.75rem;color:#a78bfa;margin-top:10px;padding:8px 10px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);border-radius:8px"><i class="fas fa-info-circle"></i> Usage tracked locally in D1 — API key has <code>sound_generation</code> scope only (not <code>user_read</code>). Each prompt's character count is saved on every generation.</p>
-        </div>
-        <div id="el-credits-error" style="display:none;color:var(--danger);font-size:.88rem"></div>
       </div>
     </div>
 
@@ -9497,406 +9412,176 @@ function adminPage(user: User) {
 .rv-bar-fill{height:100%;border-radius:4px;transition:width .5s}
 </style>
 <script>
-// ── Load global stats ──────────────────────────────────────
-(async()=>{
-  const dbgEl = document.getElementById('admin-stats-debug');
-  function dbg(msg){ if(dbgEl){ dbgEl.textContent = msg; dbgEl.style.display='block'; } }
-  function setStats(msg){
-    ['stat-users','stat-pro','stat-creator','stat-jobs','stat-mrr'].forEach(id=>{
-      const el = document.getElementById(id);
-      if(el) el.textContent = msg;
-    });
-  }
-  try {
-    dbg('Fetching stats…');
-    const ctrl = new AbortController();
-    const tid = setTimeout(()=>{ ctrl.abort(); }, 15000);
-    const res = await fetch('/api/admin/stats', { signal: ctrl.signal, credentials: 'include' });
-    clearTimeout(tid);
-    dbg('HTTP '+res.status);
-    if (!res.ok) {
-      const txt = await res.text().catch(()=>'');
-      throw new Error('HTTP '+res.status+' — '+txt.slice(0,100));
-    }
-    const data = await res.json();
-    if(data.error) throw new Error('API error: '+data.error);
-    dbg('OK — populating');
-    if(data.users){
-      const uEl = document.getElementById('stat-users');
-      const pEl = document.getElementById('stat-pro');
-      const cEl = document.getElementById('stat-creator');
-      if(uEl) uEl.textContent = String(data.users.total ?? '?');
-      if(pEl) pEl.textContent = String(data.users.pro_count ?? '?');
-      if(cEl) cEl.textContent = String(data.users.creator_count ?? '?');
-    } else {
-      dbg('Warning: data.users is null/undefined');
-    }
-    if(data.jobs){
-      const jEl = document.getElementById('stat-jobs');
-      if(jEl) jEl.textContent = String(data.jobs.total ?? '?');
-    }
-    if(dbgEl) dbgEl.style.display='none'; // hide debug on success
-  } catch(e) {
-    const msg = String(e.message||e);
-    console.error('[admin stats]', msg);
-    dbg('ERROR: '+msg);
-    setStats('ERR');
-  }
+(function loadAdminStats(){
+  var errEl=document.getElementById('admin-stats-err');
+  function showErr(msg){ if(errEl){ errEl.textContent='Stats error: '+msg; errEl.style.display='block'; } ['stat-users','stat-pro','stat-creator','stat-jobs'].forEach(function(id){ var el=document.getElementById(id); if(el) el.textContent='—'; }); }
+  var ctrl=new AbortController(), tid=setTimeout(function(){ ctrl.abort(); },15000);
+  fetch('/api/admin/stats',{signal:ctrl.signal,credentials:'include'})
+    .then(function(res){ clearTimeout(tid); if(!res.ok) return res.text().then(function(t){ throw new Error('HTTP '+res.status+' '+t.slice(0,100)); }); return res.json(); })
+    .then(function(data){
+      if(data.error) throw new Error(data.error);
+      if(data.users){ var u=document.getElementById('stat-users'),p=document.getElementById('stat-pro'),cr=document.getElementById('stat-creator'); if(u)u.textContent=String(data.users.total||0); if(p)p.textContent=String(data.users.pro_count||0); if(cr)cr.textContent=String(data.users.creator_count||0); }
+      if(data.jobs){ var j=document.getElementById('stat-jobs'); if(j)j.textContent=String(data.jobs.total||0); }
+      if(errEl) errEl.style.display='none';
+    })
+    .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-// ── Tab switcher ───────────────────────────────────────────
-const adminTabs = ['analytics','revenue','users','elevenlabs','promos'];
+var adminTabs=['analytics','revenue','users','promos'];
 function adminTab(tab){
-  document.querySelectorAll('.admin-tab[data-tab]').forEach(t=>t.classList.remove('admin-tab--active'));
-  const btn = document.querySelector(\`[data-tab="\${tab}"]\`);
-  if(btn) btn.classList.add('admin-tab--active');
-  adminTabs.forEach(t=>{ const el=document.getElementById('admin-tab-'+t); if(el) el.style.display=t===tab?'block':'none'; });
-  if(tab==='analytics' && !window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
-  if(tab==='revenue' && !window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
-  if(tab==='users' && !window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
-  if(tab==='promos' && !window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
-  if(tab==='elevenlabs'){ loadElevenLabsCredits(); }
+  document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
+  var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
+  adminTabs.forEach(function(t){ var el=document.getElementById('admin-tab-'+t); if(el) el.style.display=t===tab?'block':'none'; });
+  if(tab==='analytics'&&!window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
+  if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
+  if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
+  if(tab==='promos'&&!window._promosLoaded){ loadPromos(); window._promosLoaded=true; }
 }
+loadAnalytics(); window._analyticsLoaded=true;
 
-// Auto-load analytics on page open (it's the default tab)
-loadAnalytics(); window._analyticsLoaded = true;
-
-async function loadElevenLabsCredits(){
-  const loadingEl = document.getElementById('el-credits-loading');
-  const dataEl    = document.getElementById('el-credits-data');
-  const errorEl   = document.getElementById('el-credits-error');
-  if(loadingEl) loadingEl.style.display='block';
-  if(dataEl) dataEl.style.display='none';
-  if(errorEl) errorEl.style.display='none';
-  try {
-    const res = await fetch('/api/admin/elevenlabs-credits');
-    const data = await res.json();
-    if(loadingEl) loadingEl.style.display='none';
-    if(data.error && !data.ok){
-      if(errorEl){ errorEl.style.display='block'; errorEl.textContent='Error: '+data.error; }
-      return;
-    }
-    const remaining = data.remaining || 0;
-    const used      = data.character_count || 0;
-    const limit     = data.character_limit || 10000;
-    const pct       = limit > 0 ? Math.round((used/limit)*100) : 0;
-    const barColor  = pct > 80 ? '#ef4444' : pct > 50 ? '#f59e0b' : '#10b981';
-    if(document.getElementById('el-remaining')) document.getElementById('el-remaining').textContent = remaining.toLocaleString();
-    if(document.getElementById('el-used'))      document.getElementById('el-used').textContent      = used.toLocaleString();
-    if(document.getElementById('el-limit'))     document.getElementById('el-limit').textContent     = limit.toLocaleString();
-    if(document.getElementById('el-pct'))       document.getElementById('el-pct').textContent       = pct+'%';
-    const bar = document.getElementById('el-bar');
-    if(bar){ bar.style.width=pct+'%'; bar.style.background=pct>80?'#ef4444':pct>50?'linear-gradient(90deg,#10b981,#f59e0b)':'#10b981'; }
-    const resetEl = document.getElementById('el-reset-date');
-    if(resetEl && data.next_reset) resetEl.textContent = 'Resets on: '+data.next_reset;
-    if(document.getElementById('el-calls-month'))   document.getElementById('el-calls-month').textContent   = (data.total_calls_month||0).toLocaleString();
-    if(document.getElementById('el-calls-alltime')) document.getElementById('el-calls-alltime').textContent = (data.all_time_calls||0).toLocaleString();
-    if(document.getElementById('el-chars-alltime')) document.getElementById('el-chars-alltime').textContent = (data.all_time_chars||0).toLocaleString();
-    if(dataEl) dataEl.style.display='block';
-  } catch(e){
-    if(loadingEl) loadingEl.style.display='none';
-    if(errorEl){ errorEl.style.display='block'; errorEl.textContent='Failed to load: '+(e.message||'unknown error'); }
-  }
-}
-
-// ── ANALYTICS TAB ──────────────────────────────────────────
-const SOCIAL_ICONS = {
-  tiktok:'<i class="fab fa-tiktok" style="color:#69C9D0"></i>',
-  facebook:'<i class="fab fa-facebook" style="color:#1877F2"></i>',
-  instagram:'<i class="fab fa-instagram" style="color:#E1306C"></i>',
-  youtube:'<i class="fab fa-youtube" style="color:#FF0000"></i>',
-  twitter:'<i class="fab fa-twitter" style="color:#1DA1F2"></i>',
-  snapchat:'<i class="fab fa-snapchat" style="color:#FFFC00;-webkit-text-stroke:1px #ccc"></i>',
-  pinterest:'<i class="fab fa-pinterest" style="color:#E60023"></i>',
-  reddit:'<i class="fab fa-reddit" style="color:#FF4500"></i>',
-  linkedin:'<i class="fab fa-linkedin" style="color:#0A66C2"></i>',
-  google:'<i class="fab fa-google" style="color:#4285F4"></i>',
-  bing:'<i class="fas fa-search" style="color:#008373"></i>',
-  direct:'<i class="fas fa-link" style="color:var(--primary)"></i>',
-  referral:'<i class="fas fa-external-link-alt" style="color:var(--muted)"></i>',
-};
+var SOCIAL_ICONS={tiktok:'<i class="fab fa-tiktok" style="color:#69C9D0"></i>',facebook:'<i class="fab fa-facebook" style="color:#1877F2"></i>',instagram:'<i class="fab fa-instagram" style="color:#E1306C"></i>',youtube:'<i class="fab fa-youtube" style="color:#FF0000"></i>',twitter:'<i class="fab fa-twitter" style="color:#1DA1F2"></i>',snapchat:'<i class="fab fa-snapchat" style="color:#FFFC00"></i>',pinterest:'<i class="fab fa-pinterest" style="color:#E60023"></i>',reddit:'<i class="fab fa-reddit" style="color:#FF4500"></i>',linkedin:'<i class="fab fa-linkedin" style="color:#0A66C2"></i>',google:'<i class="fab fa-google" style="color:#4285F4"></i>',bing:'<i class="fas fa-search" style="color:#008373"></i>',direct:'<i class="fas fa-link" style="color:var(--primary)"></i>',referral:'<i class="fas fa-external-link-alt" style="color:var(--muted)"></i>'};
 
 async function loadAnalytics(){
   try{
-    const ctrl = new AbortController();
-    const tid = setTimeout(()=>ctrl.abort(), 12000);
-    const res = await fetch('/api/admin/analytics', { signal: ctrl.signal, credentials: 'include' });
+    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},12000);
+    var res=await fetch('/api/admin/analytics',{signal:ctrl.signal,credentials:'include'});
     clearTimeout(tid);
-    if(!res.ok) throw new Error('HTTP '+res.status+' '+res.statusText);
-    const d = await res.json();
-    if(d.error) throw new Error(d.error);
-    document.getElementById('an-today').textContent = d.today||0;
-    document.getElementById('an-week').textContent = d.week||0;
-    document.getElementById('an-month').textContent = d.month||0;
-
-    // Daily bar chart
-    const daily = d.daily||[];
-    const maxViews = Math.max(...daily.map(r=>r.cnt), 1);
-    const chartEl = document.getElementById('daily-chart');
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    var d=await res.json(); if(d.error) throw new Error(d.error);
+    document.getElementById('an-today').textContent=d.today||0;
+    document.getElementById('an-week').textContent=d.week||0;
+    document.getElementById('an-month').textContent=d.month||0;
+    var daily=d.daily||[],maxV=Math.max.apply(null,daily.map(function(r){return r.cnt;}).concat([1])),chartEl=document.getElementById('daily-chart');
     if(!daily.length){ chartEl.innerHTML='<p style="color:var(--muted);font-size:.82rem;text-align:center;width:100%">No data yet</p>'; }
-    else {
-      chartEl.innerHTML = daily.map(r=>{
-        const h = Math.round((r.cnt/maxViews)*100);
-        const label = new Date(r.day_bucket*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'});
-        return \`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0" title="\${label}: \${r.cnt} views">
-          <div style="width:100%;background:var(--primary);border-radius:3px 3px 0 0;height:\${h}%;opacity:.85;transition:height .3s;min-height:2px"></div>
-          <div style="font-size:.55rem;color:var(--muted);writing-mode:vertical-lr;transform:rotate(180deg);max-height:36px;overflow:hidden">\${label}</div>
-        </div>\`;
-      }).join('');
-    }
-
-    // Sources chart
-    const sources = d.sources||[];
-    const totalSrc = sources.reduce((a,s)=>a+s.cnt,0)||1;
-    const srcEl = document.getElementById('sources-chart');
+    else { chartEl.innerHTML=daily.map(function(r){ var h=Math.round((r.cnt/maxV)*100),lbl=new Date(r.day_bucket*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'}); return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0" title="'+lbl+': '+r.cnt+' views"><div style="width:100%;background:var(--primary);border-radius:3px 3px 0 0;height:'+h+'%;opacity:.85;min-height:2px"></div><div style="font-size:.55rem;color:var(--muted);writing-mode:vertical-lr;transform:rotate(180deg);max-height:36px;overflow:hidden">'+lbl+'</div></div>'; }).join(''); }
+    var sources=d.sources||[],totalSrc=sources.reduce(function(a,s){return a+s.cnt;},0)||1,srcEl=document.getElementById('sources-chart');
     if(!sources.length){ srcEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No traffic data yet</p>'; }
-    else {
-      srcEl.innerHTML = sources.map(s=>{
-        const pct = Math.round((s.cnt/totalSrc)*100);
-        const icon = SOCIAL_ICONS[s.source||'direct'] || SOCIAL_ICONS.referral;
-        const name = s.source||'direct';
-        return \`<div class="rv-bar-wrap" style="margin-bottom:10px">
-          <div style="width:22px;text-align:center">\${icon}</div>
-          <div style="width:80px;font-size:.82rem;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${name}</div>
-          <div class="rv-bar-track"><div class="rv-bar-fill" style="width:\${pct}%;background:var(--primary)"></div></div>
-          <div style="width:36px;text-align:right;font-size:.82rem;font-weight:700">\${s.cnt}</div>
-          <div style="width:34px;text-align:right;font-size:.75rem;color:var(--muted)">\${pct}%</div>
-        </div>\`;
-      }).join('');
-    }
-
-    // Social breakdown mini cards
-    const socialKeys = ['tiktok','facebook','instagram','youtube','twitter','snapchat','pinterest','reddit','linkedin'];
-    const srcMap = {};
-    (d.sources||[]).forEach(s=>{ srcMap[s.source]=s.cnt; });
-    const socialEl = document.getElementById('social-breakdown');
-    socialEl.innerHTML = socialKeys.map(k=>{
-      const cnt = srcMap[k]||0;
-      return \`<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center">
-        <div style="font-size:1.4rem;margin-bottom:6px">\${SOCIAL_ICONS[k]||''}</div>
-        <div style="font-size:1.1rem;font-weight:700">\${cnt}</div>
-        <div style="font-size:.72rem;color:var(--muted);text-transform:capitalize;margin-top:2px">\${k}</div>
-      </div>\`;
-    }).join('');
-
-    // Top pages
-    const pages = d.top_pages||[];
-    const pgEl = document.getElementById('top-pages');
+    else { srcEl.innerHTML=sources.map(function(s){ var pct=Math.round((s.cnt/totalSrc)*100),icon=SOCIAL_ICONS[s.source||'direct']||SOCIAL_ICONS.referral,name=s.source||'direct'; return '<div class="rv-bar-wrap" style="margin-bottom:10px"><div style="width:22px;text-align:center">'+icon+'</div><div style="width:80px;font-size:.82rem;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+name+'</div><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:var(--primary)"></div></div><div style="width:36px;text-align:right;font-size:.82rem;font-weight:700">'+s.cnt+'</div><div style="width:34px;text-align:right;font-size:.75rem;color:var(--muted)">'+pct+'%</div></div>'; }).join(''); }
+    var socialKeys=['tiktok','facebook','instagram','youtube','twitter','snapchat','pinterest','reddit','linkedin'],srcMap={};
+    (d.sources||[]).forEach(function(s){srcMap[s.source]=s.cnt;});
+    document.getElementById('social-breakdown').innerHTML=socialKeys.map(function(k){ var cnt=srcMap[k]||0; return '<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center"><div style="font-size:1.4rem;margin-bottom:6px">'+(SOCIAL_ICONS[k]||'')+'</div><div style="font-size:1.1rem;font-weight:700">'+cnt+'</div><div style="font-size:.72rem;color:var(--muted);text-transform:capitalize;margin-top:2px">'+k+'</div></div>'; }).join('');
+    var pages=d.top_pages||[],pgEl=document.getElementById('top-pages');
     if(!pages.length){ pgEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No data yet</p>'; }
-    else {
-      const maxPg = Math.max(...pages.map(p=>p.cnt),1);
-      pgEl.innerHTML = '<table class="admin-table"><thead><tr><th>Page</th><th>Views</th><th style="width:200px">Share</th></tr></thead><tbody>'+
-        pages.map(p=>{
-          const pct = Math.round((p.cnt/maxPg)*100);
-          return \`<tr><td><code style="font-size:.85rem">\${p.path}</code></td><td style="font-weight:700">\${p.cnt}</td><td><div class="rv-bar-track"><div class="rv-bar-fill" style="width:\${pct}%;background:#a78bfa"></div></div></td></tr>\`;
-        }).join('')+'</tbody></table>';
-    }
-  }catch(e){ document.getElementById('daily-chart').innerHTML='<p style="color:#ef4444;font-size:.82rem">Error loading analytics</p>'; }
+    else { var maxPg=Math.max.apply(null,pages.map(function(p){return p.cnt;}).concat([1])); pgEl.innerHTML='<table class="admin-table"><thead><tr><th>Page</th><th>Views</th><th style="width:200px">Share</th></tr></thead><tbody>'+pages.map(function(p){ var pct=Math.round((p.cnt/maxPg)*100); return '<tr><td><code style="font-size:.85rem">'+p.path+'</code></td><td style="font-weight:700">'+p.cnt+'</td><td><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:#a78bfa"></div></div></td></tr>'; }).join('')+'</tbody></table>'; }
+  }catch(e){ document.getElementById('daily-chart').innerHTML='<p style="color:#ef4444;font-size:.82rem">Error loading analytics: '+(e.message||'unknown')+'</p>'; }
 }
 
-// ── REVENUE TAB ────────────────────────────────────────────
 async function loadRevenue(){
   try{
-    const res = await fetch('/api/admin/revenue', { credentials: 'include' });
+    var res=await fetch('/api/admin/revenue',{credentials:'include'});
     if(!res.ok) throw new Error('HTTP '+res.status);
-    const d = await res.json();
-    if(d.error){ console.warn('[admin revenue]', d.error); document.getElementById('rv-mrr').textContent='Error: '+d.error.slice(0,20); return; }
-    const mrr = d.mrr || 0;
-    document.getElementById('rv-mrr').textContent = '\$'+(mrr).toLocaleString();
-    document.getElementById('rv-pro').textContent = d.pro_count||0;
-    document.getElementById('rv-creator').textContent = d.creator_count||0;
-    document.getElementById('rv-free').textContent = d.free_count||0;
-    document.getElementById('stat-mrr').textContent = '\$'+mrr;
-    document.getElementById('rv-pl-mrr').textContent = '\$'+(mrr).toLocaleString();
-    document.getElementById('rv-pl-credits').textContent = d.credit_pack_revenue ? '\$'+parseFloat(d.credit_pack_revenue).toFixed(2) : '\$0';
-    document.getElementById('rv-pl-musicapi').textContent = '-\$'+(d.estimated_musicapi_cost||0).toFixed(2)+' ('+(d.jobs_this_month||0)+' jobs)';
-    const profit = d.estimated_profit||0;
-    const profitEl = document.getElementById('rv-pl-profit');
-    profitEl.textContent = (profit>=0?'+':'')+'\$'+profit.toFixed(2);
-    profitEl.style.color = profit>=0 ? '#10b981' : '#ef4444';
-
-    // Revenue pie bars
-    const total = mrr + (d.credit_pack_revenue||0);
-    const pieEl = document.getElementById('rv-pie');
+    var d=await res.json(); if(d.error){ document.getElementById('rv-mrr').textContent='Error: '+d.error.slice(0,30); return; }
+    var mrr=d.mrr||0;
+    document.getElementById('rv-mrr').textContent='$'+mrr.toLocaleString();
+    document.getElementById('rv-pro').textContent=d.pro_count||0;
+    document.getElementById('rv-creator').textContent=d.creator_count||0;
+    document.getElementById('rv-free').textContent=d.free_count||0;
+    document.getElementById('stat-mrr').textContent='$'+mrr;
+    document.getElementById('rv-pl-mrr').textContent='$'+mrr.toLocaleString();
+    document.getElementById('rv-pl-credits').textContent=d.credit_pack_revenue?'$'+parseFloat(d.credit_pack_revenue).toFixed(2):'$0';
+    document.getElementById('rv-pl-musicapi').textContent='-$'+(d.estimated_musicapi_cost||0).toFixed(2)+' ('+(d.jobs_this_month||0)+' jobs)';
+    var profit=d.estimated_profit||0,profitEl=document.getElementById('rv-pl-profit');
+    profitEl.textContent=(profit>=0?'+':'')+'$'+profit.toFixed(2); profitEl.style.color=profit>=0?'#10b981':'#ef4444';
+    var total=mrr+(d.credit_pack_revenue||0),pieEl=document.getElementById('rv-pie');
     if(!total){ pieEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No revenue yet</p>'; }
-    else {
-      const proRev = d.pro_count*26;
-      const creatorRev = d.creator_count*10;
-      const packRev = d.credit_pack_revenue||0;
-      const rows = [
-        {label:'Pro Artist ('+d.pro_count+'×$26)',val:proRev,color:'#a78bfa'},
-        {label:'Creator ('+d.creator_count+'×$10)',val:creatorRev,color:'#3b82f6'},
-        {label:'Credit Packs',val:packRev,color:'#f59e0b'},
-      ];
-      pieEl.innerHTML = rows.map(r=>{
-        const pct = total>0 ? Math.round((r.val/total)*100) : 0;
-        return \`<div class="rv-bar-wrap" style="margin-bottom:12px">
-          <div style="width:12px;height:12px;border-radius:3px;background:\${r.color};flex-shrink:0"></div>
-          <div style="flex:1;font-size:.85rem">\${r.label}</div>
-          <div class="rv-bar-track"><div class="rv-bar-fill" style="width:\${pct}%;background:\${r.color}"></div></div>
-          <div style="width:52px;text-align:right;font-size:.85rem;font-weight:700">\$\${r.val}</div>
-        </div>\`;
-      }).join('');
-    }
-
-    // Recent subscribers table
-    const subs = d.recent_subscribers||[];
-    const subsEl = document.getElementById('rv-subs');
+    else { var rows=[{label:'Pro Artist ('+(d.pro_count||0)+'×$26)',val:(d.pro_count||0)*26,color:'#a78bfa'},{label:'Creator ('+(d.creator_count||0)+'×$10)',val:(d.creator_count||0)*10,color:'#3b82f6'},{label:'Credit Packs',val:d.credit_pack_revenue||0,color:'#f59e0b'}]; pieEl.innerHTML=rows.map(function(r){ var pct=total>0?Math.round((r.val/total)*100):0; return '<div class="rv-bar-wrap" style="margin-bottom:12px"><div style="width:12px;height:12px;border-radius:3px;background:'+r.color+';flex-shrink:0"></div><div style="flex:1;font-size:.85rem">'+r.label+'</div><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:'+r.color+'"></div></div><div style="width:52px;text-align:right;font-size:.85rem;font-weight:700">$'+r.val+'</div></div>'; }).join(''); }
+    var subs=d.recent_subscribers||[],subsEl=document.getElementById('rv-subs');
     if(!subs.length){ subsEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No paid subscribers yet.</p>'; }
-    else {
-      subsEl.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Joined</th></tr></thead><tbody>'+
-        subs.map(s=>\`<tr><td>\${s.email}</td><td>\${s.name}</td><td><span class="plan-badge plan-badge--\${s.plan}">\${s.plan}</span></td><td>\${new Date(s.created_at).toLocaleDateString()}</td></tr>\`).join('')+'</tbody></table>';
-    }
+    else { subsEl.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Joined</th></tr></thead><tbody>'+subs.map(function(s){ return '<tr><td>'+s.email+'</td><td>'+s.name+'</td><td><span class="plan-badge plan-badge--'+s.plan+'">'+s.plan+'</span></td><td>'+new Date(s.created_at).toLocaleDateString()+'</td></tr>'; }).join('')+'</tbody></table>'; }
   }catch(e){ document.getElementById('rv-mrr').textContent='Error'; }
 }
 
-// ── USERS TAB ──────────────────────────────────────────────
 async function loadUsers(){
-  const el = document.getElementById('admin-users-list');
-  try {
-  const ctrl = new AbortController();
-  const tid = setTimeout(()=>ctrl.abort(), 10000);
-  const res = await fetch('/api/admin/users', { signal: ctrl.signal, credentials: 'include' });
-  clearTimeout(tid);
-  const data = await res.json();
-  if(data.error){ el.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
-  if(!data.users?.length){el.innerHTML='<p style="color:var(--muted)">No users yet.</p>';return;}
-  el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Extra</th><th>Actions</th></tr></thead><tbody>'+
-    data.users.map(u=>{
-      const rem=Math.max(0,u.gens_limit-u.gens_used);
-      const remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981';
-      const bonus = u.bonus_credits || 0;
-      const isLocked = u.account_locked === 1;
-      const lockBadge = isLocked ? '<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>' : '<span style="color:#10b981;font-size:.75rem">Active</span>';
-      return \`<tr style="\${isLocked?'background:rgba(239,68,68,.04)':''}">
-        <td>\${u.email}</td>
-        <td>\${u.name}</td>
-        <td><span class="plan-badge plan-badge--\${u.plan}">\${u.plan}</span></td>
-        <td>\${lockBadge}</td>
-        <td style="font-weight:700;color:\${remColor}">\${rem} <small style="font-weight:400;color:var(--muted)">/ \${u.gens_limit}</small></td>
-        <td style="font-weight:700;color:\${bonus>0?'#a78bfa':'var(--muted)'}">\${bonus>0?'+'+bonus:'—'}</td>
-        <td style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
-          <button onclick="changeUserPlan('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.75rem">Edit Plan</button>
-          <button onclick="addCredits('\${u.id}','\${u.email}')" class="btn btn--outline btn--sm" style="font-size:.75rem">+Credits</button>
-          <button onclick="toggleLockUser('\${u.id}','\${u.email}',\${isLocked?1:0})" class="btn btn--sm" style="font-size:.75rem;background:\${isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)'};border:1px solid \${isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)'};color:\${isLocked?'#10b981':'#ef4444'}">\${isLocked?'🔓 Unlock':'🔒 Lock'}</button>
-          <button onclick="deleteUserAccount('\${u.id}','\${u.email}')" class="btn btn--sm" style="font-size:.75rem;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i> Delete</button>
-        </td>
-      </tr>\`;
-    }).join('')+'</tbody></table>';
-  window._usersLoaded = true;
-  } catch(e) {
-    if(el) el.innerHTML = '<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load users: '+(e.message||'timeout')+'</p>';
-  }
+  var el=document.getElementById('admin-users-list');
+  try{
+    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},10000);
+    var res=await fetch('/api/admin/users',{signal:ctrl.signal,credentials:'include'});
+    clearTimeout(tid);
+    var data=await res.json();
+    if(data.error){ el.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
+    if(!data.users||!data.users.length){ el.innerHTML='<p style="color:var(--muted)">No users yet.</p>'; return; }
+    el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Extra</th><th>Actions</th></tr></thead><tbody>'+
+      data.users.map(function(u){
+        var rem=Math.max(0,u.gens_limit-u.gens_used),remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981',bonus=u.bonus_credits||0,isLocked=u.account_locked===1;
+        var lockBadge=isLocked?'<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>':'<span style="color:#10b981;font-size:.75rem">Active</span>';
+        return '<tr style="'+(isLocked?'background:rgba(239,68,68,.04)':'')+'"><td>'+u.email+'</td><td>'+u.name+'</td><td><span class="plan-badge plan-badge--'+u.plan+'">'+u.plan+'</span></td><td>'+lockBadge+'</td><td style="font-weight:700;color:'+remColor+'">'+rem+' <small style="font-weight:400;color:var(--muted)">/ '+u.gens_limit+'</small></td><td style="font-weight:700;color:'+(bonus>0?'#a78bfa':'var(--muted)')+'>'+(bonus>0?'+'+bonus:'—')+'</td><td style="display:flex;gap:5px;flex-wrap:wrap;align-items:center"><button onclick="changeUserPlan(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.75rem">Edit Plan</button><button onclick="addCredits(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.75rem">+Credits</button><button onclick="toggleLockUser(\''+u.id+'\',\''+u.email+'\','+(isLocked?1:0)+')" class="btn btn--sm" style="font-size:.75rem;background:'+(isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)')+';border:1px solid '+(isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)')+';color:'+(isLocked?'#10b981':'#ef4444')+'">'+(isLocked?'🔓 Unlock':'🔒 Lock')+'</button><button onclick="deleteUserAccount(\''+u.id+'\',\''+u.email+'\')" class="btn btn--sm" style="font-size:.75rem;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i> Delete</button></td></tr>';
+      }).join('')+'</tbody></table>';
+    window._usersLoaded=true;
+  }catch(e){ if(el) el.innerHTML='<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load users: '+(e.message||'timeout')+'</p>'; }
 }
 
-async function toggleLockUser(userId, email, currentlyLocked){
-  const lock = !currentlyLocked;
-  let reason = '';
-  if(lock){
-    reason = prompt('Reason for locking "'+email+'" (shown to user):', 'Multiple accounts detected from the same network. Only one free account is permitted per household.');
-    if(reason === null) return; // cancelled
-  } else {
-    if(!confirm('Unlock account for "'+email+'"?')) return;
-  }
-  const res = await fetch('/api/admin/user/lock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,locked:lock,reason})});
-  const data = await res.json();
-  if(data.ok){ window._usersLoaded=false; loadUsers(); }
-  else { alert('Error: '+(data.error||'Failed')); }
+async function toggleLockUser(userId,email,currentlyLocked){
+  var lock=!currentlyLocked,reason='';
+  if(lock){ reason=prompt('Reason for locking "'+email+'" (shown to user):','Multiple accounts detected. Only one free account per household.'); if(reason===null)return; }
+  else { if(!confirm('Unlock account for "'+email+'"?'))return; }
+  var res=await fetch('/api/admin/user/lock',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({user_id:userId,locked:lock,reason:reason})});
+  var data=await res.json(); if(data.ok){ window._usersLoaded=false; loadUsers(); } else { alert('Error: '+(data.error||'Failed')); }
 }
 
-async function deleteUserAccount(userId, email){
-  // First confirmation
-  const first = confirm('⚠️ Delete account for "'+email+'"?\n\nThis will permanently remove their account and all sessions.\nThis cannot be undone.');
-  if(!first) return;
-  // Second confirmation
-  const second = confirm('Are you absolutely sure?\n\nType-checking: deleting "'+email+'" is permanent and irreversible.\n\nClick OK to confirm deletion.');
-  if(!second) return;
-  const res = await fetch('/api/admin/user/'+userId,{method:'DELETE'});
-  const data = await res.json();
-  if(data.ok){ window._usersLoaded=false; loadUsers(); alert('Account deleted.'); }
-  else { alert('Error: '+(data.error||'Failed')); }
+async function deleteUserAccount(userId,email){
+  if(!confirm('⚠️ Delete account for "'+email+'"?\n\nThis cannot be undone.')) return;
+  if(!confirm('Are you absolutely sure? Deleting "'+email+'" is permanent.\n\nClick OK to confirm.')) return;
+  var res=await fetch('/api/admin/user/'+userId,{method:'DELETE',credentials:'include'});
+  var data=await res.json(); if(data.ok){ window._usersLoaded=false; loadUsers(); alert('Account deleted.'); } else { alert('Error: '+(data.error||'Failed')); }
 }
 
-// ── PROMOS TAB ─────────────────────────────────────────────
 async function loadPromos(){
-  const res = await fetch('/api/admin/promos');
-  const data = await res.json();
-  const el = document.getElementById('admin-promos-list');
-  if(!data.promos?.length){el.innerHTML='<p style="color:var(--muted)">No promo codes yet.</p>';return;}
+  var res=await fetch('/api/admin/promos',{credentials:'include'}),data=await res.json(),el=document.getElementById('admin-promos-list');
+  if(!data.promos||!data.promos.length){ el.innerHTML='<p style="color:var(--muted)">No promo codes yet.</p>'; return; }
   el.innerHTML='<table class="admin-table"><thead><tr><th>Code</th><th>Description</th><th>Bonus Credits</th><th>Uses</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
-    data.promos.map(p=>\`<tr><td style="font-family:monospace;font-weight:700">\${p.code}</td><td>\${p.description||'—'}</td><td>\${p.bonus_credits||0}</td><td>\${p.uses_count}\${p.max_uses?'/'+p.max_uses:''}</td><td>\${p.active?'<span style="color:#10b981">Active</span>':'<span style="color:var(--muted)">Inactive</span>'}</td>
-    <td><button onclick="deactivatePromo('\${p.code}')" class="btn btn--outline btn--sm" style="font-size:.78rem;color:#ff6464;border-color:#ff646440">Deactivate</button></td></tr>\`).join('')+'</tbody></table>';
-  window._promosLoaded = true;
+    data.promos.map(function(p){ return '<tr><td style="font-family:monospace;font-weight:700">'+p.code+'</td><td>'+(p.description||'—')+'</td><td>'+(p.bonus_credits||0)+'</td><td>'+p.uses_count+(p.max_uses?'/'+p.max_uses:'')+'</td><td>'+(p.active?'<span style="color:#10b981">Active</span>':'<span style="color:var(--muted)">Inactive</span>')+'</td><td><button onclick="deactivatePromo(\''+p.code+'\')" class="btn btn--outline btn--sm" style="font-size:.78rem;color:#ff6464;border-color:#ff646440">Deactivate</button></td></tr>'; }).join('')+'</tbody></table>';
+  window._promosLoaded=true;
 }
 
 async function createPromo(){
-  const code=document.getElementById('new-code').value.trim().toUpperCase();
-  if(!code){alert('Enter a code');return;}
-  const status=document.getElementById('promo-create-status');
-  status.textContent='Creating…';
-  const res=await fetch('/api/admin/promos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,description:document.getElementById('new-desc').value,bonus_credits:parseInt(document.getElementById('new-credits').value)||0,max_uses:parseInt(document.getElementById('new-maxuses').value)||0,terms:document.getElementById('new-terms').value,active:1})});
-  const data=await res.json();
-  if(data.ok){status.style.color='#10b981';status.textContent='✓ Code '+code+' created!';window._promosLoaded=false;loadPromos();document.getElementById('new-code').value='';document.getElementById('new-desc').value='';document.getElementById('new-credits').value='0';document.getElementById('new-terms').value='';}
-  else{status.style.color='#ef4444';status.textContent='Error: '+(data.error||'Failed');}
+  var code=document.getElementById('new-code').value.trim().toUpperCase(); if(!code){ alert('Enter a code'); return; }
+  var status=document.getElementById('promo-create-status'); status.textContent='Creating…';
+  var res=await fetch('/api/admin/promos',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({code:code,description:document.getElementById('new-desc').value,bonus_credits:parseInt(document.getElementById('new-credits').value)||0,max_uses:parseInt(document.getElementById('new-maxuses').value)||0,terms:document.getElementById('new-terms').value,active:1})});
+  var data=await res.json();
+  if(data.ok){ status.style.color='#10b981'; status.textContent='✓ Code '+code+' created!'; window._promosLoaded=false; loadPromos(); document.getElementById('new-code').value=''; document.getElementById('new-desc').value=''; document.getElementById('new-credits').value=''; document.getElementById('new-terms').value=''; }
+  else { status.style.color='#ef4444'; status.textContent='Error: '+(data.error||'Failed'); }
 }
 
 async function deactivatePromo(code){
-  if(!confirm('Deactivate '+code+'?'))return;
-  await fetch('/api/admin/promos/'+code,{method:'DELETE'});window._promosLoaded=false;loadPromos();
+  if(!confirm('Deactivate '+code+'?')) return;
+  await fetch('/api/admin/promos/'+code,{method:'DELETE',credentials:'include'});
+  window._promosLoaded=false; loadPromos();
 }
 
-async function changeUserPlan(userId,email){
-  // Populate and show the plan modal
-  document.getElementById('umod-title').textContent = 'Edit Plan — ' + email;
-  document.getElementById('umod-plan-section').style.display = '';
-  document.getElementById('umod-credits-section').style.display = 'none';
-  document.getElementById('umod-user-id').value = userId;
-  document.getElementById('umod-overlay').style.display = 'flex';
+function changeUserPlan(userId,email){
+  document.getElementById('umod-title').textContent='Edit Plan — '+email;
+  document.getElementById('umod-plan-section').style.display='';
+  document.getElementById('umod-credits-section').style.display='none';
+  document.getElementById('umod-user-id').value=userId;
+  document.getElementById('umod-overlay').style.display='flex';
   document.getElementById('umod-plan').focus();
 }
 
-async function addCredits(userId,email){
-  // Populate and show the credits modal
-  document.getElementById('umod-title').textContent = '+Credits — ' + email;
-  document.getElementById('umod-plan-section').style.display = 'none';
-  document.getElementById('umod-credits-section').style.display = '';
-  document.getElementById('umod-user-id').value = userId;
-  document.getElementById('umod-amount').value = '';
-  document.getElementById('umod-overlay').style.display = 'flex';
+function addCredits(userId,email){
+  document.getElementById('umod-title').textContent='+Credits — '+email;
+  document.getElementById('umod-plan-section').style.display='none';
+  document.getElementById('umod-credits-section').style.display='';
+  document.getElementById('umod-user-id').value=userId;
+  document.getElementById('umod-amount').value='';
+  document.getElementById('umod-overlay').style.display='flex';
   document.getElementById('umod-amount').focus();
 }
 
-function umodClose(){
-  document.getElementById('umod-overlay').style.display = 'none';
-  document.getElementById('umod-status').textContent = '';
-}
+function umodClose(){ document.getElementById('umod-overlay').style.display='none'; document.getElementById('umod-status').textContent=''; }
 
 async function umodSave(){
-  const userId = document.getElementById('umod-user-id').value;
-  const isPlan = document.getElementById('umod-plan-section').style.display !== 'none';
-  const statusEl = document.getElementById('umod-status');
-  statusEl.style.color = 'var(--muted)';
-  statusEl.textContent = 'Saving…';
-
+  var userId=document.getElementById('umod-user-id').value,isPlan=document.getElementById('umod-plan-section').style.display!=='none',statusEl=document.getElementById('umod-status');
+  statusEl.style.color='var(--muted)'; statusEl.textContent='Saving…';
   if(isPlan){
-    const plan = document.getElementById('umod-plan').value.trim().toLowerCase();
-    if(!['free','creator','pro','developer'].includes(plan)){
-      statusEl.style.color='#ef4444'; statusEl.textContent='Invalid plan name.'; return;
-    }
-    const res = await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,plan})});
-    const data = await res.json();
-    if(data.ok){ statusEl.style.color='#10b981'; statusEl.textContent='Plan updated ✓'; window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1000); }
-    else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data.error||'Failed'); }
+    var plan=document.getElementById('umod-plan').value.trim().toLowerCase();
+    if(!['free','creator','pro','developer'].includes(plan)){ statusEl.style.color='#ef4444'; statusEl.textContent='Invalid plan name.'; return; }
+    var res=await fetch('/api/admin/user/update',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({user_id:userId,plan:plan})});
+    var data=await res.json(); if(data.ok){ statusEl.style.color='#10b981'; statusEl.textContent='Plan updated ✓'; window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1000); } else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data.error||'Failed'); }
   } else {
-    const amt = parseInt(document.getElementById('umod-amount').value);
+    var amt=parseInt(document.getElementById('umod-amount').value);
     if(!amt||isNaN(amt)||amt<=0){ statusEl.style.color='#ef4444'; statusEl.textContent='Enter a positive number.'; return; }
-    const res = await fetch('/api/admin/user/add-credits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_id:userId,amount:amt})});
-    const data = await res.json();
-    if(data.ok){
-      statusEl.style.color='#10b981';
-      statusEl.textContent='Added '+amt+' pts → new limit: '+data.gens_limit+' ('+data.remaining+' remaining) ✓';
-      window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1800);
-    } else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data.error||'Failed'); }
+    var res2=await fetch('/api/admin/user/add-credits',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({user_id:userId,amount:amt})});
+    var data2=await res2.json(); if(data2.ok){ statusEl.style.color='#10b981'; statusEl.textContent='Added '+amt+' pts → new limit: '+data2.gens_limit+' ('+data2.remaining+' remaining) ✓'; window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1800); } else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data2.error||'Failed'); }
   }
 }
 </script>
@@ -9907,17 +9592,13 @@ async function umodSave(){
     <button onclick="umodClose()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
     <h3 id="umod-title" style="font-size:1.1rem;font-weight:700;margin-bottom:20px"></h3>
     <input type="hidden" id="umod-user-id"/>
-    <!-- Plan section -->
     <div id="umod-plan-section">
       <label style="font-size:.85rem;color:var(--muted);display:block;margin-bottom:6px">New plan</label>
-      <input id="umod-plan" type="text" placeholder="free / creator / pro / developer"
-        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;box-sizing:border-box"/>
+      <input id="umod-plan" type="text" placeholder="free / creator / pro / developer" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;box-sizing:border-box"/>
     </div>
-    <!-- Credits section -->
     <div id="umod-credits-section">
       <label style="font-size:.85rem;color:var(--muted);display:block;margin-bottom:6px">Points to add</label>
-      <input id="umod-amount" type="number" min="1" placeholder="e.g. 500"
-        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;box-sizing:border-box"/>
+      <input id="umod-amount" type="number" min="1" placeholder="e.g. 500" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.95rem;box-sizing:border-box"/>
       <p style="font-size:.78rem;color:var(--muted);margin-top:6px">This amount is <strong>added on top</strong> of the user's current limit.</p>
     </div>
     <div style="margin-top:20px;display:flex;gap:10px;align-items:center">
