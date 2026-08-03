@@ -561,7 +561,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Show remaining points clearly: "X pts remaining" with used/limit below
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
-      const limitMap = { free: 50, creator: 600, pro: 2000 };
+      const limitMap = { free: 60, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
       const remaining = Math.max(0, displayLimit - user.gens_used);
       if (creditsLabel) creditsLabel.textContent = 'Points Remaining';
@@ -728,7 +728,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const card = pricingFreeBtn.closest('.plan-card');
       if (card) card.style.display = 'none';
     }
-    // Hide "Try free (50 pts)" link on checkout page
+    // Hide "Try free (60 pts)" link on checkout page
     const tryFreeLinks = document.querySelectorAll('a[href="/signup"]');
     tryFreeLinks.forEach(function(el) {
       if (el.textContent && el.textContent.trim().startsWith('Try free')) {
@@ -2702,7 +2702,7 @@ document.addEventListener('DOMContentLoaded', () => {
               const gb = document.getElementById('gs-gens-bar');
               const cl = document.getElementById('gs-credits-label');
               // Show remaining points clearly
-              const limitMap = { free: 50, creator: 600, pro: 2000 };
+              const limitMap = { free: 60, creator: 600, pro: 2000 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
               const remaining = Math.max(0, displayLimit - user.gens_used);
               if (cl) cl.textContent = 'Points Remaining';
@@ -3946,7 +3946,7 @@ window.generateOneshotSfx = async function() {
       const gv = document.getElementById('gs-gens-val');
       const gb = document.getElementById('gs-gens-bar');
       const cl = document.getElementById('gs-credits-label');
-      const limitMap = { free: 50, creator: 600, pro: 2000 };
+      const limitMap = { free: 60, creator: 600, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
       const remaining = Math.max(0, displayLimit - user.gens_used);
       if (cl) cl.textContent = 'Points Remaining';

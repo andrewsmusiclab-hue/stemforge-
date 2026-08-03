@@ -218,8 +218,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   } catch {}
 
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
-  // Free users with old download-era limit → 50 pts
-  await db.prepare(`UPDATE users SET gens_limit = 50   WHERE plan = 'free'      AND gens_limit < 50`).run()
+  // Free users: 60 pts (3 beats)
+  await db.prepare(`UPDATE users SET gens_limit = 60   WHERE plan = 'free'      AND gens_limit < 60`).run()
   // Creator users below 600 → 600 pts
   await db.prepare(`UPDATE users SET gens_limit = 600  WHERE plan = 'creator'   AND gens_limit < 600`).run()
   // Pro users below 2000 → 2000 pts
@@ -344,22 +344,22 @@ async function createUser(db: D1Database, data: {
   password_hash?: string, google_id?: string, plan?: string, registration_ip?: string
 }): Promise<void> {
   await ensureAuthTables(db)
-  const planLimits: Record<string, number> = { free:50, creator:600, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:600, pro:2000 }
   const plan = data.plan || 'free'
   await db.prepare(
     `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at)
      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
-    planLimits[plan] || 50, data.password_hash || null, data.google_id || null,
+    planLimits[plan] || 60, data.password_hash || null, data.google_id || null,
     data.registration_ip || null, Date.now()).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:50, creator:600, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:600, pro:2000 }
   // Apply rollover: unused downloads carry over, capped at 500
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
-  const newLimit = planLimits[plan] || 50
+  const newLimit = planLimits[plan] || 60
   let rolledLimit = newLimit
   if (currentUser) {
     const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
@@ -372,8 +372,8 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
 
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:50, creator:600, pro:2000 }
-  const newMonthBase = planLimits[plan] || 50
+  const planLimits: Record<string, number> = { free:60, creator:600, pro:2000 }
+  const newMonthBase = planLimits[plan] || 60
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
   if (!currentUser) return
   const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
@@ -6076,7 +6076,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260803-19'
+const ASSET_VER = '20260803-20'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
