@@ -2721,7 +2721,22 @@ document.addEventListener('DOMContentLoaded', () => {
             setStep('blueprint', lastStatus === 'blueprint' ? 'error' : lastStatus === '' ? '' : 'done');
             setStep('generating', lastStatus === 'generating' ? 'error' : '');
             setStep('extracting', lastStatus === 'extracting' ? 'error' : '');
-            showError(job.error || 'Generation failed. Please try again.');
+            // Server-busy (concurrent limit) — show friendly retry message, not a hard fail
+            if (job.server_busy || (job.error && job.error.startsWith('SERVER_BUSY:'))) {
+              const cleanMsg = (job.error || '').replace('SERVER_BUSY:', '').trim();
+              if (genError) genError.style.display = 'block';
+              if (genErrorMsg) genErrorMsg.innerHTML =
+                '<i class="fas fa-clock" style="color:#f59e0b;margin-right:6px"></i>' +
+                '<strong style="color:#f59e0b">Server busy</strong> — ' +
+                (cleanMsg || 'Our generation server is at capacity right now.') +
+                ' <button onclick="cancelGeneration()" style="margin-left:10px;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.4);color:#fcd34d;padding:4px 14px;border-radius:6px;cursor:pointer;font-size:.82rem;font-weight:600">Try Again</button>';
+              if (pipelineStatus) pipelineStatus.style.display = 'none';
+              genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
+              genBtn.disabled = false;
+              if (pollInterval) clearInterval(pollInterval);
+            } else {
+              showError(job.error || 'Generation failed. Please try again.');
+            }
           }
 
         } catch (pollErr) {

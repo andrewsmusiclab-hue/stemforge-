@@ -776,7 +776,10 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
   })
 
   if (!res.ok) {
-    const err = await res.json() as any
+    const err = await res.json().catch(() => ({})) as any
+    if (res.status === 429 || res.status === 503 || String(err?.message || err?.error || '').toLowerCase().includes('concurrent')) {
+      throw new Error('SERVER_BUSY: Our beat generation server is currently at capacity. Please try again in 30–60 seconds.')
+    }
     throw new Error(`MusicAPI Producer error: ${err?.message || err?.error || res.status}`)
   }
 
@@ -826,7 +829,10 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
   })
 
   if (!res.ok) {
-    const err = await res.json() as any
+    const err = await res.json().catch(() => ({})) as any
+    if (res.status === 429 || res.status === 503 || String(err?.message || err?.error || '').toLowerCase().includes('concurrent')) {
+      throw new Error('SERVER_BUSY: Our beat generation server is currently at capacity. Please try again in 30–60 seconds.')
+    }
     throw new Error(`MusicAPI Sonic error: ${err?.message || err?.error || res.status}`)
   }
 
@@ -880,7 +886,10 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
 
   } catch (err: any) {
     job.status = 'error'
-    job.error = err?.message || 'Pipeline start error'
+    const msg = err?.message || 'Pipeline start error'
+    // Tag server-busy errors so the frontend can show a retry button instead of a hard fail
+    job.error = msg.startsWith('SERVER_BUSY:') ? msg : msg
+    ;(job as any).server_busy = msg.startsWith('SERVER_BUSY:')
     await setJob(db, { ...job })
   }
 }
@@ -1464,6 +1473,7 @@ app.post('/api/poll/:id', async (c) => {
     clip_id: (job as any).clip_id || null,
     clip_id_alt: (job as any).clip_id_alt || null,
     error: job.error || null,
+    server_busy: (job as any).server_busy || false,
     // Chain extend progress fields (only present for song_extend jobs with chaining)
     chain_step: chainStep > 0 ? chainStep : undefined,
     chain_target_ms: chainTargetMs > 0 ? chainTargetMs : undefined,
@@ -1767,6 +1777,9 @@ app.get('/api/job/stems/:jobId', async (c) => {
             const errText = await murekaRes.text().catch(() => '')
             let errMsg = `Mureka error ${murekaRes.status}`
             try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || j?.error || errMsg } catch {}
+            if (murekaRes.status === 429 || murekaRes.status === 503 || errMsg.toLowerCase().includes('concurrent')) {
+              errMsg = 'Stem splitting is currently busy — please try again in 30–60 seconds.'
+            }
             console.error(`[stems/mureka/bg] API error ${murekaRes.status}: ${errText.slice(0, 300)}`)
             freshStem.status = 'error'
             freshStem.error = errMsg
