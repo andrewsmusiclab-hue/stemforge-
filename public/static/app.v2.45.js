@@ -1540,13 +1540,21 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // Get Stems — for full beats (not oneshots), paid plans only
+    // Get Stems — Creator and Pro only
     if (!isOneshot && stereoUrl) {
-      items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
-        if (typeof window.openStemsPanel === 'function') {
-          window.openStemsPanel(jobId, stereoUrl, safeTitle, _plan);
-        }
-      }});
+      if (isFree) {
+        items.push({ icon: 'fa-lock', label: 'Get Stems (Pro Artist only)', action: () => {
+          const upgradeModal = document.getElementById('sf-dash-upgrade');
+          if (upgradeModal) upgradeModal.style.display = 'flex';
+          else window.location.href = '/pricing';
+        }});
+      } else {
+        items.push({ icon: 'fa-layer-group', label: 'Get Stems', action: () => {
+          if (typeof window.openStemsPanel === 'function') {
+            window.openStemsPanel(jobId, stereoUrl, safeTitle, _plan);
+          }
+        }});
+      }
     }
 
     // Remix — for full beats (not oneshots), paid plans only, requires stereoUrl
@@ -4579,10 +4587,18 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  OPEN / CLOSE
   // ─────────────────────────────────────────────────────────────────────────
   window.openStemsPanel = function (jobId, stereoUrl, title, userPlan) {
+    // Gate: stem splitting is Pro Artist+ only
+    var _resolvedPlan = userPlan || (window._sfUser && window._sfUser.plan) || 'free';
+    if (_resolvedPlan === 'free') {
+      var upgradeModal = document.getElementById('sf-dash-upgrade');
+      if (upgradeModal) upgradeModal.style.display = 'flex';
+      else window.location.href = '/pricing';
+      return;
+    }
     _jobId     = jobId;
     _stereoUrl = stereoUrl;
     _title     = title || 'Beat';
-    _userPlan  = userPlan || 'free';
+    _userPlan  = _resolvedPlan;
 
     var old = document.getElementById('sf-stems-panel');
     if (old) old.remove();

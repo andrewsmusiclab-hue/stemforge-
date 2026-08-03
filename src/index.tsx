@@ -1603,9 +1603,9 @@ app.post('/api/job/stems', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
 
-  // Free plan: stem extraction is a paid feature
+  // Stem splitting is locked on the free plan — Creator and Pro Artist have access
   if (user.plan === 'free') {
-    return c.json({ error: 'Stem extraction requires a Creator or Pro Artist plan.', locked: true, upgrade: true }, 403)
+    return c.json({ error: 'Stem splitting is a Pro Artist feature. Upgrade to unlock all split modes.', locked: true, upgrade: true }, 403)
   }
 
   const body = await c.req.json<{
@@ -6076,7 +6076,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260803-18'
+const ASSET_VER = '20260803-19'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
