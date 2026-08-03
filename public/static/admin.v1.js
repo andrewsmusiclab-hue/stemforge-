@@ -183,6 +183,28 @@ async function loadAnalytics(){
     var pages=d.top_pages||[],pgEl=document.getElementById('top-pages');
     if(!pages.length){ pgEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No data yet</p>'; }
     else { var maxPg=Math.max.apply(null,pages.map(function(p){return p.cnt;}).concat([1])); pgEl.innerHTML='<table class="admin-table"><thead><tr><th>Page</th><th>Views</th><th style="width:200px">Share</th></tr></thead><tbody>'+pages.map(function(p){ var pct=Math.round((p.cnt/maxPg)*100); return '<tr><td><code style="font-size:.85rem">'+p.path+'</code></td><td style="font-weight:700">'+p.cnt+'</td><td><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:#a78bfa"></div></div></td></tr>'; }).join('')+'</tbody></table>'; }
+    // ── Countries chart ───────────────────────────────────────────
+    var COUNTRY_NAMES={AF:'Afghanistan',AL:'Albania',DZ:'Algeria',AD:'Andorra',AO:'Angola',AG:'Antigua & Barbuda',AR:'Argentina',AM:'Armenia',AU:'Australia',AT:'Austria',AZ:'Azerbaijan',BS:'Bahamas',BH:'Bahrain',BD:'Bangladesh',BB:'Barbados',BY:'Belarus',BE:'Belgium',BZ:'Belize',BJ:'Benin',BT:'Bhutan',BO:'Bolivia',BA:'Bosnia & Herzegovina',BW:'Botswana',BR:'Brazil',BN:'Brunei',BG:'Bulgaria',BF:'Burkina Faso',BI:'Burundi',CV:'Cabo Verde',KH:'Cambodia',CM:'Cameroon',CA:'Canada',CF:'Central African Republic',TD:'Chad',CL:'Chile',CN:'China',CO:'Colombia',KM:'Comoros',CG:'Congo',CD:'DR Congo',CR:'Costa Rica',HR:'Croatia',CU:'Cuba',CY:'Cyprus',CZ:'Czech Republic',DK:'Denmark',DJ:'Djibouti',DM:'Dominica',DO:'Dominican Republic',EC:'Ecuador',EG:'Egypt',SV:'El Salvador',GQ:'Equatorial Guinea',ER:'Eritrea',EE:'Estonia',SZ:'Eswatini',ET:'Ethiopia',FJ:'Fiji',FI:'Finland',FR:'France',GA:'Gabon',GM:'Gambia',GE:'Georgia',DE:'Germany',GH:'Ghana',GR:'Greece',GD:'Grenada',GT:'Guatemala',GN:'Guinea',GW:'Guinea-Bissau',GY:'Guyana',HT:'Haiti',HN:'Honduras',HU:'Hungary',IS:'Iceland',IN:'India',ID:'Indonesia',IR:'Iran',IQ:'Iraq',IE:'Ireland',IL:'Israel',IT:'Italy',JM:'Jamaica',JP:'Japan',JO:'Jordan',KZ:'Kazakhstan',KE:'Kenya',KI:'Kiribati',KW:'Kuwait',KG:'Kyrgyzstan',LA:'Laos',LV:'Latvia',LB:'Lebanon',LS:'Lesotho',LR:'Liberia',LY:'Libya',LI:'Liechtenstein',LT:'Lithuania',LU:'Luxembourg',MG:'Madagascar',MW:'Malawi',MY:'Malaysia',MV:'Maldives',ML:'Mali',MT:'Malta',MH:'Marshall Islands',MR:'Mauritania',MU:'Mauritius',MX:'Mexico',FM:'Micronesia',MD:'Moldova',MC:'Monaco',MN:'Mongolia',ME:'Montenegro',MA:'Morocco',MZ:'Mozambique',MM:'Myanmar',NA:'Namibia',NR:'Nauru',NP:'Nepal',NL:'Netherlands',NZ:'New Zealand',NI:'Nicaragua',NE:'Niger',NG:'Nigeria',MK:'North Macedonia',NO:'Norway',OM:'Oman',PK:'Pakistan',PW:'Palau',PA:'Panama',PG:'Papua New Guinea',PY:'Paraguay',PE:'Peru',PH:'Philippines',PL:'Poland',PT:'Portugal',QA:'Qatar',RO:'Romania',RU:'Russia',RW:'Rwanda',KN:'Saint Kitts & Nevis',LC:'Saint Lucia',VC:'Saint Vincent',WS:'Samoa',SM:'San Marino',ST:'São Tomé & Príncipe',SA:'Saudi Arabia',SN:'Senegal',RS:'Serbia',SC:'Seychelles',SL:'Sierra Leone',SG:'Singapore',SK:'Slovakia',SI:'Slovenia',SB:'Solomon Islands',SO:'Somalia',ZA:'South Africa',SS:'South Sudan',ES:'Spain',LK:'Sri Lanka',SD:'Sudan',SR:'Suriname',SE:'Sweden',CH:'Switzerland',SY:'Syria',TW:'Taiwan',TJ:'Tajikistan',TZ:'Tanzania',TH:'Thailand',TL:'Timor-Leste',TG:'Togo',TO:'Tonga',TT:'Trinidad & Tobago',TN:'Tunisia',TR:'Turkey',TM:'Turkmenistan',TV:'Tuvalu',UG:'Uganda',UA:'Ukraine',AE:'UAE',GB:'United Kingdom',US:'United States',UY:'Uruguay',UZ:'Uzbekistan',VU:'Vanuatu',VE:'Venezuela',VN:'Vietnam',YE:'Yemen',ZM:'Zambia',ZW:'Zimbabwe',T1:'Tor/VPN',XX:'Unknown'};
+    var countries=d.countries||[],ccEl=document.getElementById('countries-chart');
+    if(ccEl){
+      if(!countries.length){ ccEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No country data yet — will populate on next page view</p>'; }
+      else {
+        var totalCC=countries.reduce(function(a,c){return a+(c.cnt||0);},0)||1;
+        var maxCC=countries[0].cnt||1;
+        ccEl.innerHTML='<table class="admin-table"><thead><tr><th style="width:32px"></th><th>Country</th><th style="width:60px">Views</th><th style="width:220px">Share</th></tr></thead><tbody>'+
+          countries.map(function(c){
+            var flag=c.country && c.country.length===2 ? String.fromCodePoint(0x1F1E6+c.country.charCodeAt(0)-65)+String.fromCodePoint(0x1F1E6+c.country.charCodeAt(1)-65) : '🌐';
+            var name=COUNTRY_NAMES[c.country]||c.country||'Unknown';
+            var pct=Math.round((c.cnt/maxCC)*100);
+            var share=((c.cnt/totalCC)*100).toFixed(1);
+            return '<tr><td style="font-size:1.2rem;text-align:center;padding:6px 4px">'+flag+'</td>'+
+              '<td style="font-size:.88rem">'+name+'</td>'+
+              '<td style="font-weight:700;text-align:right">'+c.cnt+'</td>'+
+              '<td><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:#34d399"></div></div><span style="font-size:.72rem;color:var(--muted);margin-left:6px">'+share+'%</span></td></tr>';
+          }).join('')+
+        '</tbody></table>';
+      }
+    }
   }catch(e){
     var msg=String(e.message||e);
     var eh=errHtml(msg);
@@ -194,6 +216,7 @@ async function loadAnalytics(){
     document.getElementById('an-week').textContent='ERR';
     document.getElementById('an-month').textContent='ERR';
     var be=document.getElementById('an-busy-30d'); if(be) be.textContent='ERR';
+    var ce=document.getElementById('countries-chart'); if(ce) ce.innerHTML=eh;
   }
 }
 

@@ -200,6 +200,9 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     created_at INTEGER NOT NULL
   )`).run()
 
+  // ── Migrate: add country column to page_views (idempotent) ──
+  try { await db.prepare(`ALTER TABLE page_views ADD COLUMN country TEXT`).run() } catch {}
+
   // ── Migrate: add registration_ip column if missing (idempotent) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN registration_ip TEXT`).run() } catch {}
   // ── Migrate: add account_locked + lock_reason columns (idempotent) ──
@@ -3409,6 +3412,8 @@ app.post('/api/analytics/pageview', async (c) => {
     const body = await c.req.json<{ path?: string; referrer?: string; source?: string; medium?: string; campaign?: string }>().catch(() => ({}))
     const path = (body.path || '/').slice(0, 200)
     const referrer = (body.referrer || '').slice(0, 500)
+    // Cloudflare automatically sets CF-IPCountry on every request (ISO 3166-1 alpha-2, e.g. "US", "GB")
+    const country = (c.req.raw.headers.get('CF-IPCountry') || '').toUpperCase().slice(0, 2) || null
     // Detect social source from referrer if no explicit UTM source
     let source = (body.source || '').slice(0, 100)
     if (!source && referrer) {
@@ -3427,8 +3432,8 @@ app.post('/api/analytics/pageview', async (c) => {
       else source = 'direct'
     }
     await c.env.DB.prepare(
-      `INSERT INTO page_views (path, referrer, source, medium, campaign, created_at) VALUES (?,?,?,?,?,?)`
-    ).bind(path, referrer, source, body.medium||'', body.campaign||'', Date.now()).run()
+      `INSERT INTO page_views (path, referrer, source, medium, campaign, country, created_at) VALUES (?,?,?,?,?,?,?)`
+    ).bind(path, referrer, source, body.medium||'', body.campaign||'', country, Date.now()).run()
     return c.json({ ok: true })
   } catch { return c.json({ ok: false }) }
 })
@@ -5037,6 +5042,7 @@ app.get('/api/admin/analytics', async (c) => {
   const busyErrRow    = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM api_errors WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 }))
   const busyErrTodayRow = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM api_errors WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 }))
   const busyErrByTypeRow = await c.env.DB.prepare(`SELECT error_type, COUNT(*) as cnt FROM api_errors WHERE created_at >= ? GROUP BY error_type`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const countriesRow  = await c.env.DB.prepare(`SELECT country, COUNT(*) as cnt FROM page_views WHERE created_at >= ? AND country IS NOT NULL AND country != '' GROUP BY country ORDER BY cnt DESC LIMIT 50`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
 
   return c.json({
     today: (todayRow as any)?.cnt || 0,
@@ -5048,6 +5054,7 @@ app.get('/api/admin/analytics', async (c) => {
     busy_errors_30d: (busyErrRow as any)?.cnt || 0,
     busy_errors_today: (busyErrTodayRow as any)?.cnt || 0,
     busy_errors_by_type: (busyErrByTypeRow as any)?.results || [],
+    countries: (countriesRow as any)?.results || [],
   })
 })
 
@@ -6069,7 +6076,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260803-17'
+const ASSET_VER = '20260803-18'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9500,6 +9507,10 @@ function adminPage(user: User) {
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
         <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-file-alt" style="color:#a78bfa;margin-right:8px"></i>Top Pages (30d)</h3>
         <div id="top-pages"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-globe" style="color:#34d399;margin-right:8px"></i>Top Countries (30d)</h3>
+        <div id="countries-chart"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
       </div>
     </div>
 
