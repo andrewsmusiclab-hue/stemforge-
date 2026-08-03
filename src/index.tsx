@@ -9435,8 +9435,8 @@ function adminPage(user: User) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
           <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-chart-bar" style="color:var(--primary);margin-right:8px"></i>Daily Page Views (30d)</h3>
-          <div id="daily-chart" style="display:flex;align-items:flex-end;gap:3px;height:120px;overflow:hidden">
-            <p style="color:var(--muted);font-size:.85rem;align-self:center;width:100%;text-align:center"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+          <div id="daily-chart" style="width:100%;min-height:160px;position:relative">
+            <p style="color:var(--muted);font-size:.85rem;text-align:center;padding-top:60px"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
           </div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">

@@ -374,9 +374,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.gs-sidebar__nav-item').forEach(link => {
     link.classList.remove('active');
     const page = link.dataset.page;
-    if (page === 'home' && currentPath === '/') link.classList.add('active');
-    if (page === 'generator' && currentPath.startsWith('/generator')) link.classList.add('active');
-    if (page === 'dashboard' && currentPath.startsWith('/dashboard')) link.classList.add('active');
+    const href  = link.getAttribute('href') || '';
+    if (page === 'home'         && currentPath === '/')                    link.classList.add('active');
+    if (page === 'generator'    && currentPath.startsWith('/generator'))   link.classList.add('active');
+    if (page === 'dashboard'    && currentPath.startsWith('/dashboard'))   link.classList.add('active');
+    if (page === 'feedback'     && currentPath.startsWith('/feedback'))    link.classList.add('active');
+    if (page === 'admin'        && currentPath.startsWith('/admin'))       link.classList.add('active');
+    // "Get More Credits" button links to /subscription — match by href
+    if (!page && href === '/subscription' && currentPath.startsWith('/subscription')) link.classList.add('active');
   });
 
   // ── Mobile sidebar toggle ─────────────────────────────────────

@@ -97,9 +97,63 @@ async function loadAnalytics(){
     document.getElementById('an-today').textContent=d.today||0;
     document.getElementById('an-week').textContent=d.week||0;
     document.getElementById('an-month').textContent=d.month||0;
-    var daily=d.daily||[],maxV=Math.max.apply(null,daily.map(function(r){return r.cnt;}).concat([1])),chartEl=document.getElementById('daily-chart');
+    var daily=d.daily||[],chartEl=document.getElementById('daily-chart');
     if(!daily.length){ chartEl.innerHTML='<p style="color:var(--muted);font-size:.82rem;text-align:center;width:100%">No data yet</p>'; }
-    else { chartEl.innerHTML=daily.map(function(r){ var h=Math.round((r.cnt/maxV)*100),lbl=new Date(r.day_bucket*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'}); return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:0" title="'+lbl+': '+r.cnt+' views"><div style="width:100%;background:var(--primary);border-radius:3px 3px 0 0;height:'+h+'%;opacity:.85;min-height:2px"></div><div style="font-size:.55rem;color:var(--muted);writing-mode:vertical-lr;transform:rotate(180deg);max-height:36px;overflow:hidden">'+lbl+'</div></div>'; }).join(''); }
+    else {
+      // ── Professional SVG area line chart ──────────────────────
+      var W=chartEl.offsetWidth||560, H=160, PAD={top:12,right:16,bottom:40,left:36};
+      var cW=W-PAD.left-PAD.right, cH=H-PAD.top-PAD.bottom;
+      var vals=daily.map(function(r){return r.cnt||0;});
+      var maxV=Math.max.apply(null,vals.concat([1]));
+      var minV=0;
+      // X positions
+      var xStep=cW/(daily.length-1||1);
+      var pts=daily.map(function(r,i){
+        var x=PAD.left+i*xStep;
+        var y=PAD.top+cH-Math.round(((r.cnt-minV)/(maxV-minV))*cH);
+        return {x:x,y:y,cnt:r.cnt,lbl:new Date(r.day_bucket*86400000).toLocaleDateString('en-US',{month:'short',day:'numeric'})};
+      });
+      // Build smooth polyline points
+      var linePoints=pts.map(function(p){return p.x+','+p.y;}).join(' ');
+      // Area fill polygon (line + bottom edge)
+      var areaPoints=linePoints+' '+pts[pts.length-1].x+','+(PAD.top+cH)+' '+pts[0].x+','+(PAD.top+cH);
+      // Y axis grid lines & labels (4 levels)
+      var gridLines='';
+      for(var gi=0;gi<=4;gi++){
+        var gy=PAD.top+cH-Math.round((gi/4)*cH);
+        var gv=Math.round((gi/4)*maxV);
+        gridLines+='<line x1="'+PAD.left+'" y1="'+gy+'" x2="'+(W-PAD.right)+'" y2="'+gy+'" stroke="rgba(255,255,255,.06)" stroke-width="1"/>';
+        gridLines+='<text x="'+(PAD.left-6)+'" y="'+(gy+4)+'" text-anchor="end" fill="rgba(148,163,184,.6)" font-size="10">'+gv+'</text>';
+      }
+      // X axis labels — show every Nth label to avoid overlap
+      var labelEvery=Math.ceil(daily.length/8);
+      var xLabels=pts.map(function(p,i){
+        if(i%labelEvery!==0 && i!==daily.length-1) return '';
+        return '<text x="'+p.x+'" y="'+(H-6)+'" text-anchor="middle" fill="rgba(148,163,184,.7)" font-size="10">'+p.lbl+'</text>';
+      }).join('');
+      // Tooltip dots (invisible, revealed on hover via title)
+      var dots=pts.map(function(p){
+        return '<circle cx="'+p.x+'" cy="'+p.y+'" r="4" fill="#4e9fff" stroke="#0f172a" stroke-width="2" opacity="0" style="cursor:pointer" onmouseenter="this.setAttribute(\'opacity\',\'1\');document.getElementById(\'chart-tip\').style.display=\'block\';document.getElementById(\'chart-tip\').style.left=\''+'\'+(this.cx.baseVal.value+8)+\'px\';document.getElementById(\'chart-tip\').textContent=\''+p.lbl+': '+p.cnt+' views\';" onmouseleave="this.setAttribute(\'opacity\',\'0\');document.getElementById(\'chart-tip\').style.display=\'none\'"><title>'+p.lbl+': '+p.cnt+' views</title></circle>';
+      }).join('');
+      chartEl.style.height='auto';
+      chartEl.style.display='block';
+      chartEl.style.position='relative';
+      chartEl.innerHTML=
+        '<div id="chart-tip" style="display:none;position:absolute;background:#1e293b;border:1px solid #334155;color:#e2e8f0;font-size:.75rem;padding:4px 10px;border-radius:6px;pointer-events:none;white-space:nowrap;z-index:10"></div>'+
+        '<svg width="100%" viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;display:block">'+
+          '<defs>'+
+            '<linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">'+
+              '<stop offset="0%" stop-color="#4e9fff" stop-opacity="0.25"/>'+
+              '<stop offset="100%" stop-color="#4e9fff" stop-opacity="0.02"/>'+
+            '</linearGradient>'+
+          '</defs>'+
+          gridLines+
+          '<polygon points="'+areaPoints+'" fill="url(#areaGrad)"/>'+
+          '<polyline points="'+linePoints+'" fill="none" stroke="#4e9fff" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'+
+          dots+
+          xLabels+
+        '</svg>';
+    }
     var sources=d.sources||[],totalSrc=sources.reduce(function(a,s){return a+s.cnt;},0)||1,srcEl=document.getElementById('sources-chart');
     if(!sources.length){ srcEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No traffic data yet</p>'; }
     else { srcEl.innerHTML=sources.map(function(s){ var pct=Math.round((s.cnt/totalSrc)*100),icon=SOCIAL_ICONS[s.source||'direct']||SOCIAL_ICONS.referral,name=s.source||'direct'; return '<div class="rv-bar-wrap" style="margin-bottom:10px"><div style="width:22px;text-align:center">'+icon+'</div><div style="width:80px;font-size:.82rem;text-transform:capitalize;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+name+'</div><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:var(--primary)"></div></div><div style="width:36px;text-align:right;font-size:.82rem;font-weight:700">'+s.cnt+'</div><div style="width:34px;text-align:right;font-size:.75rem;color:var(--muted)">'+pct+'%</div></div>'; }).join(''); }
