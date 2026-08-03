@@ -223,6 +223,15 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'pro'       AND gens_limit < 2000`).run()
   // Developer users below 2000 → 2000 pts
   await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'developer' AND gens_limit < 2000`).run()
+  // ── API errors table — tracks capacity errors (Mureka/MusicAPI busy) ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS api_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    error_type TEXT NOT NULL,
+    user_id TEXT,
+    created_at INTEGER NOT NULL
+  )`).run()
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_api_errors_created_at ON api_errors (created_at)`).run() } catch {}
+
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -891,6 +900,13 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
     job.error = msg.startsWith('SERVER_BUSY:') ? msg : msg
     ;(job as any).server_busy = msg.startsWith('SERVER_BUSY:')
     await setJob(db, { ...job })
+    // Log capacity errors to DB for admin visibility
+    if (msg.startsWith('SERVER_BUSY:') && db) {
+      try {
+        await db.prepare(`INSERT INTO api_errors (error_type, user_id, created_at) VALUES (?, ?, ?)`)
+          .bind('musicapi_busy', (job as any).user_id || null, Date.now()).run()
+      } catch { /* table may not exist on very first deploy — swallow */ }
+    }
   }
 }
 
@@ -1779,6 +1795,13 @@ app.get('/api/job/stems/:jobId', async (c) => {
             try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || j?.error || errMsg } catch {}
             if (murekaRes.status === 429 || murekaRes.status === 503 || errMsg.toLowerCase().includes('concurrent')) {
               errMsg = 'Stem splitting is currently busy — please try again in 30–60 seconds.'
+              // Log capacity error to DB for admin tracking
+              if (bgDb) {
+                try {
+                  await bgDb.prepare(`INSERT INTO api_errors (error_type, user_id, created_at) VALUES (?, ?, ?)`)
+                    .bind('mureka_busy', (freshJob as any).user_id || null, Date.now()).run()
+                } catch { /* table may not exist on very first deploy — swallow */ }
+              }
             }
             console.error(`[stems/mureka/bg] API error ${murekaRes.status}: ${errText.slice(0, 300)}`)
             freshStem.status = 'error'
@@ -5005,12 +5028,15 @@ app.get('/api/admin/analytics', async (c) => {
 
   // Run analytics queries sequentially to avoid overwhelming D1 with parallel scans
   // Each query has a catch so one failure doesn't break the whole response
-  const todayRow   = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 }))
-  const weekRow    = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>().catch(() => ({ cnt: 0 }))
-  const monthRow   = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 }))
-  const sourcesRow = await c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC LIMIT 20`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
-  const topPagesRow = await c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
-  const dailyRows  = await c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC LIMIT 30`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const todayRow      = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 }))
+  const weekRow       = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(weekStart).first<any>().catch(() => ({ cnt: 0 }))
+  const monthRow      = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM page_views WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 }))
+  const sourcesRow    = await c.env.DB.prepare(`SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY source ORDER BY cnt DESC LIMIT 20`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const topPagesRow   = await c.env.DB.prepare(`SELECT path, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY path ORDER BY cnt DESC LIMIT 10`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const dailyRows     = await c.env.DB.prepare(`SELECT CAST((created_at / 86400000) AS INTEGER) as day_bucket, COUNT(*) as cnt FROM page_views WHERE created_at >= ? GROUP BY day_bucket ORDER BY day_bucket ASC LIMIT 30`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
+  const busyErrRow    = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM api_errors WHERE created_at >= ?`).bind(monthStart).first<any>().catch(() => ({ cnt: 0 }))
+  const busyErrTodayRow = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM api_errors WHERE created_at >= ?`).bind(todayStart).first<any>().catch(() => ({ cnt: 0 }))
+  const busyErrByTypeRow = await c.env.DB.prepare(`SELECT error_type, COUNT(*) as cnt FROM api_errors WHERE created_at >= ? GROUP BY error_type`).bind(monthStart).all<any>().catch(() => ({ results: [] }))
 
   return c.json({
     today: (todayRow as any)?.cnt || 0,
@@ -5019,6 +5045,9 @@ app.get('/api/admin/analytics', async (c) => {
     sources: (sourcesRow as any)?.results || [],
     top_pages: (topPagesRow as any)?.results || [],
     daily: (dailyRows as any)?.results || [],
+    busy_errors_30d: (busyErrRow as any)?.cnt || 0,
+    busy_errors_today: (busyErrTodayRow as any)?.cnt || 0,
+    busy_errors_by_type: (busyErrByTypeRow as any)?.results || [],
   })
 })
 
@@ -6040,7 +6069,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260802-16'
+const ASSET_VER = '20260803-17'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9444,6 +9473,11 @@ function adminPage(user: User) {
         <div class="sub-stat"><span class="sub-stat__label">Views Today</span><span class="sub-stat__val" id="an-today">—</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Views This Week</span><span class="sub-stat__val" id="an-week">—</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Views This Month</span><span class="sub-stat__val" id="an-month">—</span></div>
+        <div class="sub-stat" title="MusicAPI + Mureka capacity errors in last 30 days">
+          <span class="sub-stat__label"><i class="fas fa-exclamation-triangle" style="color:#f59e0b;margin-right:4px;font-size:.7rem"></i>Server Busy (30d)</span>
+          <span class="sub-stat__val" id="an-busy-30d">—</span>
+          <span id="an-busy-today" style="display:block;font-size:.7rem;color:var(--muted);margin-top:2px">today: —</span>
+        </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">

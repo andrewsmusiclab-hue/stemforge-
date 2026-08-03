@@ -97,6 +97,26 @@ async function loadAnalytics(){
     document.getElementById('an-today').textContent=d.today||0;
     document.getElementById('an-week').textContent=d.week||0;
     document.getElementById('an-month').textContent=d.month||0;
+    // Busy errors stat
+    var busyEl=document.getElementById('an-busy-30d');
+    var busyTodayEl=document.getElementById('an-busy-today');
+    if(busyEl){
+      var b30=d.busy_errors_30d||0;
+      busyEl.textContent=b30;
+      busyEl.style.color=b30>0?'#f59e0b':'';
+    }
+    if(busyTodayEl){
+      var bToday=d.busy_errors_today||0;
+      busyTodayEl.textContent='today: '+bToday;
+      busyTodayEl.style.color=bToday>0?'#fbbf24':'';
+      busyTodayEl.style.display='block';
+      // Show breakdown by type if data exists
+      var byType=d.busy_errors_by_type||[];
+      if(byType.length>1){
+        var parts=byType.map(function(t){ return t.error_type.replace('_busy','').replace('musicapi','MusicAPI').replace('mureka','Mureka')+': '+t.cnt; });
+        busyTodayEl.textContent='today: '+bToday+' ('+parts.join(', ')+')';
+      }
+    }
     var daily=d.daily||[],chartEl=document.getElementById('daily-chart');
     if(!daily.length){ chartEl.innerHTML='<p style="color:var(--muted);font-size:.82rem;text-align:center;width:100%">No data yet</p>'; }
     else {
@@ -173,6 +193,7 @@ async function loadAnalytics(){
     document.getElementById('an-today').textContent='ERR';
     document.getElementById('an-week').textContent='ERR';
     document.getElementById('an-month').textContent='ERR';
+    var be=document.getElementById('an-busy-30d'); if(be) be.textContent='ERR';
   }
 }
 
