@@ -823,13 +823,24 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
     stylePrompt = stylePrompt.replace(/,?\s*$/, '') + `, ${vocalGender} vocalist`
   }
 
-  const body: Record<string, any> = {
-    custom_mode: true,
-    tags: stylePrompt.slice(0, 200),
-    prompt: userLyrics,   // Sonic uses 'prompt' for lyrics in custom_mode
-    duration: durationSec,
-    mv: 'sonic-v5'
-  }
+  // If user provided real custom lyrics → custom_mode=true (prompt = their lyrics)
+  // If no custom lyrics (AI scaffold '[Verse]\n[Chorus]') → custom_mode=false so Sonic
+  // auto-generates lyrics from the style prompt instead of singing placeholder text
+  const hasCustomLyrics = userLyrics && userLyrics !== '[Verse]\n[Chorus]' && userLyrics.trim().length > 10
+  const body: Record<string, any> = hasCustomLyrics
+    ? {
+        custom_mode: true,
+        tags: stylePrompt.slice(0, 200),
+        prompt: userLyrics,
+        duration: durationSec,
+        mv: 'sonic-v5'
+      }
+    : {
+        custom_mode: false,
+        gpt_description_prompt: `${stylePrompt.slice(0, 200)}. Generate a song with vocals, verse and chorus structure.`,
+        duration: durationSec,
+        mv: 'sonic-v5'
+      }
 
   const res = await fetch(`${MUSICAPI_SONIC}/create`, {
     method: 'POST',
@@ -1352,7 +1363,7 @@ function parseZipTailBuffer(tailBuf: ArrayBuffer, tailOffset: number, zipUrl = '
 
 // POST /api/generate — start a new generation job
 app.post('/api/generate', async (c) => {
-  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, vocal_gender, lyrics } = await c.req.json()
+  const { prompt, genre, bpm, vocal_space, energy, duration, user_duration, instruments_include, instruments_exclude, title, vocal_gender, lyrics, vocal_mode } = await c.req.json()
 
   if (!prompt && !genre) {
     return c.json({ error: 'prompt is required' }, 400)
@@ -1421,18 +1432,29 @@ app.post('/api/generate', async (c) => {
     title: title || undefined,
     thumbnail_seed: Math.floor(Math.random() * 360)
   }
+  // vocal_mode: 'write' = user wants vocals (Sonic endpoint), 'instrumental' = no vocals (Producer endpoint)
+  // When write mode, we always use Sonic — pass user lyrics if provided, otherwise a vocal scaffold
+  // so the AI generates vocals from scratch rather than defaulting to instrumental.
+  const isVocalMode = vocal_mode === 'write'
+  const customLyrics = lyrics?.trim() || ''
+  // Lyrics to send to pipeline: user's own if provided, else a minimal scaffold for AI-generated vocals
+  const lyricsForPipeline = isVocalMode
+    ? (customLyrics || '[Verse]\n[Chorus]')
+    : undefined
+
   // Store vocal_gender and lyrics as extended job properties
   ;(job as any).vocal_gender = vocal_gender || 'off'
-  if (lyrics && lyrics.trim()) {
-    ;(job as any).user_lyrics = lyrics.trim()
+  ;(job as any).vocal_mode = vocal_mode || 'instrumental'
+  if (customLyrics) {
+    ;(job as any).user_lyrics = customLyrics
   }
   await setJob(c.env.DB, job, userId)
 
   // Parse user_duration. If the user provided lyrics, auto-calculate duration from word count
   // (avg rap: ~130 words/min, avg pop: ~110 words/min — use 120 wpm as a safe middle ground)
   let userDurationSec: number | undefined
-  if (lyrics && lyrics.trim()) {
-    const wordCount = lyrics.trim().split(/\s+/).length
+  if (customLyrics) {
+    const wordCount = customLyrics.split(/\s+/).length
     const estimatedSec = Math.round((wordCount / 120) * 60)
     // Clamp to 60–300 s, round up to nearest 15 s so Mureka gets a clean number
     const clamped = Math.max(60, Math.min(300, estimatedSec))
@@ -1443,7 +1465,7 @@ app.post('/api/generate', async (c) => {
 
   // Start pipeline in background: Step 1 (GPT blueprint) + Step 2 kick-off (MusicAPI submit)
   // Both are fast (~3-5 s total). The long MusicAPI wait is handled client-side via /api/poll/:id
-  c.executionCtx.waitUntil(startPipeline(jobId, c.env, userPlan, userDurationSec, lyrics?.trim() || undefined, genre || undefined))
+  c.executionCtx.waitUntil(startPipeline(jobId, c.env, userPlan, userDurationSec, lyricsForPipeline, genre || undefined))
 
   return c.json({ job_id: jobId, status: 'pending' })
 })
@@ -6076,7 +6098,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260803-21'
+const ASSET_VER = '20260803-22'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

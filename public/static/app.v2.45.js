@@ -2289,6 +2289,7 @@ document.addEventListener('DOMContentLoaded', () => {
           prompt: inputs.prompt,
           genre: inputs.genre,
           lyrics: inputs.lyrics || '',
+          vocal_mode: inputs.instrumental ? 'instrumental' : 'write',
           vocal_space: inputs.vocal_space,
           energy: inputs.energy,
           instruments_include: inputs.instruments_include,
