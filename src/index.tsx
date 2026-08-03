@@ -9499,6 +9499,10 @@ function adminPage(user: User) {
         </div>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
+        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-globe" style="color:#34d399;margin-right:8px"></i>Top Countries (30d)</h3>
+        <div id="countries-chart"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:20px">
         <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-hashtag" style="color:#f59e0b;margin-right:8px"></i>Social Media Breakdown</h3>
         <div id="social-breakdown" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px">
           <p style="color:var(--muted);font-size:.85rem;grid-column:1/-1"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
@@ -9507,10 +9511,6 @@ function adminPage(user: User) {
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
         <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-file-alt" style="color:#a78bfa;margin-right:8px"></i>Top Pages (30d)</h3>
         <div id="top-pages"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
-      </div>
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
-        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-globe" style="color:#34d399;margin-right:8px"></i>Top Countries (30d)</h3>
-        <div id="countries-chart"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
       </div>
     </div>
 
