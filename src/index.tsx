@@ -6545,7 +6545,7 @@ function homePage() {
   </div>
   <div class="container hero__content">
     <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
-    <h1 class="hero__title">Generate the beat.<br/><span class="gradient-text">Download it clean.</span></h1>
+    <h1 class="hero__title">Forge the beat.<br/><span class="gradient-text">Make it yours.</span></h1>
     <p class="hero__sub">StemForge generates professional tracks in your favorite genre using AI. Download the full stereo mix and take your beats straight to the DAW.</p>
     <div class="hero__ctas">
       <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>

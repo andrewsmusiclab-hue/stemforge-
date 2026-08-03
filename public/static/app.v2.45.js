@@ -1593,7 +1593,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Dashboard: Download Full Track modal (WAV / MP3) ────────────
   window.openDownloadModal = function(jobId, stereoUrl, safeTitle) {
     if (!stereoUrl) {
-      alert('No audio available for this track yet. Generate the beat first.');
+      alert('No audio available for this track yet. Forge the beat first.');
       return;
     }
     // Gate for free users
