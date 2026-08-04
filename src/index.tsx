@@ -6098,7 +6098,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260803-22'
+const ASSET_VER = '20260804-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

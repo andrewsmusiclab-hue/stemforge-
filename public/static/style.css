@@ -4392,6 +4392,61 @@ html, body {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════
+   MOBILE LIBRARY TABS — horizontally scrollable, compact
+   ══════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Make the tab row scroll horizontally instead of wrapping */
+  .lib-tabs {
+    overflow-x: auto;
+    overflow-y: visible;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding-bottom: 2px;
+    /* fade edges to hint scrollability */
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 6px, #000 calc(100% - 16px), transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 6px, #000 calc(100% - 16px), transparent 100%);
+  }
+  .lib-tabs::-webkit-scrollbar { display: none; }
+
+  /* Compact each tab — icon + short label, no oversized padding */
+  .lib-tab {
+    padding: 8px 12px;
+    font-size: .78rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+    gap: 5px;
+    border-radius: 8px 8px 0 0;
+  }
+
+  /* What's New button in mobile topbar — shrink to compact pill */
+  #sidebar-whats-new-btn {
+    width: auto !important;
+    margin: 0 4px 0 0 !important;
+    padding: 6px 10px !important;
+    border-radius: 8px !important;
+    flex-shrink: 0 !important;
+    /* hide the text label, show only star + badge */
+  }
+  #sidebar-whats-new-btn .nav-label-full,
+  #sidebar-whats-new-btn .nav-label-short {
+    display: none !important;
+  }
+  #sidebar-whats-new-btn i.fa-star {
+    font-size: 1rem !important;
+    width: auto !important;
+    margin: 0 !important;
+  }
+  /* Show badge inline next to icon on mobile */
+  #whats-new-badge {
+    position: static !important;
+    font-size: .5rem !important;
+    padding: 2px 5px !important;
+  }
+}
+
 /* ── Extra-small screens (≤ 390px — iPhone SE, etc.) ────────── */
 @media (max-width: 390px) {
   .suno-left, .suno-right {
