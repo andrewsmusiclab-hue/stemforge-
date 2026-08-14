@@ -401,6 +401,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'aug2026-visualizer',
+      date: 'August 2026',
+      title: 'Waveform Visualizer — Cards & Player',
+      tag: 'NEW FEATURE',
+      tagColor: '#a855f7',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#e2e8f0">Animated beat cards</b> — Hover any beat or remix card in your library to see a live waveform animation in that track's color.</li>
+        <li><b style="color:#e2e8f0">Mini player visualizer</b> — The player now shows a real-time waveform that reacts to whatever's playing, in full color.</li>
+        <li><b style="color:#e2e8f0">Taller player</b> — The mini player has been expanded to give the visualizer more room and make playback controls easier to use.</li>
+      </ul>`
+    },
+    {
       id: 'aug2026-bonus-points',
       date: 'August 2026',
       title: 'Bonus Points — Now Tracked Separately',
