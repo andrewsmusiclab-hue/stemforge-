@@ -921,6 +921,156 @@ document.addEventListener('DOMContentLoaded', () => {
   // Expose globally so the edit modal (outside this IIFE) can call it
   window.drawCanvasArt = drawCanvasArt;
 
+  // ══════════════════════════════════════════════════════════════
+  //  CARD AMBIENT WAVEFORM — idle sine animation on each art card
+  // ══════════════════════════════════════════════════════════════
+  // Each card gets a <canvas> injected into .project-card__art.
+  // The canvas draws a gentle multi-layer sine waveform that drifts
+  // continuously. It uses the card's data-hue for colouring.
+  // When the card's audio is actively playing (dash-audio src matches)
+  // the waveform is driven by the live AnalyserNode instead.
+
+  (function initCardWaveforms() {
+    // Map: artEl → { canvas, ctx, raf, hue, liveMode }
+    var _cardWaves = new WeakMap();
+    var _cardWaveGlobal = window._cardWaveGlobal = window._cardWaveGlobal || {
+      analyser: null,   // set by mini player when audio starts
+      hue: 180          // hue of currently-playing card
+    };
+
+    function startCardWave(artEl, hue) {
+      // If already running, just update hue
+      var existing = _cardWaves.get(artEl);
+      if (existing) { existing.hue = hue; return; }
+
+      // Build canvas — sits behind play button, above background img
+      var cv = document.createElement('canvas');
+      cv.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:2;opacity:0;transition:opacity .4s ease';
+      artEl.appendChild(cv);
+
+      // Fade in after one frame so transition fires
+      requestAnimationFrame(function(){ cv.style.opacity = '1'; });
+
+      var ctx = cv.getContext('2d');
+      var state = { canvas: cv, ctx: ctx, hue: hue, raf: null, t: Math.random() * 1000, liveMode: false };
+      _cardWaves.set(artEl, state);
+
+      function resize() {
+        cv.width  = artEl.offsetWidth  || 160;
+        cv.height = artEl.offsetHeight || 160;
+      }
+      resize();
+
+      function drawFrame() {
+        resize();
+        var W = cv.width, H = cv.height;
+        ctx.clearRect(0, 0, W, H);
+
+        var g = _cardWaveGlobal;
+        var isLive = g.analyser && g.hue === state.hue;
+
+        if (isLive && g.analyser) {
+          // ── LIVE mode: draw real waveform from AnalyserNode ──
+          var bufLen = g.analyser.fftSize;
+          var buf = new Uint8Array(bufLen);
+          g.analyser.getByteTimeDomainData(buf);
+
+          var h = state.hue;
+          ctx.save();
+          ctx.strokeStyle = 'hsla(' + h + ',80%,65%,0.9)';
+          ctx.lineWidth = 2.5;
+          ctx.shadowColor = 'hsla(' + h + ',80%,65%,0.7)';
+          ctx.shadowBlur = 10;
+          ctx.beginPath();
+          var sliceW = W / bufLen;
+          var x = 0;
+          for (var i = 0; i < bufLen; i++) {
+            var v = buf[i] / 128.0;
+            var y = (v * H) / 2;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            x += sliceW;
+          }
+          ctx.stroke();
+
+          // Second glow pass
+          ctx.globalAlpha = 0.35;
+          ctx.lineWidth = 6;
+          ctx.stroke();
+          ctx.restore();
+
+        } else {
+          // ── IDLE mode: multi-layer drifting sine ──
+          state.t += 0.012;
+          var t = state.t;
+          var h = state.hue;
+
+          // Three overlapping sine layers at different speeds/amplitudes/phases
+          var layers = [
+            { amp: H * 0.18, freq: 2.1, speed: 1.0,  phase: 0,           alpha: 0.7, width: 2.0 },
+            { amp: H * 0.10, freq: 3.4, speed: 1.6,  phase: Math.PI/3,   alpha: 0.4, width: 1.5 },
+            { amp: H * 0.06, freq: 5.2, speed: 2.3,  phase: Math.PI*0.8, alpha: 0.25, width: 1.0 }
+          ];
+
+          layers.forEach(function(l) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.strokeStyle = 'hsla(' + h + ',75%,62%,' + l.alpha + ')';
+            ctx.lineWidth = l.width;
+            ctx.shadowColor = 'hsla(' + h + ',80%,65%,0.5)';
+            ctx.shadowBlur = 8;
+            var steps = 120;
+            for (var i = 0; i <= steps; i++) {
+              var x = (i / steps) * W;
+              var y = H / 2 + Math.sin((i / steps) * Math.PI * 2 * l.freq + t * l.speed + l.phase) * l.amp;
+              if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+            ctx.restore();
+          });
+        }
+
+        state.raf = requestAnimationFrame(drawFrame);
+      }
+
+      state.raf = requestAnimationFrame(drawFrame);
+    }
+
+    function stopCardWave(artEl) {
+      var s = _cardWaves.get(artEl);
+      if (!s) return;
+      cancelAnimationFrame(s.raf);
+      if (s.canvas && s.canvas.parentNode) {
+        s.canvas.style.opacity = '0';
+        setTimeout(function(){ if (s.canvas.parentNode) s.canvas.parentNode.removeChild(s.canvas); }, 400);
+      }
+      _cardWaves.delete(artEl);
+    }
+
+    // Attach hover listeners to any .project-card__art inside a card with data-hue
+    function attachCardWaveListeners(gridEl) {
+      var root = gridEl || document;
+      root.querySelectorAll('.project-card[data-hue] .project-card__art').forEach(function(artEl) {
+        if (artEl._waveListened) return;
+        artEl._waveListened = true;
+        var hue = parseInt(artEl.closest('.project-card').dataset.hue || '180', 10);
+
+        artEl.addEventListener('mouseenter', function() { startCardWave(artEl, hue); });
+        artEl.addEventListener('mouseleave', function() {
+          // Keep wave going if this card is the one playing
+          if (_cardWaveGlobal.hue !== hue || !_cardWaveGlobal.analyser) {
+            stopCardWave(artEl);
+          }
+        });
+      });
+    }
+
+    // Expose so populateGrid can call it after rendering
+    window._attachCardWaveListeners = attachCardWaveListeners;
+
+    // Run on existing cards (in case dashboard already loaded)
+    attachCardWaveListeners(document);
+  })();
+
   // ── Load AI cover images async for a grid element ───────────
   function loadCoverImages(gridEl) {
     // Canvas-only art — no external image fetches, no AI cover images
@@ -1107,6 +1257,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     gridEl.innerHTML = html;
     if (tab === 'beats') loadCoverImages(gridEl);
+    // Attach idle waveform hover listeners to newly rendered cards
+    if (window._attachCardWaveListeners) window._attachCardWaveListeners(gridEl);
   }
 
   // ── Update tab count badges ─────────────────────────────────
@@ -1644,41 +1796,221 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   // ── Dashboard: play project audio ───────────────────────────────
+  // ══════════════════════════════════════════════════════════════
+  //  MINI PLAYER — taller layout with live waveform visualizer
+  // ══════════════════════════════════════════════════════════════
+
+  // Shared AudioContext + AnalyserNode (reused across plays)
+  var _dashAudioCtx  = null;
+  var _dashAnalyser  = null;
+  var _dashSourceNode= null;
+  var _dashWaveRAF   = null;
+
+  function _teardownDashAudio() {
+    if (_dashWaveRAF) { cancelAnimationFrame(_dashWaveRAF); _dashWaveRAF = null; }
+    if (_dashSourceNode) { try { _dashSourceNode.disconnect(); } catch(e){} _dashSourceNode = null; }
+    // Don't close AudioContext — reuse it
+    if (window._cardWaveGlobal) { window._cardWaveGlobal.analyser = null; }
+  }
+
+  function _setupDashVisualizer(audio, hue, canvasEl) {
+    _teardownDashAudio();
+    try {
+      if (!_dashAudioCtx) _dashAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (_dashAudioCtx.state === 'suspended') _dashAudioCtx.resume();
+
+      _dashAnalyser = _dashAudioCtx.createAnalyser();
+      _dashAnalyser.fftSize = 1024;
+      _dashAnalyser.smoothingTimeConstant = 0.82;
+
+      _dashSourceNode = _dashAudioCtx.createMediaElementSource(audio);
+      _dashSourceNode.connect(_dashAnalyser);
+      _dashAnalyser.connect(_dashAudioCtx.destination);
+
+      // Feed into card wave system
+      if (window._cardWaveGlobal) {
+        window._cardWaveGlobal.analyser = _dashAnalyser;
+        window._cardWaveGlobal.hue      = hue;
+      }
+    } catch(e) {
+      // AudioContext blocked or already connected — visualizer degrades gracefully
+      console.warn('Dash visualizer:', e.message);
+    }
+
+    var ctx  = canvasEl.getContext('2d');
+    var bufLen = _dashAnalyser ? _dashAnalyser.fftSize : 1024;
+    var buf  = new Uint8Array(bufLen);
+
+    // Idle sine state (fallback / initial frames before audio loads)
+    var _idleT = 0;
+
+    function drawWave() {
+      _dashWaveRAF = requestAnimationFrame(drawWave);
+      var W = canvasEl.width = canvasEl.offsetWidth || 460;
+      var H = canvasEl.height= canvasEl.offsetHeight || 60;
+      ctx.clearRect(0, 0, W, H);
+
+      var hasLive = _dashAnalyser && !audio.paused;
+
+      if (hasLive) {
+        _dashAnalyser.getByteTimeDomainData(buf);
+
+        // ── Main waveform line ──
+        ctx.save();
+        ctx.beginPath();
+        ctx.strokeStyle = 'hsla(' + hue + ',75%,65%,0.95)';
+        ctx.lineWidth   = 2.5;
+        ctx.lineJoin    = 'round';
+        ctx.shadowColor = 'hsla(' + hue + ',80%,65%,0.6)';
+        ctx.shadowBlur  = 14;
+        var sliceW = W / bufLen;
+        var x = 0;
+        for (var i = 0; i < bufLen; i++) {
+          var v = buf[i] / 128.0;
+          var y = (v * H) / 2;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          x += sliceW;
+        }
+        ctx.stroke();
+
+        // ── Soft glow duplicate ──
+        ctx.globalAlpha = 0.28;
+        ctx.lineWidth   = 7;
+        ctx.shadowBlur  = 22;
+        ctx.stroke();
+        ctx.restore();
+
+      } else {
+        // ── Idle ambient when paused / loading ──
+        _idleT += 0.018;
+        var layers = [
+          { amp: H * 0.22, freq: 2.0, speed: 1.0,  phase: 0,           alpha: 0.6,  width: 2.2 },
+          { amp: H * 0.12, freq: 3.5, speed: 1.7,  phase: Math.PI/3,   alpha: 0.35, width: 1.4 },
+          { amp: H * 0.07, freq: 5.5, speed: 2.5,  phase: Math.PI*0.7, alpha: 0.2,  width: 1.0 }
+        ];
+        layers.forEach(function(l) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.strokeStyle = 'hsla(' + hue + ',70%,62%,' + l.alpha + ')';
+          ctx.lineWidth   = l.width;
+          ctx.lineJoin    = 'round';
+          ctx.shadowColor = 'hsla(' + hue + ',75%,65%,0.4)';
+          ctx.shadowBlur  = 8;
+          var steps = 160;
+          for (var i = 0; i <= steps; i++) {
+            var x = (i / steps) * W;
+            var y = H/2 + Math.sin((i/steps)*Math.PI*2*l.freq + _idleT*l.speed + l.phase) * l.amp;
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+          ctx.restore();
+        });
+      }
+    }
+    drawWave();
+  }
+
   window.playDashProject = function(btn) {
-    const card = btn.closest('.project-card');
-    const stereoUrl = card.dataset.stereo;
+    const card       = btn.closest('.project-card');
+    const stereoUrl  = card.dataset.stereo;
+    const hue        = parseInt(card.dataset.hue || '200', 10);
     const trackTitle = card.dataset.title || card.querySelector('h4')?.textContent || 'Beat';
+
     if (!stereoUrl) {
       btn.closest('.project-card__art').style.opacity = '0.5';
       setTimeout(() => btn.closest('.project-card__art').style.opacity = '', 800);
       return;
     }
-    // Stop any existing mini-player
+
+    // Tear down previous player
     const existing = document.getElementById('dash-mini-player');
-    if (existing) existing.remove();
-    // Create mini player
+    if (existing) { _teardownDashAudio(); existing.remove(); }
+
+    // ── Build the taller mini player ──
     const player = document.createElement('div');
     player.id = 'dash-mini-player';
-    player.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--card-bg,#1a1a2e);border:1px solid var(--border,#333);border-radius:16px;padding:14px 20px;display:flex;align-items:center;gap:14px;z-index:9999;box-shadow:0 8px 40px rgba(0,0,0,.6);min-width:340px;max-width:580px;backdrop-filter:blur(12px)';
+    player.style.cssText = [
+      'position:fixed',
+      'bottom:20px',
+      'left:50%',
+      'transform:translateX(-50%)',
+      'background:rgba(14,14,28,0.92)',
+      'border:1px solid hsla(' + hue + ',50%,40%,0.4)',
+      'border-radius:20px',
+      'padding:0',
+      'z-index:9999',
+      'box-shadow:0 12px 48px rgba(0,0,0,.7), 0 0 0 1px hsla(' + hue + ',60%,50%,0.1)',
+      'min-width:360px',
+      'max-width:600px',
+      'width:min(94vw,560px)',
+      'backdrop-filter:blur(16px)',
+      'overflow:hidden',
+      'display:flex',
+      'flex-direction:column'
+    ].join(';');
+
     player.innerHTML = `
-      <audio id="dash-audio" src="${stereoUrl}" preload="auto"></audio>
-      <button id="dash-play-pause" style="width:42px;height:42px;border-radius:50%;background:var(--primary,#4e9fff);border:none;cursor:pointer;color:#fff;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center" onclick="dashTogglePlay()"><i class="fas fa-pause"></i></button>
-      <button id="dash-repeat-btn" title="Repeat" onclick="dashToggleRepeat()" style="width:34px;height:34px;border-radius:50%;background:none;border:1px solid var(--border,#333);cursor:pointer;color:var(--muted,#888);font-size:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s"><i class="fas fa-redo"></i></button>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:13px;font-weight:600;margin-bottom:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${card.querySelector('h4')?.textContent || trackTitle}</div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span id="dash-time-cur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px">0:00</span>
-          <input type="range" id="dash-seek" min="0" max="100" value="0" step="0.1" style="flex:1;accent-color:var(--primary,#4e9fff);cursor:pointer;height:3px"/>
-          <span id="dash-time-dur" style="font-size:.72rem;color:var(--muted,#888);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:32px;text-align:right"></span>
-        </div>
+      <audio id="dash-audio" src="${stereoUrl}" preload="auto" crossorigin="anonymous"></audio>
+
+      <!-- Waveform canvas — full width, sits at top of player -->
+      <div style="position:relative;width:100%;height:68px;background:linear-gradient(180deg,hsla(${hue},40%,8%,0.9) 0%,hsla(${hue},30%,5%,0.6) 100%)">
+        <canvas id="dash-wave-cv" style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+        <!-- Subtle hue glow edge at top -->
+        <div style="position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,hsla(${hue},70%,60%,0.6),transparent)"></div>
       </div>
-      <button onclick="document.getElementById('dash-mini-player').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted,#888);font-size:18px;flex-shrink:0;line-height:1"><i class="fas fa-times"></i></button>
+
+      <!-- Controls row -->
+      <div style="display:flex;align-items:center;gap:12px;padding:12px 16px 14px">
+        <!-- Play/Pause -->
+        <button id="dash-play-pause"
+          style="width:44px;height:44px;border-radius:50%;background:hsl(${hue},65%,45%);border:none;cursor:pointer;color:#fff;font-size:17px;flex-shrink:0;display:flex;align-items:center;justify-content:center;box-shadow:0 0 16px hsla(${hue},70%,50%,0.4);transition:transform .1s"
+          onmousedown="this.style.transform='scale(.92)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform=''"
+          onclick="dashTogglePlay()">
+          <i class="fas fa-pause"></i>
+        </button>
+
+        <!-- Repeat -->
+        <button id="dash-repeat-btn" title="Repeat" onclick="dashToggleRepeat()"
+          style="width:32px;height:32px;border-radius:50%;background:none;border:1px solid rgba(255,255,255,.12);cursor:pointer;color:rgba(255,255,255,.4);font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s">
+          <i class="fas fa-redo"></i>
+        </button>
+
+        <!-- Title + seek row -->
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12.5px;font-weight:600;margin-bottom:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#fff;letter-spacing:.3px">
+            ${card.querySelector('h4')?.textContent || trackTitle}
+          </div>
+          <div style="display:flex;align-items:center;gap:7px">
+            <span id="dash-time-cur" style="font-size:.68rem;color:rgba(255,255,255,.45);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:30px">0:00</span>
+            <div style="flex:1;position:relative;height:4px;border-radius:2px;background:rgba(255,255,255,.1);cursor:pointer" id="dash-seek-track">
+              <div id="dash-seek-fill" style="position:absolute;left:0;top:0;height:100%;border-radius:2px;width:0%;background:linear-gradient(90deg,hsl(${hue},65%,50%),hsl(${(hue+40)%360},75%,65%));transition:width .25s linear"></div>
+              <input type="range" id="dash-seek" min="0" max="100" value="0" step="0.1"
+                style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;margin:0"/>
+            </div>
+            <span id="dash-time-dur" style="font-size:.68rem;color:rgba(255,255,255,.45);font-variant-numeric:tabular-nums;flex-shrink:0;min-width:30px;text-align:right"></span>
+          </div>
+        </div>
+
+        <!-- Close -->
+        <button onclick="(function(){var p=document.getElementById('dash-mini-player');if(p){window._teardownDashAudio&&window._teardownDashAudio();p.remove();}})()"
+          style="background:none;border:none;cursor:pointer;color:rgba(255,255,255,.35);font-size:17px;flex-shrink:0;line-height:1;padding:4px;transition:color .15s"
+          onmouseenter="this.style.color='rgba(255,255,255,.8)'" onmouseleave="this.style.color='rgba(255,255,255,.35)'">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
     `;
+
     document.body.appendChild(player);
-    const audio = document.getElementById('dash-audio');
-    const seekBar = document.getElementById('dash-seek');
-    const timeCur = document.getElementById('dash-time-cur');
-    const timeDur = document.getElementById('dash-time-dur');
+
+    const audio   = document.getElementById('dash-audio');
+    const seekBar  = document.getElementById('dash-seek');
+    const seekFill = document.getElementById('dash-seek-fill');
+    const timeCur  = document.getElementById('dash-time-cur');
+    const timeDur  = document.getElementById('dash-time-dur');
+    const waveCV   = document.getElementById('dash-wave-cv');
+
+    // Expose teardown globally so close button can call it
+    window._teardownDashAudio = _teardownDashAudio;
 
     function fmtSecs(s) {
       if (!isFinite(s)) return '0:00';
@@ -1686,63 +2018,72 @@ document.addEventListener('DOMContentLoaded', () => {
       return m + ':' + String(sec).padStart(2, '0');
     }
 
-    let _dashRepeat = false;
+    // Start waveform (idle mode first, live after AudioContext connects)
+    _setupDashVisualizer(audio, hue, waveCV);
 
-    audio.play().catch(()=>{});
+    audio.play().catch(() => {});
+
     audio.addEventListener('loadedmetadata', () => {
       if (timeDur) timeDur.textContent = fmtSecs(audio.duration);
     });
     audio.addEventListener('timeupdate', () => {
-      if (audio.duration) {
-        seekBar.value = (audio.currentTime / audio.duration) * 100;
-        if (timeCur) timeCur.textContent = fmtSecs(audio.currentTime);
-        if (timeDur) timeDur.textContent = fmtSecs(audio.duration);
-      }
+      if (!audio.duration) return;
+      const pct = (audio.currentTime / audio.duration) * 100;
+      seekBar.value = pct;
+      if (seekFill) seekFill.style.width = pct + '%';
+      if (timeCur) timeCur.textContent = fmtSecs(audio.currentTime);
+      if (timeDur) timeDur.textContent = fmtSecs(audio.duration);
     });
     seekBar.addEventListener('input', () => {
-      if (audio.duration) audio.currentTime = (seekBar.value / 100) * audio.duration;
+      if (audio.duration) {
+        audio.currentTime = (seekBar.value / 100) * audio.duration;
+        if (seekFill) seekFill.style.width = seekBar.value + '%';
+      }
     });
     audio.addEventListener('ended', () => {
-      if (_dashRepeat) {
+      const btn = document.getElementById('dash-repeat-btn');
+      if (btn && btn.dataset.repeat === '1') {
         audio.currentTime = 0;
-        audio.play().catch(()=>{});
+        audio.play().catch(() => {});
       } else {
-        document.getElementById('dash-play-pause').innerHTML = '<i class="fas fa-play"></i>';
+        const ppBtn = document.getElementById('dash-play-pause');
+        if (ppBtn) ppBtn.innerHTML = '<i class="fas fa-play"></i>';
         seekBar.value = 0;
+        if (seekFill) seekFill.style.width = '0%';
         if (timeCur) timeCur.textContent = '0:00';
       }
     });
   };
+
   window.dashTogglePlay = function() {
     const audio = document.getElementById('dash-audio');
-    const btn = document.getElementById('dash-play-pause');
+    const btn   = document.getElementById('dash-play-pause');
     if (!audio) return;
     if (audio.paused) {
-      audio.play().catch(()=>{});
+      if (_dashAudioCtx && _dashAudioCtx.state === 'suspended') _dashAudioCtx.resume();
+      audio.play().catch(() => {});
       if (btn) btn.innerHTML = '<i class="fas fa-pause"></i>';
     } else {
       audio.pause();
       if (btn) btn.innerHTML = '<i class="fas fa-play"></i>';
     }
   };
+
   window.dashToggleRepeat = function() {
-    const player = document.getElementById('dash-mini-player');
-    if (!player) return;
-    // Find the _dashRepeat variable via closure — toggle via data attribute
     const audio = document.getElementById('dash-audio');
-    const btn = document.getElementById('dash-repeat-btn');
+    const btn   = document.getElementById('dash-repeat-btn');
     if (!btn || !audio) return;
     const isRepeat = btn.dataset.repeat === '1';
     btn.dataset.repeat = isRepeat ? '0' : '1';
     audio.loop = !isRepeat;
     if (!isRepeat) {
-      btn.style.color = 'var(--primary,#4e9fff)';
-      btn.style.borderColor = 'var(--primary,#4e9fff)';
-      btn.style.background = 'rgba(78,159,255,.12)';
+      btn.style.color       = 'hsl(var(--hue,200),65%,60%)';
+      btn.style.borderColor = 'hsl(var(--hue,200),50%,45%)';
+      btn.style.background  = 'hsla(var(--hue,200),60%,50%,0.12)';
     } else {
-      btn.style.color = 'var(--muted,#888)';
-      btn.style.borderColor = 'var(--border,#333)';
-      btn.style.background = 'none';
+      btn.style.color       = 'rgba(255,255,255,.4)';
+      btn.style.borderColor = 'rgba(255,255,255,.12)';
+      btn.style.background  = 'none';
     }
   };
 

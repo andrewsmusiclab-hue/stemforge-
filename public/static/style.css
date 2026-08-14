@@ -4469,3 +4469,35 @@ html, body {
     font-size: .6rem;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════
+   DASH MINI PLAYER — slide-up entry + mobile sizing
+   ══════════════════════════════════════════════════════════════ */
+#dash-mini-player {
+  animation: dashPlayerSlideUp .28s cubic-bezier(.22,.68,0,1.2) both;
+}
+@keyframes dashPlayerSlideUp {
+  from { opacity: 0; transform: translateX(-50%) translateY(24px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0);    }
+}
+
+/* Seek track hover — expand hit area */
+#dash-seek-track:hover #dash-seek-fill {
+  filter: brightness(1.15);
+}
+
+@media (max-width: 600px) {
+  #dash-mini-player {
+    min-width: 0 !important;
+    width: calc(100vw - 24px) !important;
+    left: 12px !important;
+    transform: none !important;
+    bottom: 12px !important;
+    border-radius: 16px !important;
+    animation: dashPlayerSlideUpMobile .28s cubic-bezier(.22,.68,0,1.2) both;
+  }
+  @keyframes dashPlayerSlideUpMobile {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0);    }
+  }
+}
