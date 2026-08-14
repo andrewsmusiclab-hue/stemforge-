@@ -290,7 +290,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Read plan from URL param
     const urlPlan = new URLSearchParams(window.location.search).get('plan') || 'creator';
     const planMeta = {
-      creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['600 points/month', 'WAV download', 'Commercial use rights'] },
+      creator: { name: 'Creator Plan', price: '$10', total: '$10.00', features: ['800 points/month', 'WAV download', 'Commercial use rights'] },
       pro:     { name: 'Pro Artist Plan', price: '$26', total: '$26.00', features: ['2,000 points/month', 'Stemforge Remix', 'WAV download, stems bundle', 'Priority queue'] },
     };
     const meta = planMeta[urlPlan] || planMeta.creator;
@@ -421,7 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Show remaining points clearly: "X pts remaining" with used/limit below
       const plan = user.plan || 'free';
       const creditsLabel = document.getElementById('gs-credits-label');
-      const limitMap = { free: 50, creator: 600, pro: 2000 };
+      const limitMap = { free: 50, creator: 800, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[plan] || 3;
       const remaining = Math.max(0, displayLimit - user.gens_used);
       if (creditsLabel) creditsLabel.textContent = 'Points Remaining';
@@ -1068,7 +1068,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to access</h3>
           <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
           <div style="display:flex;flex-direction:column;gap:10px">
-            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 600 pts</a>
+            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 800 pts</a>
             <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $26/mo · 2,000 pts</a>
           </div>
           <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
@@ -2170,7 +2170,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen to your beat, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
                     <div style="display:flex;flex-direction:column;gap:10px">
                       <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
-                        <i class="fas fa-crown"></i> Creator — $10/mo · 600 pts
+                        <i class="fas fa-crown"></i> Creator — $10/mo · 800 pts
                       </a>
                       <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
                         <i class="fas fa-star"></i> Pro Artist — $26/mo · 2,000 pts
@@ -2386,7 +2386,7 @@ document.addEventListener('DOMContentLoaded', () => {
               const gb = document.getElementById('gs-gens-bar');
               const cl = document.getElementById('gs-credits-label');
               // Show remaining points clearly
-              const limitMap = { free: 50, creator: 600, pro: 2000 };
+              const limitMap = { free: 50, creator: 800, pro: 2000 };
               const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
               const remaining = Math.max(0, displayLimit - user.gens_used);
               if (cl) cl.textContent = 'Points Remaining';
@@ -3419,7 +3419,7 @@ window.generateOneshotSfx = async function() {
       const gv = document.getElementById('gs-gens-val');
       const gb = document.getElementById('gs-gens-bar');
       const cl = document.getElementById('gs-credits-label');
-      const limitMap = { free: 50, creator: 600, pro: 2000 };
+      const limitMap = { free: 50, creator: 800, pro: 2000 };
       const displayLimit = user.gens_limit || limitMap[user.plan] || 3;
       const remaining = Math.max(0, displayLimit - user.gens_used);
       if (cl) cl.textContent = 'Points Remaining';
