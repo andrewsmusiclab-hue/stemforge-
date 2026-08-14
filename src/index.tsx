@@ -3648,6 +3648,79 @@ app.post('/api/job/update', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  POST /api/job/fix-genre — AI-detects real genre from prompt/blueprint
+//  and saves it back to the job. Called when genre looks like a prompt.
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/job/fix-genre', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const { job_id } = await c.req.json<any>()
+  if (!job_id) return c.json({ error: 'Missing job_id' }, 400)
+
+  try {
+    const row = await c.env.DB.prepare('SELECT data, user_id FROM jobs WHERE id = ?').bind(job_id).first<{ data: string; user_id: string | null }>()
+    if (!row) return c.json({ error: 'Job not found' }, 404)
+    if (row.user_id && row.user_id !== user.id) return c.json({ error: 'Forbidden' }, 403)
+
+    const job = JSON.parse(row.data) as any
+    if (!job.blueprint) return c.json({ error: 'No blueprint' }, 400)
+
+    let bp = job.blueprint
+    if (typeof bp === 'string') { try { bp = JSON.parse(bp) } catch(_) { return c.json({ error: 'Bad blueprint' }, 400) } }
+    if (Array.isArray(bp)) bp = bp[0]
+
+    // Build context for GPT genre classifier
+    const promptText  = job.prompt || ''
+    const mood        = bp?.mood || ''
+    const bpm         = bp?.bpm || ''
+    const stylePrompt = bp?.style_prompt || ''
+    const instruments = Array.isArray(bp?.instruments)
+      ? bp.instruments.map((i: any) => (typeof i === 'object' ? i.name : i)).join(', ')
+      : ''
+
+    const apiKey = c.env.OPENAI_API_KEY
+    if (!apiKey) return c.json({ error: 'No API key' }, 500)
+
+    const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        temperature: 0,
+        max_tokens: 30,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a music genre classifier. Given info about a track, return ONLY the genre as 1-3 words lowercase (e.g. "hip hop", "trap", "r&b", "pop", "drill", "lo-fi", "afrobeats", "dancehall", "reggaeton", "jazz", "cinematic", "soca"). No explanation, no punctuation, just the genre.'
+          },
+          {
+            role: 'user',
+            content: `Classify the genre of this music track:\nPrompt: "${promptText.slice(0, 300)}"\nBPM: ${bpm}\nMood: ${mood}\nStyle: "${stylePrompt.slice(0, 200)}"\nInstruments: ${instruments.slice(0, 200)}\n\nReturn only the genre (1-3 words, lowercase):`
+          }
+        ]
+      })
+    })
+
+    if (!res.ok) return c.json({ error: 'AI classification failed' }, 502)
+    const data: any = await res.json()
+    const detectedGenre = (data?.choices?.[0]?.message?.content || '').trim().toLowerCase().replace(/[^a-z0-9 &\-]/g, '').trim()
+    if (!detectedGenre) return c.json({ error: 'No genre detected' }, 500)
+
+    // Save back to blueprint
+    if (!job.blueprint || typeof job.blueprint !== 'object') job.blueprint = bp
+    job.blueprint.genre = detectedGenre
+    await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?').bind(JSON.stringify(job), job_id).run()
+
+    return c.json({ ok: true, genre: detectedGenre })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Fix genre failed' }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  POST /api/job/cover — upload a custom cover image for a track.
 //  Accepts multipart/form-data with fields: job_id, image (file).
 //  Stores JPEG/PNG/WebP in R2 under covers/<jobId>-custom.<ext>
@@ -6046,6 +6119,37 @@ app.get('/api/oneshot-audio/:id', async (c) => {
   })
 })
 
+// GET /api/track-audio/:id — proxy beat stereo_url for browser playback
+//   Streams the audio through Cloudflare with permissive CORS headers.
+//   Falls back gracefully if the CDN URL has expired.
+app.get('/api/track-audio/:id', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
+  const jobId = c.req.param('id')
+  const row = await c.env.DB.prepare('SELECT data FROM jobs WHERE id = ?').bind(jobId).first<{ data: string }>()
+  if (!row) return c.json({ error: 'Track not found' }, 404)
+  const job = JSON.parse(row.data) as any
+  const audioUrl = job.stereo_url || job.audio_url
+  if (!audioUrl) return c.json({ error: 'No audio URL for this track' }, 404)
+
+  // If it's already a relative/proxy URL (extend-audio-proxy), redirect
+  if (audioUrl.startsWith('/api/')) return c.redirect(audioUrl)
+
+  // Stream the audio from the upstream CDN URL
+  const upstream = await fetch(audioUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+  if (!upstream.ok) {
+    return c.json({ error: 'Audio source unavailable — URL may have expired', status: upstream.status }, 502)
+  }
+  const contentType = upstream.headers.get('Content-Type') || 'audio/wav'
+  return new Response(upstream.body, {
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET',
+    }
+  })
+})
+
 // GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
@@ -6102,7 +6206,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260814-03'
+const ASSET_VER = '20260814-04'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

@@ -1160,56 +1160,100 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Render a single beats/songs card ───────────────────────
+  // ── Detect if a genre string is actually a user prompt (not a real genre) ──
+  function _isPromptGenre(g) {
+    if (!g || g.length <= 3) return false;
+    // Prompt-like if: very long, contains spaces AND looks like a sentence/request
+    var lc = g.toLowerCase();
+    var promptKeywords = /make me|female|male|hook|verse|vocal|rap song|please|create|with|and a|include|want|need|style of/;
+    if (promptKeywords.test(lc)) return true;
+    // Long and contains multiple words (more than 4 words = likely a prompt)
+    if (g.split(/\s+/).length > 4) return true;
+    return false;
+  }
+
+  // ── Auto-fix prompt genres via API (fire-and-forget, updates card in place) ──
+  function _autoFixGenre(jobId, cardEl, hue) {
+    fetch('/api/job/fix-genre', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.genre) return;
+      var genreEl = cardEl.querySelector('.sf-genre-label');
+      if (genreEl) {
+        genreEl.textContent = data.genre;
+        genreEl.style.display = '';
+      }
+      // Also update the data-genre attribute
+      cardEl.setAttribute('data-genre', data.genre);
+    })
+    .catch(function() {}); // silent fail
+  }
+
   function renderBeatCard(p, i) {
     const hue  = p.thumbnail_seed != null ? p.thumbnail_seed : hueFromIndex(i, p.id);
-    const thumbBg = `linear-gradient(135deg, hsl(${hue},70%,30%) 0%, hsl(${(hue+60)%360},80%,20%) 100%)`;
+    const thumbBg = 'linear-gradient(135deg, hsl(' + hue + ',70%,30%) 0%, hsl(' + ((hue+60)%360) + ',80%,20%) 100%)';
     const bpm  = p.blueprint ? p.blueprint.bpm + ' BPM' : '';
-    const genre= (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
+    var rawGenre = (p.blueprint && p.blueprint.genre) ? p.blueprint.genre : 'music';
+
+    // If genre looks like a user prompt, show a placeholder and fix it async
+    var isPromptGenre = _isPromptGenre(rawGenre);
+    var genre = isPromptGenre ? 'detecting...' : rawGenre;
 
     // ── Card title priority: user song title > genre+key > fallback ──
-    // Never show "instrumental only", "no vocals", prompt junk as a title.
     const _badTitle = /instrumental\s+only|no\s+vocals|include\s+instruments/i;
     const _userTitle  = (p.title && !_badTitle.test(p.title)) ? p.title : null;
     const _genreRaw   = p.blueprint ? p.blueprint.genre : null;
-    const _genreClean = (_genreRaw && !_badTitle.test(_genreRaw)) ? _genreRaw : null;
+    const _genreClean = (_genreRaw && !_badTitle.test(_genreRaw) && !_isPromptGenre(_genreRaw)) ? _genreRaw : null;
     const _genreKey   = _genreClean
-      ? (_genreClean + (p.blueprint && p.blueprint.key ? ' — '+p.blueprint.key : ''))
-      : (genre !== 'music' ? genre : 'Beat');
+      ? (_genreClean + (p.blueprint && p.blueprint.key ? ' \u2014 '+p.blueprint.key : ''))
+      : ((!isPromptGenre && genre !== 'music') ? genre : 'Beat');
 
-    // Show ONLY the song title if available; otherwise genre. No subtitle row.
     const displayTitle = _userTitle || _genreKey;
     const safeFilename = displayTitle.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase();
     const dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
 
-    return `
-      <div class="project-card"
-           data-stereo="${p.stereo_url||''}" data-zip="${p.zip_url||''}"
-           data-id="${p.id}"
-           data-title="${displayTitle.replace(/"/g,'&quot;')}"
-           data-hue="${hue}"
-           data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
-           >
-        <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},55%,12%),hsl(${(hue+60)%360},65%,8%));position:relative;overflow:hidden">
-          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
-            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
-          <div class="project-card__play" onclick="playDashProject(this)">
-            <i class="fas fa-play"></i>
-          </div>
-        </div>
-        <div class="project-card__body">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
-            <h4 style="margin:0;flex:1">${formatCardTitle(displayTitle)}</h4>
-            <button class="song-dots-btn" title="More options"
-              onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
-              style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
-          </div>
-          ${genre && genre !== 'music' ? '<p style="margin:0 0 3px;font-size:.78rem;color:var(--muted,#888);text-transform:capitalize">' + genre + '</p>' : ''}
-          <p style="margin-bottom:4px">${bpm ? bpm + (dateStr ? ' · ' : '') : ''}${dateStr}</p>
-          <div class="project-card__tags">
-            ${bpm ? '<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">' + bpm + '</span>' : ''}
-          </div>
-        </div>
-      </div>`;
+    // ── Neon genre label: hue-colored glow text ──
+    var showGenreLabel = genre && genre !== 'music';
+    var genreLabelHtml = showGenreLabel
+      ? '<p class="sf-genre-label" style="margin:0 0 4px;font-size:.75rem;font-weight:600;text-transform:capitalize;letter-spacing:.04em;color:hsl(' + hue + ',80%,68%);text-shadow:0 0 8px hsla(' + hue + ',80%,60%,.55),0 0 2px hsla(' + hue + ',60%,80%,.3)">' + genre + '</p>'
+      : '<p class="sf-genre-label" style="display:none;margin:0 0 4px;font-size:.75rem;font-weight:600;text-transform:capitalize;letter-spacing:.04em;color:hsl(' + hue + ',80%,68%);text-shadow:0 0 8px hsla(' + hue + ',80%,60%,.55),0 0 2px hsla(' + hue + ',60%,80%,.3)"></p>';
+
+    // ── data-prompt attribute for async genre fix ──
+    var needsFix = isPromptGenre ? ' data-needs-genre-fix="1"' : '';
+
+    return '<div class="project-card"' + needsFix +
+           ' data-stereo="' + (p.stereo_url||'') + '"' +
+           ' data-zip="' + (p.zip_url||'') + '"' +
+           ' data-id="' + p.id + '"' +
+           ' data-title="' + displayTitle.replace(/"/g,'&quot;') + '"' +
+           ' data-hue="' + hue + '"' +
+           ' data-genre="' + (rawGenre||'music').replace(/"/g,'&quot;') + '"' +
+           '>' +
+      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',55%,12%),hsl(' + ((hue+60)%360) + ',65%,8%));position:relative;overflow:hidden">' +
+        '<img src="' + (function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return e?e.src:'/static/stemforge-logo.png';}()) + '" alt="StemForge"' +
+          ' style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:' + (function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}()) + ';pointer-events:none;user-select:none"/>' +
+        '<div class="project-card__play" onclick="playDashProject(this)">' +
+          '<i class="fas fa-play"></i>' +
+        '</div>' +
+      '</div>' +
+      '<div class="project-card__body">' +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+          '<h4 style="margin:0;flex:1">' + formatCardTitle(displayTitle) + '</h4>' +
+          '<button class="song-dots-btn" title="More options"' +
+            ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + (p.stereo_url||'') + '\',\'' + (p.zip_url||'') + '\',\'' + safeFilename + '\',\'beats\')"' +
+            ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
+        '</div>' +
+        genreLabelHtml +
+        '<p style="margin-bottom:4px">' + (bpm ? bpm + (dateStr ? ' \xb7 ' : '') : '') + dateStr + '</p>' +
+        '<div class="project-card__tags">' +
+          (bpm ? '<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">' + bpm + '</span>' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>';
   }
 
   // ── Render a single one-shot card ───────────────────────────
@@ -1315,6 +1359,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tab === 'beats') loadCoverImages(gridEl);
     // Attach idle waveform hover listeners to newly rendered cards
     if (window._attachCardWaveListeners) window._attachCardWaveListeners(gridEl);
+    // Auto-fix prompt genres: find cards with data-needs-genre-fix and call API
+    gridEl.querySelectorAll('.project-card[data-needs-genre-fix]').forEach(function(cardEl) {
+      var jobId = cardEl.getAttribute('data-id');
+      var hue   = parseInt(cardEl.getAttribute('data-hue') || '200', 10);
+      if (jobId) _autoFixGenre(jobId, cardEl, hue);
+    });
   }
 
   // ── Update tab count badges ─────────────────────────────────
@@ -1968,18 +2018,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
   window.playDashProject = function(btn) {
     const card       = btn.closest('.project-card');
-    const stereoUrl  = card.dataset.stereo;
-    const hue        = parseInt(card.dataset.hue || '200', 10);
-    const trackTitle = card.dataset.title || card.querySelector('h4')?.textContent || 'Beat';
+    const stereoUrl  = card ? card.dataset.stereo : '';
+    const jobId      = card ? card.dataset.id : '';
+    const hue        = parseInt((card && card.dataset.hue) || '200', 10);
+    const trackTitle = (card && (card.dataset.title || (card.querySelector('h4') && card.querySelector('h4').textContent))) || 'Beat';
 
-    if (!stereoUrl) {
+    // Use proxied audio URL — routes through our server to avoid CORS/expired CDN URL issues
+    const playUrl = jobId ? '/api/track-audio/' + jobId : stereoUrl;
+
+    console.log('[SF play] jobId:', jobId, '| playUrl:', playUrl, '| stereoUrl:', stereoUrl);
+
+    if (!stereoUrl && !jobId) {
       // Audio not ready yet — show a brief visual pulse on the art
       const artEl = btn.closest('.project-card__art');
       if (artEl) { artEl.style.opacity = '0.4'; setTimeout(() => artEl.style.opacity = '', 700); }
-      // Also show a small toast so user knows why nothing happened
       (function() {
         var t = document.createElement('div');
-        t.textContent = 'Audio not ready yet';
+        t.textContent = 'Audio not ready yet — try refreshing';
         t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e1e3a;color:#94a3b8;font-size:.8rem;padding:8px 18px;border-radius:20px;z-index:99999;pointer-events:none;border:1px solid rgba(255,255,255,.1);box-shadow:0 4px 20px rgba(0,0,0,.5)';
         document.body.appendChild(t);
         setTimeout(() => t.remove(), 2200);
@@ -2015,7 +2070,7 @@ document.addEventListener('DOMContentLoaded', () => {
     ].join(';');
 
     player.innerHTML = `
-      <audio id="dash-audio" src="${stereoUrl}" preload="auto" crossorigin="anonymous"></audio>
+      <audio id="dash-audio" src="${playUrl}" preload="auto" crossorigin="anonymous"></audio>
 
       <!-- Waveform canvas — full width, sits at top of player -->
       <div style="position:relative;width:100%;height:68px;background:linear-gradient(180deg,hsla(${hue},40%,8%,0.9) 0%,hsla(${hue},30%,5%,0.6) 100%)">
@@ -2086,7 +2141,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Start waveform (idle mode first, live after AudioContext connects)
     _setupDashVisualizer(audio, hue, waveCV);
 
-    audio.play().catch(() => {});
+    // Handle audio load error (e.g. expired CDN URL)
+    audio.addEventListener('error', function() {
+      var code = audio.error ? audio.error.code : 0;
+      console.warn('[SF audio] error code:', code, '| src:', audio.src);
+      var pp = document.getElementById('dash-play-pause');
+      if (pp) { pp.innerHTML = '<i class="fas fa-exclamation-triangle"></i>'; pp.style.background = 'rgba(239,68,68,.7)'; }
+      var t = document.createElement('div');
+      t.textContent = 'Audio unavailable — this track may need to be regenerated';
+      t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e1e3a;color:#f87171;font-size:.8rem;padding:8px 18px;border-radius:20px;z-index:99999;pointer-events:none;border:1px solid rgba(239,68,68,.3);box-shadow:0 4px 20px rgba(0,0,0,.5)';
+      document.body.appendChild(t);
+      setTimeout(function() { t.remove(); }, 3500);
+    });
+
+    audio.play().catch(function(e) { console.warn('[SF audio] play() rejected:', e && e.message); });
 
     audio.addEventListener('loadedmetadata', () => {
       if (timeDur) timeDur.textContent = fmtSecs(audio.duration);
