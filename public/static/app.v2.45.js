@@ -876,10 +876,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // Cache of loaded Image objects keyed by src
   var _sfLogoCache = {};
 
-  // Pick a stable logo index from the pool based on hue value
-  // so the same card always gets the same logo across renders
-  function _sfPickLogoIndex(hue) {
-    return Math.round(hue / (360 / _sfLogoPool.length)) % _sfLogoPool.length;
+  // Pick a stable logo index from the pool based on card position.
+  // Pattern: every 6th card (positions 5, 11, 17...) gets a unique new logo
+  // (cycling through v2–v21). All other cards get the original (index 0) with hue-rotate.
+  // cardIdx = the card's position index in the grid (0-based)
+  function _sfPickLogoIndex(cardIdx) {
+    if ((cardIdx + 1) % 6 === 0) {
+      // Which unique logo to use — cycle through indices 1–20 (v2–v21)
+      var newLogoSlot = Math.floor(cardIdx / 6) % 20; // 0–19
+      return newLogoSlot + 1; // maps to pool index 1–20
+    }
+    return 0; // original logo with hue-rotate
   }
 
   function _sfLoadLogo(idx, callback) {
@@ -896,8 +903,8 @@ document.addEventListener('DOMContentLoaded', () => {
     _sfLogoCache[entry.src] = img; // store early to avoid double-loads
   }
 
-  function drawCanvasArt(artEl, hue, title, genre) {
-    var logoIdx = _sfPickLogoIndex(hue);
+  function drawCanvasArt(artEl, hue, title, genre, cardIdx) {
+    var logoIdx = _sfPickLogoIndex(cardIdx != null ? cardIdx : 0);
 
     function doDraw(logoImg, applyHueRotate) {
     try {
@@ -1122,15 +1129,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── Load AI cover images async for a grid element ───────────
   function loadCoverImages(gridEl) {
     // Canvas-only art — no external image fetches, no AI cover images
-    gridEl.querySelectorAll('.project-card[data-hue]').forEach((card) => {
+    // Use forEach index so each card's position drives logo selection
+    const cards = Array.from(gridEl.querySelectorAll('.project-card[data-hue]'));
+    cards.forEach((card, cardIdx) => {
       const hue   = parseInt(card.dataset.hue || '180', 10);
       const title = card.dataset.title || '';
       const genre = card.dataset.genre || 'music';
       const artEl = card.querySelector('.project-card__art');
       if (!artEl) return;
-      // Draw canvas art — this sets artEl.style.backgroundImage to the canvas data URL
-      // NOTE: do NOT clear backgroundImage after calling drawCanvasArt — that would wipe the canvas art
-      drawCanvasArt(artEl, hue, title, genre);
+      drawCanvasArt(artEl, hue, title, genre, cardIdx);
     });
   }
 
@@ -1183,8 +1190,8 @@ document.addEventListener('DOMContentLoaded', () => {
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
            >
         <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},55%,12%),hsl(${(hue+60)%360},65%,8%));position:relative;overflow:hidden">
-          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
-            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
+          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
+            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
           <div class="project-card__play" onclick="playDashProject(this)">
             <i class="fas fa-play"></i>
           </div>
@@ -1218,8 +1225,8 @@ document.addEventListener('DOMContentLoaded', () => {
            data-id="${p.id}"
            data-title="${label.replace(/"/g,'&quot;')}">
         <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},60%,16%),hsl(${hue2},70%,9%));position:relative;overflow:hidden">
-          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
-            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
+          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
+            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
           ${audioUrl ? `<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>` : '<div class="project-card__play" style="opacity:.3;pointer-events:none"><i class="fas fa-hourglass-half"></i></div>'}
         </div>
         <div class="project-card__body">
