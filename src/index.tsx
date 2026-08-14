@@ -220,8 +220,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
   // Free users: 60 pts (3 beats)
   await db.prepare(`UPDATE users SET gens_limit = 60   WHERE plan = 'free'      AND gens_limit < 60`).run()
-  // Creator users below 600 → 600 pts
-  await db.prepare(`UPDATE users SET gens_limit = 600  WHERE plan = 'creator'   AND gens_limit < 600`).run()
+  // Creator users below 800 → 800 pts
+  await db.prepare(`UPDATE users SET gens_limit = 800  WHERE plan = 'creator'   AND gens_limit < 800`).run()
   // Pro users below 2000 → 2000 pts
   await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'pro'       AND gens_limit < 2000`).run()
   // Developer users below 2000 → 2000 pts
@@ -344,7 +344,7 @@ async function createUser(db: D1Database, data: {
   password_hash?: string, google_id?: string, plan?: string, registration_ip?: string
 }): Promise<void> {
   await ensureAuthTables(db)
-  const planLimits: Record<string, number> = { free:60, creator:600, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
   const plan = data.plan || 'free'
   await db.prepare(
     `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at)
@@ -356,7 +356,7 @@ async function createUser(db: D1Database, data: {
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:60, creator:600, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
   // Apply rollover: unused downloads carry over, capped at 500
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
   const newLimit = planLimits[plan] || 60
@@ -372,7 +372,7 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
 
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:60, creator:600, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
   const newMonthBase = planLimits[plan] || 60
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
   if (!currentUser) return
@@ -6743,7 +6743,7 @@ function homePage() {
         <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 600 points monthly</li>
+          <li><i class="fas fa-check"></i> 800 points monthly</li>
           <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
           <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -7057,7 +7057,7 @@ window.showSfPlanToast = function(type, plan, msg) {
           if (plan === 'free') {
             msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
           } else if (plan === 'creator') {
-            msg.textContent = 'You will be downgraded to Creator ($10/mo, 600 points/mo) at the end of your current billing cycle. You keep all features until then.';
+            msg.textContent = 'You will be downgraded to Creator ($10/mo, 800 points/mo) at the end of your current billing cycle. You keep all features until then.';
           }
           document.getElementById('home-downgrade-modal').style.display = 'flex';
           return;
@@ -7292,7 +7292,7 @@ window.showSfPlanToast = function(type, plan, msg) {
             if (plan === 'free') {
               if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
             } else if (plan === 'creator') {
-              if (msg) msg.textContent = 'You will be downgraded to Creator ($10/mo, 600 points/mo) at the end of your current billing cycle. You keep all features until then.';
+              if (msg) msg.textContent = 'You will be downgraded to Creator ($10/mo, 800 points/mo) at the end of your current billing cycle. You keep all features until then.';
             }
             document.getElementById('home-downgrade-modal').style.display = 'flex';
           });
@@ -7936,7 +7936,7 @@ function pricingPage() {
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 600 points monthly</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 800 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
           <li><i class="fas fa-check"></i> Auto Split (up to 5 stems) — 30 pts</li>
@@ -8380,7 +8380,7 @@ function pricingPage() {
     const msg = plan === 'free'
       ? 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.'
       : plan === 'creator'
-        ? 'You will be downgraded to the Creator plan ($10/mo, 600 points/mo) at the end of your current billing cycle.'
+        ? 'You will be downgraded to the Creator plan ($10/mo, 800 points/mo) at the end of your current billing cycle.'
         : 'You will be switched to Pro Artist ($26/mo, 2,000 points/mo) at end of your billing cycle.';
     document.getElementById('pricing-downgrade-msg').textContent = msg;
     document.getElementById('pricing-downgrade-modal').style.display = 'flex';
@@ -8664,7 +8664,7 @@ function checkoutPage() {
           <div class="checkout-plan-summary__price"><span id="co-plan-price">$10</span><span>/mo</span></div>
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
-          <li><i class="fas fa-check"></i> 600 points monthly</li>
+          <li><i class="fas fa-check"></i> 800 points monthly</li>
           <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
@@ -8932,7 +8932,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <div class="sub-plan-card__price">$10<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 600 points monthly</li>
+            <li><i class="fas fa-check"></i> 800 points monthly</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
@@ -9322,7 +9322,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       if (pendingTarget === 'free') {
         msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (50 points monthly) after that.';
       } else if (pendingTarget === 'creator') {
-        msg.textContent = 'You will be downgraded to the Creator plan ($10/mo, 600 points/mo) at the end of your current billing cycle.';
+        msg.textContent = 'You will be downgraded to the Creator plan ($10/mo, 800 points/mo) at the end of your current billing cycle.';
       }
       modal.style.display = 'flex';
     });
@@ -9900,7 +9900,7 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 600 points monthly, Auto Split (30 pts), Vocals &amp; Instrumental (70 pts), WAV download, commercial use rights</li>
+    <li><strong>Creator Plan ($10/month):</strong> 800 points monthly, Auto Split (30 pts), Vocals &amp; Instrumental (70 pts), WAV download, commercial use rights</li>
     <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix, Extend song</li>
   </ul>
 
