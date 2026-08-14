@@ -98,6 +98,88 @@ async function setJob(db: D1Database | undefined, job: Job, userId?: string): Pr
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  R2 AUDIO PERSISTENCE — saves beat audio permanently so CDN
+//  expiry never breaks playback. Key pattern: beats/{jobId}.wav
+//  Falls back silently if R2 is unavailable.
+// ═══════════════════════════════════════════════════════════════
+
+const R2_BEATS_PREFIX = 'beats'
+
+/** Returns true if a URL already points to our own R2 proxy (i.e. permanent) */
+function isR2BeatUrl(url: string, siteUrl: string): boolean {
+  if (!url) return false
+  return url.includes('/api/track-audio/') ||
+         url.includes('/api/extend-audio-proxy/') ||
+         url.includes('/api/oneshot-audio/')
+}
+
+/**
+ * Fetch `cdnUrl`, upload the audio to R2 as `beats/{jobId}.wav`,
+ * update the job record so stereo_url points to our proxy endpoint,
+ * and return the permanent proxy URL.
+ * Returns null (silently) if anything fails — caller keeps original URL.
+ */
+async function persistAudioToR2(
+  cdnUrl: string,
+  jobId: string,
+  r2: R2Bucket,
+  db: D1Database | undefined,
+  siteUrl: string
+): Promise<string | null> {
+  try {
+    // Fetch the audio from the CDN
+    const resp = await fetch(cdnUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+    if (!resp.ok) {
+      console.warn(`[R2 persist] CDN fetch failed for job=${jobId}: HTTP ${resp.status}`)
+      return null
+    }
+    const buf = await resp.arrayBuffer()
+    if (!buf || buf.byteLength < 1000) {
+      console.warn(`[R2 persist] Audio too small for job=${jobId}: ${buf?.byteLength} bytes`)
+      return null
+    }
+
+    // Detect content type (WAV vs MP3/M4A)
+    const ctype = resp.headers.get('Content-Type') || 'audio/wav'
+    const ext = ctype.includes('mp3') || ctype.includes('mpeg') ? 'mp3'
+              : ctype.includes('m4a') || ctype.includes('mp4') ? 'm4a'
+              : 'wav'
+    const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
+
+    // Upload to R2
+    await r2.put(r2Key, buf, {
+      httpMetadata: { contentType: ctype },
+      customMetadata: { jobId, source: 'pipeline', savedAt: Date.now().toString() }
+    })
+
+    // Build permanent proxy URL
+    const proxyUrl = `${siteUrl}/api/track-audio/${jobId}`
+
+    // Update the job record so stereo_url is now permanent
+    if (db) {
+      try {
+        const row = await db.prepare('SELECT data FROM jobs WHERE id = ?').bind(jobId).first<{ data: string }>()
+        if (row) {
+          const job = JSON.parse(row.data) as any
+          job.stereo_url = proxyUrl
+          ;(job as any).r2_audio_key = r2Key   // store key for direct R2 access
+          await db.prepare('UPDATE jobs SET data = ? WHERE id = ?').bind(JSON.stringify(job), jobId).run()
+        }
+      } catch (dbErr: any) {
+        console.warn(`[R2 persist] DB update failed for job=${jobId}:`, dbErr?.message)
+        // Non-fatal — R2 file is saved, just the URL in DB didn't update
+      }
+    }
+
+    console.log(`[R2 persist] Saved job=${jobId} → R2 key=${r2Key} (${Math.round(buf.byteLength/1024)}KB)`)
+    return proxyUrl
+  } catch (err: any) {
+    console.warn(`[R2 persist] Failed for job=${jobId}:`, err?.message)
+    return null
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  AUTH — Users, Sessions, Google OAuth, Email/Password
 //  Uses D1 for persistence. Falls back gracefully if secrets
 //  are not yet configured (returns 503 with setup message).
@@ -1170,6 +1252,12 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
       ;(job as any).clip_id_alt = result.clipId2
       job.status = 'ready'
       await setJob(db, { ...job })
+      // ── Persist audio to R2 immediately so URL never expires ──────────────
+      if (env.IMAGES && result.url1 && env.SITE_URL) {
+        // fire-and-forget inside waitUntil-compatible context
+        persistAudioToR2(result.url1, jobId, env.IMAGES, db, env.SITE_URL)
+          .catch((e: any) => console.warn('[R2 persist/instrumental] error:', e?.message))
+      }
       return job
     }
 
@@ -1234,6 +1322,11 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
         ;(job as any).chain_error = chainErr?.message
         job.status = 'ready'
         await setJob(db, { ...job })
+        // Still persist what we have to R2
+        if (env.IMAGES && stereoUrl && env.SITE_URL) {
+          persistAudioToR2(stereoUrl, jobId, env.IMAGES, db, env.SITE_URL)
+            .catch((e: any) => console.warn('[R2 persist/chain-err] error:', e?.message))
+        }
         return job
       }
     }
@@ -1252,6 +1345,11 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     }
     job.status = 'ready'
     await setJob(db, { ...job })
+    // ── Persist audio to R2 immediately so URL never expires ──────────────────
+    if (env.IMAGES && stereoUrl && env.SITE_URL) {
+      persistAudioToR2(stereoUrl, jobId, env.IMAGES, db, env.SITE_URL)
+        .catch((e: any) => console.warn('[R2 persist/sonic] error:', e?.message))
+    }
 
   } catch (err: any) {
     job.status = 'error'
@@ -6119,35 +6217,140 @@ app.get('/api/oneshot-audio/:id', async (c) => {
   })
 })
 
-// GET /api/track-audio/:id — proxy beat stereo_url for browser playback
-//   Streams the audio through Cloudflare with permissive CORS headers.
-//   Falls back gracefully if the CDN URL has expired.
+// GET /api/track-audio/:id — permanent audio playback endpoint.
+//
+// Fallback chain (in order):
+//   1. R2 key stored in job.r2_audio_key → serve directly from R2 (instant, permanent)
+//   2. job.stereo_url is already our own proxy URL → redirect internally
+//   3. job.stereo_url is a live CDN URL → proxy it + save to R2 for next time
+//   4. CDN URL is expired + job has clip_id → re-fetch fresh URL from MusicAPI + save to R2
+//   5. Everything fails → 502 with clear error
+//
+// No auth required — audio element can't send cookies in crossorigin mode.
 app.get('/api/track-audio/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const jobId = c.req.param('id')
+  const siteUrl = c.env.SITE_URL || 'https://stemforge.studio'
+
   const row = await c.env.DB.prepare('SELECT data FROM jobs WHERE id = ?').bind(jobId).first<{ data: string }>()
   if (!row) return c.json({ error: 'Track not found' }, 404)
   const job = JSON.parse(row.data) as any
-  const audioUrl = job.stereo_url || job.audio_url
-  if (!audioUrl) return c.json({ error: 'No audio URL for this track' }, 404)
 
-  // If it's already a relative/proxy URL (extend-audio-proxy), redirect
-  if (audioUrl.startsWith('/api/')) return c.redirect(audioUrl)
-
-  // Stream the audio from the upstream CDN URL
-  const upstream = await fetch(audioUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
-  if (!upstream.ok) {
-    return c.json({ error: 'Audio source unavailable — URL may have expired', status: upstream.status }, 502)
+  const commonHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET',
+    'Cache-Control': 'public, max-age=86400',
   }
-  const contentType = upstream.headers.get('Content-Type') || 'audio/wav'
-  return new Response(upstream.body, {
-    headers: {
-      'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=3600',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET',
+
+  // ── Step 1: Serve from R2 if already persisted ────────────────────────────
+  if (c.env.IMAGES && job.r2_audio_key) {
+    const obj = await c.env.IMAGES.get(job.r2_audio_key)
+    if (obj) {
+      const ctype = obj.httpMetadata?.contentType || 'audio/wav'
+      const rangeHeader = c.req.header('Range')
+      if (rangeHeader) {
+        // Support range requests for seek-ability
+        const size = obj.size
+        const match = rangeHeader.match(/bytes=(\d+)-(\d*)/)
+        if (match) {
+          const start = parseInt(match[1])
+          const end   = match[2] ? parseInt(match[2]) : size - 1
+          const body  = await obj.arrayBuffer()
+          const chunk = body.slice(start, end + 1)
+          return new Response(chunk, {
+            status: 206,
+            headers: {
+              ...commonHeaders,
+              'Content-Type': ctype,
+              'Content-Range': `bytes ${start}-${end}/${size}`,
+              'Content-Length': String(chunk.byteLength),
+              'Accept-Ranges': 'bytes',
+            }
+          })
+        }
+      }
+      return new Response(obj.body, {
+        headers: { ...commonHeaders, 'Content-Type': ctype, 'Accept-Ranges': 'bytes' }
+      })
     }
-  })
+    // R2 key exists in job but file not found — fall through to re-fetch
+    console.warn(`[track-audio] R2 key ${job.r2_audio_key} not found for job=${jobId}, falling through`)
+  }
+
+  const audioUrl: string = job.stereo_url || job.audio_url || ''
+  if (!audioUrl) return c.json({ error: 'No audio available for this track' }, 404)
+
+  // ── Step 2: Already our own internal proxy URL → redirect ─────────────────
+  if (audioUrl.startsWith('/api/')) return c.redirect(audioUrl)
+  // Already pointing at this same endpoint (loop guard)
+  if (audioUrl.includes('/api/track-audio/')) {
+    return c.json({ error: 'Audio URL loop detected — track may need to be regenerated' }, 502)
+  }
+
+  // ── Step 3: Try the CDN URL — if alive, stream + save to R2 ──────────────
+  const tryStreamCdn = async (url: string): Promise<Response | null> => {
+    try {
+      const upstream = await fetch(url, {
+        headers: { 'User-Agent': 'StemForge/1.0' },
+        cf: { cacheTtl: 0 } as any
+      })
+      if (!upstream.ok) return null
+
+      const ctype = upstream.headers.get('Content-Type') || 'audio/wav'
+      const buf   = await upstream.arrayBuffer()
+      if (!buf || buf.byteLength < 1000) return null
+
+      // Save to R2 in the background (don't await — serve immediately)
+      if (c.env.IMAGES) {
+        c.executionCtx?.waitUntil?.(
+          persistAudioToR2(url, jobId, c.env.IMAGES, c.env.DB, siteUrl)
+            .catch((e: any) => console.warn('[track-audio R2 save]', e?.message))
+        )
+      }
+
+      return new Response(buf, {
+        headers: { ...commonHeaders, 'Content-Type': ctype, 'Accept-Ranges': 'bytes' }
+      })
+    } catch {
+      return null
+    }
+  }
+
+  const cdnResponse = await tryStreamCdn(audioUrl)
+  if (cdnResponse) return cdnResponse
+
+  // ── Step 4: CDN expired — try MusicAPI clip_id re-fetch ──────────────────
+  const clipId: string = (job as any).clip_id || ''
+  if (clipId && c.env.MUSICAPI_KEY) {
+    console.log(`[track-audio] CDN expired for job=${jobId}, re-fetching via clip_id=${clipId}`)
+    try {
+      // Poll the clip status to get a fresh audio_url
+      const pollRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${clipId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (pollRes.ok) {
+        const pollData: any = await pollRes.json()
+        const clips = Array.isArray(pollData) ? pollData : (pollData.data || [pollData])
+        const clip  = clips.find((cl: any) => (cl.id || cl.clip_id) === clipId || clips[0])
+        const freshUrl: string = clip?.audio_url || clip?.wav_url || ''
+
+        if (freshUrl) {
+          console.log(`[track-audio] Got fresh URL for job=${jobId} via clip_id`)
+          const refreshed = await tryStreamCdn(freshUrl)
+          if (refreshed) return refreshed
+        }
+      }
+    } catch (clipErr: any) {
+      console.warn(`[track-audio] clip_id re-fetch failed for job=${jobId}:`, clipErr?.message)
+    }
+  }
+
+  // ── Step 5: Nothing worked ────────────────────────────────────────────────
+  console.error(`[track-audio] All fallbacks exhausted for job=${jobId}`)
+  return c.json({
+    error: 'Audio unavailable — the source URL has expired and could not be refreshed. Please regenerate this track.',
+    jobId
+  }, 502)
 })
 
 // GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
@@ -6206,7 +6409,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260814-04'
+const ASSET_VER = '20260814-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
