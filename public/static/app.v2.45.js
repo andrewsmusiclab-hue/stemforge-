@@ -1203,6 +1203,7 @@ document.addEventListener('DOMContentLoaded', () => {
               onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
               style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
           </div>
+          ${genre && genre !== 'music' ? `<p style="margin:0 0 3px;font-size:.78rem;color:var(--muted,#888);text-transform:capitalize">${genre}</p>` : ''}
           <p style="margin-bottom:4px">${bpm ? bpm + (dateStr ? ' · ' : '') : ''}${dateStr}</p>
           <div class="project-card__tags">
             ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
@@ -1972,8 +1973,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const trackTitle = card.dataset.title || card.querySelector('h4')?.textContent || 'Beat';
 
     if (!stereoUrl) {
-      btn.closest('.project-card__art').style.opacity = '0.5';
-      setTimeout(() => btn.closest('.project-card__art').style.opacity = '', 800);
+      // Audio not ready yet — show a brief visual pulse on the art
+      const artEl = btn.closest('.project-card__art');
+      if (artEl) { artEl.style.opacity = '0.4'; setTimeout(() => artEl.style.opacity = '', 700); }
+      // Also show a small toast so user knows why nothing happened
+      (function() {
+        var t = document.createElement('div');
+        t.textContent = 'Audio not ready yet';
+        t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e1e3a;color:#94a3b8;font-size:.8rem;padding:8px 18px;border-radius:20px;z-index:99999;pointer-events:none;border:1px solid rgba(255,255,255,.1);box-shadow:0 4px 20px rgba(0,0,0,.5)';
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 2200);
+      })();
       return;
     }
 
