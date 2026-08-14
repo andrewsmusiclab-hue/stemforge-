@@ -1203,10 +1203,10 @@ document.addEventListener('DOMContentLoaded', () => {
               onclick="event.stopPropagation();openCardMenu(this,'${p.id}','${p.stereo_url||''}','${p.zip_url||''}','${safeFilename}','beats')"
               style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>
           </div>
-          ${genre && genre !== 'music' ? `<p style="margin:0 0 3px;font-size:.78rem;color:var(--muted,#888);text-transform:capitalize">${genre}</p>` : ''}
+          ${genre && genre !== 'music' ? '<p style="margin:0 0 3px;font-size:.78rem;color:var(--muted,#888);text-transform:capitalize">' + genre + '</p>' : ''}
           <p style="margin-bottom:4px">${bpm ? bpm + (dateStr ? ' · ' : '') : ''}${dateStr}</p>
           <div class="project-card__tags">
-            ${bpm ? `<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">${bpm}</span>` : ''}
+            ${bpm ? '<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">' + bpm + '</span>' : ''}
           </div>
         </div>
       </div>`;
