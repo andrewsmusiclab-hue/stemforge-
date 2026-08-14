@@ -849,9 +849,57 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Canvas art generator (shared helper) ───────────────────
+  // ── Logo pool: index 0 = original (hue-rotated), 1–20 = new unique variants (no filter) ──
+  var _sfLogoPool = [
+    { src: '/static/stemforge-logo.png',     hueRotate: true  }, // original — keep hue-rotate behaviour
+    { src: '/static/stemforge-logo-v2.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v3.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v4.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v5.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v6.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v7.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v8.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v9.png',  hueRotate: false },
+    { src: '/static/stemforge-logo-v10.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v11.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v12.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v13.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v14.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v15.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v16.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v17.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v18.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v19.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v20.png', hueRotate: false },
+    { src: '/static/stemforge-logo-v21.png', hueRotate: false },
+  ];
+  // Cache of loaded Image objects keyed by src
+  var _sfLogoCache = {};
+
+  // Pick a stable logo index from the pool based on hue value
+  // so the same card always gets the same logo across renders
+  function _sfPickLogoIndex(hue) {
+    return Math.round(hue / (360 / _sfLogoPool.length)) % _sfLogoPool.length;
+  }
+
+  function _sfLoadLogo(idx, callback) {
+    var entry = _sfLogoPool[idx];
+    if (_sfLogoCache[entry.src] && _sfLogoCache[entry.src].complete && _sfLogoCache[entry.src].naturalWidth) {
+      callback(_sfLogoCache[entry.src], entry.hueRotate);
+      return;
+    }
+    var img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload  = function() { _sfLogoCache[entry.src] = img; callback(img, entry.hueRotate); };
+    img.onerror = function() { callback(null, false); };
+    img.src = entry.src;
+    _sfLogoCache[entry.src] = img; // store early to avoid double-loads
+  }
+
   function drawCanvasArt(artEl, hue, title, genre) {
-    // ── Inner draw — runs immediately OR after logo loads ──
-    function doDraw(logoImg) {
+    var logoIdx = _sfPickLogoIndex(hue);
+
+    function doDraw(logoImg, applyHueRotate) {
     try {
       const W = 320, H = 320;
       const canvas = document.createElement('canvas');
@@ -865,7 +913,7 @@ document.addEventListener('DOMContentLoaded', () => {
       grad.addColorStop(1,   `hsl(${(hue+100)%360},65%,5%)`);
       ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
 
-      // ── LAYER 2: Logo — dimmed to 35% so it doesn't compete with text ──
+      // ── LAYER 2: Logo ──
       if (logoImg && logoImg.complete && logoImg.naturalWidth) {
         ctx.save();
         ctx.globalAlpha = 0.55;
@@ -873,8 +921,11 @@ document.addEventListener('DOMContentLoaded', () => {
         off.width = W; off.height = H;
         const octx = off.getContext('2d');
         octx.drawImage(logoImg, 0, 0, W, H);
-        ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.8)`;
-        // Only clip top — leave 48px clear for genre label band
+        // Original logo: apply hue-rotate so it matches the card colour
+        // New unique logos: no filter — display their own colours as-is
+        if (applyHueRotate) {
+          ctx.filter = `hue-rotate(${hue}deg) saturate(1.4) brightness(0.8)`;
+        }
         ctx.beginPath();
         ctx.rect(0, 48, W, H - 48);
         ctx.clip();
@@ -887,11 +938,9 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.fillStyle = 'rgba(0,0,0,0.82)';
       ctx.fillRect(0, 0, W, 46);
 
-      // ── LAYER 4: Song title — bright white, letter-spaced ──
-      // Show song title (preferred) — fall back to genre if title is blank or junk
+      // ── LAYER 4: Song title ──
       const _badLabel = /instrumental\s+only|no\s+vocals|include\s+instruments/i;
       const _rawLabel = (title && !_badLabel.test(title)) ? title : (genre || 'music');
-      // Truncate to fit the band: uppercase, max 18 chars
       const labelText = _rawLabel.toUpperCase().replace(/_/g,' ').slice(0,18);
       ctx.font = '700 12px system-ui,sans-serif';
       ctx.fillStyle = '#ffffff';
@@ -913,22 +962,9 @@ document.addEventListener('DOMContentLoaded', () => {
       artEl.style.backgroundSize = 'cover';
       artEl.style.backgroundPosition = 'center';
     } catch(e) { /* gradient fallback */ }
-    } // end doDraw
-
-    // Load logo then draw; if already cached draw immediately
-    if (window._sfLogoImg && window._sfLogoImg.complete) {
-      doDraw(window._sfLogoImg);
-    } else if (!window._sfLogoImg) {
-      window._sfLogoImg = new Image();
-      window._sfLogoImg.crossOrigin = 'anonymous';
-      window._sfLogoImg.onload  = () => doDraw(window._sfLogoImg);
-      window._sfLogoImg.onerror = () => doDraw(null);
-      window._sfLogoImg.src = '/static/stemforge-logo.png';
-    } else {
-      // Still loading — wait then draw
-      window._sfLogoImg.addEventListener('load',  () => doDraw(window._sfLogoImg), { once: true });
-      window._sfLogoImg.addEventListener('error', () => doDraw(null),               { once: true });
     }
+
+    _sfLoadLogo(logoIdx, doDraw);
   }
   // Expose globally so the edit modal (outside this IIFE) can call it
   window.drawCanvasArt = drawCanvasArt;
@@ -1147,8 +1183,8 @@ document.addEventListener('DOMContentLoaded', () => {
            data-genre="${(genre||'music').replace(/"/g,'&quot;')}"
            >
         <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},55%,12%),hsl(${(hue+60)%360},65%,8%));position:relative;overflow:hidden">
-          <img src="/static/stemforge-logo.png" alt="StemForge"
-            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(${hue}deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>
+          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
+            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
           <div class="project-card__play" onclick="playDashProject(this)">
             <i class="fas fa-play"></i>
           </div>
@@ -1182,8 +1218,8 @@ document.addEventListener('DOMContentLoaded', () => {
            data-id="${p.id}"
            data-title="${label.replace(/"/g,'&quot;')}">
         <div class="project-card__art" style="background:linear-gradient(135deg,hsl(${hue},60%,16%),hsl(${hue2},70%,9%));position:relative;overflow:hidden">
-          <img src="/static/stemforge-logo.png" alt="StemForge"
-            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(${hue}deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>
+          <img src="${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return e?e.src:'/static/stemforge-logo.png';}())}" alt="StemForge"
+            style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:${(function(){var e=_sfLogoPool[_sfPickLogoIndex(hue)];return(e&&e.hueRotate)?'hue-rotate('+hue+'deg) saturate(1.6) brightness(0.9)':'none';}())};pointer-events:none;user-select:none"/>
           ${audioUrl ? `<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>` : '<div class="project-card__play" style="opacity:.3;pointer-events:none"><i class="fas fa-hourglass-half"></i></div>'}
         </div>
         <div class="project-card__body">
