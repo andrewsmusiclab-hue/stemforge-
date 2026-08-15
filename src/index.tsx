@@ -198,6 +198,7 @@ interface User {
   stripe_subscription_id?: string
   account_locked?: number   // 1 = locked, 0/null = active
   lock_reason?: string
+  pending_downgrade?: string | null  // 'creator' | 'free' | null — stored in D1 at downgrade time
   created_at: number
 }
 
@@ -292,6 +293,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN lock_reason TEXT`).run() } catch {}
   // ── Migrate: add bonus_credits column (tracks purchased extra credits separately) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN bonus_credits INTEGER NOT NULL DEFAULT 0`).run() } catch {}
+  // ── Migrate: add pending_downgrade column (tracks scheduled plan downgrade) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN pending_downgrade TEXT`).run() } catch {}
   // ── Lock specific policy-violating accounts (idempotent) ──
   try {
     await db.prepare(
@@ -396,6 +399,7 @@ async function getSessionUser(db: D1Database, token: string): Promise<User | nul
       stripe_subscription_id: row.stripe_subscription_id,
       account_locked: row.account_locked ?? 0,
       lock_reason: row.lock_reason ?? null,
+      pending_downgrade: row.pending_downgrade ?? null,
       created_at: row.created_at
     }
   } catch { return null }
@@ -3376,6 +3380,8 @@ app.post('/api/stripe/webhook', async (c) => {
         ).bind(customerId).first<{id:string}>()
         if (dbUser) {
           await updateUserPlan(c.env.DB, dbUser.id, plan, customerId, subId)
+          // Clear pending_downgrade since the plan change has now taken effect
+          await c.env.DB.prepare(`UPDATE users SET pending_downgrade = NULL WHERE id = ?`).bind(dbUser.id).run().catch(() => {})
         }
       }
     }
@@ -3397,7 +3403,7 @@ app.post('/api/stripe/webhook', async (c) => {
       const customerId = sub.customer
       if (customerId) {
         await c.env.DB.prepare(
-          `UPDATE users SET plan='free', gens_limit=50, stripe_subscription_id=NULL WHERE stripe_customer_id=?`
+          `UPDATE users SET plan='free', gens_limit=50, stripe_subscription_id=NULL, pending_downgrade=NULL WHERE stripe_customer_id=?`
         ).bind(customerId).run()
       }
     }
@@ -3664,7 +3670,7 @@ app.get('/subscription', async (c) => {
   if (!user) return c.redirect('/login')
 
   // ── Detect any pending Stripe plan changes + fetch real billing date ──
-  let pendingDowngrade: string | null = null  // 'free' | 'creator' | null
+  let pendingDowngrade: string | null = user.pending_downgrade ?? null  // D1-stored — instant, no Stripe call
   let pendingUpgrade: string | null = null    // 'creator' | 'pro' | null
   let realNextBillingDate: string | null = null  // e.g. "Jul 14, 2026"
   if (user.stripe_subscription_id && stripeConfigured(c.env)) {
@@ -3678,11 +3684,12 @@ app.get('/subscription', async (c) => {
           month: 'short', day: 'numeric', year: 'numeric'
         })
       }
-      // cancel_at_period_end = true means downgrading to free (cancellation)
-      if (sub.cancel_at_period_end) {
+      // cancel_at_period_end = true means downgrading to free (cancellation) — sync to D1 if not set
+      if (sub.cancel_at_period_end && !pendingDowngrade) {
         pendingDowngrade = 'free'
+        if (c.env.DB) await c.env.DB.prepare(`UPDATE users SET pending_downgrade = 'free' WHERE id = ?`).bind(user.id).run().catch(() => {})
       }
-      // Check for subscription schedules (downgrade to creator / upgrade)
+      // Check for subscription schedules (downgrade to creator / upgrade) — Stripe-schedule fallback
       if (!pendingDowngrade) {
         const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}&limit=5`, {}, c.env.STRIPE_SECRET_KEY)
         const active = schedules?.data?.find((s: any) => s.status === 'active' && s.subscription === user.stripe_subscription_id)
@@ -3705,7 +3712,7 @@ app.get('/subscription', async (c) => {
           }
         }
       }
-    } catch { /* Stripe check failed — show no pending banner */ }
+    } catch { /* Stripe check failed — fall back to D1-stored pendingDowngrade already set above */ }
   }
 
   return c.html(subscriptionPage(user, c.env, pendingDowngrade, pendingUpgrade, realNextBillingDate))
@@ -4725,6 +4732,10 @@ app.post('/api/subscription/downgrade', async (c) => {
       await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
         cancel_at_period_end: 'true',
       }, c.env.STRIPE_SECRET_KEY)
+      // Save pending_downgrade to D1 so UI can reflect this immediately
+      if (c.env.DB) {
+        await c.env.DB.prepare(`UPDATE users SET pending_downgrade = 'free' WHERE id = ?`).bind(user.id).run()
+      }
       return c.json({ ok: true, message: 'Your subscription will cancel at the end of the billing period. You will move to the Free plan then.' })
     } else {
       // Downgrade to creator: update subscription to creator price, prorated at cycle end
@@ -4741,6 +4752,10 @@ app.post('/api/subscription/downgrade', async (c) => {
         proration_behavior: 'none',
         billing_cycle_anchor: 'unchanged',
       }, c.env.STRIPE_SECRET_KEY)
+      // Save pending_downgrade to D1 so UI can reflect this immediately (no Stripe schedule to detect)
+      if (c.env.DB) {
+        await c.env.DB.prepare(`UPDATE users SET pending_downgrade = ? WHERE id = ?`).bind(target_plan, user.id).run()
+      }
       return c.json({ ok: true, message: `Your plan will change to Creator at the next billing cycle.` })
     }
   } catch (e: any) {
@@ -4809,6 +4824,8 @@ app.post('/api/subscription/cancel-downgrade', async (c) => {
       await stripeRequest('POST', `/subscriptions/${user.stripe_subscription_id}`, {
         cancel_at_period_end: 'false'
       }, c.env.STRIPE_SECRET_KEY)
+      // Clear pending_downgrade in D1
+      if (c.env.DB) await c.env.DB.prepare(`UPDATE users SET pending_downgrade = NULL WHERE id = ?`).bind(user.id).run()
       return c.json({ ok: true, message: 'Subscription cancellation removed. Your plan continues as normal.' })
     }
 
@@ -4818,9 +4835,13 @@ app.post('/api/subscription/cancel-downgrade', async (c) => {
     if (activeSchedule) {
       // Release the schedule — removes the future plan change
       await stripeRequest('POST', `/subscription_schedules/${activeSchedule.id}/release`, {}, c.env.STRIPE_SECRET_KEY)
+      // Clear pending_downgrade in D1
+      if (c.env.DB) await c.env.DB.prepare(`UPDATE users SET pending_downgrade = NULL WHERE id = ?`).bind(user.id).run()
       return c.json({ ok: true, message: 'Scheduled plan change cancelled. Your current plan continues.' })
     }
 
+    // Even if Stripe has no record, clear the D1 field (defensive cleanup)
+    if (c.env.DB) await c.env.DB.prepare(`UPDATE users SET pending_downgrade = NULL WHERE id = ?`).bind(user.id).run()
     return c.json({ ok: false, message: 'No pending downgrade found to cancel.' })
   } catch (e: any) {
     return c.json({ error: e?.message || 'Cancel downgrade failed' }, 500)
@@ -4858,19 +4879,32 @@ app.post('/api/subscription/cancel-upgrade', async (c) => {
 // GET /api/subscription/pending-state — returns { pendingDowngrade, pendingUpgrade } for home/pricing pages
 // pendingDowngrade: 'free' | 'creator' | null
 // pendingUpgrade:   'creator' | 'pro' | null
+// Primary source: D1 users.pending_downgrade (written at downgrade time — no Stripe polling needed)
+// Fallback: Stripe subscription cancel_at_period_end + subscription schedules
 app.get('/api/subscription/pending-state', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ pendingDowngrade: null, pendingUpgrade: null })
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user || !user.stripe_subscription_id || !stripeConfigured(c.env)) {
-    return c.json({ pendingDowngrade: null, pendingUpgrade: null })
+  if (!user) return c.json({ pendingDowngrade: null, pendingUpgrade: null, plan: null })
+
+  // ── Primary: use D1-stored pending_downgrade (fastest, no Stripe call needed) ──
+  if (user.pending_downgrade) {
+    return c.json({ pendingDowngrade: user.pending_downgrade, pendingUpgrade: null, plan: user.plan })
   }
+
+  if (!user.stripe_subscription_id || !stripeConfigured(c.env)) {
+    return c.json({ pendingDowngrade: null, pendingUpgrade: null, plan: user.plan })
+  }
+
+  // ── Fallback: check Stripe for cancel_at_period_end + subscription schedules ──
   try {
     let pendingDowngrade: string | null = null
     let pendingUpgrade: string | null = null
     const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
     if (sub.cancel_at_period_end) {
       pendingDowngrade = 'free'
+      // Sync to D1 so future calls are fast
+      await c.env.DB.prepare(`UPDATE users SET pending_downgrade = 'free' WHERE id = ?`).bind(user.id).run().catch(() => {})
     }
     if (!pendingDowngrade) {
       const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}&limit=5`, {}, c.env.STRIPE_SECRET_KEY)
@@ -6409,7 +6443,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260814-06'
+const ASSET_VER = '20260814-07'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
