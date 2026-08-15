@@ -440,6 +440,36 @@ p  { color: var(--sub); }
 .plan-card__features--full { gap: 12px; }
 .pricing-preview__cta { text-align: center; margin-top: 40px; }
 
+/* ── Plan card status banners (current / downgrading) ───────── */
+.plan-card-status-banner {
+  display: flex; align-items: center; gap: 7px;
+  font-size: .72rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  padding: 7px 14px; border-radius: 8px;
+  margin-bottom: 16px;
+  width: 100%;
+}
+.plan-card-status-banner--current {
+  background: rgba(16,185,129,.12);
+  border: 1px solid rgba(16,185,129,.35);
+  color: #34d399;
+  box-shadow: 0 0 14px rgba(16,185,129,.15);
+}
+.plan-card-status-banner--downgrading {
+  background: rgba(251,146,60,.1);
+  border: 1px solid rgba(251,146,60,.32);
+  color: #fb923c;
+  box-shadow: 0 0 14px rgba(251,146,60,.12);
+}
+/* Border glow on cards when they have a status */
+.plan-card--is-current {
+  border-color: rgba(16,185,129,.55) !important;
+  box-shadow: 0 0 28px rgba(16,185,129,.14) !important;
+}
+.plan-card--is-downgrading {
+  border-color: rgba(251,146,60,.45) !important;
+  box-shadow: 0 0 28px rgba(251,146,60,.12) !important;
+}
+
 /* ── Testimonials ────────────────────────────────────────────── */
 .testimonials { padding: 100px 0; background: var(--bg-2); }
 .testimonials__grid {

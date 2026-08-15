@@ -6409,7 +6409,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260814-05'
+const ASSET_VER = '20260814-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7024,7 +7024,8 @@ function homePage() {
       <p>Start free. Upgrade when you need more depth.</p>
     </div>
     <div class="plans-grid">
-      <div class="plan-card">
+      <div class="plan-card" id="home-free-plan-card">
+        <div id="home-free-card-status-top"></div>
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
@@ -7044,7 +7045,8 @@ function homePage() {
           </button>
         </div>
       </div>
-      <div class="plan-card plan-card--featured">
+      <div class="plan-card plan-card--featured" id="home-creator-plan-card">
+        <div id="home-creator-card-status-top"></div>
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
@@ -7065,7 +7067,8 @@ function homePage() {
           </button>
         </div>
       </div>
-      <div class="plan-card">
+      <div class="plan-card" id="home-pro-plan-card">
+        <div id="home-pro-card-status-top"></div>
         <div class="plan-card__tier">Pro Artist</div>
         <div class="plan-card__price"><span class="plan-card__amount">$26</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track.</p>
@@ -7296,6 +7299,33 @@ window.showSfPlanToast = function(type, plan, msg) {
     const pd   = state.pendingDowngrade; // 'creator' | 'free' | null
     const pu   = state.pendingUpgrade;   // 'pro' | 'creator' | null
     const plan = state.plan || null;
+
+    // ── Helper: set card-level status banner ─────────────────────────────────
+    function setHomeCardStatus(cardId, topSlotId, statusType) {
+      const card = document.getElementById(cardId);
+      const slot = document.getElementById(topSlotId);
+      if (!slot) return;
+      // Remove old status classes
+      if (card) {
+        card.classList.remove('plan-card--is-current', 'plan-card--is-downgrading');
+      }
+      if (statusType === 'current') {
+        slot.innerHTML = '<div class="plan-card-status-banner plan-card-status-banner--current"><i class="fas fa-check-circle"></i> Your Current Plan</div>';
+        if (card) card.classList.add('plan-card--is-current');
+      } else if (statusType === 'downgrading') {
+        slot.innerHTML = '<div class="plan-card-status-banner plan-card-status-banner--downgrading"><i class="fas fa-arrow-down"></i> Downgrading to this plan</div>';
+        if (card) card.classList.add('plan-card--is-downgrading');
+      } else {
+        slot.innerHTML = '';
+      }
+    }
+
+    // Determine which cards get which status
+    // Current plan card = plan (unless pending downgrade already in effect)
+    // Downgrade target card = pd (if pd set)
+    setHomeCardStatus('home-free-plan-card',    'home-free-card-status-top',    plan === 'free'    ? 'current' : pd === 'free'    ? 'downgrading' : null);
+    setHomeCardStatus('home-creator-plan-card', 'home-creator-card-status-top', plan === 'creator' ? 'current' : pd === 'creator' ? 'downgrading' : null);
+    setHomeCardStatus('home-pro-plan-card',     'home-pro-card-status-top',     plan === 'pro'     ? 'current' : null);
 
     // ── Free card: show banner+cancel when pending downgrade is 'free' ──
     const frNote  = document.getElementById('home-free-downgrade-note');
@@ -8213,7 +8243,8 @@ function pricingPage() {
 <section class="pricing-full">
   <div class="container">
     <div class="plans-grid plans-grid--full">
-      <div class="plan-card">
+      <div class="plan-card" id="pricing-free-plan-card">
+        <div id="pricing-free-card-status-top"></div>
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
@@ -8238,7 +8269,8 @@ function pricingPage() {
           </button>
         </div>
       </div>
-      <div class="plan-card plan-card--featured">
+      <div class="plan-card plan-card--featured" id="pricing-creator-plan-card">
+        <div id="pricing-creator-card-status-top"></div>
         <div class="plan-card__badge">Most popular</div>
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
@@ -8266,7 +8298,8 @@ function pricingPage() {
           </button>
         </div>
       </div>
-      <div class="plan-card">
+      <div class="plan-card" id="pricing-pro-plan-card">
+        <div id="pricing-pro-card-status-top"></div>
         <div class="plan-card__tier">Pro Artist</div>
         <div class="plan-card__price"><span class="plan-card__amount">$26</span><span>/month</span></div>
         <p class="plan-card__desc">For serious artists who need every track clean.</p>
@@ -8421,6 +8454,27 @@ function pricingPage() {
   function pricingApplyPendingState(pendingState, userPlan) {
     const pd   = (pendingState && pendingState.pendingDowngrade) || null;
     const plan = userPlan || (pendingState && pendingState.plan) || null;
+
+    // ── Helper: set card-level status banner ─────────────────────────────────
+    function setPricingCardStatus(cardId, topSlotId, statusType) {
+      const card = document.getElementById(cardId);
+      const slot = document.getElementById(topSlotId);
+      if (!slot) return;
+      if (card) card.classList.remove('plan-card--is-current', 'plan-card--is-downgrading');
+      if (statusType === 'current') {
+        slot.innerHTML = '<div class="plan-card-status-banner plan-card-status-banner--current"><i class="fas fa-check-circle"></i> Your Current Plan</div>';
+        if (card) card.classList.add('plan-card--is-current');
+      } else if (statusType === 'downgrading') {
+        slot.innerHTML = '<div class="plan-card-status-banner plan-card-status-banner--downgrading"><i class="fas fa-arrow-down"></i> Downgrading to this plan</div>';
+        if (card) card.classList.add('plan-card--is-downgrading');
+      } else {
+        slot.innerHTML = '';
+      }
+    }
+
+    setPricingCardStatus('pricing-free-plan-card',    'pricing-free-card-status-top',    plan === 'free'    ? 'current' : pd === 'free'    ? 'downgrading' : null);
+    setPricingCardStatus('pricing-creator-plan-card', 'pricing-creator-card-status-top', plan === 'creator' ? 'current' : pd === 'creator' ? 'downgrading' : null);
+    setPricingCardStatus('pricing-pro-plan-card',     'pricing-pro-card-status-top',     plan === 'pro'     ? 'current' : null);
 
     // ── Free card: show banner+cancel, hide button when pending downgrade = 'free' ──
     const fdEl       = document.getElementById('pricing-free-downgrade');
@@ -9203,7 +9257,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <div class="sub-plans-grid">
 
         <!-- ── FREE CARD ────────────────────────────────────────────── -->
-        <div class="sub-plan-card ${user.plan === 'free' ? 'sub-plan-card--current' : ''}" id="sub-plan-free">
+        <div class="sub-plan-card ${user.plan === 'free' ? 'sub-plan-card--current' : pendingDowngrade === 'free' ? 'plan-card--is-downgrading' : ''}" id="sub-plan-free">
+          ${user.plan === 'free' ? '<div class="plan-card-status-banner plan-card-status-banner--current"><i class="fas fa-check-circle"></i> Your Current Plan</div>' : pendingDowngrade === 'free' ? '<div class="plan-card-status-banner plan-card-status-banner--downgrading"><i class="fas fa-arrow-down"></i> Downgrading to this plan</div>' : ''}
           <div class="sub-plan-card__top">
             <div><h4>Free</h4><p>Try the engine</p></div>
             <div class="sub-plan-card__price">$0<span>/mo</span></div>
@@ -9233,7 +9288,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         </div>
 
         <!-- ── CREATOR CARD ──────────────────────────────────────────── -->
-        <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : ''}" id="sub-plan-creator">
+        <div class="sub-plan-card ${user.plan === 'creator' ? 'sub-plan-card--current' : pendingDowngrade === 'creator' ? 'plan-card--is-downgrading' : ''}" id="sub-plan-creator">
+          ${user.plan === 'creator' ? '<div class="plan-card-status-banner plan-card-status-banner--current"><i class="fas fa-check-circle"></i> Your Current Plan</div>' : pendingDowngrade === 'creator' ? '<div class="plan-card-status-banner plan-card-status-banner--downgrading"><i class="fas fa-arrow-down"></i> Downgrading to this plan</div>' : ''}
           <div class="sub-plan-card__top">
             <div><h4>Creator</h4><p>For Artists &amp; creators</p></div>
             <div class="sub-plan-card__price">$10<span>/mo</span></div>
@@ -9290,6 +9346,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
 
         <!-- ── PRO ARTIST CARD ───────────────────────────────────────── -->
         <div class="sub-plan-card ${user.plan === 'pro' ? 'sub-plan-card--current' : ''}" id="sub-plan-pro">
+          ${user.plan === 'pro' ? '<div class="plan-card-status-banner plan-card-status-banner--current"><i class="fas fa-check-circle"></i> Your Current Plan</div>' : ''}
           <div class="sub-plan-card__top">
             <div><h4>Pro Artist</h4><p>Maximum output</p></div>
             <div class="sub-plan-card__price">$26<span>/mo</span></div>
