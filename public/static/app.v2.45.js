@@ -401,6 +401,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'aug2026-download-limits',
+      date: 'August 2026',
+      title: 'WAV Download Limits & Free Plan Update',
+      tag: 'IMPORTANT UPDATE',
+      tagColor: '#38bdf8',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#e2e8f0">Pro Artist — 100 WAV downloads/month</b> — Pro Artist plan members now have a limit of <b style="color:#c084fc">100 WAV downloads</b> per billing cycle. Downloads reset automatically on your renewal date.</li>
+        <li><b style="color:#e2e8f0">Creator — 40 WAV downloads/month</b> — Creator plan members now have a limit of <b style="color:#38bdf8">40 WAV downloads</b> per billing cycle. Downloads reset automatically on your renewal date.</li>
+        <li><b style="color:#e2e8f0">Free plan — 3 generations/month</b> — Free users now receive <b style="color:#e2e8f0">3 track generations</b> per month to try StemForge. Upgrade anytime to unlock more.</li>
+        <li><b style="color:#e2e8f0">Track your WAV downloads in the sidebar</b> — Look at the bottom of the left sidebar under <b style="color:#38bdf8">Points Remaining</b> — you'll now see a <b style="color:#38bdf8">WAV Downloads</b> row showing exactly how many downloads you have left this cycle, with a progress bar that turns red when you're close to the limit.</li>
+        <li><b style="color:#e2e8f0">Subscription page usage card</b> — Your full download usage is also visible on the <b style="color:#e2e8f0">Subscription page</b> (go to <a href="/subscription" style="color:#38bdf8">Subscription</a>) — scroll to the <b>WAV Downloads</b> card below the Points Usage section to see your used vs. remaining downloads with a detailed progress bar.</li>
+      </ul>`
+    },
+    {
       id: 'aug2026-visualizer',
       date: 'August 2026',
       title: 'Waveform Visualizer — Cards & Player',
