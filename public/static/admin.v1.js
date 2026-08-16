@@ -251,23 +251,94 @@ async function loadRevenue(){
   }
 }
 
-async function loadUsers(){
-  var el=document.getElementById('admin-users-list');
+var _userSearchTimeout=null;
+function initUserSearch(){
+  var wrap=document.getElementById('admin-users-list');
+  if(!wrap||document.getElementById('admin-user-search')) return;
+  var bar='<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">'+
+    '<div style="position:relative;flex:1;max-width:360px">'+
+      '<i class="fas fa-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:.85rem"></i>'+
+      '<input id="admin-user-search" type="text" placeholder="Search by email or name…" '+
+        'style="width:100%;padding:9px 12px 9px 32px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.88rem;box-sizing:border-box"'+
+        ' oninput="onUserSearch(this.value)"/>'+
+    '</div>'+
+    '<span id="admin-user-count" style="font-size:.82rem;color:var(--muted)"></span>'+
+  '</div>'+
+  '<div id="admin-users-table"></div>';
+  wrap.innerHTML=bar;
+}
+function onUserSearch(q){
+  clearTimeout(_userSearchTimeout);
+  _userSearchTimeout=setTimeout(function(){ loadUsers(q); },320);
+}
+
+async function loadUsers(q){
+  initUserSearch();
+  var tableEl=document.getElementById('admin-users-table');
+  var countEl=document.getElementById('admin-user-count');
+  if(!tableEl) return;
+  tableEl.innerHTML='<p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
   try{
-    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},10000);
-    var res=await fetch('/api/admin/users',{signal:ctrl.signal,credentials:'include'});
+    var url='/api/admin/users'+(q?'?q='+encodeURIComponent(q):'');
+    var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},12000);
+    var res=await fetch(url,{signal:ctrl.signal,credentials:'include'});
     clearTimeout(tid);
     var data=await res.json();
-    if(data.error){ el.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
-    if(!data.users||!data.users.length){ el.innerHTML='<p style="color:var(--muted)">No users yet.</p>'; return; }
-    el.innerHTML='<table class="admin-table"><thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>Status</th><th>Points</th><th>Extra</th><th>Actions</th></tr></thead><tbody>'+
+    if(data.error){ tableEl.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
+    if(!data.users||!data.users.length){ tableEl.innerHTML='<p style="color:var(--muted)">No users found.</p>'; return; }
+    if(countEl) countEl.textContent=data.users.length+' user'+(data.users.length!==1?'s':'');
+    var DL_LIMITS={free:0,creator:40,pro:100,developer:9999};
+    tableEl.innerHTML='<div style="overflow-x:auto"><table class="admin-table"><thead><tr>'+
+      '<th>Email / Name</th><th>Plan</th><th>Status</th>'+
+      '<th>Points</th><th>Bonus</th><th>Downloads</th>'+
+      '<th>Signed Up</th><th>Renewal</th><th>Actions</th>'+
+    '</tr></thead><tbody id="admin-users-tbody">'+
       data.users.map(function(u){
-        var rem=Math.max(0,u.gens_limit-u.gens_used),remColor=rem===0?'#ef4444':rem<=10?'#f59e0b':'#10b981',bonus=u.bonus_credits||0,isLocked=u.account_locked===1;
-        var lockBadge=isLocked?'<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>':'<span style="color:#10b981;font-size:.75rem">Active</span>';
-        return '<tr style="'+(isLocked?'background:rgba(239,68,68,.04)':'')+'"><td>'+u.email+'</td><td>'+u.name+'</td><td><span class="plan-badge plan-badge--'+u.plan+'">'+u.plan+'</span></td><td>'+lockBadge+'</td><td style="font-weight:700;color:'+remColor+'">'+rem+' <small style="font-weight:400;color:var(--muted)">/ '+u.gens_limit+'</small></td><td style="font-weight:700;color:'+(bonus>0?'#a78bfa':'var(--muted)')+'>'+(bonus>0?'+'+bonus:'—')+'</td><td style="display:flex;gap:5px;flex-wrap:wrap;align-items:center"><button onclick="changeUserPlan(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.75rem">Edit Plan</button><button onclick="addCredits(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.75rem">+Credits</button><button onclick="toggleLockUser(\''+u.id+'\',\''+u.email+'\','+(isLocked?1:0)+')" class="btn btn--sm" style="font-size:.75rem;background:'+(isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)')+';border:1px solid '+(isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)')+';color:'+(isLocked?'#10b981':'#ef4444')+'">'+(isLocked?'Unlock':'Lock')+'</button><button onclick="deleteUserAccount(\''+u.id+'\',\''+u.email+'\')" class="btn btn--sm" style="font-size:.75rem;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i> Delete</button></td></tr>';
-      }).join('')+'</tbody></table>';
+        var rem=Math.max(0,(u.gens_limit||0)-(u.gens_used||0));
+        var remColor=rem===0?'#ef4444':rem<=(u.gens_limit*0.1)?'#f59e0b':'#10b981';
+        var bonus=u.bonus_credits||0;
+        var isLocked=u.account_locked===1;
+        var lockBadge=isLocked
+          ?'<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>'
+          :'<span style="color:#10b981;font-size:.75rem">Active</span>';
+        var dlUsed=u.downloads_used||0;
+        var dlLimit=DL_LIMITS[u.plan]||0;
+        var dlColor=dlUsed>=dlLimit&&dlLimit>0?'#ef4444':dlUsed>=(dlLimit*0.8)&&dlLimit>0?'#f59e0b':'var(--text)';
+        var dlStr=u.plan==='free'?'<span style="color:var(--muted)">N/A</span>':'<span style="color:'+dlColor+';font-weight:700">'+dlUsed+'</span><small style="color:var(--muted)"> / '+dlLimit+'</small>';
+        var signupDate=u.created_at?new Date(u.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
+        var hasSub=!!u.stripe_subscription_id;
+        var renewalCell=hasSub?'<span id="renew-'+u.id+'" style="color:var(--muted);font-size:.78rem" data-user-id="'+u.id+'" data-loaded="0">Loading…</span>':'<span style="color:var(--muted);font-size:.78rem">—</span>';
+        return '<tr data-uid="'+u.id+'" style="'+(isLocked?'background:rgba(239,68,68,.04)':'')+'">'+
+          '<td><div style="font-weight:600;font-size:.85rem">'+u.email+'</div><div style="color:var(--muted);font-size:.78rem">'+u.name+'</div></td>'+
+          '<td><span class="plan-badge plan-badge--'+u.plan+'">'+u.plan+'</span></td>'+
+          '<td>'+lockBadge+'</td>'+
+          '<td style="color:'+remColor+';font-weight:700">'+rem+'<small style="font-weight:400;color:var(--muted)"> / '+u.gens_limit+'</small></td>'+
+          '<td style="color:'+(bonus>0?'#a78bfa':'var(--muted)')+';font-weight:700">'+(bonus>0?'+'+bonus:'—')+'</td>'+
+          '<td>'+dlStr+'</td>'+
+          '<td style="font-size:.78rem;color:var(--muted)">'+signupDate+'</td>'+
+          '<td style="font-size:.78rem">'+renewalCell+'</td>'+
+          '<td><div style="display:flex;gap:4px;flex-wrap:wrap">'+
+            '<button onclick="changeUserPlan(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.72rem;padding:4px 8px">Plan</button>'+
+            '<button onclick="addCredits(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.72rem;padding:4px 8px">+Pts</button>'+
+            '<button onclick="toggleLockUser(\''+u.id+'\',\''+u.email+'\','+(isLocked?1:0)+')" class="btn btn--sm" style="font-size:.72rem;padding:4px 8px;background:'+(isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)')+';border:1px solid '+(isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)')+';color:'+(isLocked?'#10b981':'#ef4444')+'">'+(isLocked?'Unlock':'Lock')+'</button>'+
+            '<button onclick="deleteUserAccount(\''+u.id+'\',\''+u.email+'\')" class="btn btn--sm" style="font-size:.72rem;padding:4px 8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i></button>'+
+          '</div></td>'+
+        '</tr>';
+      }).join('')+'</tbody></table></div>';
+    // Lazy-load renewal dates for users with subscriptions
+    data.users.filter(function(u){ return !!u.stripe_subscription_id; }).forEach(function(u){
+      fetch('/api/admin/user-renewal/'+u.id,{credentials:'include'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          var el=document.getElementById('renew-'+u.id);
+          if(el) el.textContent=d.renewal_date||'—';
+        }).catch(function(){
+          var el=document.getElementById('renew-'+u.id);
+          if(el) el.textContent='—';
+        });
+    });
     window._usersLoaded=true;
-  }catch(e){ if(el) el.innerHTML='<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load users: '+(e.message||'timeout')+'</p>'; }
+  }catch(e){ if(tableEl) tableEl.innerHTML='<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load: '+(e.message||'timeout')+'</p>'; }
 }
 
 async function toggleLockUser(userId,email,currentlyLocked){

@@ -1888,11 +1888,10 @@ document.addEventListener('DOMContentLoaded', () => {
              style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,var(--primary),#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
             <i class="fas fa-file-audio"></i> Download MP3
           </a>
-          <a href="/api/download-wav/${jobId}" download="${title}.wav"
-             onclick="document.getElementById('sf-download-modal').remove()"
-             style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
+          <button onclick="document.getElementById('sf-download-modal').remove();doWavDownload('${jobId}','${title}')"
+             style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;width:100%">
             <i class="fas fa-file-waveform"></i> Download WAV
-          </a>
+          </button>
         </div>
         <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV = lossless quality · MP3 = smaller file size</p>
       </div>`;
@@ -3034,10 +3033,7 @@ document.addEventListener('DOMContentLoaded', () => {
               function doDownload(url, filename, format) {
                 if (format === 'wav') {
                   const jobIdDl = job.id || currentJobId;
-                  const a = document.createElement('a');
-                  a.href = '/api/download-wav/' + jobIdDl;
-                  a.download = filename + '.wav';
-                  document.body.appendChild(a); a.click(); a.remove();
+                  doWavDownload(jobIdDl, filename);
                 } else {
                   const a = document.createElement('a');
                   a.href = url;
@@ -3169,9 +3165,10 @@ document.addEventListener('DOMContentLoaded', () => {
               if (!user) return;
               // Update global user object
               if (window._sfUser) {
-                window._sfUser.gens_used  = user.gens_used;
-                window._sfUser.gens_limit = user.gens_limit;
-                window._sfUser.plan       = user.plan;
+                window._sfUser.gens_used    = user.gens_used;
+                window._sfUser.gens_limit   = user.gens_limit;
+                window._sfUser.plan         = user.plan;
+                window._sfUser.bonus_credits= user.bonus_credits || 0;
               }
               const gv = document.getElementById('gs-gens-val');
               const gb = document.getElementById('gs-gens-bar');
@@ -3187,6 +3184,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 gb.style.width = pct + '%';
               }
               window._sfUpdateSidebarBonus(user.bonus_credits || 0);
+              // Show credits-exhausted alert if user has no points left
+              const totalRemaining = Math.max(0, displayLimit - user.gens_used) + (user.bonus_credits || 0);
+              if (totalRemaining === 0 && user.plan !== 'developer') {
+                setTimeout(() => showCreditsExhaustedAlert(), 2500);
+              }
             }).catch(() => {});
             // Show 3-dot edit button on result
             const dotsBtn = document.getElementById('gen-result-dots');
@@ -4659,6 +4661,98 @@ function showSubToast(html, bg, shadow) {
   toast.innerHTML = html;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 4500);
+}
+
+// ── Download limit reached modal ─────────────────────────────
+function showDownloadMaxedModal(dlUsed, dlLimit) {
+  const existing = document.getElementById('sf-dl-maxed-modal');
+  if (existing) { existing.style.display = 'flex'; return; }
+  const plan = (window._sfUser && window._sfUser.plan) || 'creator';
+  const isCreator = plan === 'creator';
+  const modal = document.createElement('div');
+  modal.id = 'sf-dl-maxed-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px)';
+  modal.innerHTML = `
+    <div style="background:var(--surface,#1a1a2e);border:1px solid rgba(251,146,60,.4);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative;box-shadow:0 0 40px rgba(251,146,60,.15)">
+      <button onclick="document.getElementById('sf-dl-maxed-modal').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted,#888);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+      <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#f97316,#dc2626);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.3rem;color:#fff">
+        <i class="fas fa-download"></i>
+      </div>
+      <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;color:var(--text,#fff)">Download limit reached</h3>
+      <p style="color:var(--muted,#aaa);font-size:.9rem;margin-bottom:6px;line-height:1.5">
+        You've used <strong style="color:#fb923c">${dlUsed} / ${dlLimit}</strong> WAV downloads this billing cycle.
+      </p>
+      <p style="color:var(--muted,#aaa);font-size:.85rem;margin-bottom:24px;line-height:1.5">
+        Your limit resets at the start of your next billing cycle.<br>
+        ${isCreator ? 'Upgrade to Pro Artist for 100 downloads/cycle.' : 'Your downloads reset next billing cycle.'}
+      </p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${isCreator ? `<a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Upgrade to Pro — 100 downloads/cycle</a>` : ''}
+        <button onclick="document.getElementById('sf-dl-maxed-modal').style.display='none'" style="padding:11px 24px;background:rgba(255,255,255,.07);color:var(--text,#fff);border:1px solid var(--border,#333);border-radius:12px;font-weight:600;cursor:pointer;font-size:.9rem">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.style.display = 'none'; });
+}
+
+// ── Credits exhausted alert ───────────────────────────────────
+function showCreditsExhaustedAlert() {
+  const existing = document.getElementById('sf-credits-exhausted-modal');
+  if (existing) { existing.style.display = 'flex'; return; }
+  const plan = (window._sfUser && window._sfUser.plan) || 'free';
+  const isFree = plan === 'free';
+  const modal = document.createElement('div');
+  modal.id = 'sf-credits-exhausted-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px)';
+  modal.innerHTML = `
+    <div style="background:var(--surface,#1a1a2e);border:1px solid rgba(234,179,8,.35);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative;box-shadow:0 0 40px rgba(234,179,8,.12)">
+      <button onclick="document.getElementById('sf-credits-exhausted-modal').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted,#888);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+      <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#eab308,#f97316);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.3rem;color:#fff">
+        <i class="fas fa-bolt"></i>
+      </div>
+      <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;color:var(--text,#fff)">Out of generation points</h3>
+      <p style="color:var(--muted,#aaa);font-size:.9rem;margin-bottom:24px;line-height:1.5">
+        You've used all your points for this billing cycle.<br>
+        ${isFree ? 'Upgrade to a paid plan for more points.' : 'Buy a credit pack to keep creating now, or wait for your cycle to reset.'}
+      </p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${!isFree ? `<a href="/subscription#credits" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#eab308,#f97316);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-bolt"></i> Buy Credits</a>` : ''}
+        ${isFree ? `<a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Upgrade Plan</a>` : ''}
+        <button onclick="document.getElementById('sf-credits-exhausted-modal').style.display='none'" style="padding:11px 24px;background:rgba(255,255,255,.07);color:var(--text,#fff);border:1px solid var(--border,#333);border-radius:12px;font-weight:600;cursor:pointer;font-size:.9rem">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.style.display = 'none'; });
+}
+
+// ── Shared WAV download helper (with download-cap error handling) ──
+async function doWavDownload(jobId, filename) {
+  try {
+    const res = await fetch('/api/download-wav/' + jobId);
+    if (!res.ok) {
+      let errData = {};
+      try { errData = await res.json(); } catch {}
+      if (errData.downloads_maxed) {
+        showDownloadMaxedModal(errData.downloads_used || 0, errData.downloads_limit || 0);
+        return;
+      }
+      // Generic error toast
+      showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
+      return;
+    }
+    // Stream the blob and trigger browser download
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (filename || 'stemforge_beat') + '.wav';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) {
+    showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: network error', '#ef4444', 'rgba(239,68,68,.4)');
+  }
 }
 
 // Mark downgrade as pending when user confirms it (subscription page modal)

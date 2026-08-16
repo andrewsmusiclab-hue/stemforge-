@@ -199,6 +199,7 @@ interface User {
   account_locked?: number   // 1 = locked, 0/null = active
   lock_reason?: string
   pending_downgrade?: string | null  // 'creator' | 'free' | null — stored in D1 at downgrade time
+  downloads_used: number             // tracks downloaded this billing cycle (counts actual downloads)
   created_at: number
 }
 
@@ -295,6 +296,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN bonus_credits INTEGER NOT NULL DEFAULT 0`).run() } catch {}
   // ── Migrate: add pending_downgrade column (tracks scheduled plan downgrade) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN pending_downgrade TEXT`).run() } catch {}
+  // ── Migrate: add downloads_used column (monthly download counter, resets each billing cycle) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN downloads_used INTEGER NOT NULL DEFAULT 0`).run() } catch {}
   // ── Lock specific policy-violating accounts (idempotent) ──
   try {
     await db.prepare(
@@ -400,6 +403,7 @@ async function getSessionUser(db: D1Database, token: string): Promise<User | nul
       account_locked: row.account_locked ?? 0,
       lock_reason: row.lock_reason ?? null,
       pending_downgrade: row.pending_downgrade ?? null,
+      downloads_used: row.downloads_used ?? 0,
       created_at: row.created_at
     }
   } catch { return null }
@@ -464,8 +468,9 @@ async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: s
   if (!currentUser) return
   const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
   const rolledLimit = Math.min(5000, newMonthBase + unused)
+  // Reset gens_used, roll over unused plan points (NOT bonus_credits — those expire), reset download counter
   await db.prepare(
-    `UPDATE users SET gens_used=0, gens_limit=? WHERE stripe_customer_id=?`
+    `UPDATE users SET gens_used=0, gens_limit=?, bonus_credits=0, downloads_used=0 WHERE stripe_customer_id=?`
   ).bind(rolledLimit, customerId).run()
 }
 
@@ -3188,20 +3193,26 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, downloads_used FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; downloads_used: number }>()
+  const plan = fresh?.plan ?? user.plan
+  const dlUsed = fresh?.downloads_used ?? 0
+  const dlLimit = DOWNLOAD_LIMITS[plan] ?? 0
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
   return c.json({
     user: {
       id: user.id, name: user.name, email: user.email,
       avatar: user.avatar,
-      plan: fresh?.plan ?? user.plan,
+      plan,
       gens_used: fresh?.gens_used ?? user.gens_used,
       gens_limit: fresh?.gens_limit ?? user.gens_limit,
       bonus_credits: fresh?.bonus_credits ?? user.bonus_credits ?? 0,
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null,
+      downloads_used: dlUsed,
+      downloads_limit: dlLimit,
+      downloads_remaining: Math.max(0, dlLimit - dlUsed),
       is_admin: isAdmin(user, c.env)
     }
   })
@@ -5385,14 +5396,48 @@ app.get('/api/admin/stats', async (c) => {
   })
 })
 
-// GET /api/admin/users — list all users
+// GET /api/admin/users — list all users (with optional search)
 app.get('/api/admin/users', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  const rows = await c.env.DB.prepare(`SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,created_at FROM users ORDER BY created_at DESC LIMIT 100`).all<any>()
-  return c.json({ users: rows.results || [] })
+  const q = (c.req.query('q') || '').trim()
+  let rows
+  if (q) {
+    const like = `%${q}%`
+    rows = await c.env.DB.prepare(
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,downloads_used,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
+    ).bind(like, like).all<any>()
+  } else {
+    rows = await c.env.DB.prepare(
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,downloads_used,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users ORDER BY created_at DESC LIMIT 200`
+    ).all<any>()
+  }
+  // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
+  const users = rows.results || []
+  // Return raw users without Stripe calls for speed — renewal date fetched client-side per-row if needed
+  return c.json({ users })
+})
+
+// GET /api/admin/user-renewal/:userId — fetch Stripe renewal date for a single user
+app.get('/api/admin/user-renewal/:userId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const admin = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(admin, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  if (!stripeConfigured(c.env)) return c.json({ renewal_date: null })
+  const userId = c.req.param('userId')
+  const dbUser = await c.env.DB.prepare(`SELECT stripe_subscription_id FROM users WHERE id=?`).bind(userId).first<{stripe_subscription_id:string|null}>()
+  if (!dbUser?.stripe_subscription_id) return c.json({ renewal_date: null })
+  try {
+    const sub = await stripeRequest('GET', `/subscriptions/${dbUser.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const item0 = sub.items?.data?.[0]
+    const periodEnd: number = item0?.current_period_end ?? sub.current_period_end
+    if (!periodEnd) return c.json({ renewal_date: null })
+    const renewal_date = new Date(periodEnd * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    return c.json({ renewal_date })
+  } catch { return c.json({ renewal_date: null }) }
 })
 
 // POST /api/admin/user/update — update a user's plan or credits
@@ -6387,29 +6432,57 @@ app.get('/api/track-audio/:id', async (c) => {
   }, 502)
 })
 
+// Download limits per plan (per billing cycle)
+const DOWNLOAD_LIMITS: Record<string, number> = { free: 0, creator: 40, pro: 100, developer: 9999 }
+
 // GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login')
-  // Free plan: downloads locked — stems and tracks are saved until upgrade
+  // Free plan: downloads locked
   if (user.plan === 'free') {
     return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan. Your tracks are saved — upgrade anytime to download.', locked: true, upgrade: true }, 403)
+  }
+  // Download cap check
+  const dlLimit = DOWNLOAD_LIMITS[user.plan] ?? 0
+  const dlUsed  = user.downloads_used ?? 0
+  if (dlUsed >= dlLimit) {
+    return c.json({
+      error: `You've reached your ${dlLimit} download limit for this billing cycle. Your points still work — create all you want, downloads reset next cycle.`,
+      downloads_maxed: true,
+      downloads_used: dlUsed,
+      downloads_limit: dlLimit
+    }, 403)
   }
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
   if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
+  // Increment download counter BEFORE serving (atomic — prevents double-downloads on retry)
+  await c.env.DB.prepare(`UPDATE users SET downloads_used = downloads_used + 1 WHERE id = ?`).bind(user.id).run()
   // Fetch the audio and re-serve it with a proper filename
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
+  const audioUrl = job.r2_audio_key
+    ? `https://pub-placeholder.r2.dev/${job.r2_audio_key}` // fallback, real URL via track-audio proxy
+    : job.stereo_url
   const upstream = await fetch(job.stereo_url)
-  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  if (!upstream.ok) {
+    // Rollback counter if fetch failed
+    await c.env.DB.prepare(`UPDATE users SET downloads_used = MAX(0, downloads_used - 1) WHERE id = ?`).bind(user.id).run()
+    return c.json({ error: 'Could not fetch audio' }, 502)
+  }
+  const newDlUsed = dlUsed + 1
+  const remaining = dlLimit - newDlUsed
   return new Response(upstream.body, {
     headers: {
       'Content-Type': 'audio/wav',
       'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-      'Cache-Control': 'no-store'
+      'Cache-Control': 'no-store',
+      'X-Downloads-Used': String(newDlUsed),
+      'X-Downloads-Limit': String(dlLimit),
+      'X-Downloads-Remaining': String(remaining)
     }
   })
 })
@@ -6443,7 +6516,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260814-07'
+const ASSET_VER = '20260816-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7204,67 +7277,66 @@ function homePage() {
   </div>
 </div>
 
-<!-- Home page upgrade confirmation modal (same as subscription page) -->
-<div id="home-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;padding:16px">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
-    <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:24px 28px 20px">
-      <div style="display:flex;align-items:center;gap:12px">
-        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-arrow-up" style="color:white;font-size:.9rem"></i>
+<!-- Home page upgrade confirmation modal (Suno-style) -->
+<div id="home-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(8px)">
+  <div style="background:var(--surface);border:1px solid rgba(108,58,255,.35);border-radius:24px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 80px rgba(108,58,255,.2)">
+    <div style="background:linear-gradient(135deg,rgba(108,58,255,.18),rgba(168,85,247,.12));border-bottom:1px solid rgba(108,58,255,.2);padding:22px 26px 18px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:11px">
+          <div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-bolt" style="color:white;font-size:.85rem"></i>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:1.1rem;font-weight:700" id="hum-title">Upgrade Plan</h3>
+            <p style="margin:0;font-size:.78rem;color:var(--muted)">Instant access — charged now</p>
+          </div>
         </div>
-        <div>
-          <h3 style="margin:0;font-size:1.15rem" id="hum-title">Confirm Upgrade</h3>
-          <p style="margin:0;font-size:.8rem;color:var(--muted)" id="hum-subtitle">Review your prorated charge</p>
-        </div>
+        <button onclick="closeHomeUpgradeModal()" style="background:none;border:none;color:var(--muted);font-size:1rem;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
       </div>
     </div>
-    <div id="hum-loading" style="padding:40px;text-align:center">
-      <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
-      <p style="color:var(--muted);margin:0;font-size:.9rem">Calculating your charge…</p>
+    <div id="hum-loading" style="padding:44px;text-align:center">
+      <div style="width:34px;height:34px;border:3px solid var(--border);border-top-color:#a855f7;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 14px"></div>
+      <p style="color:var(--muted);margin:0;font-size:.88rem">Calculating your proration…</p>
     </div>
-    <div id="hum-content" style="display:none;padding:24px 28px">
-      <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px">
-        <div style="text-align:center">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Current Plan</div>
-          <div id="hum-from-label" style="font-weight:700;font-size:1rem">Free</div>
-          <div id="hum-from-price" style="font-size:.8rem;color:var(--muted)"></div>
+    <div id="hum-content" style="display:none;padding:22px 26px">
+      <!-- Plan pill -->
+      <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:22px">
+        <div style="padding:5px 13px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:20px;font-size:.83rem;font-weight:600" id="hum-from-label">Free</div>
+        <div style="width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-right" style="color:white;font-size:.65rem"></i>
         </div>
-        <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-arrow-right" style="color:white;font-size:.8rem"></i>
+        <div style="padding:5px 13px;background:linear-gradient(135deg,rgba(108,58,255,.15),rgba(168,85,247,.1));border:1px solid rgba(168,85,247,.4);border-radius:20px;font-size:.83rem;font-weight:700;color:#c084fc" id="hum-to-label">Pro Artist</div>
+      </div>
+      <!-- Breakdown -->
+      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:14px">
+        <div style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;font-weight:600" id="hum-plan-name">Plan</span>
+          <span id="hum-new-price" style="font-size:.85rem;font-weight:600">—</span>
         </div>
-        <div style="text-align:center">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">New Plan</div>
-          <div id="hum-to-label" style="font-weight:700;font-size:1rem;color:#a855f7">Pro Artist</div>
-          <div id="hum-to-price" style="font-size:.8rem;color:var(--muted)"></div>
+        <div id="hum-discount-row" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <div>
+            <span style="font-size:.85rem;color:#10b981;font-weight:600"><i class="fas fa-tag" style="margin-right:4px"></i>Unused credit discount</span>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:1px" id="hum-discount-note"></div>
+          </div>
+          <span id="hum-discount-val" style="font-size:.85rem;font-weight:600;color:#10b981">—</span>
+        </div>
+        <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,rgba(108,58,255,.12),rgba(168,85,247,.08))">
+          <div>
+            <span style="font-size:.95rem;font-weight:800">Charged today</span>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:1px">Access granted immediately</div>
+          </div>
+          <span id="hum-charge" style="font-size:1.2rem;font-weight:900;color:#c084fc">—</span>
         </div>
       </div>
-      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px">
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Billing period</span>
-          <span id="hum-period" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Days remaining</span>
-          <span id="hum-days" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Price difference</span>
-          <span id="hum-diff" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:12px 16px;display:flex;justify-content:space-between;background:rgba(108,58,255,.1)">
-          <span style="font-size:.95rem;font-weight:700">Charge today</span>
-          <span id="hum-charge" style="font-size:1.1rem;font-weight:800;color:#a855f7">—</span>
-        </div>
-      </div>
-      <p id="hum-note" style="font-size:.8rem;color:var(--muted);text-align:center;margin:0 0 20px;line-height:1.5"></p>
-      <div style="display:flex;gap:10px">
+      <p id="hum-note" style="font-size:.78rem;color:var(--muted);text-align:center;margin:0 0 18px;line-height:1.5"></p>
+      <div style="display:flex;gap:9px">
         <button class="btn btn--outline btn--sm" style="flex:1" onclick="closeHomeUpgradeModal()"><i class="fas fa-times"></i> Cancel</button>
-        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="hum-confirm-btn" onclick="confirmHomeUpgrade()"><i class="fas fa-lock"></i> <span id="hum-confirm-label">Confirm &amp; Pay</span></button>
+        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="hum-confirm-btn" onclick="confirmHomeUpgrade()"><i class="fas fa-bolt"></i> <span id="hum-confirm-label">Confirm &amp; Pay</span></button>
       </div>
     </div>
-    <div id="hum-error" style="display:none;padding:32px 28px;text-align:center">
-      <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:#ef4444;margin-bottom:12px"></i>
-      <p id="hum-error-msg" style="color:var(--muted);margin:0 0 20px;font-size:.9rem;line-height:1.5"></p>
+    <div id="hum-error" style="display:none;padding:32px 26px;text-align:center">
+      <i class="fas fa-exclamation-triangle" style="font-size:1.8rem;color:#ef4444;margin-bottom:12px;display:block"></i>
+      <p id="hum-error-msg" style="color:var(--muted);margin:0 0 18px;font-size:.88rem;line-height:1.5"></p>
       <button class="btn btn--outline btn--sm" onclick="closeHomeUpgradeModal()">Close</button>
     </div>
   </div>
@@ -7495,29 +7567,40 @@ window.showSfPlanToast = function(type, plan, msg) {
       .then(r => r.json())
       .then(data => {
         if (data.error) { showHumError(data.error); return; }
-        document.getElementById('hum-from-label').textContent = data.current_plan_label || 'Free';
-        document.getElementById('hum-from-price').textContent = data.current_price_label || '';
-        document.getElementById('hum-to-label').textContent   = data.target_plan_label || plan;
-        document.getElementById('hum-to-price').textContent   = data.new_price_label || '';
+        const targetLabel       = data.target_plan_label || plan;
+        const newPriceCents     = data.new_price_cents     || 0;
+        const currentPriceCents = data.current_price_cents || 0;
+        const proratedCents     = data.proration_cents     || newPriceCents;
+        const discountCents     = Math.max(0, newPriceCents - proratedCents);
         const humHasRealSub = data.has_subscription &&
           data.days_remaining != null && !isNaN(data.days_remaining) &&
           data.days_in_period != null && !isNaN(data.days_in_period);
-        const humChargeLabel = (data.proration_label && data.proration_label !== '$NaN')
-          ? data.proration_label : (data.new_price_label ? data.new_price_label.replace('/mo','') : '');
-        if (humHasRealSub) {
-          document.getElementById('hum-period').textContent = data.billing_cycle_range || (data.period_end_label ? 'Renews ' + data.period_end_label : '—');
-          document.getElementById('hum-days').textContent   = data.days_remaining + ' days left';
-          document.getElementById('hum-diff').textContent   = data.price_diff_label || ((data.current_price_label||'') + ' → ' + (data.new_price_label||''));
-          document.getElementById('hum-charge').textContent = humChargeLabel;
-          document.getElementById('hum-note').textContent   = 'Then ' + (data.new_price_label||'') + ' starting ' + (data.period_end_label||'next billing date') + '.';
+        const chargeLabel = '$' + (proratedCents / 100).toFixed(2);
+        // Plan pills
+        document.getElementById('hum-from-label').textContent = data.current_plan_label || 'Free';
+        document.getElementById('hum-to-label').textContent   = targetLabel;
+        document.getElementById('hum-title').textContent      = 'Upgrade to ' + targetLabel;
+        // New price row
+        document.getElementById('hum-plan-name').textContent = targetLabel;
+        document.getElementById('hum-new-price').textContent = '$' + (newPriceCents / 100).toFixed(2);
+        // Discount row
+        const discountRow = document.getElementById('hum-discount-row');
+        if (humHasRealSub && discountCents > 0 && currentPriceCents > 0) {
+          discountRow.style.display = 'flex';
+          document.getElementById('hum-discount-val').textContent  = '−$' + (discountCents / 100).toFixed(2);
+          document.getElementById('hum-discount-note').textContent = data.days_remaining + ' days left on ' + (data.current_plan_label || 'current plan');
         } else {
-          document.getElementById('hum-period').textContent = 'New subscription';
-          document.getElementById('hum-days').textContent   = 'Full billing cycle';
-          document.getElementById('hum-diff').textContent   = '—';
-          document.getElementById('hum-charge').textContent = data.new_price_label ? data.new_price_label.replace('/mo','') : humChargeLabel;
-          document.getElementById('hum-note').textContent   = 'You will be charged ' + (data.new_price_label||'') + ' today and billed monthly.';
+          discountRow.style.display = 'none';
         }
-        document.getElementById('hum-confirm-label').textContent = 'Confirm & Pay ' + humChargeLabel;
+        // Charge today
+        document.getElementById('hum-charge').textContent = chargeLabel;
+        // Renewal note
+        if (humHasRealSub && data.period_end_label) {
+          document.getElementById('hum-note').textContent = 'Then ' + (data.new_price_label||'') + ' starting ' + data.period_end_label + '. Cancel anytime.';
+        } else {
+          document.getElementById('hum-note').textContent = 'Billed monthly at ' + (data.new_price_label||'') + '. Cancel anytime.';
+        }
+        document.getElementById('hum-confirm-label').textContent = 'Confirm & Pay ' + chargeLabel;
         document.getElementById('hum-loading').style.display = 'none';
         document.getElementById('hum-content').style.display = 'block';
       })
@@ -8398,67 +8481,64 @@ function pricingPage() {
 </section>
 </main>
 
-<!-- Pricing page upgrade modal -->
-<div id="pricing-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;padding:16px">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
-    <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:24px 28px 20px">
-      <div style="display:flex;align-items:center;gap:12px">
-        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-arrow-up" style="color:white;font-size:.9rem"></i>
+<!-- Pricing page upgrade modal (Suno-style) -->
+<div id="pricing-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(8px)">
+  <div style="background:var(--surface);border:1px solid rgba(108,58,255,.35);border-radius:24px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 80px rgba(108,58,255,.2)">
+    <div style="background:linear-gradient(135deg,rgba(108,58,255,.18),rgba(168,85,247,.12));border-bottom:1px solid rgba(108,58,255,.2);padding:22px 26px 18px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:11px">
+          <div style="width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-bolt" style="color:white;font-size:.85rem"></i>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:1.1rem;font-weight:700" id="pum-title">Upgrade Plan</h3>
+            <p style="margin:0;font-size:.78rem;color:var(--muted)">Instant access — charged now</p>
+          </div>
         </div>
-        <div>
-          <h3 style="margin:0;font-size:1.15rem" id="pum-title">Confirm Upgrade</h3>
-          <p style="margin:0;font-size:.8rem;color:var(--muted)">Review your charge before paying</p>
-        </div>
+        <button onclick="closePricingUpgradeModal()" style="background:none;border:none;color:var(--muted);font-size:1rem;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
       </div>
     </div>
-    <div id="pum-loading" style="padding:40px;text-align:center">
-      <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
-      <p style="color:var(--muted);margin:0;font-size:.9rem">Calculating your charge…</p>
+    <div id="pum-loading" style="padding:44px;text-align:center">
+      <div style="width:34px;height:34px;border:3px solid var(--border);border-top-color:#a855f7;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 14px"></div>
+      <p style="color:var(--muted);margin:0;font-size:.88rem">Calculating your proration…</p>
     </div>
-    <div id="pum-content" style="display:none;padding:24px 28px">
-      <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px">
-        <div style="text-align:center">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Current Plan</div>
-          <div id="pum-from-label" style="font-weight:700;font-size:1rem">Free</div>
-          <div id="pum-from-price" style="font-size:.8rem;color:var(--muted)"></div>
+    <div id="pum-content" style="display:none;padding:22px 26px">
+      <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:22px">
+        <div style="padding:5px 13px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:20px;font-size:.83rem;font-weight:600" id="pum-from-label">Free</div>
+        <div style="width:26px;height:26px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-right" style="color:white;font-size:.65rem"></i>
         </div>
-        <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-arrow-right" style="color:white;font-size:.8rem"></i>
+        <div style="padding:5px 13px;background:linear-gradient(135deg,rgba(108,58,255,.15),rgba(168,85,247,.1));border:1px solid rgba(168,85,247,.4);border-radius:20px;font-size:.83rem;font-weight:700;color:#c084fc" id="pum-to-label">Pro Artist</div>
+      </div>
+      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:14px;overflow:hidden;margin-bottom:14px">
+        <div style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:.85rem;font-weight:600" id="pum-plan-name">Plan</span>
+          <span id="pum-new-price" style="font-size:.85rem;font-weight:600">—</span>
         </div>
-        <div style="text-align:center">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">New Plan</div>
-          <div id="pum-to-label" style="font-weight:700;font-size:1rem;color:#a855f7">Pro Artist</div>
-          <div id="pum-to-price" style="font-size:.8rem;color:var(--muted)"></div>
+        <div id="pum-discount-row" style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <div>
+            <span style="font-size:.85rem;color:#10b981;font-weight:600"><i class="fas fa-tag" style="margin-right:4px"></i>Unused credit discount</span>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:1px" id="pum-discount-note"></div>
+          </div>
+          <span id="pum-discount-val" style="font-size:.85rem;font-weight:600;color:#10b981">—</span>
+        </div>
+        <div style="padding:14px 16px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,rgba(108,58,255,.12),rgba(168,85,247,.08))">
+          <div>
+            <span style="font-size:.95rem;font-weight:800">Charged today</span>
+            <div style="font-size:.72rem;color:var(--muted);margin-top:1px">Access granted immediately</div>
+          </div>
+          <span id="pum-charge" style="font-size:1.2rem;font-weight:900;color:#c084fc">—</span>
         </div>
       </div>
-      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px">
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Billing period</span>
-          <span id="pum-period" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Days remaining</span>
-          <span id="pum-days" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Price difference</span>
-          <span id="pum-diff" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:12px 16px;display:flex;justify-content:space-between;background:rgba(108,58,255,.1)">
-          <span style="font-size:.95rem;font-weight:700">Charged today</span>
-          <span id="pum-charge" style="font-size:1.1rem;font-weight:800;color:#a855f7">—</span>
-        </div>
-      </div>
-      <p id="pum-note" style="font-size:.8rem;color:var(--muted);text-align:center;margin:0 0 20px;line-height:1.5"></p>
-      <div style="display:flex;gap:10px">
+      <p id="pum-note" style="font-size:.78rem;color:var(--muted);text-align:center;margin:0 0 18px;line-height:1.5"></p>
+      <div style="display:flex;gap:9px">
         <button class="btn btn--outline btn--sm" style="flex:1" onclick="closePricingUpgradeModal()"><i class="fas fa-times"></i> Cancel</button>
-        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="pum-confirm-btn" onclick="confirmPricingUpgrade()"><i class="fas fa-lock"></i> <span id="pum-confirm-label">Confirm &amp; Pay</span></button>
+        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="pum-confirm-btn" onclick="confirmPricingUpgrade()"><i class="fas fa-bolt"></i> <span id="pum-confirm-label">Confirm &amp; Pay</span></button>
       </div>
     </div>
-    <div id="pum-error" style="display:none;padding:32px 28px;text-align:center">
-      <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:#ef4444;margin-bottom:12px"></i>
-      <p id="pum-error-msg" style="color:var(--muted);margin:0 0 20px;font-size:.9rem;line-height:1.5"></p>
+    <div id="pum-error" style="display:none;padding:32px 26px;text-align:center">
+      <i class="fas fa-exclamation-triangle" style="font-size:1.8rem;color:#ef4444;margin-bottom:12px;display:block"></i>
+      <p id="pum-error-msg" style="color:var(--muted);margin:0 0 18px;font-size:.88rem;line-height:1.5"></p>
       <button class="btn btn--outline btn--sm" onclick="closePricingUpgradeModal()">Close</button>
     </div>
   </div>
@@ -8678,42 +8758,7 @@ function pricingPage() {
     });
   });
 
-  // ── Shared helper: populate proration breakdown rows ────────────────────────
-  // prefix = 'pum' | 'hum' | 'upgrade'
-  // IDs: <prefix>-period, <prefix>-days, <prefix>-diff, <prefix>-charge, <prefix>-note
-  function populateUpgradeRows(prefix, data) {
-    const hasRealSub = data.has_subscription &&
-      data.days_remaining != null && !isNaN(data.days_remaining) &&
-      data.days_in_period != null && !isNaN(data.days_in_period);
-    const chargeLabel = (data.proration_label && data.proration_label !== '$NaN')
-      ? data.proration_label : (data.new_price_label ? data.new_price_label.replace('/mo','') : '');
-    const periodEl = document.getElementById(prefix + '-period');
-    const daysEl   = document.getElementById(prefix + '-days');
-    const diffEl   = document.getElementById(prefix + '-diff');
-    const chargeEl = document.getElementById(prefix + '-charge');
-    const noteEl   = document.getElementById(prefix + '-note');
-    if (hasRealSub) {
-      // Show exact billing cycle range e.g. "Jun 14 – Jul 14, 2025"
-      if (periodEl) periodEl.textContent = data.billing_cycle_range || (data.period_end_label ? 'Renews ' + data.period_end_label : '—');
-      // Show exact days remaining e.g. "13 days left"
-      if (daysEl)   daysEl.textContent   = data.days_remaining + ' days left';
-      // Show price difference e.g. "$19.00/mo → $39.00/mo"
-      if (diffEl)   diffEl.textContent   = data.price_diff_label || ((data.current_price_label || '') + ' → ' + (data.new_price_label || ''));
-      // Charge = prorated amount (new - old) × days remaining
-      if (chargeEl) chargeEl.textContent = chargeLabel;
-      if (noteEl)   noteEl.textContent   = 'Then ' + (data.new_price_label || '') + ' starting ' +
-        (data.period_end_label || 'next billing date') + '.';
-    } else {
-      if (periodEl) periodEl.textContent = 'New subscription';
-      if (daysEl)   daysEl.textContent   = 'Full billing cycle';
-      if (diffEl)   diffEl.textContent   = '—';
-      if (chargeEl) chargeEl.textContent = data.new_price_label ? data.new_price_label.replace('/mo','') : chargeLabel;
-      if (noteEl)   noteEl.textContent   = 'You will be charged ' + (data.new_price_label || '') + ' today and billed monthly.';
-    }
-    return chargeLabel;
-  }
-
-  // ── Upgrade modal ───────────────────────────────────────────────────────────
+  // ── Upgrade modal (Suno-style) ──────────────────────────────────────────────
   function openPricingUpgradeModal(plan) {
     _pumPlan = plan;
     const modal = document.getElementById('pricing-upgrade-modal');
@@ -8725,12 +8770,41 @@ function pricingPage() {
       .then(r => r.json())
       .then(data => {
         if (data.error) { showPumError(data.error); return; }
+        const targetLabel       = data.target_plan_label || plan;
+        const newPriceCents     = data.new_price_cents     || 0;
+        const currentPriceCents = data.current_price_cents || 0;
+        const proratedCents     = data.proration_cents     || newPriceCents;
+        const discountCents     = Math.max(0, newPriceCents - proratedCents);
+        const hasRealSub = data.has_subscription &&
+          data.days_remaining != null && !isNaN(data.days_remaining) &&
+          data.days_in_period != null && !isNaN(data.days_in_period);
+        const chargeLabel = '$' + (proratedCents / 100).toFixed(2);
+        // Pill labels
         document.getElementById('pum-from-label').textContent = data.current_plan_label || 'Free';
-        document.getElementById('pum-from-price').textContent = data.current_price_label || '$0/mo';
-        document.getElementById('pum-to-label').textContent   = data.target_plan_label || plan;
-        document.getElementById('pum-to-price').textContent   = data.new_price_label || '';
-        const pumCharge = populateUpgradeRows('pum', data);
-        document.getElementById('pum-confirm-label').textContent = 'Confirm & Pay ' + pumCharge;
+        document.getElementById('pum-to-label').textContent   = targetLabel;
+        document.getElementById('pum-title').textContent      = 'Upgrade to ' + targetLabel;
+        // Price row
+        document.getElementById('pum-plan-name').textContent  = targetLabel;
+        document.getElementById('pum-new-price').textContent  = '$' + (newPriceCents / 100).toFixed(2);
+        // Discount row
+        const discountRow = document.getElementById('pum-discount-row');
+        if (hasRealSub && discountCents > 0 && currentPriceCents > 0) {
+          discountRow.style.display = 'flex';
+          document.getElementById('pum-discount-val').textContent  = '−$' + (discountCents / 100).toFixed(2);
+          document.getElementById('pum-discount-note').textContent = data.days_remaining + ' days left on ' + (data.current_plan_label || 'current plan');
+        } else {
+          discountRow.style.display = 'none';
+        }
+        // Charge today
+        document.getElementById('pum-charge').textContent = chargeLabel;
+        // Renewal note
+        const noteEl = document.getElementById('pum-note');
+        if (hasRealSub && data.period_end_label) {
+          noteEl.textContent = 'Then ' + (data.new_price_label||'') + ' starting ' + data.period_end_label + '. Cancel anytime.';
+        } else {
+          noteEl.textContent = 'Billed monthly at ' + (data.new_price_label||'') + '. Cancel anytime.';
+        }
+        document.getElementById('pum-confirm-label').textContent = 'Confirm & Pay ' + chargeLabel;
         document.getElementById('pum-loading').style.display = 'none';
         document.getElementById('pum-content').style.display = 'block';
       })
@@ -9162,6 +9236,13 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
+  // Download stats
+  const DL_LIMITS: Record<string, number> = { free: 0, creator: 40, pro: 100, developer: 9999 }
+  const dlLimit = DL_LIMITS[user.plan] ?? 0
+  const dlUsed  = user.downloads_used ?? 0
+  const dlRemaining = Math.max(0, dlLimit - dlUsed)
+  const dlPct   = dlLimit > 0 ? Math.min(100, Math.round((dlUsed / dlLimit) * 100)) : 0
+  const dlMaxed  = dlLimit > 0 && dlUsed >= dlLimit
   const billingPeriod = user.plan === 'free' ? 'N/A' : 'Monthly'
   // Use real Stripe period_end if available, otherwise show N/A (not a hardcoded +30 days guess)
   const nextBilling = realNextBillingDate ?? (user.stripe_subscription_id ? 'Loading…' : 'N/A')
@@ -9209,6 +9290,38 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <div class="sub-usage-bar"><div class="sub-usage-bar__fill" id="sub-usage-bar-fill" style="width:${pct}%"></div></div>
       <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
+
+    <!-- ── WAV Downloads Counter ──────────────────────────────── -->
+    ${user.plan !== 'free' ? `
+    <div class="sub-usage-card" id="sub-downloads-card" style="margin-top:12px">
+      <div class="sub-usage-header">
+        <h3 style="display:flex;align-items:center;gap:8px"><i class="fas fa-download" style="color:var(--primary);font-size:.9rem"></i> WAV Downloads</h3>
+        <span class="sub-usage-count" id="sub-dl-count" style="${dlMaxed ? 'color:#ef4444' : dlPct >= 80 ? 'color:#f97316' : ''}">${dlUsed} / ${dlLimit} used</span>
+      </div>
+      <div class="sub-usage-bar">
+        <div class="sub-usage-bar__fill" id="sub-dl-bar-fill" style="width:${dlPct}%;background:${dlMaxed ? 'linear-gradient(90deg,#ef4444,#dc2626)' : dlPct >= 80 ? 'linear-gradient(90deg,#f97316,#ea580c)' : 'linear-gradient(90deg,var(--primary),#6366f1)'}"></div>
+      </div>
+      <p class="sub-usage-note" id="sub-dl-note" style="${dlMaxed ? 'color:#ef4444' : dlPct >= 80 && !dlMaxed ? 'color:#f97316' : ''}">
+        ${dlMaxed
+          ? `<i class="fas fa-exclamation-triangle"></i> Download limit reached — resets on billing date`
+          : dlPct >= 80
+          ? `<i class="fas fa-exclamation-circle"></i> ${dlRemaining} downloads remaining · Resets on billing date`
+          : `${dlRemaining} of ${dlLimit} WAV downloads remaining this cycle · Resets on billing date`}
+      </p>
+      ${dlMaxed ? `
+      <div style="margin-top:10px;padding:10px 14px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;display:flex;align-items:center;gap:10px;font-size:.85rem">
+        <i class="fas fa-info-circle" style="color:#ef4444;flex-shrink:0"></i>
+        <span style="color:var(--muted)">You can still create beats — downloads reset when your billing cycle renews.
+        ${user.plan === 'creator' ? ' <a href="/pricing?plan=pro" style="color:var(--primary);font-weight:600">Upgrade to Pro for 100/cycle &rarr;</a>' : ''}</span>
+      </div>` : ''}
+    </div>` : `
+    <div class="sub-usage-card" id="sub-downloads-card" style="margin-top:12px;opacity:.6">
+      <div class="sub-usage-header">
+        <h3 style="display:flex;align-items:center;gap:8px"><i class="fas fa-download" style="font-size:.9rem"></i> WAV Downloads</h3>
+        <span class="sub-usage-count">Not available on Free plan</span>
+      </div>
+      <p class="sub-usage-note">Upgrade to Creator or Pro Artist to unlock WAV downloads.</p>
+    </div>`}
 
     <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
     <div class="sub-credits-section" id="sub-credits-section">
@@ -9484,85 +9597,100 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
 </div>
 
 <!-- Upgrade confirm modal -->
-<div id="sub-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;padding:16px">
-  <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.6)">
+<div id="sub-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(8px)">
+  <div style="background:var(--surface);border:1px solid rgba(108,58,255,.35);border-radius:24px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 80px rgba(108,58,255,.2)">
 
     <!-- Modal header -->
-    <div style="background:linear-gradient(135deg,#6c3aff22,#a855f722);border-bottom:1px solid var(--border);padding:24px 28px 20px">
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:4px">
-        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-arrow-up" style="color:white;font-size:.9rem"></i>
+    <div style="background:linear-gradient(135deg,rgba(108,58,255,.18),rgba(168,85,247,.12));border-bottom:1px solid rgba(108,58,255,.2);padding:24px 28px 20px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-bolt" style="color:white;font-size:.9rem"></i>
+          </div>
+          <div>
+            <h3 style="margin:0;font-size:1.15rem;font-weight:700" id="upgrade-modal-title">Upgrade Plan</h3>
+            <p style="margin:0;font-size:.8rem;color:var(--muted)" id="upgrade-modal-subtitle">Instant access — charged now</p>
+          </div>
         </div>
-        <div>
-          <h3 style="margin:0;font-size:1.15rem" id="upgrade-modal-title">Confirm Upgrade</h3>
-          <p style="margin:0;font-size:.8rem;color:var(--muted)" id="upgrade-modal-subtitle">Review your prorated charge</p>
-        </div>
+        <button onclick="closeUpgradeModal()" style="background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer;padding:4px"><i class="fas fa-times"></i></button>
       </div>
     </div>
 
     <!-- Loading state -->
-    <div id="upgrade-modal-loading" style="padding:40px;text-align:center">
-      <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
-      <p style="color:var(--muted);margin:0;font-size:.9rem">Calculating your prorated charge…</p>
+    <div id="upgrade-modal-loading" style="padding:48px;text-align:center">
+      <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:#a855f7;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 16px"></div>
+      <p style="color:var(--muted);margin:0;font-size:.9rem">Calculating your proration…</p>
     </div>
 
     <!-- Content state -->
     <div id="upgrade-modal-content" style="display:none;padding:24px 28px">
 
-      <!-- Plan transition -->
-      <div style="display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:20px">
-        <div style="text-align:center">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Current Plan</div>
-          <div id="upgrade-from-label" style="font-weight:700;font-size:1rem;color:var(--text)">Creator</div>
-          <div id="upgrade-from-price" style="font-size:.8rem;color:var(--muted)">$19/mo</div>
+      <!-- Plan transition pill -->
+      <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:24px">
+        <div style="padding:6px 14px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:20px;font-size:.85rem;font-weight:600" id="upgrade-from-label">Creator</div>
+        <div style="width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-arrow-right" style="color:white;font-size:.7rem"></i>
         </div>
-        <div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-arrow-right" style="color:white;font-size:.8rem"></i>
+        <div style="padding:6px 14px;background:linear-gradient(135deg,rgba(108,58,255,.15),rgba(168,85,247,.1));border:1px solid rgba(168,85,247,.4);border-radius:20px;font-size:.85rem;font-weight:700;color:#c084fc" id="upgrade-to-label">Pro Artist</div>
+      </div>
+
+      <!-- Suno-style price breakdown -->
+      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-bottom:16px">
+
+        <!-- New plan full price -->
+        <div style="padding:13px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <div>
+            <span style="font-size:.88rem;font-weight:600" id="umod-plan-name">Pro Artist</span>
+            <span style="font-size:.78rem;color:var(--muted);margin-left:6px" id="umod-cycle-note">monthly</span>
+          </div>
+          <span id="umod-new-price" style="font-size:.88rem;font-weight:600">$26.00</span>
         </div>
-        <div style="text-align:center">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">New Plan</div>
-          <div id="upgrade-to-label" style="font-weight:700;font-size:1rem;color:#a855f7">Pro Artist</div>
-          <div id="upgrade-to-price" style="font-size:.8rem;color:var(--muted)">$39/mo</div>
+
+        <!-- Unused credits discount row (only shown when upgrading mid-cycle) -->
+        <div id="umod-discount-row" style="padding:13px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+          <div>
+            <span style="font-size:.88rem;color:#10b981;font-weight:600"><i class="fas fa-tag" style="margin-right:5px"></i>Unused credit discount</span>
+            <div style="font-size:.75rem;color:var(--muted);margin-top:1px" id="umod-discount-note">Value of remaining days on current plan</div>
+          </div>
+          <span id="umod-discount-val" style="font-size:.88rem;font-weight:600;color:#10b981">−$0.00</span>
+        </div>
+
+        <!-- Charge today — highlighted -->
+        <div style="padding:15px 18px;display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,rgba(108,58,255,.12),rgba(168,85,247,.08))">
+          <div>
+            <span style="font-size:1rem;font-weight:800">Charged today</span>
+            <div style="font-size:.75rem;color:var(--muted);margin-top:1px" id="umod-today-note">Access granted immediately</div>
+          </div>
+          <span id="umod-charge-today" style="font-size:1.25rem;font-weight:900;color:#c084fc">$26.00</span>
         </div>
       </div>
 
-      <!-- Proration breakdown table -->
-      <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:16px">
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Billing period</span>
-          <span id="upgrade-period-label" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Days remaining</span>
-          <span id="upgrade-days-label" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:10px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
-          <span style="font-size:.85rem;color:var(--muted)">Price difference</span>
-          <span id="upgrade-diff-label" style="font-size:.85rem;font-weight:600">—</span>
-        </div>
-        <div style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center;background:rgba(108,58,255,.1)">
-          <span style="font-size:.95rem;font-weight:700">Charge today</span>
-          <span id="upgrade-charge-label" style="font-size:1.1rem;font-weight:800;color:#a855f7">—</span>
-        </div>
+      <!-- Billing cycle info -->
+      <div id="umod-renewal-row" style="display:flex;align-items:center;gap:8px;padding:10px 14px;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;margin-bottom:20px;font-size:.8rem;color:var(--muted)">
+        <i class="fas fa-calendar-alt" style="color:#6c3aff;flex-shrink:0"></i>
+        <span id="umod-renewal-note">Then billed monthly at the new plan rate.</span>
       </div>
 
-      <!-- Renewal note -->
-      <p id="upgrade-renewal-note" style="font-size:.8rem;color:var(--muted);text-align:center;margin:0 0 20px;line-height:1.5"></p>
+      <!-- Credits section anchor note -->
+      <div id="umod-credits-section" style="display:none;padding:10px 14px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2);border-radius:10px;margin-bottom:20px;font-size:.8rem;color:var(--muted)">
+        <i class="fas fa-bolt" style="color:#10b981;margin-right:5px"></i>
+        <span id="umod-credits-note">Your generation points will be upgraded to the new plan's limit immediately.</span>
+      </div>
 
       <!-- Action buttons -->
       <div style="display:flex;gap:10px">
         <button class="btn btn--outline btn--sm" style="flex:1" onclick="closeUpgradeModal()">
           <i class="fas fa-times"></i> Cancel
         </button>
-        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none" id="upgrade-confirm-btn" onclick="confirmUpgrade()">
-          <i class="fas fa-lock"></i> <span id="upgrade-confirm-label">Confirm &amp; Pay</span>
+        <button class="btn btn--primary btn--sm" style="flex:2;background:linear-gradient(135deg,#6c3aff,#a855f7);border:none;font-size:.95rem" id="upgrade-confirm-btn" onclick="confirmUpgrade()">
+          <i class="fas fa-bolt"></i> <span id="upgrade-confirm-label">Confirm &amp; Pay</span>
         </button>
       </div>
     </div>
 
     <!-- Error state -->
-    <div id="upgrade-modal-error" style="display:none;padding:32px 28px;text-align:center">
-      <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:#ef4444;margin-bottom:12px"></i>
+    <div id="upgrade-modal-error" style="display:none;padding:36px 28px;text-align:center">
+      <i class="fas fa-exclamation-triangle" style="font-size:2rem;color:#ef4444;margin-bottom:14px;display:block"></i>
       <p id="upgrade-error-msg" style="color:var(--muted);margin:0 0 20px;font-size:.9rem;line-height:1.5">Unable to calculate proration.</p>
       <button class="btn btn--outline btn--sm" onclick="closeUpgradeModal()">Close</button>
     </div>
@@ -9571,21 +9699,21 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
 </div>
 <script>
 (function(){
-  // ── Upgrade flow: preview → confirm modal → pay ──────────────────────────
+  // ── Upgrade flow: preview → Suno-style confirm modal → pay ──────────────
   let _upgradePendingPlan = null;
   let _upgradePreviewData = null;
 
   function openUpgradeModal(targetPlan) {
     _upgradePendingPlan = targetPlan;
     _upgradePreviewData = null;
-    const modal = document.getElementById('sub-upgrade-modal');
+    const modal      = document.getElementById('sub-upgrade-modal');
     const loadingEl  = document.getElementById('upgrade-modal-loading');
     const contentEl  = document.getElementById('upgrade-modal-content');
     const errorEl    = document.getElementById('upgrade-modal-error');
     modal.style.display = 'flex';
-    loadingEl.style.display  = 'block';
-    contentEl.style.display  = 'none';
-    errorEl.style.display    = 'none';
+    loadingEl.style.display = 'block';
+    contentEl.style.display = 'none';
+    errorEl.style.display   = 'none';
 
     fetch('/api/subscription/upgrade-preview?plan=' + encodeURIComponent(targetPlan))
       .then(r => r.json())
@@ -9593,58 +9721,76 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         if (data.error) { showUpgradeError(data.error); return; }
         _upgradePreviewData = data;
 
-        // Populate plan labels
-        document.getElementById('upgrade-from-label').textContent  = data.current_plan_label  || 'Current';
-        document.getElementById('upgrade-from-price').textContent  = data.current_price_label || '';
-        document.getElementById('upgrade-to-label').textContent    = data.target_plan_label   || targetPlan;
-        document.getElementById('upgrade-to-price').textContent    = data.new_price_label     || '';
+        const targetLabel = data.target_plan_label || targetPlan;
+        const newPriceCents     = data.new_price_cents     || 0;
+        const currentPriceCents = data.current_price_cents || 0;
+        const proratedCents     = data.proration_cents     || newPriceCents;
 
-        // Populate breakdown rows
+        // Discount = new_price - proration (unused credit value from old plan)
+        const discountCents = Math.max(0, newPriceCents - proratedCents);
+
         const hasRealSub = data.has_subscription &&
           data.days_remaining != null && !isNaN(data.days_remaining) &&
           data.days_in_period != null && !isNaN(data.days_in_period);
-        const chargeLabel = (data.proration_label && data.proration_label !== '$NaN')
-          ? data.proration_label : (data.new_price_label ? data.new_price_label.replace('/mo','') : '');
-        if (hasRealSub) {
-          // Billing cycle: e.g. "Jun 14 – Jul 14, 2025"
-          document.getElementById('upgrade-period-label').textContent =
-            data.billing_cycle_range || (data.period_end_label ? 'Renews ' + data.period_end_label : '—');
-          // Days remaining: e.g. "13 days left"
-          document.getElementById('upgrade-days-label').textContent =
-            data.days_remaining + ' days left';
-          // Price diff: e.g. "$19.00/mo → $39.00/mo"
-          document.getElementById('upgrade-diff-label').textContent =
-            data.price_diff_label || ((data.current_price_label || '') + ' → ' + (data.new_price_label || ''));
-          // Charge today: prorated amount = (new_daily - old_daily) × days_remaining
-          document.getElementById('upgrade-charge-label').textContent = chargeLabel;
-          document.getElementById('upgrade-renewal-note').textContent =
-            'Then ' + (data.new_price_label || '') + ' starting ' + (data.period_end_label || 'next billing date') + '.';
+
+        // ── Plan transition pill ──
+        document.getElementById('upgrade-from-label').textContent = data.current_plan_label || 'Current';
+        document.getElementById('upgrade-to-label').textContent   = targetLabel;
+        document.getElementById('upgrade-modal-title').textContent = 'Upgrade to ' + targetLabel;
+
+        // ── New plan price row ──
+        document.getElementById('umod-plan-name').textContent  = targetLabel;
+        document.getElementById('umod-new-price').textContent  = '$' + (newPriceCents / 100).toFixed(2);
+        document.getElementById('umod-cycle-note').textContent = data.period_end_label
+          ? 'renews ' + data.period_end_label
+          : 'monthly';
+
+        // ── Discount row (only for mid-cycle upgrades with a real existing sub) ──
+        const discountRow = document.getElementById('umod-discount-row');
+        if (hasRealSub && discountCents > 0 && currentPriceCents > 0) {
+          discountRow.style.display = 'flex';
+          document.getElementById('umod-discount-val').textContent  = '−$' + (discountCents / 100).toFixed(2);
+          document.getElementById('umod-discount-note').textContent =
+            data.days_remaining + ' days left on ' + (data.current_plan_label || 'current plan');
         } else {
-          // No existing subscription (or period dates unavailable) — full price checkout
-          document.getElementById('upgrade-period-label').textContent = 'New subscription';
-          document.getElementById('upgrade-days-label').textContent   = 'Full billing cycle';
-          document.getElementById('upgrade-diff-label').textContent   = '—';
-          document.getElementById('upgrade-charge-label').textContent = data.new_price_label ? data.new_price_label.replace('/mo','') : chargeLabel;
-          document.getElementById('upgrade-renewal-note').textContent =
-            'You will be charged ' + (data.new_price_label || '') + ' today and billed monthly.';
+          discountRow.style.display = 'none';
         }
 
-        // Update confirm button label
-        document.getElementById('upgrade-confirm-label').textContent =
-          'Confirm & Pay ' + chargeLabel;
+        // ── Charge today ──
+        const chargeLabel = '$' + (proratedCents / 100).toFixed(2);
+        document.getElementById('umod-charge-today').textContent = chargeLabel;
+        document.getElementById('umod-today-note').textContent   = hasRealSub && discountCents > 0
+          ? targetLabel + ' — ' + data.new_price_label + ' minus unused credit'
+          : 'Instant access · ' + targetLabel + ' features unlocked now';
+
+        // ── Renewal note ──
+        const renewalNote = document.getElementById('umod-renewal-note');
+        if (hasRealSub && data.period_end_label) {
+          renewalNote.textContent = 'Then ' + (data.new_price_label || '') + '/mo starting ' + data.period_end_label + '.';
+        } else {
+          renewalNote.textContent = 'Billed monthly. Cancel anytime from this page.';
+        }
+
+        // ── Credits upgrade note ──
+        const credSection = document.getElementById('umod-credits-section');
+        credSection.style.display = 'block';
+        document.getElementById('umod-credits-note').textContent =
+          'Your points allowance upgrades immediately to ' + (targetPlan === 'pro' ? '2,000 pts/mo' : '800 pts/mo') + '.';
+
+        // ── Confirm button ──
+        document.getElementById('upgrade-confirm-label').textContent = 'Confirm & Pay ' + chargeLabel;
 
         loadingEl.style.display = 'none';
         contentEl.style.display = 'block';
       })
-      .catch(err => showUpgradeError('Network error. Please try again.'));
+      .catch(() => showUpgradeError('Network error. Please try again.'));
   }
 
   function showUpgradeError(msg) {
     document.getElementById('upgrade-modal-loading').style.display = 'none';
     document.getElementById('upgrade-modal-content').style.display = 'none';
-    const errorEl = document.getElementById('upgrade-modal-error');
     document.getElementById('upgrade-error-msg').textContent = msg;
-    errorEl.style.display = 'block';
+    document.getElementById('upgrade-modal-error').style.display = 'block';
   }
 
   window.closeUpgradeModal = function() {
