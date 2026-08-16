@@ -6516,7 +6516,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260816-01'
+const ASSET_VER = '20260816-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6700,19 +6700,19 @@ function globalSidebar() {
 
   <!-- Navigation -->
   <nav class="gs-sidebar__nav">
-    <a href="/" class="gs-sidebar__nav-item" data-page="home">
+    <a href="/" class="gs-sidebar__nav-item gs-auth-nav" data-page="home" style="display:none">
       <i class="fas fa-home"></i>
       <span>Home</span>
     </a>
-    <a href="/generator" class="gs-sidebar__nav-item" data-page="generator">
+    <a href="/generator" class="gs-sidebar__nav-item gs-auth-nav" data-page="generator" style="display:none">
       <i class="fas fa-music"></i>
       <span>Create</span>
     </a>
-    <a href="/dashboard" class="gs-sidebar__nav-item" data-page="dashboard">
+    <a href="/dashboard" class="gs-sidebar__nav-item gs-auth-nav" data-page="dashboard" style="display:none">
       <i class="fas fa-th-large"></i>
       <span>Library</span>
     </a>
-    <a href="/feedback" class="gs-sidebar__nav-item" data-page="feedback">
+    <a href="/feedback" class="gs-sidebar__nav-item gs-auth-nav" data-page="feedback" style="display:none">
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
@@ -6834,6 +6834,15 @@ function globalSidebar() {
         <i class="fas fa-bolt" style="color:#f59e0b;margin-right:4px;font-size:.65rem"></i>Bonus Points
       </div>
       <div class="gs-credits__bonus-val" id="gs-bonus-val">0 <small>bonus</small></div>
+    </div>
+    <!-- WAV Downloads row (only visible when plan has download limit) -->
+    <div id="gs-wav-row" style="display:none">
+      <div class="gs-credits__divider"></div>
+      <div class="gs-credits__label" style="margin-top:2px">
+        <i class="fas fa-file-audio" style="color:#38bdf8;margin-right:4px;font-size:.65rem"></i>WAV Downloads
+      </div>
+      <div class="gs-credits__val" id="gs-wav-val" style="color:#38bdf8">— <small>/ —</small></div>
+      <div class="gs-credits__bar"><div id="gs-wav-bar" style="width:0%;background:linear-gradient(90deg,#0ea5e9,#38bdf8)"></div></div>
     </div>
   </div>
 
@@ -7063,7 +7072,6 @@ function homePage() {
           <p class="plan-card__desc">For artists, writers, and content creators.</p>
           <ul class="plan-card__features">
             <li><i class="fas fa-check"></i> 800 points monthly</li>
-            <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
@@ -7116,115 +7124,6 @@ function homePage() {
 
   </div><!-- /.hero__fullvp-inner -->
 </section>
-
-<section class="logos-bar">
-  <div class="container">
-    <p class="logos-bar__label">Powered by industry-leading AI</p>
-    <div class="logos-bar__items">
-      <span><i class="fas fa-music"></i> Beat Engine</span>
-      <span><i class="fas fa-bolt"></i> Edge Deployed</span>
-      <span><i class="fas fa-shield-alt"></i> Commercial Use</span>
-      <span><i class="fas fa-music"></i> Studio-Quality Output</span>
-      <span><i class="fas fa-infinity"></i> Always Improving</span>
-    </div>
-  </div>
-</section>
-
-<section class="features" id="features">
-  <div class="container">
-    <div class="section-header">
-      <div class="section-tag">Features</div>
-      <h2>Everything you need.<br/>Nothing you don't.</h2>
-      <p>Built for artists who want more than a loop.</p>
-    </div>
-    <div class="features__grid">
-      <div class="feature-card feature-card--hero">
-        <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
-        <h3>Studio-quality downloads</h3>
-        <p>Download the full stereo mix in lossless WAV — ready for release, streaming, or your DAW.</p>
-        <div class="feature-card__tracks">
-          <span class="track-pill track-pill--kick">Stereo Mix</span>
-          <span class="track-pill track-pill--bass">WAV</span>
-          <span class="track-pill track-pill--keys">Lossless</span>
-          <span class="track-pill track-pill--hats">Commercial rights</span>
-        </div>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon"><i class="fas fa-microchip"></i></div>
-        <h3>Composition-first generation</h3>
-        <p>AI builds a shared blueprint first — BPM, key, structure, arrangement — so all tracks lock together perfectly.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon"><i class="fas fa-sliders"></i></div>
-        <h3>Regenerate your beat</h3>
-        <p>Don't like the result? Regenerate with a new style or adjust your prompt. Every generation is unique and saved to your library.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon"><i class="fas fa-compact-disc"></i></div>
-        <h3>Lossless WAV exports</h3>
-        <p>Download the full stereo mix as a lossless WAV file — ready for distribution, streaming, or your own DAW workflow.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon"><i class="fas fa-tags"></i></div>
-        <h3>Intelligent stem naming</h3>
-        <p>Each stem is named by what it actually contains — drums, bass, keys, lead — so you can work with them straight out of the export.</p>
-      </div>
-      <div class="feature-card">
-        <div class="feature-card__icon"><i class="fas fa-shield-alt"></i></div>
-        <h3>Commercial use included</h3>
-        <p>All paid plan exports come with full commercial use rights. Sell your beats, release your music.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-
-
-<!-- pricing-preview section removed — plan cards now live inside hero -->
-
-<section class="final-cta">
-  <div class="container">
-    <div class="final-cta__box">
-      <div class="final-cta__orb"></div>
-      <h2>Your next beat.<br/>Every track. Ready to download.</h2>
-      <a href="/generator" class="btn btn--primary btn--lg">Try the generator free <i class="fas fa-arrow-right"></i></a>
-    </div>
-  </div>
-</section>
-
-<!-- Bottom stems video — fixed to viewport bottom, fades in as user scrolls to bottom -->
-<!-- Wrapper handles the gradient bleed — transparent top, solid bottom -->
-<div id="stems-bg-wrap" style="position:fixed;bottom:0;left:0;width:100%;height:65vh;pointer-events:none;z-index:0;opacity:0;transition:opacity .6s ease;will-change:opacity;-webkit-mask-image:linear-gradient(to bottom,transparent 0%,black 38%);mask-image:linear-gradient(to bottom,transparent 0%,black 38%)">
-  <video id="stems-bg-video" autoplay muted loop playsinline
-    style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;mix-blend-mode:screen;pointer-events:none">
-    <source src="/static/stems-wave.mp4" type="video/mp4">
-  </video>
-</div>
-<script>
-(function(){
-  var wrap = document.getElementById('stems-bg-wrap');
-  if (!wrap) return;
-  var ticking = false;
-  function onScroll() {
-    if (ticking) return;
-    ticking = true;
-    requestAnimationFrame(function() {
-      ticking = false;
-      var scrolled = window.scrollY;
-      var winH     = window.innerHeight;
-      var docH     = document.documentElement.scrollHeight;
-      /* progress: 0 = page top, 1 = page bottom */
-      var progress = scrolled / Math.max(1, docH - winH);
-      /* fade in from 70% → 90% scroll; once visible, stays visible all the way to bottom */
-      var opacity  = parseFloat((0.22 * Math.max(0, Math.min(1, (progress - 0.70) / 0.20))).toFixed(3));
-      wrap.style.opacity    = opacity;
-      wrap.style.visibility = opacity < 0.005 ? 'hidden' : 'visible';
-    });
-  }
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
-})();
-</script>
 
 <!-- Home page downgrade confirmation modal -->
 <div id="home-downgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
@@ -8357,13 +8256,10 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 800 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
-          <li><i class="fas fa-check"></i> Auto Split (up to 5 stems) — 30 pts</li>
-          <li><i class="fas fa-check"></i> Vocals &amp; Instrumental — 70 pts</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
-          <li class="muted"><i class="fas fa-times"></i> WAV downloads</li>
-
           <li class="muted"><i class="fas fa-times"></i> Stem regeneration</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
         </ul>
@@ -9096,7 +8992,7 @@ function checkoutPage() {
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
           <li><i class="fas fa-check"></i> 800 points monthly</li>
-          <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
+          <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
         <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$10.00</strong></div>
@@ -9237,12 +9133,6 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         <span class="sub-stat__label">Next Billing Date</span>
         <span class="sub-stat__val">${nextBilling}</span>
       </div>
-      <div class="sub-stat">
-        <span class="sub-stat__label">Points Remaining</span>
-        <span class="sub-stat__val" id="sub-remaining-val">${Math.max(0, user.gens_limit - user.gens_used)} / ${user.gens_limit}</span>
-        ${user.bonus_credits > 0 ? `<span class="sub-stat__bonus" id="sub-bonus-val"><i class="fas fa-bolt"></i> ${user.bonus_credits} bonus pts</span>` : `<span class="sub-stat__bonus" id="sub-bonus-val" style="display:none"></span>`}
-      </div>
-
     </div>
     <div class="sub-usage-card">
       <div class="sub-usage-header">

@@ -525,6 +525,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Hide the sign-in button now that we know the user is logged in
       const gsSigninBtn = document.getElementById('gs-signin-btn');
       if (gsSigninBtn) gsSigninBtn.style.display = 'none';
+      // Show nav items that are hidden for unauthenticated users
+      document.querySelectorAll('.gs-auth-nav').forEach(el => { el.style.display = 'flex'; });
 
       const initials = user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2);
       if (gsAvatar) {
@@ -584,6 +586,29 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       // Show bonus points row
       window._sfUpdateSidebarBonus(user.bonus_credits || 0);
+
+      // ── WAV Downloads row ─────────────────────────────────────
+      const DL_LIMITS = { free: 0, creator: 40, pro: 100, developer: 9999 };
+      const dlLimit   = DL_LIMITS[user.plan] ?? 0;
+      const dlUsed    = user.downloads_used ?? 0;
+      const dlRemain  = Math.max(0, dlLimit - dlUsed);
+      const gsWavRow  = document.getElementById('gs-wav-row');
+      const gsWavVal  = document.getElementById('gs-wav-val');
+      const gsWavBar  = document.getElementById('gs-wav-bar');
+      if (gsWavRow && dlLimit > 0 && user.plan !== 'developer') {
+        gsWavRow.style.display = 'block';
+        if (gsWavVal) {
+          gsWavVal.style.color = dlRemain === 0 ? '#ef4444' : '#38bdf8';
+          gsWavVal.innerHTML = `${dlRemain} <small>/ ${dlLimit} left</small>`;
+        }
+        if (gsWavBar) {
+          const dlPct = dlLimit > 0 ? Math.min(100, Math.round(dlUsed / dlLimit * 100)) : 0;
+          gsWavBar.style.width = dlPct + '%';
+          gsWavBar.style.background = dlRemain === 0
+            ? 'linear-gradient(90deg,#ef4444,#f87171)'
+            : 'linear-gradient(90deg,#0ea5e9,#38bdf8)';
+        }
+      }
 
       // ── Sidebar user dropdown toggle ──────────────────────────
       const gsUserBtn      = document.getElementById('gs-user-btn');
@@ -5156,12 +5181,29 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  OPEN / CLOSE
   // ─────────────────────────────────────────────────────────────────────────
   window.openStemsPanel = function (jobId, stereoUrl, title, userPlan) {
-    // Gate: stem splitting is Pro Artist+ only
+    // Gate: stem splitting is Pro Artist+ only (Creator cannot access stem splitting)
     var _resolvedPlan = userPlan || (window._sfUser && window._sfUser.plan) || 'free';
-    if (_resolvedPlan === 'free') {
-      var upgradeModal = document.getElementById('sf-dash-upgrade');
-      if (upgradeModal) upgradeModal.style.display = 'flex';
-      else window.location.href = '/pricing';
+    if (_resolvedPlan === 'free' || _resolvedPlan === 'creator') {
+      // Show a targeted upgrade prompt
+      var existingGate = document.getElementById('sf-stem-gate-modal');
+      if (existingGate) existingGate.remove();
+      var gateEl = document.createElement('div');
+      gateEl.id = 'sf-stem-gate-modal';
+      gateEl.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.78);backdrop-filter:blur(8px);padding:16px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif';
+      gateEl.innerHTML = [
+        '<div style="background:#12152a;border:1px solid rgba(108,58,255,.4);border-radius:20px;max-width:400px;width:100%;padding:32px 28px;text-align:center;box-shadow:0 20px 60px rgba(108,58,255,.25)">',
+          '<div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 18px">',
+            '<i class="fas fa-scissors" style="color:white;font-size:1.3rem"></i>',
+          '</div>',
+          '<h3 style="margin:0 0 8px;font-size:1.2rem;font-weight:800;color:#e2e8f0">Stem Splitting is Pro Only</h3>',
+          '<p style="margin:0 0 24px;font-size:.88rem;color:#94a3b8;line-height:1.6">Stem splitting requires a <strong style="color:#c084fc">Pro Artist</strong> plan. Upgrade to split your beats into individual stems — drums, bass, keys, lead, and more.</p>',
+          '<div style="display:flex;flex-direction:column;gap:10px">',
+            '<a href="/pricing" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown" style="margin-right:6px"></i>Upgrade to Pro Artist — $26/mo</a>',
+            '<button onclick="document.getElementById(\'sf-stem-gate-modal\').remove()" style="padding:10px 24px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#94a3b8;border-radius:12px;font-size:.88rem;cursor:pointer;font-weight:600">Maybe later</button>',
+          '</div>',
+        '</div>'
+      ].join('');
+      document.body.appendChild(gateEl);
       return;
     }
     _jobId     = jobId;
