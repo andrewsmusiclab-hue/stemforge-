@@ -407,11 +407,12 @@ document.addEventListener('DOMContentLoaded', () => {
       tag: 'IMPORTANT UPDATE',
       tagColor: '#38bdf8',
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
-        <li><b style="color:#e2e8f0">Pro Artist — 100 WAV downloads/month</b> — Pro Artist plan members now have a limit of <b style="color:#c084fc">100 WAV downloads</b> per billing cycle. Downloads reset automatically on your renewal date.</li>
-        <li><b style="color:#e2e8f0">Creator — 40 WAV downloads/month</b> — Creator plan members now have a limit of <b style="color:#38bdf8">40 WAV downloads</b> per billing cycle. Downloads reset automatically on your renewal date.</li>
-        <li><b style="color:#e2e8f0">Free plan — 3 generations/month</b> — Free users now receive <b style="color:#e2e8f0">3 track generations</b> per month to try StemForge. Upgrade anytime to unlock more.</li>
-        <li><b style="color:#e2e8f0">Track your WAV downloads in the sidebar</b> — Look at the bottom of the left sidebar under <b style="color:#38bdf8">Points Remaining</b> — you'll now see a <b style="color:#38bdf8">WAV Downloads</b> row showing exactly how many downloads you have left this cycle, with a progress bar that turns red when you're close to the limit.</li>
-        <li><b style="color:#e2e8f0">Subscription page usage card</b> — Your full download usage is also visible on the <b style="color:#e2e8f0">Subscription page</b> (go to <a href="/subscription" style="color:#38bdf8">Subscription</a>) — scroll to the <b>WAV Downloads</b> card below the Points Usage section to see your used vs. remaining downloads with a detailed progress bar.</li>
+        <li><b style="color:#e2e8f0">Pro Artist — 100 WAV downloads/month</b> — Pro Artist members have a limit of <b style="color:#c084fc">100 WAV downloads</b> per billing cycle. Downloads reset on your renewal date.</li>
+        <li><b style="color:#e2e8f0">Creator — 40 WAV downloads/month</b> — Creator members have a limit of <b style="color:#38bdf8">40 WAV downloads</b> per billing cycle. Downloads reset on your renewal date.</li>
+        <li><b style="color:#e2e8f0">Free plan — 3 generations/month</b> — Free users receive <b style="color:#e2e8f0">3 track generations</b> per month to try StemForge. Upgrade anytime to unlock more.</li>
+        <li><b style="color:#e2e8f0">Creator now has Auto Split access</b> — Creator plan members can now open the Stem Player and use the <b style="color:#38bdf8">Auto Split</b> tab (up to 5 stems: Vocals · Drums · Bass · Other · Instrumental). Vocals &amp; Instrumental separation remains a <b style="color:#c084fc">Pro Artist</b> exclusive.</li>
+        <li><b style="color:#e2e8f0">WAV download tracker in the sidebar</b> — Look under <b style="color:#38bdf8">Points Remaining</b> in the left sidebar — you'll see a <b style="color:#38bdf8">WAV Downloads</b> row with a live progress bar showing downloads remaining this cycle. The bar turns red when you're close to the limit.</li>
+        <li><b style="color:#e2e8f0">WAV Downloads card on Subscription page</b> — Head to <a href="/subscription" style="color:#38bdf8">Subscription</a> and scroll to the <b>WAV Downloads</b> card below Points Usage for a full breakdown of your used vs. remaining downloads.</li>
       </ul>`
     },
     {
@@ -762,23 +763,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // We use a MutationObserver-free approach: just call after the async block
   setTimeout(applyOneShotVisibility, 500);
 
-  // ── Hide free-tier CTAs for users who are already signed up ─────────────
-  // Any logged-in user (even free plan) has an account — they don't need
-  // "Get started free" / "Try free" buttons. Those are for visitors only.
+  // ── Hide free-tier signup CTAs for users who already have an account ───────
+  // Logged-in users don't need "Get started free" — but keep the Free card
+  // visible on home/pricing so Creator/Pro users can see it (for downgrade info).
+  // Only hide the signup button inside the card; keep the card itself shown.
   function applyFreeTierVisibility() {
     if (!window._sfUser) return; // not logged in — show everything
-    // Hide free plan card on homepage
-    const homeFreeCard = document.getElementById('home-free-plan-btn');
-    if (homeFreeCard) {
-      const card = homeFreeCard.closest('.plan-card');
-      if (card) card.style.display = 'none';
-    }
-    // Hide free plan button on pricing page
+    // Hide just the "Get started free" signup button on home free card
+    const homeFreeBtn = document.getElementById('home-free-plan-btn');
+    if (homeFreeBtn) homeFreeBtn.style.display = 'none';
+    // Hide just the signup button on pricing free card
     const pricingFreeBtn = document.getElementById('pricing-free-btn');
-    if (pricingFreeBtn) {
-      const card = pricingFreeBtn.closest('.plan-card');
-      if (card) card.style.display = 'none';
-    }
+    if (pricingFreeBtn) pricingFreeBtn.style.display = 'none';
     // Hide "Try free (60 pts)" link on checkout page
     const tryFreeLinks = document.querySelectorAll('a[href="/signup"]');
     tryFreeLinks.forEach(function(el) {
@@ -5195,9 +5191,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  OPEN / CLOSE
   // ─────────────────────────────────────────────────────────────────────────
   window.openStemsPanel = function (jobId, stereoUrl, title, userPlan) {
-    // Gate: stem splitting is Pro Artist+ only (Creator cannot access stem splitting)
+    // Gate: stem splitting — Free is fully blocked; Creator can use Auto Split only
     var _resolvedPlan = userPlan || (window._sfUser && window._sfUser.plan) || 'free';
-    if (_resolvedPlan === 'free' || _resolvedPlan === 'creator') {
+    if (_resolvedPlan === 'free') {
       // Show a targeted upgrade prompt
       var existingGate = document.getElementById('sf-stem-gate-modal');
       if (existingGate) existingGate.remove();
@@ -5209,10 +5205,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 18px">',
             '<i class="fas fa-scissors" style="color:white;font-size:1.3rem"></i>',
           '</div>',
-          '<h3 style="margin:0 0 8px;font-size:1.2rem;font-weight:800;color:#e2e8f0">Stem Splitting is Pro Only</h3>',
-          '<p style="margin:0 0 24px;font-size:.88rem;color:#94a3b8;line-height:1.6">Stem splitting requires a <strong style="color:#c084fc">Pro Artist</strong> plan. Upgrade to split your beats into individual stems — drums, bass, keys, lead, and more.</p>',
+          '<h3 style="margin:0 0 8px;font-size:1.2rem;font-weight:800;color:#e2e8f0">Stem Splitting is Creator+</h3>',
+          '<p style="margin:0 0 24px;font-size:.88rem;color:#94a3b8;line-height:1.6">Upgrade to <strong style="color:#38bdf8">Creator</strong> to split your beats with Auto Split, or go <strong style="color:#c084fc">Pro Artist</strong> for Vocals &amp; Instrumental separation too.</p>',
           '<div style="display:flex;flex-direction:column;gap:10px">',
-            '<a href="/pricing" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown" style="margin-right:6px"></i>Upgrade to Pro Artist — $26/mo</a>',
+            '<a href="/pricing" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown" style="margin-right:6px"></i>View Plans</a>',
             '<button onclick="document.getElementById(\'sf-stem-gate-modal\').remove()" style="padding:10px 24px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#94a3b8;border-radius:12px;font-size:.88rem;cursor:pointer;font-weight:600">Maybe later</button>',
           '</div>',
         '</div>'
@@ -5346,7 +5342,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<button class="sp-tab" data-tab="split_from_mix" style="' +
               'flex:1;height:27px;border-radius:6px;border:none;cursor:pointer;' +
               'font-size:.72rem;font-weight:600;background:rgba(255,255,255,0.04);' +
-              'color:rgba(255,255,255,0.42);transition:all .2s">Vocals &amp; Inst.</button>' +
+              'color:rgba(255,255,255,0.42);transition:all .2s">Vocals &amp; Inst.' +
+            (_userPlan === 'creator' ? ' <span style="font-size:.55rem;background:#6c3aff;color:#fff;padding:1px 4px;border-radius:3px;vertical-align:middle;margin-left:2px">Pro</span>' : '') +
+          '</button>' +
           '<button class="sp-tab" data-tab="advanced" style="' +
               'flex:1;height:27px;border-radius:6px;border:none;cursor:pointer;' +
               'font-size:.72rem;font-weight:600;background:rgba(255,255,255,0.04);' +
@@ -5463,6 +5461,20 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
 
   // ── Vocals & Instrumental tab ─────────────────────────────────────────────
   function _showSplitTab() {
+    // Gate: V+I is Pro Artist only — Creator can only use Auto Split
+    if (_userPlan === 'creator') {
+      _setTabBody(
+        '<div style="text-align:center;padding:14px 0">' +
+          '<div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 10px">' +
+            '<i class="fas fa-microphone" style="color:white;font-size:.85rem"></i>' +
+          '</div>' +
+          '<p style="margin:0 0 6px;font-size:.84rem;font-weight:700;color:#e2e8f0">Vocals &amp; Instrumental is Pro Only</p>' +
+          '<p style="margin:0 0 14px;font-size:.77rem;color:#64748b;line-height:1.5">Upgrade to Pro Artist to separate vocals from the full instrumental track.</p>' +
+          '<a href="/pricing" style="display:inline-block;padding:7px 18px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:8px;font-weight:700;text-decoration:none;font-size:.8rem"><i class="fas fa-crown" style="margin-right:5px"></i>Upgrade to Pro Artist</a>' +
+        '</div>'
+      );
+      return;
+    }
     _setTabBody(
       '<div style="display:flex;align-items:center;gap:10px">' +
         '<div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0;flex-wrap:wrap">' +

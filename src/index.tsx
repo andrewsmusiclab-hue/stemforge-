@@ -6516,7 +6516,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260816-03'
+const ASSET_VER = '20260816-04'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7072,6 +7072,7 @@ function homePage() {
           <p class="plan-card__desc">For artists, writers, and content creators.</p>
           <ul class="plan-card__features">
             <li><i class="fas fa-check"></i> 800 points monthly</li>
+            <li><i class="fas fa-check"></i> Auto Split (up to 5 stems)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
@@ -7092,10 +7093,11 @@ function homePage() {
           <p class="plan-card__desc">For serious artists who need every track.</p>
           <ul class="plan-card__features">
             <li><i class="fas fa-check"></i> 2,000 points monthly</li>
-            <li><i class="fas fa-check"></i> Song Extend + all stem modes</li>
-            <li><i class="fas fa-check"></i> WAV + Stem download</li>
+            <li><i class="fas fa-check"></i> Vocals &amp; Instrumental split</li>
+            <li><i class="fas fa-check"></i> Song Extend + stem download</li>
+            <li><i class="fas fa-check"></i> WAV download + commercial use</li>
             <li><i class="fas fa-check"></i> Reference track upload</li>
-            <li><i class="fas fa-check"></i> Commercial use rights</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
           <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
@@ -8256,11 +8258,11 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 800 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
+          <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (30 pts)</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
-          <li class="muted"><i class="fas fa-times"></i> Stem splitting</li>
+          <li class="muted"><i class="fas fa-times"></i> Vocals &amp; Instrumental split</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
-          <li class="muted"><i class="fas fa-times"></i> Stem regeneration</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
         </ul>
         <button class="btn btn--primary btn--full pricing-plan-btn" data-plan="creator" id="pricing-creator-btn">Start Creator — $10/mo</button>
@@ -8281,10 +8283,10 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 2,000 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Everything in Creator</li>
+          <li><i class="fas fa-check"></i> Vocals &amp; Instrumental split</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> All stem split modes + stem download</li>
+          <li><i class="fas fa-check"></i> Stem download (all modes)</li>
           <li><i class="fas fa-check"></i> Reference track upload</li>
-          <li><i class="fas fa-check"></i> Stem regeneration</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
           <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
@@ -8992,6 +8994,7 @@ function checkoutPage() {
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
           <li><i class="fas fa-check"></i> 800 points monthly</li>
+          <li><i class="fas fa-check"></i> Auto Split — up to 5 stems</li>
           <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
         </ul>
@@ -9295,6 +9298,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 800 points monthly</li>
+            <li><i class="fas fa-check"></i> Auto Split — up to 5 stems</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
           </ul>
@@ -9353,13 +9357,14 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           <ul>
             <li><i class="fas fa-check"></i> 2,000 points monthly</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-            <li><i class="fas fa-check"></i> All stem split modes + stem download</li>
+            <li><i class="fas fa-check"></i> Vocals &amp; Instrumental split</li>
+            <li><i class="fas fa-check"></i> Stem download (all modes)</li>
             <li><i class="fas fa-check"></i> Reference track upload</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></li>
-            <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
           </ul>
           ${user.plan === 'pro'
             ? `<div class="sub-action-wrap" id="sub-pro-action-wrap">
@@ -9418,7 +9423,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Points Cost</span><span>Available On</span></div>
           <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
           <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
           <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
