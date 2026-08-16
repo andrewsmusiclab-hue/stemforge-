@@ -7005,59 +7005,116 @@ function footer() {
 function homePage() {
   return shell('Generate Beats. Keep Every Track', `
 <main>
-<section class="hero">
+<section class="hero hero--fullvp" id="hero-section">
   <div class="hero__bg">
     <div class="hero__orb hero__orb--1"></div>
     <div class="hero__orb hero__orb--2"></div>
     <div class="hero__grid"></div>
-    <!-- Looping background video — fixed to viewport, fades out on scroll past hero -->
+    <!-- Background video fixed to viewport -->
     <video id="hero-bg-video" autoplay muted loop playsinline
-      style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.18;mix-blend-mode:screen;pointer-events:none;z-index:0;transition:opacity .4s ease">
+      style="position:fixed;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.15;mix-blend-mode:screen;pointer-events:none;z-index:0">
       <source src="/static/hero-wave.mp4" type="video/mp4">
     </video>
-    <script>
-      (function(){
-        var vid = document.getElementById('hero-bg-video');
-        var hero = vid && vid.closest('.hero');
-        if (!vid || !hero) return;
-        function onScroll() {
-          var bottom = hero.getBoundingClientRect().bottom;
-          if (bottom <= 0) {
-            vid.style.opacity = '0';
-            vid.style.visibility = 'hidden';
-          } else {
-            vid.style.visibility = 'visible';
-            /* fade from 0.18 → 0 as hero bottom approaches viewport top */
-            var fade = Math.max(0, Math.min(1, bottom / window.innerHeight));
-            vid.style.opacity = (0.18 * fade).toFixed(3);
-          }
-        }
-        window.addEventListener('scroll', onScroll, { passive: true });
-      })();
-    </script>
   </div>
-  <div class="container hero__content">
-    <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
-    <h1 class="hero__title">Forge the beat.<br/><span class="gradient-text">Make it yours.</span></h1>
-    <p class="hero__sub">StemForge generates professional tracks in your favorite genre using AI. Download the full stereo mix and take your beats straight to the DAW.</p>
-    <div class="hero__ctas">
-      <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
-      <a href="#pricing-preview" class="btn btn--outline btn--lg" onclick="event.preventDefault();document.getElementById('pricing-preview').scrollIntoView({behavior:'smooth'})"><i class="fas fa-tags"></i> See pricing</a>
+
+  <!-- Two-column hero layout: left=copy, right=plan cards -->
+  <div class="hero__fullvp-inner container">
+
+    <!-- Left: headline + CTA -->
+    <div class="hero__copy-col">
+      <div class="hero__badge"><i class="fas fa-bolt"></i> AI-powered multitrack generation</div>
+      <h1 class="hero__title">Forge the beat.<br/><span class="gradient-text">Make it yours.</span></h1>
+      <p class="hero__sub">StemForge generates professional tracks in your favorite genre using AI. Download the full stereo mix and take your beats straight to the DAW.</p>
+      <div class="hero__ctas">
+        <a href="/generator" class="btn btn--primary btn--lg"><i class="fas fa-play"></i> Try the generator</a>
+      </div>
+      <a href="/pricing" class="hero__pricing-link">See full pricing details <i class="fas fa-arrow-right"></i></a>
     </div>
 
-  </div>
-  <div class="hero__wave-wrap">
-    <div class="waveform-demo">
-      <div class="wv-track"><span class="wv-label">Kick</span><div class="wv-bars" data-track="kick"></div></div>
-      <div class="wv-track"><span class="wv-label">Snare</span><div class="wv-bars" data-track="snare"></div></div>
-      <div class="wv-track"><span class="wv-label">Hi-hats</span><div class="wv-bars" data-track="hats"></div></div>
-      <div class="wv-track"><span class="wv-label">Bass</span><div class="wv-bars" data-track="bass"></div></div>
-      <div class="wv-track"><span class="wv-label">Rhodes</span><div class="wv-bars" data-track="rhodes"></div></div>
-      <div class="wv-track"><span class="wv-label">Guitar</span><div class="wv-bars" data-track="guitar"></div></div>
-      <div class="wv-track"><span class="wv-label">Pad</span><div class="wv-bars" data-track="pad"></div></div>
-      <div class="wv-track"><span class="wv-label">FX</span><div class="wv-bars" data-track="fx"></div></div>
+    <!-- Right: plan cards -->
+    <div class="hero__plans-col">
+      <div class="plans-grid plans-grid--hero">
+        <div class="plan-card" id="home-free-plan-card">
+          <div id="home-free-card-status-top"></div>
+          <div class="plan-card__tier">Free</div>
+          <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
+          <p class="plan-card__desc">Try the engine. No card needed.</p>
+          <ul class="plan-card__features">
+            <li><i class="fas fa-check"></i> 60 points monthly</li>
+            <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
+            <li class="muted"><i class="fas fa-times"></i> Downloads</li>
+            <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
+          </ul>
+          <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
+          <div id="home-free-plan-status" style="margin:8px 0 0">
+            <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-free-downgrade-note" style="display:none">
+              <i class="fas fa-clock"></i> <span id="home-free-downgrade-msg">Downgrading to Free at end of billing cycle</span>
+            </div>
+            <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-free" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('free')">
+              <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+            </button>
+          </div>
+        </div>
+        <div class="plan-card plan-card--featured" id="home-creator-plan-card">
+          <div id="home-creator-card-status-top"></div>
+          <div class="plan-card__badge">Most popular</div>
+          <div class="plan-card__tier">Creator</div>
+          <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
+          <p class="plan-card__desc">For artists, writers, and content creators.</p>
+          <ul class="plan-card__features">
+            <li><i class="fas fa-check"></i> 800 points monthly</li>
+            <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
+            <li><i class="fas fa-check"></i> WAV download</li>
+            <li><i class="fas fa-check"></i> Commercial use rights</li>
+          </ul>
+          <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
+          <div id="home-creator-plan-status" style="margin:8px 0 0">
+            <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-creator-downgrade-note" style="display:none">
+              <i class="fas fa-clock"></i> <span id="home-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
+            </div>
+            <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-creator" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('creator')">
+              <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+            </button>
+          </div>
+        </div>
+        <div class="plan-card" id="home-pro-plan-card">
+          <div id="home-pro-card-status-top"></div>
+          <div class="plan-card__tier">Pro Artist</div>
+          <div class="plan-card__price"><span class="plan-card__amount">$26</span><span>/month</span></div>
+          <p class="plan-card__desc">For serious artists who need every track.</p>
+          <ul class="plan-card__features">
+            <li><i class="fas fa-check"></i> 2,000 points monthly</li>
+            <li><i class="fas fa-check"></i> Song Extend + all stem modes</li>
+            <li><i class="fas fa-check"></i> WAV + Stem download</li>
+            <li><i class="fas fa-check"></i> Reference track upload</li>
+            <li><i class="fas fa-check"></i> Commercial use rights</li>
+            <li><i class="fas fa-check"></i> Priority queue</li>
+          </ul>
+          <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
+          <div id="home-pro-plan-status" style="margin:8px 0 0">
+            <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-pro-downgrade-note" style="display:none">
+              <i class="fas fa-clock"></i> <span id="home-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
+            </div>
+            <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-pro" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('pro')">
+              <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
+            </button>
+          </div>
+        </div>
+        <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
+          <div class="plan-card__tier" style="color:#a78bfa">Developer</div>
+          <div class="plan-card__price"><span class="plan-card__amount">🔒</span></div>
+          <p class="plan-card__desc">For the site owner. Unlimited access, no limits.</p>
+          <ul class="plan-card__features">
+            <li><i class="fas fa-check"></i> Unlimited generations</li>
+            <li><i class="fas fa-check"></i> All features unlocked</li>
+            <li><i class="fas fa-check"></i> Admin panel access</li>
+          </ul>
+          <button class="btn btn--outline btn--full" onclick="activateDeveloperPlan()" id="dev-activate-btn">Activate Developer Plan</button>
+        </div>
+      </div>
     </div>
-  </div>
+
+  </div><!-- /.hero__fullvp-inner -->
 </section>
 
 <section class="logos-bar">
@@ -7123,102 +7180,7 @@ function homePage() {
 
 
 
-<section class="pricing-preview" id="pricing-preview">
-  <div class="container">
-    <div class="section-header">
-      <div class="section-tag">Pricing</div>
-      <h2>Simple, honest pricing.</h2>
-      <p>Start free. Upgrade when you need more depth.</p>
-    </div>
-    <div class="plans-grid">
-      <div class="plan-card" id="home-free-plan-card">
-        <div id="home-free-card-status-top"></div>
-        <div class="plan-card__tier">Free</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
-        <p class="plan-card__desc">Try the engine. No card needed.</p>
-        <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 60 points monthly</li>
-          <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-          <li class="muted"><i class="fas fa-times"></i> Downloads</li>
-          <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
-        </ul>
-        <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
-        <div id="home-free-plan-status" style="margin:8px 0 0">
-          <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-free-downgrade-note" style="display:none">
-            <i class="fas fa-clock"></i> <span id="home-free-downgrade-msg">Downgrading to Free at end of billing cycle</span>
-          </div>
-          <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-free" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('free')">
-            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
-          </button>
-        </div>
-      </div>
-      <div class="plan-card plan-card--featured" id="home-creator-plan-card">
-        <div id="home-creator-card-status-top"></div>
-        <div class="plan-card__badge">Most popular</div>
-        <div class="plan-card__tier">Creator</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
-        <p class="plan-card__desc">For artists, writers, and content creators.</p>
-        <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 800 points monthly</li>
-          <li><i class="fas fa-check"></i> Auto Split &amp; Vocals+Instrumental</li>
-          <li><i class="fas fa-check"></i> WAV download</li>
-          <li><i class="fas fa-check"></i> Commercial use rights</li>
-        </ul>
-        <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
-        <div id="home-creator-plan-status" style="margin:8px 0 0">
-          <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-creator-downgrade-note" style="display:none">
-            <i class="fas fa-clock"></i> <span id="home-creator-downgrade-msg">Downgrading to Creator at end of billing cycle</span>
-          </div>
-          <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-creator" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('creator')">
-            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
-          </button>
-        </div>
-      </div>
-      <div class="plan-card" id="home-pro-plan-card">
-        <div id="home-pro-card-status-top"></div>
-        <div class="plan-card__tier">Pro Artist</div>
-        <div class="plan-card__price"><span class="plan-card__amount">$26</span><span>/month</span></div>
-        <p class="plan-card__desc">For serious artists who need every track.</p>
-        <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> 2,000 points monthly</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="font-size:.75rem;opacity:.8"></i> Song Extend</li>
-          <li><i class="fas fa-check"></i> All stem split modes</li>
-          <li><i class="fas fa-check"></i> Stem download</li>
-          <li><i class="fas fa-check"></i> Reference track upload</li>
-          <li><i class="fas fa-check"></i> WAV download</li>
-          <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li><i class="fas fa-check"></i> Priority queue</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.75rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span> — reinvent any beat</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX</li>
-        </ul>
-        <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
-        <div id="home-pro-plan-status" style="margin:8px 0 0">
-          <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-pro-downgrade-note" style="display:none">
-            <i class="fas fa-clock"></i> <span id="home-pro-downgrade-msg">Downgrading to Pro Artist at end of billing cycle</span>
-          </div>
-          <button class="btn btn--outline btn--sm" id="home-btn-cancel-downgrade-pro" style="display:none;margin-top:6px;border-color:rgba(78,159,255,.4);color:var(--primary);width:100%" onclick="homeCancelDowngrade('pro')">
-            <i class="fas fa-undo" style="font-size:.75rem;margin-right:4px"></i>Cancel Downgrade
-          </button>
-        </div>
-      </div>
-      <div class="plan-card plan-card--developer" id="developer-plan-card" style="display:none">
-        <div class="plan-card__tier" style="color:#a78bfa">Developer</div>
-        <div class="plan-card__price"><span class="plan-card__amount">🔒</span></div>
-        <p class="plan-card__desc">For the site owner. Unlimited access, no limits.</p>
-        <ul class="plan-card__features">
-          <li><i class="fas fa-check"></i> Unlimited generations</li>
-          <li><i class="fas fa-check"></i> All features unlocked</li>
-          <li><i class="fas fa-check"></i> No credit deductions</li>
-          <li><i class="fas fa-check"></i> Admin panel access</li>
-        </ul>
-        <button class="btn btn--outline btn--full" onclick="activateDeveloperPlan()" id="dev-activate-btn">Activate Developer Plan</button>
-      </div>
-    </div>
-    <div class="pricing-preview__cta">
-      <a href="/pricing" class="btn btn--ghost">See full pricing details <i class="fas fa-arrow-right"></i></a>
-    </div>
-  </div>
-</section>
+<!-- pricing-preview section removed — plan cards now live inside hero -->
 
 <section class="final-cta">
   <div class="container">
