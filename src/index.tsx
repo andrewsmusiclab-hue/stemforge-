@@ -6516,7 +6516,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260816-04'
+const ASSET_VER = '20260816-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7055,6 +7055,10 @@ function homePage() {
             <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
           </ul>
           <a href="/signup" class="btn btn--outline btn--full" id="home-free-plan-btn" data-plan="free">Get started free</a>
+          <!-- Downgrade to Free button — shown for Creator/Pro when not already downgrading -->
+          <button class="btn btn--outline btn--sm home-plan-btn" data-plan="free" id="home-btn-downgrade-to-free" style="display:none;margin-top:6px;border-color:rgba(255,100,100,.4);color:#ff7070;width:100%">
+            <i class="fas fa-arrow-down" style="font-size:.75rem;margin-right:4px"></i>Downgrade to Free
+          </button>
           <div id="home-free-plan-status" style="margin:8px 0 0">
             <div class="home-downgrade-note sub-downgrade-pending-banner" id="home-free-downgrade-note" style="display:none">
               <i class="fas fa-clock"></i> <span id="home-free-downgrade-msg">Downgrading to Free at end of billing cycle</span>
@@ -7301,15 +7305,18 @@ window.showSfPlanToast = function(type, plan, msg) {
     const frMsg   = document.getElementById('home-free-downgrade-msg');
     const frCancel= document.getElementById('home-btn-cancel-downgrade-free');
     const freePlanBtn = document.getElementById('home-free-plan-btn');
+    const frDgBtn = document.getElementById('home-btn-downgrade-to-free');
     if (pd === 'free' && frNote) {
       if (frMsg) frMsg.textContent = 'Downgrading to Free at end of billing cycle';
       frNote.style.display = 'flex';
       if (frCancel) frCancel.style.display = 'inline-flex';
-      // Hide/disable the downgrade button itself
-      if (freePlanBtn) { freePlanBtn.style.display = 'none'; }
+      if (frDgBtn)  frDgBtn.style.display = 'none';
+      if (freePlanBtn) freePlanBtn.style.display = 'none';
     } else if (frNote) {
       frNote.style.display = 'none';
       if (frCancel) frCancel.style.display = 'none';
+      // Show "Downgrade to Free" button for paid users who aren't downgrading
+      if (frDgBtn) frDgBtn.style.display = (plan === 'creator' || plan === 'pro') ? 'inline-flex' : 'none';
     }
 
     // ── Creator card: show banner+cancel when pending downgrade is 'creator' (from Pro) ──

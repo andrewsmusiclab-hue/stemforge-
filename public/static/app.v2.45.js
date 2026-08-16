@@ -401,18 +401,30 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'aug2026-creator-autosplit-v2',
+      date: 'August 2026',
+      title: 'Creator Plan — Auto Split Now Available',
+      tag: 'PLAN UPDATE',
+      tagColor: '#38bdf8',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#38bdf8">Creator can now use Auto Split</b> — Creator plan members can open the Stem Player on any beat and use the <b style="color:#38bdf8">Auto Split</b> tab to split their track into up to 5 stems: <span style="color:#e2e8f0">Vocals · Drums · Bass · Other · Instrumental</span>. Each stem costs 30 pts.</li>
+        <li><b style="color:#e2e8f0">Vocals &amp; Instrumental stays Pro Artist only</b> — The V&amp;I tab (2-stem separation at 70 pts) remains exclusive to Pro Artist. Creator users will see a locked state with an upgrade prompt when they click that tab.</li>
+        <li><b style="color:#e2e8f0">Free users still fully blocked</b> — Free plan users cannot access the Stem Player at all. Upgrade to Creator or Pro Artist to unlock splitting.</li>
+        <li><b style="color:#e2e8f0">One Shot Creator added to Pro Artist</b> — The <i class="fas fa-bolt" style="color:#f59e0b"></i> <b style="color:#fcd34d">One Shot Creator</b> SFX generator is now listed on all Pro Artist plan cards across the site.</li>
+      </ul>`
+    },
+    {
       id: 'aug2026-download-limits',
       date: 'August 2026',
       title: 'WAV Download Limits & Free Plan Update',
       tag: 'IMPORTANT UPDATE',
-      tagColor: '#38bdf8',
+      tagColor: '#f59e0b',
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
         <li><b style="color:#e2e8f0">Pro Artist — 100 WAV downloads/month</b> — Pro Artist members have a limit of <b style="color:#c084fc">100 WAV downloads</b> per billing cycle. Downloads reset on your renewal date.</li>
         <li><b style="color:#e2e8f0">Creator — 40 WAV downloads/month</b> — Creator members have a limit of <b style="color:#38bdf8">40 WAV downloads</b> per billing cycle. Downloads reset on your renewal date.</li>
         <li><b style="color:#e2e8f0">Free plan — 3 generations/month</b> — Free users receive <b style="color:#e2e8f0">3 track generations</b> per month to try StemForge. Upgrade anytime to unlock more.</li>
-        <li><b style="color:#e2e8f0">Creator now has Auto Split access</b> — Creator plan members can now open the Stem Player and use the <b style="color:#38bdf8">Auto Split</b> tab (up to 5 stems: Vocals · Drums · Bass · Other · Instrumental). Vocals &amp; Instrumental separation remains a <b style="color:#c084fc">Pro Artist</b> exclusive.</li>
-        <li><b style="color:#e2e8f0">WAV download tracker in the sidebar</b> — Look under <b style="color:#38bdf8">Points Remaining</b> in the left sidebar — you'll see a <b style="color:#38bdf8">WAV Downloads</b> row with a live progress bar showing downloads remaining this cycle. The bar turns red when you're close to the limit.</li>
-        <li><b style="color:#e2e8f0">WAV Downloads card on Subscription page</b> — Head to <a href="/subscription" style="color:#38bdf8">Subscription</a> and scroll to the <b>WAV Downloads</b> card below Points Usage for a full breakdown of your used vs. remaining downloads.</li>
+        <li><b style="color:#e2e8f0">WAV download tracker in your sidebar</b> — Look under <b style="color:#38bdf8">Points Remaining</b> in the left sidebar — you'll see a <b style="color:#38bdf8">WAV Downloads</b> row with a live progress bar. It turns red when you're near the limit.</li>
+        <li><b style="color:#e2e8f0">WAV Downloads card on Subscription page</b> — Head to <a href="/subscription" style="color:#38bdf8">Subscription</a> and scroll to the <b>WAV Downloads</b> card below Points Usage to see your full usage breakdown.</li>
       </ul>`
     },
     {
