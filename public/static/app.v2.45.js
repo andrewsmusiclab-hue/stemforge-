@@ -414,17 +414,15 @@ document.addEventListener('DOMContentLoaded', () => {
       </ul>`
     },
     {
-      id: 'aug2026-download-limits',
+      id: 'aug2026-unlimited-downloads',
       date: 'August 2026',
-      title: 'WAV Download Limits & Free Plan Update',
-      tag: 'IMPORTANT UPDATE',
-      tagColor: '#f59e0b',
+      title: 'Unlimited WAV Downloads — No Caps',
+      tag: 'UPGRADE',
+      tagColor: '#22c55e',
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
-        <li><b style="color:#e2e8f0">Pro Artist — 100 WAV downloads/month</b> — Pro Artist members have a limit of <b style="color:#c084fc">100 WAV downloads</b> per billing cycle. Downloads reset on your renewal date.</li>
-        <li><b style="color:#e2e8f0">Creator — 40 WAV downloads/month</b> — Creator members have a limit of <b style="color:#38bdf8">40 WAV downloads</b> per billing cycle. Downloads reset on your renewal date.</li>
-        <li><b style="color:#e2e8f0">Free plan — 3 generations/month</b> — Free users receive <b style="color:#e2e8f0">3 track generations</b> per month to try StemForge. Upgrade anytime to unlock more.</li>
-        <li><b style="color:#e2e8f0">WAV download tracker in your sidebar</b> — Look under <b style="color:#38bdf8">Points Remaining</b> in the left sidebar — you'll see a <b style="color:#38bdf8">WAV Downloads</b> row with a live progress bar. It turns red when you're near the limit.</li>
-        <li><b style="color:#e2e8f0">WAV Downloads card on Subscription page</b> — Head to <a href="/subscription" style="color:#38bdf8">Subscription</a> and scroll to the <b>WAV Downloads</b> card below Points Usage to see your full usage breakdown.</li>
+        <li><b style="color:#4ade80">Unlimited WAV downloads for Creator &amp; Pro Artist</b> — We've removed all download caps. Download as many tracks as you want, whenever you want — no monthly limits, ever.</li>
+        <li><b style="color:#e2e8f0">Free plan — upgrade to download</b> — Free users can create up to 3 tracks/month to try StemForge. Upgrade to Creator or Pro Artist to unlock WAV downloads with no restrictions.</li>
+        <li><b style="color:#e2e8f0">Your beats, your files</b> — Every track you generate is yours. Download any time, as many times as you need.</li>
       </ul>`
     },
     {
@@ -614,30 +612,8 @@ document.addEventListener('DOMContentLoaded', () => {
       // Show bonus points row
       window._sfUpdateSidebarBonus(user.bonus_credits || 0);
 
-      // ── WAV Downloads row ─────────────────────────────────────
-      const DL_LIMITS = { free: 0, creator: 40, pro: 100, developer: 9999 };
-      const dlLimit   = DL_LIMITS[user.plan] ?? 0;
-      const dlUsed    = user.downloads_used ?? 0;
-      const dlRemain  = Math.max(0, dlLimit - dlUsed);
-      const gsWavRow  = document.getElementById('gs-wav-row');
-      const gsWavVal  = document.getElementById('gs-wav-val');
-      const gsWavBar  = document.getElementById('gs-wav-bar');
-      if (gsWavRow && dlLimit > 0 && user.plan !== 'developer') {
-        gsWavRow.style.display = 'block';
-        if (gsWavVal) {
-          gsWavVal.style.color = dlRemain === 0 ? '#ef4444' : '#38bdf8';
-          gsWavVal.innerHTML = `${dlRemain} <small>/ ${dlLimit} left</small>`;
-        }
-        if (gsWavBar) {
-          const dlPct = dlLimit > 0 ? Math.min(100, Math.round(dlUsed / dlLimit * 100)) : 0;
-          gsWavBar.style.width = dlPct + '%';
-          gsWavBar.style.background = dlRemain === 0
-            ? 'linear-gradient(90deg,#ef4444,#f87171)'
-            : 'linear-gradient(90deg,#0ea5e9,#38bdf8)';
-        }
-      }
 
-      // ── Sidebar user dropdown toggle ──────────────────────────
+            // ── Sidebar user dropdown toggle ──────────────────────────
       const gsUserBtn      = document.getElementById('gs-user-btn');
       const gsUserDropdown = document.getElementById('gs-user-dropdown');
       if (gsUserBtn && gsUserDropdown) {
@@ -4710,38 +4686,6 @@ function showSubToast(html, bg, shadow) {
   setTimeout(() => toast.remove(), 4500);
 }
 
-// ── Download limit reached modal ─────────────────────────────
-function showDownloadMaxedModal(dlUsed, dlLimit) {
-  const existing = document.getElementById('sf-dl-maxed-modal');
-  if (existing) { existing.style.display = 'flex'; return; }
-  const plan = (window._sfUser && window._sfUser.plan) || 'creator';
-  const isCreator = plan === 'creator';
-  const modal = document.createElement('div');
-  modal.id = 'sf-dl-maxed-modal';
-  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px)';
-  modal.innerHTML = `
-    <div style="background:var(--surface,#1a1a2e);border:1px solid rgba(251,146,60,.4);border-radius:20px;padding:36px 32px;max-width:420px;width:90%;text-align:center;position:relative;box-shadow:0 0 40px rgba(251,146,60,.15)">
-      <button onclick="document.getElementById('sf-dl-maxed-modal').style.display='none'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted,#888);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
-      <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#f97316,#dc2626);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.3rem;color:#fff">
-        <i class="fas fa-download"></i>
-      </div>
-      <h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px;color:var(--text,#fff)">Download limit reached</h3>
-      <p style="color:var(--muted,#aaa);font-size:.9rem;margin-bottom:6px;line-height:1.5">
-        You've used <strong style="color:#fb923c">${dlUsed} / ${dlLimit}</strong> WAV downloads this billing cycle.
-      </p>
-      <p style="color:var(--muted,#aaa);font-size:.85rem;margin-bottom:24px;line-height:1.5">
-        Your limit resets at the start of your next billing cycle.<br>
-        ${isCreator ? 'Upgrade to Pro Artist for 100 downloads/cycle.' : 'Your downloads reset next billing cycle.'}
-      </p>
-      <div style="display:flex;flex-direction:column;gap:10px">
-        ${isCreator ? `<a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Upgrade to Pro — 100 downloads/cycle</a>` : ''}
-        <button onclick="document.getElementById('sf-dl-maxed-modal').style.display='none'" style="padding:11px 24px;background:rgba(255,255,255,.07);color:var(--text,#fff);border:1px solid var(--border,#333);border-radius:12px;font-weight:600;cursor:pointer;font-size:.9rem">Close</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-  modal.addEventListener('click', e => { if (e.target === modal) modal.style.display = 'none'; });
-}
-
 // ── Credits exhausted alert ───────────────────────────────────
 function showCreditsExhaustedAlert() {
   const existing = document.getElementById('sf-credits-exhausted-modal');
@@ -4779,10 +4723,6 @@ async function doWavDownload(jobId, filename) {
     if (!res.ok) {
       let errData = {};
       try { errData = await res.json(); } catch {}
-      if (errData.downloads_maxed) {
-        showDownloadMaxedModal(errData.downloads_used || 0, errData.downloads_limit || 0);
-        return;
-      }
       // Generic error toast
       showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
       return;

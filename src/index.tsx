@@ -3193,11 +3193,9 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, downloads_used FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; downloads_used: number }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number }>()
   const plan = fresh?.plan ?? user.plan
-  const dlUsed = fresh?.downloads_used ?? 0
-  const dlLimit = DOWNLOAD_LIMITS[plan] ?? 0
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
   return c.json({
@@ -3210,9 +3208,6 @@ app.get('/api/auth/me', async (c) => {
       bonus_credits: fresh?.bonus_credits ?? user.bonus_credits ?? 0,
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null,
-      downloads_used: dlUsed,
-      downloads_limit: dlLimit,
-      downloads_remaining: Math.max(0, dlLimit - dlUsed),
       is_admin: isAdmin(user, c.env)
     }
   })
@@ -6432,9 +6427,6 @@ app.get('/api/track-audio/:id', async (c) => {
   }, 502)
 })
 
-// Download limits per plan (per billing cycle)
-const DOWNLOAD_LIMITS: Record<string, number> = { free: 0, creator: 40, pro: 100, developer: 9999 }
-
 // GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
@@ -6445,44 +6437,21 @@ app.get('/api/download-wav/:id', async (c) => {
   if (user.plan === 'free') {
     return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan. Your tracks are saved — upgrade anytime to download.', locked: true, upgrade: true }, 403)
   }
-  // Download cap check
-  const dlLimit = DOWNLOAD_LIMITS[user.plan] ?? 0
-  const dlUsed  = user.downloads_used ?? 0
-  if (dlUsed >= dlLimit) {
-    return c.json({
-      error: `You've reached your ${dlLimit} download limit for this billing cycle. Your points still work — create all you want, downloads reset next cycle.`,
-      downloads_maxed: true,
-      downloads_used: dlUsed,
-      downloads_limit: dlLimit
-    }, 403)
-  }
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
   if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
-  // Increment download counter BEFORE serving (atomic — prevents double-downloads on retry)
-  await c.env.DB.prepare(`UPDATE users SET downloads_used = downloads_used + 1 WHERE id = ?`).bind(user.id).run()
   // Fetch the audio and re-serve it with a proper filename
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
-  const audioUrl = job.r2_audio_key
-    ? `https://pub-placeholder.r2.dev/${job.r2_audio_key}` // fallback, real URL via track-audio proxy
-    : job.stereo_url
   const upstream = await fetch(job.stereo_url)
   if (!upstream.ok) {
-    // Rollback counter if fetch failed
-    await c.env.DB.prepare(`UPDATE users SET downloads_used = MAX(0, downloads_used - 1) WHERE id = ?`).bind(user.id).run()
     return c.json({ error: 'Could not fetch audio' }, 502)
   }
-  const newDlUsed = dlUsed + 1
-  const remaining = dlLimit - newDlUsed
   return new Response(upstream.body, {
     headers: {
       'Content-Type': 'audio/wav',
       'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-      'Cache-Control': 'no-store',
-      'X-Downloads-Used': String(newDlUsed),
-      'X-Downloads-Limit': String(dlLimit),
-      'X-Downloads-Remaining': String(remaining)
+      'Cache-Control': 'no-store'
     }
   })
 })
@@ -6516,7 +6485,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260816-06'
+const ASSET_VER = '20260816-07'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -6834,15 +6803,6 @@ function globalSidebar() {
         <i class="fas fa-bolt" style="color:#f59e0b;margin-right:4px;font-size:.65rem"></i>Bonus Points
       </div>
       <div class="gs-credits__bonus-val" id="gs-bonus-val">0 <small>bonus</small></div>
-    </div>
-    <!-- WAV Downloads row (only visible when plan has download limit) -->
-    <div id="gs-wav-row" style="display:none">
-      <div class="gs-credits__divider"></div>
-      <div class="gs-credits__label" style="margin-top:2px">
-        <i class="fas fa-file-audio" style="color:#38bdf8;margin-right:4px;font-size:.65rem"></i>WAV Downloads
-      </div>
-      <div class="gs-credits__val" id="gs-wav-val" style="color:#38bdf8">— <small>/ —</small></div>
-      <div class="gs-credits__bar"><div id="gs-wav-bar" style="width:0%;background:linear-gradient(90deg,#0ea5e9,#38bdf8)"></div></div>
     </div>
   </div>
 
@@ -9104,13 +9064,6 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
-  // Download stats
-  const DL_LIMITS: Record<string, number> = { free: 0, creator: 40, pro: 100, developer: 9999 }
-  const dlLimit = DL_LIMITS[user.plan] ?? 0
-  const dlUsed  = user.downloads_used ?? 0
-  const dlRemaining = Math.max(0, dlLimit - dlUsed)
-  const dlPct   = dlLimit > 0 ? Math.min(100, Math.round((dlUsed / dlLimit) * 100)) : 0
-  const dlMaxed  = dlLimit > 0 && dlUsed >= dlLimit
   const billingPeriod = user.plan === 'free' ? 'N/A' : 'Monthly'
   // Use real Stripe period_end if available, otherwise show N/A (not a hardcoded +30 days guess)
   const nextBilling = realNextBillingDate ?? (user.stripe_subscription_id ? 'Loading…' : 'N/A')
@@ -9152,38 +9105,6 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <div class="sub-usage-bar"><div class="sub-usage-bar__fill" id="sub-usage-bar-fill" style="width:${pct}%"></div></div>
       <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
-
-    <!-- ── WAV Downloads Counter ──────────────────────────────── -->
-    ${user.plan !== 'free' ? `
-    <div class="sub-usage-card" id="sub-downloads-card" style="margin-top:12px">
-      <div class="sub-usage-header">
-        <h3 style="display:flex;align-items:center;gap:8px"><i class="fas fa-download" style="color:var(--primary);font-size:.9rem"></i> WAV Downloads</h3>
-        <span class="sub-usage-count" id="sub-dl-count" style="${dlMaxed ? 'color:#ef4444' : dlPct >= 80 ? 'color:#f97316' : ''}">${dlUsed} / ${dlLimit} used</span>
-      </div>
-      <div class="sub-usage-bar">
-        <div class="sub-usage-bar__fill" id="sub-dl-bar-fill" style="width:${dlPct}%;background:${dlMaxed ? 'linear-gradient(90deg,#ef4444,#dc2626)' : dlPct >= 80 ? 'linear-gradient(90deg,#f97316,#ea580c)' : 'linear-gradient(90deg,var(--primary),#6366f1)'}"></div>
-      </div>
-      <p class="sub-usage-note" id="sub-dl-note" style="${dlMaxed ? 'color:#ef4444' : dlPct >= 80 && !dlMaxed ? 'color:#f97316' : ''}">
-        ${dlMaxed
-          ? `<i class="fas fa-exclamation-triangle"></i> Download limit reached — resets on billing date`
-          : dlPct >= 80
-          ? `<i class="fas fa-exclamation-circle"></i> ${dlRemaining} downloads remaining · Resets on billing date`
-          : `${dlRemaining} of ${dlLimit} WAV downloads remaining this cycle · Resets on billing date`}
-      </p>
-      ${dlMaxed ? `
-      <div style="margin-top:10px;padding:10px 14px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;display:flex;align-items:center;gap:10px;font-size:.85rem">
-        <i class="fas fa-info-circle" style="color:#ef4444;flex-shrink:0"></i>
-        <span style="color:var(--muted)">You can still create beats — downloads reset when your billing cycle renews.
-        ${user.plan === 'creator' ? ' <a href="/pricing?plan=pro" style="color:var(--primary);font-weight:600">Upgrade to Pro for 100/cycle &rarr;</a>' : ''}</span>
-      </div>` : ''}
-    </div>` : `
-    <div class="sub-usage-card" id="sub-downloads-card" style="margin-top:12px;opacity:.6">
-      <div class="sub-usage-header">
-        <h3 style="display:flex;align-items:center;gap:8px"><i class="fas fa-download" style="font-size:.9rem"></i> WAV Downloads</h3>
-        <span class="sub-usage-count">Not available on Free plan</span>
-      </div>
-      <p class="sub-usage-note">Upgrade to Creator or Pro Artist to unlock WAV downloads.</p>
-    </div>`}
 
     <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
     <div class="sub-credits-section" id="sub-credits-section">
