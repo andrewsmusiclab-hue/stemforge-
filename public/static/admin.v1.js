@@ -287,10 +287,9 @@ async function loadUsers(q){
     if(data.error){ tableEl.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
     if(!data.users||!data.users.length){ tableEl.innerHTML='<p style="color:var(--muted)">No users found.</p>'; return; }
     if(countEl) countEl.textContent=data.users.length+' user'+(data.users.length!==1?'s':'');
-    var DL_LIMITS={free:0,creator:40,pro:100,developer:9999};
     tableEl.innerHTML='<div style="overflow-x:auto"><table class="admin-table"><thead><tr>'+
       '<th>Email / Name</th><th>Plan</th><th>Status</th>'+
-      '<th>Points</th><th>Bonus</th><th>Downloads</th>'+
+      '<th>Points</th><th>Bonus</th>'+
       '<th>Signed Up</th><th>Renewal</th><th>Actions</th>'+
     '</tr></thead><tbody id="admin-users-tbody">'+
       data.users.map(function(u){
@@ -301,10 +300,6 @@ async function loadUsers(q){
         var lockBadge=isLocked
           ?'<span style="background:#7f1d1d;color:#fca5a5;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">LOCKED</span>'
           :'<span style="color:#10b981;font-size:.75rem">Active</span>';
-        var dlUsed=u.downloads_used||0;
-        var dlLimit=DL_LIMITS[u.plan]||0;
-        var dlColor=dlUsed>=dlLimit&&dlLimit>0?'#ef4444':dlUsed>=(dlLimit*0.8)&&dlLimit>0?'#f59e0b':'var(--text)';
-        var dlStr=u.plan==='free'?'<span style="color:var(--muted)">N/A</span>':'<span style="color:'+dlColor+';font-weight:700">'+dlUsed+'</span><small style="color:var(--muted)"> / '+dlLimit+'</small>';
         var signupDate=u.created_at?new Date(u.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
         var hasSub=!!u.stripe_subscription_id;
         var renewalCell=hasSub?'<span id="renew-'+u.id+'" style="color:var(--muted);font-size:.78rem" data-user-id="'+u.id+'" data-loaded="0">Loading…</span>':'<span style="color:var(--muted);font-size:.78rem">—</span>';
@@ -314,7 +309,7 @@ async function loadUsers(q){
           '<td>'+lockBadge+'</td>'+
           '<td style="color:'+remColor+';font-weight:700">'+rem+'<small style="font-weight:400;color:var(--muted)"> / '+u.gens_limit+'</small></td>'+
           '<td style="color:'+(bonus>0?'#a78bfa':'var(--muted)')+';font-weight:700">'+(bonus>0?'+'+bonus:'—')+'</td>'+
-          '<td>'+dlStr+'</td>'+
+          '<td>'+
           '<td style="font-size:.78rem;color:var(--muted)">'+signupDate+'</td>'+
           '<td style="font-size:.78rem">'+renewalCell+'</td>'+
           '<td><div style="display:flex;gap:4px;flex-wrap:wrap">'+

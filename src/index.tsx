@@ -5402,11 +5402,11 @@ app.get('/api/admin/users', async (c) => {
   if (q) {
     const like = `%${q}%`
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,downloads_used,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
     ).bind(like, like).all<any>()
   } else {
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,downloads_used,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users ORDER BY created_at DESC LIMIT 200`
     ).all<any>()
   }
   // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
