@@ -309,7 +309,6 @@ async function loadUsers(q){
           '<td>'+lockBadge+'</td>'+
           '<td style="color:'+remColor+';font-weight:700">'+rem+'<small style="font-weight:400;color:var(--muted)"> / '+u.gens_limit+'</small></td>'+
           '<td style="color:'+(bonus>0?'#a78bfa':'var(--muted)')+';font-weight:700">'+(bonus>0?'+'+bonus:'—')+'</td>'+
-          '<td>'+
           '<td style="font-size:.78rem;color:var(--muted)">'+signupDate+'</td>'+
           '<td style="font-size:.78rem">'+renewalCell+'</td>'+
           '<td><div style="display:flex;gap:4px;flex-wrap:wrap">'+
