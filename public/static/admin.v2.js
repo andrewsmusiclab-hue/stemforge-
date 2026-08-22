@@ -1,4 +1,4 @@
-/* StemForge Admin Panel JS — loaded as external file to avoid browser inline-script caching */
+/* StemForge Admin Panel JS v2 — 2026-08-22 — free-user renewal dates + signups tab */
 
 // ── Diagnostic strip ─────────────────────────────────────────
 function diagSet(id, ok, msg){
