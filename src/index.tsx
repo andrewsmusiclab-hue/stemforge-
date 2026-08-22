@@ -22,6 +22,7 @@ type Bindings = {
   SITE_URL: string                  // e.g. https://473bb3a0-5a11-4e55-b6ea-c81157be4dc1.vip.gensparksite.com
   ADMIN_EMAIL: string               // Developer admin email — grants developer plan access
   STAGING_URL?: string              // Set by wrangler.staging.jsonc — shown in admin Publish tab
+  CRON_SECRET?: string              // Secret token for /api/cron/free-reset endpoint
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -298,6 +299,13 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN pending_downgrade TEXT`).run() } catch {}
   // ── Migrate: add downloads_used column (monthly download counter, resets each billing cycle) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN downloads_used INTEGER NOT NULL DEFAULT 0`).run() } catch {}
+  // ── Migrate: add cycle_start column (tracks when free user's current 30-day window began) ──
+  // Defaults to created_at so existing users get their first reset ~30 days after signup
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN cycle_start INTEGER`).run() } catch {}
+  // Backfill: any free user without cycle_start gets created_at as their cycle start
+  try { await db.prepare(`UPDATE users SET cycle_start = created_at WHERE plan = 'free' AND cycle_start IS NULL`).run() } catch {}
+  // ── Opportunistic reset on cold start — catches any overdue free users ──
+  try { await runFreeUserReset(db) } catch {}
   // ── Lock specific policy-violating accounts (idempotent) ──
   try {
     await db.prepare(
@@ -436,12 +444,13 @@ async function createUser(db: D1Database, data: {
   await ensureAuthTables(db)
   const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
   const plan = data.plan || 'free'
+  const now = Date.now()
   await db.prepare(
-    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at, cycle_start)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
     planLimits[plan] || 60, data.password_hash || null, data.google_id || null,
-    data.registration_ip || null, Date.now()).run()
+    data.registration_ip || null, now, plan === 'free' ? now : null).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
@@ -10689,5 +10698,71 @@ app.get('/api/admin/stem-diag', async (c) => {
     submit_basic: submitResult
   })
 })
+
+// ═══════════════════════════════════════════════════════════════
+//  SCHEDULED CRON — Free plan monthly reset
+//  Cloudflare Pages does not support cron triggers directly.
+//  Resets run two ways:
+//  1. Opportunistically on each Worker cold start (inside initDb)
+//  2. Via GET /api/cron/free-reset?secret=CRON_SECRET — called daily
+//     by an external cron service (e.g. cron-job.org, free tier)
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/cron/free-reset — external cron trigger (secured by CRON_SECRET env var)
+app.get('/api/cron/free-reset', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not available' }, 500)
+  // Auth: require matching secret in query param or Authorization header
+  const cronSecret = (c.env as any).CRON_SECRET
+  const provided = c.req.query('secret') || c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!cronSecret || provided !== cronSecret) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  try {
+    const result = await runFreeUserReset(c.env.DB)
+    return c.json({ ok: true, reset: result.reset, errors: result.errors, ts: new Date().toISOString() })
+  } catch (err: any) {
+    return c.json({ ok: false, error: err?.message }, 500)
+  }
+})
+// ═══════════════════════════════════════════════════════════════
+
+async function runFreeUserReset(db: D1Database): Promise<{ reset: number; errors: string[] }> {
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+  const now = Date.now()
+  const cutoff = now - THIRTY_DAYS_MS
+  const errors: string[] = []
+
+  // Find all free users whose cycle_start is 30+ days ago
+  // (cycle_start IS NULL guard catches any users missed by the backfill)
+  const due = await db.prepare(
+    `SELECT id, email, cycle_start FROM users
+     WHERE plan = 'free'
+       AND account_locked = 0
+       AND (cycle_start IS NULL OR cycle_start <= ?)`
+  ).bind(cutoff).all<{ id: string; email: string; cycle_start: number | null }>()
+
+  const users = due.results || []
+  if (users.length === 0) return { reset: 0, errors }
+
+  // Reset each user: zero out gens_used, advance cycle_start by exactly 30 days
+  // (not "now") so users keep their anniversary date and don't drift
+  let resetCount = 0
+  for (const u of users) {
+    try {
+      // Advance cycle_start by 30 days from its current value (preserves anniversary)
+      // If null/very old, just set to now
+      const prevCycle = u.cycle_start || now
+      const newCycle = prevCycle + THIRTY_DAYS_MS
+      await db.prepare(
+        `UPDATE users SET gens_used = 0, cycle_start = ? WHERE id = ? AND plan = 'free'`
+      ).bind(newCycle, u.id).run()
+      resetCount++
+    } catch (err: any) {
+      errors.push(`${u.email}: ${err?.message || 'unknown error'}`)
+    }
+  }
+
+  return { reset: resetCount, errors }
+}
 
 export default app

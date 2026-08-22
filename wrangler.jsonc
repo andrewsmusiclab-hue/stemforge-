@@ -19,7 +19,8 @@
     "SESSION_SECRET": "REDACTED_SESSION_SECRET",
     "SITE_URL": "https://stemforge.studio",
     "REPLICATE_API_KEY": "REDACTED_REPLICATE_KEY",
-    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com"
+    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com",
+    "CRON_SECRET": "REDACTED_CRON_SECRET"
   },
   "d1_databases": [
     {
