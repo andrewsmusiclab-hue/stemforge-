@@ -9355,6 +9355,23 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       </div>
     </div>
 
+    <!-- ── Billing Management ────────────────────────────────── -->
+    ${user.stripe_customer_id ? `
+    <div style="margin-top:32px;padding:24px 28px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div style="width:40px;height:40px;background:linear-gradient(135deg,#1e1e3a,#2d2a6e);border:1px solid rgba(108,58,255,.3);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+          <i class="fas fa-credit-card" style="color:#a78bfa;font-size:.9rem"></i>
+        </div>
+        <div>
+          <div style="font-weight:600;font-size:.95rem;margin-bottom:2px">Payment &amp; Billing</div>
+          <div style="color:var(--muted);font-size:.8rem">Update your credit card, view invoices, and manage your billing info via Stripe's secure portal.</div>
+        </div>
+      </div>
+      <a href="/api/stripe/portal" class="btn btn--outline btn--sm" style="white-space:nowrap;border-color:rgba(167,139,250,.4);color:#a78bfa;text-decoration:none;display:inline-flex;align-items:center;gap:7px;padding:9px 18px;flex-shrink:0">
+        <i class="fas fa-external-link-alt" style="font-size:.75rem"></i> Manage Billing
+      </a>
+    </div>` : ''}
+
     <!-- ── Points Cost Reference Table ──────────────────────── -->
     <div style="margin-top:40px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
