@@ -9996,7 +9996,7 @@ function adminPage(user: User) {
 .rv-bar-track{flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden}
 .rv-bar-fill{height:100%;border-radius:4px;transition:width .5s}
 </style>
-<script src="/static/admin.v1.js?v=${ASSET_VER}"></script>
+<script src="/static/admin.v2.js?v=${ASSET_VER}"></script>
 
 <!-- Admin user modal -->
 <div id="umod-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;align-items:center;justify-content:center">
