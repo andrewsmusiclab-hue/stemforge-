@@ -3743,7 +3743,32 @@ app.get('/subscription', async (c) => {
     } catch { /* Stripe check failed — fall back to D1-stored pendingDowngrade already set above */ }
   }
 
-  return c.html(subscriptionPage(user, c.env, pendingDowngrade, pendingUpgrade, realNextBillingDate))
+  // ── Fetch payment method + recent invoices for billing section ──────────
+  let paymentMethod: { brand: string; last4: string; exp_month: number; exp_year: number } | null = null
+  let recentInvoices: { date: string; amount: string; status: string; description: string; url: string | null }[] = []
+  if (user.stripe_customer_id && stripeConfigured(c.env)) {
+    try {
+      // Get default payment method from customer
+      const customer = await stripeRequest('GET', `/customers/${user.stripe_customer_id}?expand[]=invoice_settings.default_payment_method`, {}, c.env.STRIPE_SECRET_KEY)
+      const pm = customer?.invoice_settings?.default_payment_method
+      if (pm?.card) {
+        paymentMethod = { brand: pm.card.brand, last4: pm.card.last4, exp_month: pm.card.exp_month, exp_year: pm.card.exp_year }
+      }
+      // Get last 5 invoices
+      const invoiceList = await stripeRequest('GET', `/invoices?customer=${user.stripe_customer_id}&limit=5&status=paid`, {}, c.env.STRIPE_SECRET_KEY)
+      if (invoiceList?.data?.length) {
+        recentInvoices = invoiceList.data.map((inv: any) => ({
+          date: new Date(inv.created * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          amount: `$${(inv.amount_paid / 100).toFixed(2)}`,
+          status: inv.status,
+          description: inv.lines?.data?.[0]?.description || inv.description || 'Subscription',
+          url: inv.hosted_invoice_url || null,
+        }))
+      }
+    } catch { /* silently skip — billing section just won't render */ }
+  }
+
+  return c.html(subscriptionPage(user, c.env, pendingDowngrade, pendingUpgrade, realNextBillingDate, paymentMethod, recentInvoices))
 })
 
 app.get('/account', async (c) => {
@@ -9080,7 +9105,7 @@ function profilePage(user: User | null) {
 }
 
 // ─── SUBSCRIPTION PAGE ────────────────────────────────────────────────────────
-function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | null = null, pendingUpgrade: string | null = null, realNextBillingDate: string | null = null) {
+function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | null = null, pendingUpgrade: string | null = null, realNextBillingDate: string | null = null, paymentMethod: { brand: string; last4: string; exp_month: number; exp_year: number } | null = null, recentInvoices: { date: string; amount: string; status: string; description: string; url: string | null }[] = []) {
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const pct = user.gens_limit > 0 ? Math.min(100, Math.round((user.gens_used / user.gens_limit) * 100)) : 0
@@ -9383,22 +9408,78 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       </div>
     </div>
 
-    <!-- ── Billing Management ────────────────────────────────── -->
+    <!-- ── Payment Method + Invoice History ─────────────────── -->
     ${user.stripe_customer_id ? `
-    <div style="margin-top:32px;padding:24px 28px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
-      <div style="display:flex;align-items:center;gap:14px">
-        <div style="width:40px;height:40px;background:linear-gradient(135deg,#1e1e3a,#2d2a6e);border:1px solid rgba(108,58,255,.3);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-credit-card" style="color:#a78bfa;font-size:.9rem"></i>
+    <div style="margin-top:32px;display:grid;grid-template-columns:1fr 1fr;gap:20px" class="billing-grid">
+
+      <!-- Payment Method card -->
+      <div style="padding:24px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:32px;height:32px;background:linear-gradient(135deg,#1e1e3a,#2d2a6e);border:1px solid rgba(108,58,255,.3);border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-credit-card" style="color:#a78bfa;font-size:.8rem"></i>
+            </div>
+            <span style="font-weight:600;font-size:.95rem">Payment Method</span>
+          </div>
+          <a href="/api/stripe/portal" style="font-size:.78rem;color:#a78bfa;text-decoration:none;opacity:.8" title="Manage in Stripe">
+            <i class="fas fa-external-link-alt" style="font-size:.7rem;margin-right:3px"></i>Manage
+          </a>
         </div>
-        <div>
-          <div style="font-weight:600;font-size:.95rem;margin-bottom:2px">Payment &amp; Billing</div>
-          <div style="color:var(--muted);font-size:.8rem">Update your credit card, view invoices, and manage your billing info via Stripe's secure portal.</div>
+        ${paymentMethod ? `
+        <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:10px">
+          <div style="width:42px;height:28px;background:#1a1a2e;border:1px solid rgba(255,255,255,.15);border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:.65rem;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:.5px">
+            ${paymentMethod.brand === 'visa' ? '<span style="color:#1a73e8;font-size:.7rem;font-weight:900">VISA</span>' : paymentMethod.brand === 'mastercard' ? '<span style="font-size:.6rem;color:#eb001b;font-weight:900">MC</span>' : paymentMethod.brand === 'amex' ? '<span style="color:#2e77bc;font-size:.6rem;font-weight:900">AMEX</span>' : paymentMethod.brand.toUpperCase().slice(0,4)}
+          </div>
+          <div>
+            <div style="font-weight:600;font-size:.9rem;letter-spacing:.5px">•••• •••• •••• ${paymentMethod.last4}</div>
+            <div style="color:var(--muted);font-size:.75rem;margin-top:2px">Expires ${String(paymentMethod.exp_month).padStart(2,'0')} / ${String(paymentMethod.exp_year).slice(-2)}</div>
+          </div>
+          <div style="margin-left:auto">
+            <span style="font-size:.7rem;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.25);border-radius:20px;padding:2px 9px">Default</span>
+          </div>
         </div>
+        <p style="margin:10px 0 0;font-size:.75rem;color:var(--muted)"><a href="/api/stripe/portal" style="color:#a78bfa;text-decoration:none">+ Add or change card →</a></p>
+        ` : `
+        <div style="text-align:center;padding:20px 0;color:var(--muted);font-size:.85rem">
+          <i class="fas fa-credit-card" style="font-size:1.4rem;margin-bottom:8px;opacity:.3;display:block"></i>
+          No payment method on file
+        </div>
+        <a href="/api/stripe/portal" style="display:block;text-align:center;font-size:.8rem;color:#a78bfa;text-decoration:none;margin-top:8px">+ Add a payment method →</a>
+        `}
       </div>
-      <a href="/api/stripe/portal" class="btn btn--outline btn--sm" style="white-space:nowrap;border-color:rgba(167,139,250,.4);color:#a78bfa;text-decoration:none;display:inline-flex;align-items:center;gap:7px;padding:9px 18px;flex-shrink:0">
-        <i class="fas fa-external-link-alt" style="font-size:.75rem"></i> Manage Billing
-      </a>
-    </div>` : ''}
+
+      <!-- Invoice History card -->
+      <div style="padding:24px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:32px;height:32px;background:linear-gradient(135deg,#1e1e3a,#2d2a6e);border:1px solid rgba(108,58,255,.3);border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-file-invoice-dollar" style="color:#a78bfa;font-size:.8rem"></i>
+            </div>
+            <span style="font-weight:600;font-size:.95rem">Invoice History</span>
+          </div>
+          <a href="/api/stripe/portal" style="font-size:.78rem;color:#a78bfa;text-decoration:none;opacity:.8">
+            <i class="fas fa-external-link-alt" style="font-size:.7rem;margin-right:3px"></i>View all
+          </a>
+        </div>
+        ${recentInvoices.length ? recentInvoices.map(inv => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:.83rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${inv.description}</div>
+            <div style="font-size:.73rem;color:var(--muted);margin-top:1px">${inv.date}</div>
+          </div>
+          <div style="font-weight:600;font-size:.88rem;flex-shrink:0">${inv.amount}</div>
+          <span style="font-size:.68rem;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.25);border-radius:20px;padding:2px 8px;flex-shrink:0">Paid</span>
+          ${inv.url ? `<a href="${inv.url}" target="_blank" style="color:var(--muted);text-decoration:none;font-size:.8rem;flex-shrink:0" title="View invoice"><i class="fas fa-download"></i></a>` : ''}
+        </div>`).join('') : `
+        <div style="text-align:center;padding:20px 0;color:var(--muted);font-size:.85rem">
+          <i class="fas fa-file-invoice" style="font-size:1.4rem;margin-bottom:8px;opacity:.3;display:block"></i>
+          No invoices yet
+        </div>
+        `}
+      </div>
+    </div>
+    <style>@media(max-width:640px){.billing-grid{grid-template-columns:1fr!important}}</style>
+    ` : ''}
 
     <!-- ── Points Cost Reference Table ──────────────────────── -->
     <div style="margin-top:40px">
