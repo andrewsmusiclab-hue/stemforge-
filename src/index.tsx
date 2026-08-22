@@ -331,6 +331,19 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   )`).run()
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_api_errors_created_at ON api_errors (created_at)`).run() } catch {}
 
+  // ── Signup click tracking table ──────────────────────────────────────────────
+  // Records every time a user clicks the "Continue with Google" or email signup button
+  await db.prepare(`CREATE TABLE IF NOT EXISTS signup_clicks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL DEFAULT 'google',  -- 'google' | 'email'
+    page TEXT NOT NULL DEFAULT 'login',          -- 'login' | 'signup'
+    referrer TEXT,
+    country TEXT,
+    created_at INTEGER NOT NULL
+  )`).run()
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_signup_clicks_created_at ON signup_clicks (created_at)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_signup_clicks_event_type ON signup_clicks (event_type)`).run() } catch {}
+
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -5411,11 +5424,11 @@ app.get('/api/admin/users', async (c) => {
   if (q) {
     const like = `%${q}%`
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
     ).bind(like, like).all<any>()
   } else {
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at FROM users ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start FROM users ORDER BY created_at DESC LIMIT 200`
     ).all<any>()
   }
   // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
@@ -8836,10 +8849,10 @@ function signupPage() {
         <p class="auth-card__sub">Already have one? <a href="/login">Log in</a></p>
         <div id="auth-error" class="auth-error" style="display:none"></div>
         <div class="oauth-btns">
-          <a href="/api/auth/google" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
+          <a href="/api/auth/google" class="oauth-btn oauth-btn--google" onclick="(function(){fetch('/api/track/signup-click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_type:'google',page:'signup',referrer:document.referrer||''})}).catch(function(){});})();"><i class="fab fa-google"></i> Continue with Google</a>
         </div>
         <div class="auth-divider"><span>or</span></div>
-        <a href="/register" class="btn btn--outline btn--full btn--lg" style="margin-top:8px">
+        <a href="/register" class="btn btn--outline btn--full btn--lg" style="margin-top:8px" onclick="(function(){fetch('/api/track/signup-click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_type:'email',page:'signup',referrer:document.referrer||''})}).catch(function(){});})();">
           <i class="fas fa-envelope"></i> Sign up with email
         </a>
         <p class="auth-card__sub" style="margin-top:20px;font-size:13px">By continuing you agree to our <a href="/terms" target="_blank">Terms</a> and <a href="/privacy" target="_blank">Privacy Policy</a>.</p>
@@ -8927,9 +8940,7 @@ function loginPage(next = '') {
         <p class="auth-card__sub">Don't have an account? <a href="/signup">Sign up free</a></p>
         <div id="auth-error" class="auth-error" style="display:none"></div>
         <div class="oauth-btns">
-          <a href="${googleHref}" class="oauth-btn oauth-btn--google"><i class="fab fa-google"></i> Continue with Google</a>
-        </div>
-        <div class="auth-divider"><span>or log in with email</span></div>
+          <a href="${googleHref}" class="oauth-btn oauth-btn--google" onclick="(function(){fetch('/api/track/signup-click',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_type:'google',page:'login',referrer:document.referrer||''})}).catch(function(){});})();"><i class="fab fa-google"></i> Continue with Google</a>
         <form class="auth-form" id="login-form" novalidate>
         ${nextField}
           <div class="form-group">
@@ -9847,6 +9858,7 @@ function adminPage(user: User) {
       <button class="admin-tab admin-tab--active" data-tab="analytics" onclick="adminTab('analytics')"><i class="fas fa-chart-bar"></i> Analytics</button>
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
+      <button class="admin-tab" data-tab="signups" onclick="adminTab('signups')"><i class="fab fa-google"></i> Signups</button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -9945,7 +9957,31 @@ function adminPage(user: User) {
       </div>
     </div>
 
-
+    <!-- SIGNUPS TAB -->
+    <div id="admin-tab-signups" style="display:none">
+      <div class="sub-stats-bar" style="margin-bottom:28px">
+        <div class="sub-stat"><span class="sub-stat__label">Google Clicks Today</span><span class="sub-stat__val" id="sc-today">—</span></div>
+        <div class="sub-stat"><span class="sub-stat__label">Google Clicks (7d)</span><span class="sub-stat__val" id="sc-week">—</span></div>
+        <div class="sub-stat"><span class="sub-stat__label">Google Clicks (30d)</span><span class="sub-stat__val" id="sc-google30">—</span></div>
+        <div class="sub-stat"><span class="sub-stat__label">Email Clicks (30d)</span><span class="sub-stat__val" id="sc-email30">—</span></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fab fa-google" style="color:#4285F4;margin-right:8px"></i>Daily Click Trend (30d)</h3>
+          <div id="sc-daily-chart" style="width:100%;min-height:160px;position:relative">
+            <p style="color:var(--muted);font-size:.85rem;text-align:center;padding-top:60px"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+          </div>
+        </div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+          <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-chart-pie" style="color:#a78bfa;margin-right:8px"></i>Click Breakdown</h3>
+          <div id="sc-breakdown"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
+        </div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+        <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-history" style="color:#f59e0b;margin-right:8px"></i>Recent Click Events (last 50)</h3>
+        <div id="sc-recent" style="overflow-x:auto"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
+      </div>
+    </div>
 
   </div>
 </main>
@@ -10696,6 +10732,72 @@ app.get('/api/admin/stem-diag', async (c) => {
     sonic_task_poll: { url: sonicUrl, ...sonicRes },
     stems_task_poll:  { url: stemUrl,  ...stemRes },
     submit_basic: submitResult
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
+//  SIGNUP CLICK TRACKING
+// ═══════════════════════════════════════════════════════════════
+
+// POST /api/track/signup-click — records a button click on login/signup page
+// Called client-side before redirect; fire-and-forget, no auth required
+app.post('/api/track/signup-click', async (c) => {
+  if (!c.env.DB) return c.json({ ok: false }, 200)
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const eventType = (body.event_type === 'email') ? 'email' : 'google'
+    const page      = (body.page === 'signup') ? 'signup' : 'login'
+    const referrer  = (typeof body.referrer === 'string' ? body.referrer : '').slice(0, 500) || null
+    const country   = c.req.header('CF-IPCountry') || null
+    await c.env.DB.prepare(
+      `INSERT INTO signup_clicks (event_type, page, referrer, country, created_at) VALUES (?, ?, ?, ?, ?)`
+    ).bind(eventType, page, referrer, country, Date.now()).run()
+    return c.json({ ok: true })
+  } catch { return c.json({ ok: false }, 200) }
+})
+
+// GET /api/admin/signup-clicks — admin view of signup click data
+app.get('/api/admin/signup-clicks', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const now = Date.now()
+  const DAY  = 86400000
+  const todayCutoff  = now - DAY
+  const weekCutoff   = now - 7 * DAY
+  const monthCutoff  = now - 30 * DAY
+
+  const [totalRow, todayRow, weekRow, googleRow, emailRow, daily, recent] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM signup_clicks WHERE created_at >= ?`).bind(monthCutoff).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM signup_clicks WHERE created_at >= ?`).bind(todayCutoff).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM signup_clicks WHERE created_at >= ?`).bind(weekCutoff).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM signup_clicks WHERE event_type='google' AND created_at >= ?`).bind(monthCutoff).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM signup_clicks WHERE event_type='email' AND created_at >= ?`).bind(monthCutoff).first<any>(),
+    // Daily breakdown last 30 days
+    c.env.DB.prepare(`
+      SELECT date(created_at/1000,'unixepoch') as day, event_type, COUNT(*) as cnt
+      FROM signup_clicks WHERE created_at >= ?
+      GROUP BY day, event_type ORDER BY day ASC
+    `).bind(monthCutoff).all<any>(),
+    // Most recent 50 clicks
+    c.env.DB.prepare(`
+      SELECT id, event_type, page, referrer, country, created_at
+      FROM signup_clicks ORDER BY created_at DESC LIMIT 50
+    `).all<any>(),
+  ])
+
+  return c.json({
+    stats: {
+      total_30d:  (totalRow as any)?.cnt  || 0,
+      today:      (todayRow as any)?.cnt  || 0,
+      this_week:  (weekRow as any)?.cnt   || 0,
+      google_30d: (googleRow as any)?.cnt || 0,
+      email_30d:  (emailRow as any)?.cnt  || 0,
+    },
+    daily:  daily.results  || [],
+    recent: recent.results || [],
   })
 })
 

@@ -73,7 +73,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users'];
+var adminTabs=['analytics','revenue','users','signups'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -81,6 +81,7 @@ function adminTab(tab){
   if(tab==='analytics'&&!window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
+  if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
@@ -302,7 +303,20 @@ async function loadUsers(q){
           :'<span style="color:#10b981;font-size:.75rem">Active</span>';
         var signupDate=u.created_at?new Date(u.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
         var hasSub=!!u.stripe_subscription_id;
-        var renewalCell=hasSub?'<span id="renew-'+u.id+'" style="color:var(--muted);font-size:.78rem" data-user-id="'+u.id+'" data-loaded="0">Loading…</span>':'<span style="color:var(--muted);font-size:.78rem">—</span>';
+        var renewalCell;
+        if(hasSub){
+          renewalCell='<span id="renew-'+u.id+'" style="color:var(--muted);font-size:.78rem" data-user-id="'+u.id+'" data-loaded="0">Loading…</span>';
+        } else if(u.plan==='free' && u.cycle_start){
+          // Free plan — show next reset date (cycle_start + 30 days)
+          var nextReset=new Date(u.cycle_start + 30*24*60*60*1000);
+          var nextResetStr=nextReset.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+          var nowMs=Date.now();
+          var daysLeft=Math.max(0,Math.ceil((nextReset.getTime()-nowMs)/(24*60*60*1000)));
+          var badge=daysLeft<=3?'<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.65rem;padding:1px 6px;border-radius:999px;margin-left:4px">'+daysLeft+'d left</span>':'';
+          renewalCell='<span style="color:#94a3b8;font-size:.78rem" title="Free plan resets every 30 days">'+nextResetStr+badge+'</span>';
+        } else {
+          renewalCell='<span style="color:var(--muted);font-size:.78rem">—</span>';
+        }
         return '<tr data-uid="'+u.id+'" style="'+(isLocked?'background:rgba(239,68,68,.04)':'')+'">'+
           '<td><div style="font-weight:600;font-size:.85rem">'+u.email+'</div><div style="color:var(--muted);font-size:.78rem">'+u.name+'</div></td>'+
           '<td><span class="plan-badge plan-badge--'+u.plan+'">'+u.plan+'</span></td>'+
@@ -333,6 +347,117 @@ async function loadUsers(q){
     });
     window._usersLoaded=true;
   }catch(e){ if(tableEl) tableEl.innerHTML='<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load: '+(e.message||'timeout')+'</p>'; }
+}
+
+// ── Signup Clicks Tab ────────────────────────────────────────
+async function loadSignupClicks(){
+  var errHtml=function(msg){ return '<p style="color:#fca5a5;font-size:.82rem;padding:8px;background:rgba(239,68,68,.1);border-radius:6px;border:1px solid rgba(239,68,68,.3)"><b>\u274c Error:</b> '+msg+'</p>'; };
+  try{
+    var res=await fetch('/api/admin/signup-clicks',{credentials:'include'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    var d=await res.json(); if(d.error) throw new Error(d.error);
+    var s=d.stats||{};
+    var todayEl=document.getElementById('sc-today'); if(todayEl) todayEl.textContent=s.today||0;
+    var weekEl=document.getElementById('sc-week'); if(weekEl) weekEl.textContent=s.this_week||0;
+    var g30El=document.getElementById('sc-google30'); if(g30El) g30El.textContent=s.google_30d||0;
+    var e30El=document.getElementById('sc-email30'); if(e30El) e30El.textContent=s.email_30d||0;
+
+    // ── Daily trend chart ───────────────────────────────────
+    var chartEl=document.getElementById('sc-daily-chart');
+    if(chartEl){
+      var daily=d.daily||[];
+      if(!daily.length){ chartEl.innerHTML='<p style="color:var(--muted);font-size:.82rem;text-align:center;padding-top:40px">No data yet</p>'; }
+      else {
+        // Merge rows by day: google + email each get own array
+        var dayMap={};
+        daily.forEach(function(r){ var day=r.day; if(!dayMap[day]) dayMap[day]={day:day,google:0,email:0}; dayMap[day][r.event_type]=(dayMap[day][r.event_type]||0)+r.cnt; });
+        var days=Object.keys(dayMap).sort();
+        var googleVals=days.map(function(d){ return dayMap[d].google||0; });
+        var emailVals=days.map(function(d){ return dayMap[d].email||0; });
+        var maxV=Math.max.apply(null,days.map(function(d){ return dayMap[d].google+dayMap[d].email; }).concat([1]));
+        var W=chartEl.offsetWidth||560, H=160, PAD={top:12,right:16,bottom:40,left:36};
+        var cW=W-PAD.left-PAD.right, cH=H-PAD.top-PAD.bottom;
+        var xStep=cW/(days.length-1||1);
+        // Grid lines
+        var gridLines='';
+        for(var gi=0;gi<=4;gi++){
+          var gy=PAD.top+cH-Math.round((gi/4)*cH);
+          var gv=Math.round((gi/4)*maxV);
+          gridLines+='<line x1="'+PAD.left+'" y1="'+gy+'" x2="'+(W-PAD.right)+'" y2="'+gy+'" stroke="rgba(255,255,255,.06)" stroke-width="1"/>';
+          gridLines+='<text x="'+(PAD.left-6)+'" y="'+(gy+4)+'" text-anchor="end" fill="rgba(148,163,184,.6)" font-size="10">'+gv+'</text>';
+        }
+        // Google line (blue)
+        var gPts=days.map(function(day,i){ var x=PAD.left+i*xStep; var v=dayMap[day].google||0; var y=PAD.top+cH-Math.round((v/maxV)*cH); return {x:x,y:y,cnt:v,lbl:day}; });
+        var gLine=gPts.map(function(p){return p.x+','+p.y;}).join(' ');
+        var gArea=gLine+' '+gPts[gPts.length-1].x+','+(PAD.top+cH)+' '+gPts[0].x+','+(PAD.top+cH);
+        // Email line (amber)
+        var ePts=days.map(function(day,i){ var x=PAD.left+i*xStep; var v=dayMap[day].email||0; var y=PAD.top+cH-Math.round((v/maxV)*cH); return {x:x,y:y,cnt:v,lbl:day}; });
+        var eLine=ePts.map(function(p){return p.x+','+p.y;}).join(' ');
+        // X labels
+        var labelEvery=Math.ceil(days.length/8);
+        var xLabels=days.map(function(day,i){ if(i%labelEvery!==0 && i!==days.length-1) return ''; return '<text x="'+(PAD.left+i*xStep)+'" y="'+(H-6)+'" text-anchor="middle" fill="rgba(148,163,184,.7)" font-size="10">'+day.slice(5)+'</text>'; }).join('');
+        chartEl.style.height='auto'; chartEl.style.display='block'; chartEl.style.position='relative';
+        chartEl.innerHTML=
+          '<div style="display:flex;gap:16px;margin-bottom:8px;font-size:.75rem;">'+
+            '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#4285F4;margin-right:4px"></span>Google</span>'+
+            '<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#f59e0b;margin-right:4px"></span>Email</span>'+
+          '</div>'+
+          '<svg width="100%" viewBox="0 0 '+W+' '+H+'" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;display:block">'+
+            '<defs>'+
+              '<linearGradient id="gAreaGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4285F4" stop-opacity="0.2"/><stop offset="100%" stop-color="#4285F4" stop-opacity="0.01"/></linearGradient>'+
+            '</defs>'+
+            gridLines+
+            '<polygon points="'+gArea+'" fill="url(#gAreaGrad)"/>'+
+            '<polyline points="'+gLine+'" fill="none" stroke="#4285F4" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>'+
+            '<polyline points="'+eLine+'" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="5,3"/>'+
+            xLabels+
+          '</svg>';
+      }
+    }
+
+    // ── Breakdown pie bars ──────────────────────────────────
+    var bkEl=document.getElementById('sc-breakdown');
+    if(bkEl){
+      var total=(s.google_30d||0)+(s.email_30d||0);
+      if(!total){ bkEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No clicks recorded yet.</p>'; }
+      else {
+        var rows2=[
+          {label:'Google Sign-up',cnt:s.google_30d||0,color:'#4285F4',icon:'fab fa-google'},
+          {label:'Email Sign-up',cnt:s.email_30d||0,color:'#f59e0b',icon:'fas fa-envelope'},
+        ];
+        bkEl.innerHTML=rows2.map(function(r){ var pct=total>0?Math.round((r.cnt/total)*100):0; return '<div class="rv-bar-wrap" style="margin-bottom:14px"><div style="width:24px;text-align:center"><i class="'+r.icon+'" style="color:'+r.color+'"></i></div><div style="width:110px;font-size:.84rem">'+r.label+'</div><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:'+r.color+'"></div></div><div style="width:36px;text-align:right;font-size:.85rem;font-weight:700">'+r.cnt+'</div><div style="width:40px;text-align:right;font-size:.75rem;color:var(--muted)">'+pct+'%</div></div>'; }).join(''); }
+    }
+
+    // ── Recent events table ──────────────────────────────────
+    var recEl=document.getElementById('sc-recent');
+    if(recEl){
+      var recent=d.recent||[];
+      if(!recent.length){ recEl.innerHTML='<p style="color:var(--muted);font-size:.85rem">No click events yet.</p>'; }
+      else {
+        recEl.innerHTML='<table class="admin-table"><thead><tr><th>Type</th><th>Page</th><th>Country</th><th>Referrer</th><th>Time</th></tr></thead><tbody>'+
+          recent.map(function(r){
+            var typeIcon=r.event_type==='google'
+              ?'<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(66,133,244,.15);color:#4285F4;padding:2px 8px;border-radius:999px;font-size:.75rem;font-weight:600"><i class="fab fa-google"></i> Google</span>'
+              :'<span style="display:inline-flex;align-items:center;gap:5px;background:rgba(245,158,11,.15);color:#f59e0b;padding:2px 8px;border-radius:999px;font-size:.75rem;font-weight:600"><i class="fas fa-envelope"></i> Email</span>';
+            var flag=r.country && r.country.length===2
+              ?String.fromCodePoint(0x1F1E6+r.country.charCodeAt(0)-65)+String.fromCodePoint(0x1F1E6+r.country.charCodeAt(1)-65)+' '
+              :'\uD83C\uDF10 ';
+            var ref=r.referrer?('<code style="font-size:.75rem;max-width:180px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle" title="'+r.referrer+'">'+r.referrer.replace(/^https?:\/\//,'').slice(0,40)+'</code>'):'<span style="color:var(--muted);font-size:.78rem">direct</span>';
+            var ts=new Date(r.created_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+            return '<tr><td>'+typeIcon+'</td><td style="font-size:.82rem;color:var(--muted)">'+r.page+'</td><td style="font-size:.85rem">'+flag+(r.country||'?')+'</td><td>'+ref+'</td><td style="font-size:.78rem;color:var(--muted);white-space:nowrap">'+ts+'</td></tr>';
+          }).join('')+
+        '</tbody></table>';
+      }
+    }
+
+    window._signupsLoaded=true;
+  }catch(e){
+    var msg=String(e.message||e);
+    var eh=errHtml(msg);
+    var dc2=document.getElementById('sc-daily-chart'); if(dc2) dc2.innerHTML=eh;
+    var bk=document.getElementById('sc-breakdown'); if(bk) bk.innerHTML=eh;
+    var rc=document.getElementById('sc-recent'); if(rc) rc.innerHTML=eh;
+  }
 }
 
 async function toggleLockUser(userId,email,currentlyLocked){
