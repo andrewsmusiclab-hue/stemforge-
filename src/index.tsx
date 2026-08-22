@@ -9095,6 +9095,12 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
     : user.plan === 'creator'
     ? [{ value: 'free', label: 'Free — $0/mo (cancel)' }]
     : []
+  // Pending change labels
+  const pendingDowngradeLabel = pendingDowngrade === 'creator' ? 'Creator' : pendingDowngrade === 'free' ? 'Free' : null
+  const pendingUpgradeLabel   = pendingUpgrade   === 'pro'     ? 'Pro Artist' : pendingUpgrade === 'creator' ? 'Creator' : null
+  const hasPendingChange = !!(pendingDowngradeLabel || pendingUpgradeLabel)
+  const pendingChangeLabel = pendingDowngradeLabel ?? pendingUpgradeLabel
+  const pendingChangeDir   = pendingDowngradeLabel ? 'downgrade' : 'upgrade'
 
   return shell('Subscription', `
 <main class="inner-page gs-content sub-page">
@@ -9103,17 +9109,39 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <h1>Subscription</h1>
       <p>Manage your plan, billing, and usage.</p>
     </div>
+
+    ${hasPendingChange ? `
+    <div style="display:flex;align-items:flex-start;gap:14px;padding:16px 20px;background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.3);border-radius:12px;margin-bottom:20px">
+      <div style="width:36px;height:36px;background:rgba(245,158,11,.15);border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">
+        <i class="fas fa-clock" style="color:#f59e0b;font-size:.9rem"></i>
+      </div>
+      <div>
+        <div style="font-weight:600;font-size:.95rem;color:#fbbf24;margin-bottom:3px">
+          Plan change scheduled
+        </div>
+        <div style="color:rgba(255,255,255,.75);font-size:.85rem;line-height:1.5">
+          You are currently on <strong style="color:#fff">${planLabel}</strong> and will ${pendingChangeDir === 'downgrade' ? 'move down' : 'upgrade'} to
+          <strong style="color:#fff">${pendingChangeLabel}</strong> at the end of your current billing period
+          ${nextBilling !== 'N/A' && nextBilling !== 'Loading…' ? `(${nextBilling})` : ''}.
+          You keep full <strong style="color:#fff">${planLabel}</strong> access until then.
+        </div>
+      </div>
+    </div>` : ''}
+
     <div class="sub-stats-bar">
       <div class="sub-stat">
         <span class="sub-stat__label">Current Plan</span>
-        <span class="sub-stat__val"><span class="plan-badge ${planClass}">${planLabel}</span></span>
+        <span class="sub-stat__val">
+          <span class="plan-badge ${planClass}">${planLabel}</span>
+          ${hasPendingChange ? `<span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;font-size:.72rem;color:#f59e0b;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.25);border-radius:20px;padding:2px 8px;vertical-align:middle"><i class="fas fa-arrow-${pendingChangeDir === 'downgrade' ? 'down' : 'up'}" style="font-size:.65rem"></i> changing to ${pendingChangeLabel}</span>` : ''}
+        </span>
       </div>
       <div class="sub-stat">
         <span class="sub-stat__label">Billing Period</span>
         <span class="sub-stat__val">${billingPeriod}</span>
       </div>
       <div class="sub-stat">
-        <span class="sub-stat__label">Next Billing Date</span>
+        <span class="sub-stat__label">${hasPendingChange ? 'Change Takes Effect' : 'Next Billing Date'}</span>
         <span class="sub-stat__val">${nextBilling}</span>
       </div>
     </div>
