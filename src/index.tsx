@@ -9262,16 +9262,48 @@ function profilePage(user: User | null) {
 <div id="dragReposOverlay" style="display:none">
   <div class="drepos-backdrop"></div>
   <div class="drepos-panel">
+
     <div class="drepos-header">
       <span class="drepos-title" id="dreposTitle">Position photo</span>
-      <p class="drepos-hint"><i class="fas fa-arrows-alt"></i> Drag to reposition</p>
-    </div>
-    <div class="drepos-stage-wrap">
-      <div class="drepos-stage" id="dreposStage">
-        <img id="dreposImg" src="" alt="" draggable="false">
-        <div class="drepos-frame" id="dreposFrame"></div>
+      <div class="drepos-hints">
+        <span class="drepos-hint-drag"><i class="fas fa-arrows-alt"></i> Drag to reposition</span>
+        <span class="drepos-centre-pill" id="dreposCentrePill" style="display:none">
+          <i class="fas fa-crosshairs"></i> Centred
+        </span>
       </div>
     </div>
+
+    <!--
+      Stage layout:
+        • .drepos-stage-wrap  — the full scrollable canvas (bigger than the crop window)
+        • #dreposStage        — same size as stage-wrap, holds the image + overlays
+        • #dreposImg          — the actual photo, translated by drag
+        • .drepos-vignette    — four dim panels outside the crop frame (top/bottom/left/right)
+        • #dreposFrame        — the bright crop window border
+        • .drepos-crosshair-h / -v — centre snap lines, visible only when snapped
+    -->
+    <div class="drepos-stage-wrap" id="dreposStageWrap">
+      <div class="drepos-stage" id="dreposStage">
+        <img id="dreposImg" src="" alt="" draggable="false">
+
+        <!-- Vignette panels dim the out-of-crop area -->
+        <div class="drepos-vig drepos-vig--top"    id="dreposVigTop"></div>
+        <div class="drepos-vig drepos-vig--bottom" id="dreposVigBottom"></div>
+        <div class="drepos-vig drepos-vig--left"   id="dreposVigLeft"></div>
+        <div class="drepos-vig drepos-vig--right"  id="dreposVigRight"></div>
+
+        <!-- Crop-window border -->
+        <div class="drepos-frame" id="dreposFrame">
+          <!-- Rule-of-thirds grid lines inside crop window -->
+          <div class="drepos-thirds"></div>
+        </div>
+
+        <!-- Centre-snap crosshair lines (shown briefly when centred) -->
+        <div class="drepos-snap-h" id="dreposSnapH"></div>
+        <div class="drepos-snap-v" id="dreposSnapV"></div>
+      </div>
+    </div>
+
     <div class="drepos-actions">
       <button class="btn btn--ghost" onclick="cancelRepos()">Cancel</button>
       <button class="btn btn--primary" onclick="confirmRepos()"><i class="fas fa-check"></i> Use this position</button>
@@ -9295,7 +9327,9 @@ let _dreposObjUrl  = null
 let _dragging      = false
 let _dragStartX    = 0, _dragStartY = 0
 let _imgOffX       = 0, _imgOffY    = 0
-let _imgW = 0, _imgH = 0, _stageW = 0, _stageH = 0, _frameW = 0, _frameH = 0
+let _imgW = 0, _imgH = 0, _stageW = 0, _stageH = 0
+let _frameX = 0, _frameY = 0, _frameW = 0, _frameH = 0  // crop window inside stage
+let _centreSnapTimer = null
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  MODAL open / close
@@ -9346,38 +9380,64 @@ function openReposOverlay(target, file) {
 
   title.textContent = target === 'cover' ? 'Position cover photo' : 'Position profile picture'
 
-  // Show frame aspect ratio matching target
+  // ── Set up crop frame dimensions ────────────────────────────────────────
+  // For cover: the crop window is 80% wide × full height of stage (banner shape)
+  // For avatar: square crop window centred (circle shown via border-radius)
+  // The stage is larger so the dimmed "outside" area is visible around the frame.
+  _stageW = stage.offsetWidth
+  _stageH = stage.offsetHeight
+
   if (target === 'cover') {
-    frame.style.borderRadius = '0'
-    frame.style.width  = '100%'
-    frame.style.height = '100%'
+    // Banner crop: wide rectangle, 8:3 ratio like the real banner (160px tall / 900px wide ≈ 0.178)
+    const fW = Math.round(_stageW * 0.82)
+    const fH = Math.round(fW * 0.22)   // ~4.5:1 ratio matching the real banner
+    const fX = Math.round((_stageW - fW) / 2)
+    const fY = Math.round((_stageH - fH) / 2)
+    _frameX = fX; _frameY = fY; _frameW = fW; _frameH = fH
+    frame.style.borderRadius = '4px'
+    frame.style.width  = fW + 'px'
+    frame.style.height = fH + 'px'
+    frame.style.left   = fX + 'px'
+    frame.style.top    = fY + 'px'
   } else {
-    // Circle crop preview for avatar
+    // Avatar crop: circle
+    const sz = Math.round(Math.min(_stageW, _stageH) * 0.58)
+    const fX = Math.round((_stageW - sz) / 2)
+    const fY = Math.round((_stageH - sz) / 2)
+    _frameX = fX; _frameY = fY; _frameW = sz; _frameH = sz
     frame.style.borderRadius = '50%'
-    const sz = Math.min(stage.offsetWidth, stage.offsetHeight) * 0.65 + 'px'
-    frame.style.width = sz; frame.style.height = sz
+    frame.style.width  = sz + 'px'
+    frame.style.height = sz + 'px'
+    frame.style.left   = fX + 'px'
+    frame.style.top    = fY + 'px'
   }
+  updateVignette()
+
+  // Position the snap crosshair lines at the frame centre
+  const snapH = document.getElementById('dreposSnapH')
+  const snapV = document.getElementById('dreposSnapV')
+  if (snapH) snapH.style.top  = (_frameY + _frameH / 2) + 'px'
+  if (snapV) snapV.style.left = (_frameX + _frameW / 2) + 'px'
 
   img.onload = function() {
-    // Natural image size vs stage
     _stageW = stage.offsetWidth
     _stageH = stage.offsetHeight
     _imgW   = img.naturalWidth
     _imgH   = img.naturalHeight
 
-    // Scale so image fills the stage (cover-like, but larger so user can drag)
-    const scaleW = _stageW / _imgW
-    const scaleH = _stageH / _imgH
-    const scale  = Math.max(scaleW, scaleH) * 1.3  // 30% bigger so there's room to drag
+    // Scale image so it fully covers the crop frame (not the whole stage) + 25% extra to drag
+    const scaleW = _frameW / _imgW
+    const scaleH = _frameH / _imgH
+    const scale  = Math.max(scaleW, scaleH) * 1.4
     _imgW = Math.round(_imgW * scale)
     _imgH = Math.round(_imgH * scale)
     img.style.width  = _imgW + 'px'
     img.style.height = _imgH + 'px'
 
-    // Start centred
-    _imgOffX = (_stageW - _imgW) / 2
-    _imgOffY = (_stageH - _imgH) / 2
-    clampAndApplyOffset()
+    // Start with image centred over the frame
+    _imgOffX = _frameX + Math.round((_frameW - _imgW) / 2)
+    _imgOffY = _frameY + Math.round((_frameH - _imgH) / 2)
+    clampAndApplyOffset(true)  // true = skip snap check on load
   }
   img.src = _dreposObjUrl
 
@@ -9399,17 +9459,18 @@ function cancelRepos() {
 }
 
 function confirmRepos() {
-  // Capture position as CSS % (where in the image the frame sits)
-  const stage = document.getElementById('dreposStage')
-  _stageW = stage.offsetWidth
-  _stageH = stage.offsetHeight
-
-  // Convert pixel offset → percentage of image
-  // posX% = distance from left edge of image to left edge of stage / (imgW - stageW) * 100
-  const maxOffX = 0, minOffX = _stageW - _imgW
-  const maxOffY = 0, minOffY = _stageH - _imgH
-  const pctX = minOffX === maxOffX ? 50 : Math.round((_imgOffX - maxOffX) / (minOffX - maxOffX) * 100)
-  const pctY = minOffY === maxOffY ? 50 : Math.round((_imgOffY - maxOffY) / (minOffY - maxOffY) * 100)
+  // Convert pixel drag offset → CSS background-position / object-position %
+  // The "range" is how far the image can travel while still covering the frame.
+  // minOff = frame_start + frame_size - img_size  (image pushed as far right/down as possible)
+  // maxOff = frame_start                          (image pushed as far left/up as possible)
+  const minOffX = _frameX + _frameW - _imgW
+  const maxOffX = _frameX
+  const minOffY = _frameY + _frameH - _imgH
+  const maxOffY = _frameY
+  const rangeX  = minOffX - maxOffX   // negative (or 0 if image == frame width)
+  const rangeY  = minOffY - maxOffY
+  const pctX = rangeX === 0 ? 50 : Math.round((_imgOffX - maxOffX) / rangeX * 100)
+  const pctY = rangeY === 0 ? 50 : Math.round((_imgOffY - maxOffY) / rangeY * 100)
   const posStr = pctX + '% ' + pctY + '%'
 
   if (_dreposTarget === 'cover') {
@@ -9484,15 +9545,85 @@ function onDragMove(e) {
 }
 function onDragEnd() { _dragging = false }
 
-function clampAndApplyOffset() {
-  const stage = document.getElementById('dreposStage')
-  _stageW = stage.offsetWidth
-  _stageH = stage.offsetHeight
-  // Clamp so image always covers the stage
-  _imgOffX = Math.min(0, Math.max(_stageW - _imgW, _imgOffX))
-  _imgOffY = Math.min(0, Math.max(_stageH - _imgH, _imgOffY))
+function clampAndApplyOffset(skipSnap) {
+  // Clamp so image always fully covers the crop frame (not just the stage)
+  const minX = _frameX + _frameW - _imgW   // image right edge ≥ frame right edge
+  const maxX = _frameX                      // image left  edge ≤ frame left  edge
+  const minY = _frameY + _frameH - _imgH
+  const maxY = _frameY
+  _imgOffX = Math.min(maxX, Math.max(minX, _imgOffX))
+  _imgOffY = Math.min(maxY, Math.max(minY, _imgOffY))
   const img = document.getElementById('dreposImg')
   img.style.transform = 'translate(' + _imgOffX + 'px,' + _imgOffY + 'px)'
+  if (!skipSnap) checkCentreSnap()
+}
+
+// ── Centre-snap indicator ─────────────────────────────────────────────────
+function checkCentreSnap() {
+  // Image is centred over the FRAME when:
+  //   imgOffX = frameX + (frameW - imgW)/2  (horiz centre)
+  //   imgOffY = frameY + (frameH - imgH)/2  (vert  centre)
+  const centreX = _frameX + (_frameW - _imgW) / 2
+  const centreY = _frameY + (_frameH - _imgH) / 2
+  const THRESH  = 6   // pixels — snap zone
+  const snapX   = Math.abs(_imgOffX - centreX) < THRESH
+  const snapY   = Math.abs(_imgOffY - centreY) < THRESH
+  const snapped = snapX && snapY
+
+  // If within threshold, snap exactly to centre
+  if (snapped) {
+    _imgOffX = Math.round(centreX)
+    _imgOffY = Math.round(centreY)
+    document.getElementById('dreposImg').style.transform =
+      'translate(' + _imgOffX + 'px,' + _imgOffY + 'px)'
+  }
+
+  // Show/hide crosshair lines and pill
+  const snapH   = document.getElementById('dreposSnapH')
+  const snapV   = document.getElementById('dreposSnapV')
+  const pill    = document.getElementById('dreposCentrePill')
+  if (snapped) {
+    snapH.classList.add('drepos-snap--visible')
+    snapV.classList.add('drepos-snap--visible')
+    pill.style.display = 'inline-flex'
+    // Auto-hide after 1.4 s
+    clearTimeout(_centreSnapTimer)
+    _centreSnapTimer = setTimeout(function() {
+      snapH.classList.remove('drepos-snap--visible')
+      snapV.classList.remove('drepos-snap--visible')
+    }, 1400)
+  } else {
+    clearTimeout(_centreSnapTimer)
+    snapH.classList.remove('drepos-snap--visible')
+    snapV.classList.remove('drepos-snap--visible')
+    pill.style.display = 'none'
+  }
+}
+
+// ── Vignette panels ───────────────────────────────────────────────────────
+function updateVignette() {
+  // Four rects that cover the area OUTSIDE the crop frame
+  const top    = document.getElementById('dreposVigTop')
+  const bottom = document.getElementById('dreposVigBottom')
+  const left   = document.getElementById('dreposVigLeft')
+  const right  = document.getElementById('dreposVigRight')
+  if (!top) return
+  // Top
+  top.style.top    = '0'; top.style.left = '0'; top.style.right = '0'
+  top.style.height = _frameY + 'px'
+  // Bottom
+  bottom.style.bottom = '0'; bottom.style.left = '0'; bottom.style.right = '0'
+  bottom.style.height = (_stageH - _frameY - _frameH) + 'px'
+  // Left (between top and bottom panels)
+  left.style.top    = _frameY + 'px'
+  left.style.left   = '0'
+  left.style.width  = _frameX + 'px'
+  left.style.height = _frameH + 'px'
+  // Right
+  right.style.top    = _frameY + 'px'
+  right.style.right  = '0'
+  right.style.width  = (_stageW - _frameX - _frameW) + 'px'
+  right.style.height = _frameH + 'px'
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
