@@ -6725,7 +6725,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.45.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.46.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
