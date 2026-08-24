@@ -1185,12 +1185,14 @@ async function fireNextChainExtend(
 
     if (sourceclipId) {
       // Fast path — pass clip_id directly, no upload
+      // custom_mode is REQUIRED for extend_music (MusicAPI docs)
       const extBody: Record<string, any> = {
         task_type: 'extend_music',
         continue_clip_id: sourceclipId,
-        mv: 'sonic-v5'
+        mv: 'sonic-v5',
+        custom_mode: false  // required field; set true below if custom lyrics present
       }
-      if (hasCustomLyrics) extBody.prompt = chainLyrics
+      if (hasCustomLyrics) { extBody.custom_mode = true; extBody.prompt = chainLyrics }
       if (job.chain_style) extBody.tags = job.chain_style
 
       const extRes = await fetch(`${MUSICAPI_SONIC}/create`, {
@@ -1239,12 +1241,14 @@ async function fireNextChainExtend(
       }
       if (!uploadedClipId) throw new Error('Chain upload timed out')
 
+      // custom_mode is REQUIRED for extend_music (MusicAPI docs)
       const extBody: Record<string, any> = {
         task_type: 'extend_music',
         continue_clip_id: uploadedClipId,
-        mv: 'sonic-v5'
+        mv: 'sonic-v5',
+        custom_mode: false  // required field; set true below if custom lyrics present
       }
-      if (hasCustomLyrics) extBody.prompt = chainLyrics
+      if (hasCustomLyrics) { extBody.custom_mode = true; extBody.prompt = chainLyrics }
       if (job.chain_style) extBody.tags = job.chain_style
 
       const extRes = await fetch(`${MUSICAPI_SONIC}/create`, {
@@ -4367,14 +4371,22 @@ app.post('/api/job/extend-upload', async (c) => {
     // The frontend stores that clip_id as extUploadAudioId and sends it here.
     const isClipId = !upload_audio_id.startsWith('http')
     if (isClipId) {
+      // IMPORTANT: use extend_upload_music when clip came from /sonic/upload
+      // MusicAPI docs: "When extending your own uploaded music, you MUST use extend_upload_music"
+      // extend_music with an uploaded clip_id returns Failed status
+      // custom_mode is REQUIRED for all extend task types
       const extBody: Record<string, any> = {
-        task_type: 'extend_music',
+        task_type: 'extend_upload_music',
         continue_clip_id: upload_audio_id,
         mv: 'sonic-v5',
-        continue_at: uploadContinueAt
+        continue_at: uploadContinueAt,
+        custom_mode: false  // required field
       }
-      if (hasCustomLyrics) extBody.prompt = typedLyricsUpload
       if (isInstrumental) extBody.make_instrumental = true
+      if (hasCustomLyrics) {
+        extBody.custom_mode = true
+        extBody.prompt = typedLyricsUpload
+      }
       console.log(`[extend-upload] /sonic/create continue_clip_id=${upload_audio_id} continue_at=${uploadContinueAt} instrumental=${isInstrumental}`)
       const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
         method: 'POST',
@@ -4393,40 +4405,54 @@ app.post('/api/job/extend-upload', async (c) => {
         return c.json({ error: 'MusicAPI returned no task_id', raw: sonicText.slice(0, 800) }, 500)
       }
     } else {
-      // ── Path B: R2 URL — try sonic/upload first to get clip_id, then continue_clip_id ──
-      // sonic/upload-extend often rejects R2 proxy URLs with HTTP 400.
-      // sonic/upload (the synchronous upload endpoint) is more reliable with arbitrary URLs.
+      // ── Path B: R2/HTTP URL — try sonic/upload first (if not already an R2 pub URL), then upload-extend ──
+      // If the URL is already an R2 public URL (starts with https://pub-), skip sonic/upload:
+      // it is returning HTTP 400 for ALL URL uploads globally right now.
+      // Go straight to upload-extend which accepts R2 public URLs directly.
       const audioSrc = upload_audio_id
-      console.log(`[extend-upload] Path B: sonic/upload url=${audioSrc.slice(0, 100)}`)
+      const isR2PubUrl = audioSrc.startsWith('https://pub-')
       let pathBClipId: string | null = null
-      try {
-        const sonicUploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: audioSrc })
-        })
-        const sonicUploadText = await sonicUploadRes.text()
-        console.log(`[extend-upload] Path B sonic/upload HTTP ${sonicUploadRes.status} raw: ${sonicUploadText.slice(0, 300)}`)
-        if (sonicUploadRes.ok) {
-          let ud: any = {}
-          try { ud = JSON.parse(sonicUploadText) } catch {}
-          pathBClipId = ud.clip_id || null
-          if (pathBClipId) console.log(`[extend-upload] Path B sonic/upload clip_id=${pathBClipId}`)
+
+      if (!isR2PubUrl) {
+        // Non-R2 URL: try sonic/upload first (may work for some CDN URLs)
+        console.log(`[extend-upload] Path B: sonic/upload url=${audioSrc.slice(0, 100)}`)
+        try {
+          const sonicUploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: audioSrc })
+          })
+          const sonicUploadText = await sonicUploadRes.text()
+          console.log(`[extend-upload] Path B sonic/upload HTTP ${sonicUploadRes.status} raw: ${sonicUploadText.slice(0, 300)}`)
+          if (sonicUploadRes.ok) {
+            let ud: any = {}
+            try { ud = JSON.parse(sonicUploadText) } catch {}
+            pathBClipId = ud.clip_id || null
+            if (pathBClipId) console.log(`[extend-upload] Path B sonic/upload clip_id=${pathBClipId}`)
+          }
+        } catch (uploadErr: any) {
+          console.warn('[extend-upload] Path B sonic/upload threw:', uploadErr?.message)
         }
-      } catch (uploadErr: any) {
-        console.warn('[extend-upload] Path B sonic/upload threw:', uploadErr?.message)
+      } else {
+        console.log(`[extend-upload] Path B: R2 public URL detected — skipping sonic/upload (currently returns 400), going direct to upload-extend`)
       }
 
       if (pathBClipId) {
-        // Got clip_id — use continue_clip_id just like Path A
+        // Got clip_id from /sonic/upload — must use extend_upload_music (not extend_music)
+        // MusicAPI docs: "When extending your own uploaded music, you MUST use extend_upload_music"
+        // custom_mode is REQUIRED for all extend task types
         const extBody: Record<string, any> = {
-          task_type: 'extend_music',
+          task_type: 'extend_upload_music',
           continue_clip_id: pathBClipId,
           mv: 'sonic-v5',
-          continue_at: uploadContinueAt
+          continue_at: uploadContinueAt,
+          custom_mode: false  // required field
         }
-        if (hasCustomLyrics) extBody.prompt = typedLyricsUpload
         if (isInstrumental) extBody.make_instrumental = true
+        if (hasCustomLyrics) {
+          extBody.custom_mode = true
+          extBody.prompt = typedLyricsUpload
+        }
         console.log(`[extend-upload] Path B /sonic/create clip_id=${pathBClipId} continue_at=${uploadContinueAt}`)
         const scRes = await fetch(`${MUSICAPI_SONIC}/create`, {
           method: 'POST',
@@ -4441,11 +4467,10 @@ app.post('/api/job/extend-upload', async (c) => {
         extTaskId = scData.task_id || scData.id || scData.data?.[0]?.id
         if (!extTaskId) return c.json({ error: 'MusicAPI returned no task_id', raw: scText.slice(0, 800) }, 500)
       } else {
-        // sonic/upload failed — fall back to upload-extend
-        // Use R2 public URL (starts with pub-) when available — Sonic's downloader can fetch it.
-        // Proxy URLs (going through our CF Worker) get blocked by Cloudflare bot protection.
-        const uploadExtSrc = upload_audio_id.startsWith('https://pub-') ? upload_audio_id : audioSrc
-        console.log(`[extend-upload] Path B fallback: /sonic/upload-extend url=${uploadExtSrc.slice(0, 100)}`)
+        // sonic/upload not available — use upload-extend directly.
+        // Use R2 public URL when available (Sonic can fetch it; CF Worker proxy gets bot-blocked).
+        const uploadExtSrc = isR2PubUrl ? audioSrc : audioSrc
+        console.log(`[extend-upload] Path B: /sonic/upload-extend url=${uploadExtSrc.slice(0, 100)}`)
         const uploadExtBody: Record<string, any> = {
           url: uploadExtSrc, mv: 'sonic-v5', continue_at: uploadContinueAt
         }
@@ -4648,14 +4673,20 @@ app.post('/api/job/extend', async (c) => {
     if (sonicNativeClipId) {
       // ── Path A: use Sonic-native clip_id with continue_clip_id ──────────────
       // Works for BOTH instrumental and vocal — the !isInstrumental guard was a bug
+      // IMPORTANT: custom_mode is REQUIRED for extend_music (MusicAPI docs)
+      // Without it Sonic uses an undefined mode and produces garbage/failed output
       const extBody: Record<string, any> = {
         task_type: 'extend_music',
         continue_clip_id: sonicNativeClipId,
         mv: 'sonic-v5',
-        continue_at: continueAt
+        continue_at: continueAt,
+        custom_mode: false  // required field — use AI description mode (no custom lyrics needed)
       }
       if (isInstrumental) extBody.make_instrumental = true
-      if (hasCustomLyricsExtend) extBody.prompt = typedLyricsExtend
+      if (hasCustomLyricsExtend) {
+        extBody.custom_mode = true
+        extBody.prompt = typedLyricsExtend
+      }
       if (styleStr) extBody.tags = styleStr.slice(0, 200)
       console.log(`[job/extend] /sonic/create continue_clip_id=${sonicNativeClipId} continue_at=${continueAt} instrumental=${isInstrumental}`)
       const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
@@ -4676,13 +4707,14 @@ app.post('/api/job/extend', async (c) => {
       }
 
     } else {
-      // ── Path B: /sonic/upload-extend fallback (instrumental or upload failed) ──
-      // Mirror audio into R2 first — MusicAPI downloads from our fast edge URL
-      // instead of a slow Mureka CDN URL which can timeout the Worker (30s limit).
+      // ── Path B: /sonic/upload-extend fallback (sonic/upload returned 400) ──
+      // Mirror audio into R2 first — use R2 PUBLIC URL for Sonic (not proxy).
+      // The Worker proxy URL going through our CF Worker gets bot-blocked by Cloudflare.
+      // R2 public CDN URL (pub-*.r2.dev) bypasses that protection.
+      const R2_PUBLIC_BASE_B = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
       let audioUrlForMusicApi = sourceJob.stereo_url
       if (c.env.IMAGES) {
         try {
-          const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
           const audioFetch = await fetch(sourceJob.stereo_url)
           if (audioFetch.ok) {
             const audioBuffer = await audioFetch.arrayBuffer()
@@ -4691,8 +4723,9 @@ app.post('/api/job/extend', async (c) => {
             await c.env.IMAGES.put(`extend-uploads/${r2Filename}`, audioBuffer, {
               httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
             })
-            audioUrlForMusicApi = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Filename)}`
-            console.log(`[job/extend] mirrored audio to R2: extend-uploads/${r2Filename}`)
+            // Use R2 public URL — Sonic can fetch directly without CF bot protection
+            audioUrlForMusicApi = `${R2_PUBLIC_BASE_B}/extend-uploads/${r2Filename}`
+            console.log(`[job/extend] mirrored audio to R2 public: ${audioUrlForMusicApi.slice(0, 100)}`)
           }
         } catch (mirrorErr: any) {
           console.warn('[job/extend] R2 mirror failed, using original URL:', mirrorErr?.message)
@@ -6662,7 +6695,52 @@ app.post('/api/upload-extend-audio', async (c) => {
     console.log(`[upload-extend-audio] /sonic/upload task_id: ${sonic.task_id}`)
     return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, task_id: sonic.task_id })
   }
-  // Sonic upload failed — return both URLs; extend-upload will use r2_public_url for upload-extend fallback
+
+  // /sonic/upload returned 400 (currently broken on MusicAPI side for URL uploads).
+  // Fallback: call /sonic/upload-extend directly to get a task_id.
+  // The frontend will poll that task_id via /api/poll-upload-task to get a clip_id,
+  // then use extend_upload_music with that clip_id for the actual extend.
+  console.log(`[upload-extend-audio] /sonic/upload failed — trying /sonic/upload-extend directly`)
+  try {
+    const ueBody: Record<string, any> = {
+      url: r2PublicUrl,
+      mv: 'sonic-v5',
+      continue_at: 60,         // placeholder — real continue_at set later by extend-upload
+      custom_mode: false,
+      make_instrumental: true, // safe default; user's actual make_instrumental set later
+      gpt_description_prompt: 'Continue this track in the same style'
+    }
+    const ueRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(ueBody)
+    })
+    const ueText = await ueRes.text()
+    console.log(`[upload-extend-audio] /sonic/upload-extend HTTP ${ueRes.status} raw: ${ueText.slice(0, 400)}`)
+    if (ueRes.ok) {
+      let ueData: any = {}
+      try { ueData = JSON.parse(ueText) } catch {}
+      // upload-extend returns a task_id — poll it to get the clip_id for the actual extend
+      const ueTaskId = ueData.task_id || ueData.steps?.extend?.task_id || ueData.data?.[0]?.id
+      if (ueTaskId) {
+        console.log(`[upload-extend-audio] /sonic/upload-extend task_id=${ueTaskId}`)
+        return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, task_id: ueTaskId })
+      }
+      // If upload-extend returned a clip_id directly (rare), use it
+      const ueClipId = ueData.clip_id || ueData.data?.[0]?.clip_id
+      if (ueClipId) {
+        console.log(`[upload-extend-audio] /sonic/upload-extend clip_id=${ueClipId}`)
+        return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, clip_id: ueClipId })
+      }
+    }
+    console.warn(`[upload-extend-audio] /sonic/upload-extend also failed: ${ueText.slice(0, 200)}`)
+  } catch (ueErr: any) {
+    console.warn('[upload-extend-audio] /sonic/upload-extend threw:', ueErr?.message)
+  }
+
+  // Both /sonic/upload and /sonic/upload-extend failed — last resort: store URL and let
+  // extend-upload handle it directly (will use upload-extend with the R2 public URL).
+  // The r2_public_url stored as extUploadAudioId bypasses CF bot protection for Sonic.
   return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, status: 'ready' })
 })
 
@@ -7177,7 +7255,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-11'
+const ASSET_VER = '20260824-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
