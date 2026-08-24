@@ -4611,18 +4611,26 @@ app.post('/api/job/extend', async (c) => {
     // ── Always upload audio to Sonic first to get a Sonic-native clip_id ─────
     // The stored job.clip_id is a MusicAPI Producer/Suno ID — NOT a Sonic ID.
     // /sonic/create { continue_clip_id } requires a Sonic-native clip_id.
-    // /sonic/upload returns clip_id directly (no polling needed).
-    // Strategy: call /sonic/upload → get Sonic clip_id → use continue_clip_id.
-    // Fallback to /sonic/upload-extend if upload fails.
+    // /sonic/upload requires a DIRECT downloadable URL with Content-Length.
+    // Our Worker proxy (/api/track-audio/) streams audio fine for browsers but
+    // MusicAPI's downloader fetches it externally and may get an incomplete/chunked
+    // response — causing Sonic to ingest garbage and produce a 2-second output.
+    // FIX: prefer the R2 public URL (pub-*.r2.dev) which returns a plain static file
+    // with correct Content-Length, direct from R2 — no Worker streaming involved.
+    // Fall back to stereo_url (CDN URL) if no r2_audio_key is available.
+    const R2_PUB_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
+    const sonicUploadUrl = sourceJob.r2_audio_key
+      ? `${R2_PUB_BASE}/${sourceJob.r2_audio_key}`
+      : (sourceJob.stereo_url_alt || sourceJob.stereo_url || '')
 
     // Step 1: Upload audio to Sonic to get a Sonic-native clip_id
-    console.log(`[job/extend] Uploading audio to Sonic: ${sourceJob.stereo_url?.slice(0, 80)}`)
+    console.log(`[job/extend] Uploading audio to Sonic: ${sonicUploadUrl.slice(0, 100)}`)
     let sonicNativeClipId: string | null = null
     try {
       const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: sourceJob.stereo_url })
+        body: JSON.stringify({ url: sonicUploadUrl })
       })
       const uploadText = await uploadRes.text()
       console.log(`[job/extend] /sonic/upload HTTP ${uploadRes.status} raw: ${uploadText.slice(0, 300)}`)
@@ -4681,15 +4689,13 @@ app.post('/api/job/extend', async (c) => {
 
     } else {
       // ── Path B: Library track (no native Sonic clip_id) — use /sonic/upload to get one ──
-      // Source track stereo_url is a CDN URL (MusicAPI/Suno CDN or our R2 proxy).
-      // We POST it to /sonic/upload to get a clip_id, then use extend_upload_music.
-      //
-      // NOTE: MusicAPI's URL-based /sonic/upload is currently returning HTTP 400 globally
-      // (confirmed broken for ALL URLs including their own documented examples).
-      // Binary multipart is NOT supported (returns HTTP 500). 
-      // If /sonic/upload fails, we refund credits and return a user-friendly error.
+      // Use R2 public URL when available — direct static file with Content-Length,
+      // avoids Worker streaming issues that cause Sonic to ingest garbage audio.
+      // Fall back to stereo_url_alt (direct CDN) then stereo_url as last resort.
       let libraryUploadClipId: string | null = null
-      const audioUrlForSonic = sourceJob.stereo_url || ''
+      const audioUrlForSonic = sourceJob.r2_audio_key
+        ? `${R2_PUB_BASE}/${sourceJob.r2_audio_key}`
+        : (sourceJob.stereo_url_alt || sourceJob.stereo_url || '')
 
       console.log(`[job/extend] Path B: /sonic/upload url=${audioUrlForSonic.slice(0, 100)}`)
       try {
@@ -6595,8 +6601,10 @@ app.post('/api/upload-extend-audio', async (c) => {
   // audioUrl = Worker proxy URL (served by our Worker with full Content-Length + CORS)
   // This is the URL we give to MusicAPI — it's publicly accessible, no auth required,
   // and serves the file with all required headers.
-  // NOTE: R2 public URL (pub-*.r2.dev) returns 404 — public access domain not enabled in dashboard.
-  //       Use the Worker proxy URL instead for all MusicAPI-facing URLs.
+  // R2 public access IS enabled (pub-8e434559eec949638897e09ecee99a88.r2.dev).
+  // For upload-extend (user-uploaded files), we use the Worker proxy URL because
+  // freshly-uploaded files may not yet be under the beats/ R2 key structure.
+  // For library extends (job/extend), we use R2 public URL directly.
   const audioUrl = `${siteUrl}/api/extend-audio-proxy/${r2Key}`
   console.log(`[upload-extend-audio] R2 stored. proxy=${audioUrl} r2Key=${r2Key}`)
 
@@ -7172,7 +7180,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-15'
+const ASSET_VER = '20260824-16'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
