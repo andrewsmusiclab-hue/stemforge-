@@ -192,6 +192,8 @@ interface User {
   name: string
   avatar?: string
   cover_image?: string
+  avatar_position?: string   // CSS object-position e.g. '50% 30%'
+  cover_position?: string    // CSS background-position
   plan: 'free' | 'creator' | 'pro' | 'developer'
   gens_used: number
   gens_limit: number       // base plan limit (resets on billing cycle)
@@ -305,6 +307,9 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN cycle_start INTEGER`).run() } catch {}
   // ── Migrate: add cover_image column (stores R2 URL for profile banner/cover photo) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN cover_image TEXT`).run() } catch {}
+  // ── Migrate: add avatar_position + cover_position (CSS position strings for drag crop) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN avatar_position TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN cover_position  TEXT`).run() } catch {}
   // Backfill: any free user without cycle_start gets created_at as their cycle start
   try { await db.prepare(`UPDATE users SET cycle_start = created_at WHERE plan = 'free' AND cycle_start IS NULL`).run() } catch {}
   // ── Opportunistic reset on cold start — catches any overdue free users ──
@@ -420,7 +425,9 @@ async function getSessionUser(db: D1Database, token: string): Promise<User | nul
     if (!row) return null
     return {
       id: row.id, email: row.email, name: row.name, avatar: row.avatar,
-      cover_image: row.cover_image ?? null,
+      cover_image:      row.cover_image      ?? null,
+      avatar_position:   row.avatar_position   ?? '50% 50%',
+      cover_position:    row.cover_position    ?? '50% 50%',
       plan: row.plan, gens_used: row.gens_used, gens_limit: row.gens_limit,
       bonus_credits: row.bonus_credits ?? 0,
       stripe_customer_id: row.stripe_customer_id,
@@ -3184,9 +3191,11 @@ app.post('/api/profile/update', async (c) => {
 
   try {
     const formData = await c.req.formData()
-    const newName = (formData.get('name') as string | null)?.trim() || null
-    const avatarFile = formData.get('avatar') as File | null
-    const coverFile  = formData.get('cover')  as File | null
+    const newName        = (formData.get('name')             as string | null)?.trim() || null
+    const avatarFile     = formData.get('avatar')             as File   | null
+    const coverFile      = formData.get('cover')              as File   | null
+    const newAvatarPos   = (formData.get('avatar_position')  as string | null)?.trim() || null
+    const newCoverPos    = (formData.get('cover_position')   as string | null)?.trim() || null
 
     let avatarUrl: string | null = null
     let coverUrl:  string | null = null
@@ -3214,9 +3223,11 @@ app.post('/api/profile/update', async (c) => {
     // ── Build and run UPDATE query ───────────────────────────────────────────
     const setParts: string[] = []
     const binds: any[] = []
-    if (newName && newName.length >= 1) { setParts.push('name = ?'); binds.push(newName.slice(0, 60)) }
-    if (avatarUrl) { setParts.push('avatar = ?'); binds.push(avatarUrl) }
-    if (coverUrl)  { setParts.push('cover_image = ?'); binds.push(coverUrl) }
+    if (newName && newName.length >= 1)    { setParts.push('name = ?');            binds.push(newName.slice(0, 60)) }
+    if (avatarUrl)                         { setParts.push('avatar = ?');           binds.push(avatarUrl) }
+    if (coverUrl)                          { setParts.push('cover_image = ?');      binds.push(coverUrl) }
+    if (newAvatarPos && avatarUrl)         { setParts.push('avatar_position = ?');  binds.push(newAvatarPos) }
+    if (newCoverPos  && coverUrl)          { setParts.push('cover_position = ?');   binds.push(newCoverPos) }
 
     if (setParts.length === 0) return c.json({ ok: true, message: 'Nothing to update' })
 
@@ -3225,9 +3236,11 @@ app.post('/api/profile/update', async (c) => {
 
     return c.json({
       ok: true,
-      name:        newName    ?? user.name,
-      avatar:      avatarUrl  ?? user.avatar  ?? null,
-      cover_image: coverUrl   ?? user.cover_image ?? null,
+      name:            newName      ?? user.name,
+      avatar:          avatarUrl    ?? user.avatar       ?? null,
+      cover_image:     coverUrl     ?? user.cover_image  ?? null,
+      avatar_position: (avatarUrl ? newAvatarPos : null) ?? (user as any).avatar_position ?? '50% 50%',
+      cover_position:  (coverUrl  ? newCoverPos  : null) ?? (user as any).cover_position  ?? '50% 50%',
     })
   } catch (err: any) {
     console.error('[profile/update] error:', err?.message)
@@ -9121,8 +9134,10 @@ function profilePage(user: User | null) {
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const memberSince = new Date(user.created_at).toLocaleDateString('en-US',{year:'numeric',month:'long'})
-  const coverStyle = user.cover_image
-    ? `background-image:url('${user.cover_image}');background-size:cover;background-position:center;`
+  const coverPos   = (user as any).cover_position  || '50% 50%'
+  const avatarPos   = (user as any).avatar_position || '50% 50%'
+  const coverStyle  = user.cover_image
+    ? `background-image:url('${user.cover_image}');background-size:cover;background-position:${coverPos};`
     : ''
 
   return shell('Profile', `
@@ -9142,7 +9157,7 @@ function profilePage(user: User | null) {
         <!-- ── Avatar ── -->
         <div class="profile-avatar-wrap">
           ${user.avatar
-            ? `<img src="${user.avatar}" class="profile-avatar" id="profileAvatarImg" alt="${user.name}"/>`
+            ? `<img src="${user.avatar}" class="profile-avatar" id="profileAvatarImg" alt="${user.name}" style="object-position:${avatarPos}"/>`
             : `<div class="profile-avatar profile-avatar--initials" id="profileAvatarImg">${initials}</div>`
           }
         </div>
@@ -9241,11 +9256,50 @@ function profilePage(user: User | null) {
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════
+     DRAG-TO-REPOSITION OVERLAY  (shared for cover + avatar)
+══════════════════════════════════════════════════════════ -->
+<div id="dragReposOverlay" style="display:none">
+  <div class="drepos-backdrop"></div>
+  <div class="drepos-panel">
+    <div class="drepos-header">
+      <span class="drepos-title" id="dreposTitle">Position photo</span>
+      <p class="drepos-hint"><i class="fas fa-arrows-alt"></i> Drag to reposition</p>
+    </div>
+    <div class="drepos-stage-wrap">
+      <div class="drepos-stage" id="dreposStage">
+        <img id="dreposImg" src="" alt="" draggable="false">
+        <div class="drepos-frame" id="dreposFrame"></div>
+      </div>
+    </div>
+    <div class="drepos-actions">
+      <button class="btn btn--ghost" onclick="cancelRepos()">Cancel</button>
+      <button class="btn btn--primary" onclick="confirmRepos()"><i class="fas fa-check"></i> Use this position</button>
+    </div>
+  </div>
+</div>
+
 <script>
-// ── Profile edit modal state ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//  PROFILE EDIT — state
+// ═══════════════════════════════════════════════════════════════════════════
 let _pendingAvatarFile = null
 let _pendingCoverFile  = null
+let _avatarPosition    = '${user.avatar_position || '50% 50%'}'
+let _coverPosition     = '${user.cover_position  || '50% 50%'}'
 
+// ── Drag-repositioner state ──────────────────────────────────────────────
+let _dreposTarget  = null   // 'cover' | 'avatar'
+let _dreposFile    = null
+let _dreposObjUrl  = null
+let _dragging      = false
+let _dragStartX    = 0, _dragStartY = 0
+let _imgOffX       = 0, _imgOffY    = 0
+let _imgW = 0, _imgH = 0, _stageW = 0, _stageH = 0, _frameW = 0, _frameH = 0
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  MODAL open / close
+// ═══════════════════════════════════════════════════════════════════════════
 function openProfileModal() {
   document.getElementById('profileEditModal').style.display = 'flex'
   document.body.style.overflow = 'hidden'
@@ -9258,46 +9312,196 @@ function closeProfileModalDirect() {
   document.body.style.overflow = ''
 }
 
-// ── Avatar pick & preview ─────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//  FILE PICK triggers
+// ═══════════════════════════════════════════════════════════════════════════
 function triggerAvatarPick() { document.getElementById('avatarFileInput').click() }
+function triggerCoverPick()  { document.getElementById('coverFileInput').click()  }
 
 function previewAvatar(input) {
-  const file = input.files[0]
-  if (!file) return
-  _pendingAvatarFile = file
-  const url = URL.createObjectURL(file)
-  // Update modal preview
-  const wrap = document.getElementById('modalAvatarPreview')
-  wrap.innerHTML = '<img src="' + url + '" id="modalAvatarImg" alt="avatar"/>'
+  const file = input.files[0]; if (!file) return
+  openReposOverlay('avatar', file)
+  input.value = ''   // reset so same file can be re-picked
 }
-
-// ── Cover pick & preview ──────────────────────────────────────────────────────
-function triggerCoverPick() { document.getElementById('coverFileInput').click() }
-
 function previewCover(input) {
-  const file = input.files[0]
-  if (!file) return
-  _pendingCoverFile = file
-  const url = URL.createObjectURL(file)
-  // Update both: the actual cover div on page and modal preview
-  document.getElementById('profileCover').style.backgroundImage = 'url(' + url + ')'
-  document.getElementById('profileCover').style.backgroundSize  = 'cover'
-  document.getElementById('profileCover').style.backgroundPosition = 'center'
-  const modalPrev = document.getElementById('modalCoverPreview')
-  if (modalPrev) {
-    modalPrev.style.backgroundImage = 'url(' + url + ')'
-    modalPrev.style.backgroundSize  = 'cover'
-    modalPrev.style.backgroundPosition = 'center'
-    const btn = modalPrev.querySelector('.pedit-cover-pick-btn')
-    if (btn) btn.querySelector('span').textContent = 'Change photo'
-  }
+  const file = input.files[0]; if (!file) return
+  openReposOverlay('cover', file)
+  input.value = ''
 }
 
-// ── Save profile ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+//  DRAG-TO-REPOSITION  overlay
+// ═══════════════════════════════════════════════════════════════════════════
+function openReposOverlay(target, file) {
+  _dreposTarget = target
+  _dreposFile   = file
+  if (_dreposObjUrl) URL.revokeObjectURL(_dreposObjUrl)
+  _dreposObjUrl = URL.createObjectURL(file)
+
+  const overlay = document.getElementById('dragReposOverlay')
+  const img     = document.getElementById('dreposImg')
+  const title   = document.getElementById('dreposTitle')
+  const frame   = document.getElementById('dreposFrame')
+  const stage   = document.getElementById('dreposStage')
+
+  title.textContent = target === 'cover' ? 'Position cover photo' : 'Position profile picture'
+
+  // Show frame aspect ratio matching target
+  if (target === 'cover') {
+    frame.style.borderRadius = '0'
+    frame.style.width  = '100%'
+    frame.style.height = '100%'
+  } else {
+    // Circle crop preview for avatar
+    frame.style.borderRadius = '50%'
+    const sz = Math.min(stage.offsetWidth, stage.offsetHeight) * 0.65 + 'px'
+    frame.style.width = sz; frame.style.height = sz
+  }
+
+  img.onload = function() {
+    // Natural image size vs stage
+    _stageW = stage.offsetWidth
+    _stageH = stage.offsetHeight
+    _imgW   = img.naturalWidth
+    _imgH   = img.naturalHeight
+
+    // Scale so image fills the stage (cover-like, but larger so user can drag)
+    const scaleW = _stageW / _imgW
+    const scaleH = _stageH / _imgH
+    const scale  = Math.max(scaleW, scaleH) * 1.3  // 30% bigger so there's room to drag
+    _imgW = Math.round(_imgW * scale)
+    _imgH = Math.round(_imgH * scale)
+    img.style.width  = _imgW + 'px'
+    img.style.height = _imgH + 'px'
+
+    // Start centred
+    _imgOffX = (_stageW - _imgW) / 2
+    _imgOffY = (_stageH - _imgH) / 2
+    clampAndApplyOffset()
+  }
+  img.src = _dreposObjUrl
+
+  overlay.style.display = 'flex'
+  document.body.style.overflow = 'hidden'
+
+  // Attach drag listeners
+  const s = document.getElementById('dreposStage')
+  s.addEventListener('mousedown',  onDragStart)
+  s.addEventListener('touchstart', onDragStart, { passive: false })
+  window.addEventListener('mousemove',  onDragMove)
+  window.addEventListener('touchmove',  onDragMove, { passive: false })
+  window.addEventListener('mouseup',   onDragEnd)
+  window.addEventListener('touchend',  onDragEnd)
+}
+
+function cancelRepos() {
+  closeReposOverlay()
+}
+
+function confirmRepos() {
+  // Capture position as CSS % (where in the image the frame sits)
+  const stage = document.getElementById('dreposStage')
+  _stageW = stage.offsetWidth
+  _stageH = stage.offsetHeight
+
+  // Convert pixel offset → percentage of image
+  // posX% = distance from left edge of image to left edge of stage / (imgW - stageW) * 100
+  const maxOffX = 0, minOffX = _stageW - _imgW
+  const maxOffY = 0, minOffY = _stageH - _imgH
+  const pctX = minOffX === maxOffX ? 50 : Math.round((_imgOffX - maxOffX) / (minOffX - maxOffX) * 100)
+  const pctY = minOffY === maxOffY ? 50 : Math.round((_imgOffY - maxOffY) / (minOffY - maxOffY) * 100)
+  const posStr = pctX + '% ' + pctY + '%'
+
+  if (_dreposTarget === 'cover') {
+    _pendingCoverFile = _dreposFile
+    _coverPosition    = posStr
+    // Apply live preview on page cover
+    const cover = document.getElementById('profileCover')
+    cover.style.backgroundImage    = 'url(' + _dreposObjUrl + ')'
+    cover.style.backgroundSize     = 'cover'
+    cover.style.backgroundPosition = posStr
+    // Apply in modal preview too
+    const modalPrev = document.getElementById('modalCoverPreview')
+    if (modalPrev) {
+      modalPrev.style.backgroundImage    = 'url(' + _dreposObjUrl + ')'
+      modalPrev.style.backgroundSize     = 'cover'
+      modalPrev.style.backgroundPosition = posStr
+      const btn = modalPrev.querySelector('.pedit-cover-pick-btn span')
+      if (btn) btn.textContent = 'Change photo'
+    }
+  } else {
+    _pendingAvatarFile = _dreposFile
+    _avatarPosition    = posStr
+    // Apply live preview in modal avatar
+    const wrap = document.getElementById('modalAvatarPreview')
+    if (wrap) wrap.innerHTML = '<img src="' + _dreposObjUrl + '" id="modalAvatarImg" alt="avatar" style="object-position:' + posStr + '">'
+    // Apply live preview on page avatar
+    const pageAvatar = document.getElementById('profileAvatarImg')
+    if (pageAvatar && pageAvatar.tagName === 'IMG') {
+      pageAvatar.src = _dreposObjUrl
+      pageAvatar.style.objectPosition = posStr
+    }
+  }
+
+  closeReposOverlay()
+}
+
+function closeReposOverlay() {
+  removeDragListeners()
+  document.getElementById('dragReposOverlay').style.display = 'none'
+  document.body.style.overflow = 'hidden'  // keep modal scroll locked
+}
+
+function removeDragListeners() {
+  const s = document.getElementById('dreposStage')
+  s.removeEventListener('mousedown',  onDragStart)
+  s.removeEventListener('touchstart', onDragStart)
+  window.removeEventListener('mousemove',  onDragMove)
+  window.removeEventListener('touchmove',  onDragMove)
+  window.removeEventListener('mouseup',   onDragEnd)
+  window.removeEventListener('touchend',  onDragEnd)
+}
+
+// ── Drag handlers ──────────────────────────────────────────────────────────
+function getEventXY(e) {
+  if (e.touches) return { x: e.touches[0].clientX, y: e.touches[0].clientY }
+  return { x: e.clientX, y: e.clientY }
+}
+function onDragStart(e) {
+  e.preventDefault()
+  _dragging = true
+  const { x, y } = getEventXY(e)
+  _dragStartX = x - _imgOffX
+  _dragStartY = y - _imgOffY
+}
+function onDragMove(e) {
+  if (!_dragging) return
+  e.preventDefault()
+  const { x, y } = getEventXY(e)
+  _imgOffX = x - _dragStartX
+  _imgOffY = y - _dragStartY
+  clampAndApplyOffset()
+}
+function onDragEnd() { _dragging = false }
+
+function clampAndApplyOffset() {
+  const stage = document.getElementById('dreposStage')
+  _stageW = stage.offsetWidth
+  _stageH = stage.offsetHeight
+  // Clamp so image always covers the stage
+  _imgOffX = Math.min(0, Math.max(_stageW - _imgW, _imgOffX))
+  _imgOffY = Math.min(0, Math.max(_stageH - _imgH, _imgOffY))
+  const img = document.getElementById('dreposImg')
+  img.style.transform = 'translate(' + _imgOffX + 'px,' + _imgOffY + 'px)'
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  SAVE PROFILE
+// ═══════════════════════════════════════════════════════════════════════════
 async function saveProfile() {
-  const btn = document.getElementById('peditSaveBtn')
+  const btn   = document.getElementById('peditSaveBtn')
   const errEl = document.getElementById('peditError')
-  const name = document.getElementById('peditNameInput').value.trim()
+  const name  = document.getElementById('peditNameInput').value.trim()
   errEl.style.display = 'none'
 
   if (!name) { showPeditError('Name cannot be empty'); return }
@@ -9308,18 +9512,16 @@ async function saveProfile() {
   try {
     const fd = new FormData()
     fd.append('name', name)
-    if (_pendingAvatarFile) fd.append('avatar', _pendingAvatarFile)
-    if (_pendingCoverFile)  fd.append('cover',  _pendingCoverFile)
+    if (_pendingAvatarFile) { fd.append('avatar', _pendingAvatarFile); fd.append('avatar_position', _avatarPosition) }
+    if (_pendingCoverFile)  { fd.append('cover',  _pendingCoverFile);  fd.append('cover_position',  _coverPosition)  }
 
-    const res = await fetch('/api/profile/update', { method: 'POST', body: fd })
+    const res  = await fetch('/api/profile/update', { method: 'POST', body: fd })
     const data = await res.json()
     if (!res.ok || !data.ok) throw new Error(data.error || 'Update failed')
 
-    // ── Apply changes to page without reload ────────────────────────────────
-    // Update name
+    // ── Apply to page live ────────────────────────────────────────────────
     document.getElementById('profileNameDisplay').textContent = data.name
 
-    // Update avatar on main page
     if (data.avatar) {
       const avatarWrap = document.getElementById('profileAvatarImg')
       if (avatarWrap) {
@@ -9328,14 +9530,14 @@ async function saveProfile() {
         newImg.className = 'profile-avatar'
         newImg.id = 'profileAvatarImg'
         newImg.alt = data.name
+        newImg.style.objectPosition = data.avatar_position || '50% 50%'
         avatarWrap.parentNode.replaceChild(newImg, avatarWrap)
       }
     }
-
-    // Update cover on main page (already previewed live, but update with server URL for consistency)
     if (data.cover_image) {
       const cover = document.getElementById('profileCover')
-      cover.style.backgroundImage = 'url(' + data.cover_image + '?t=' + Date.now() + ')'
+      cover.style.backgroundImage    = 'url(' + data.cover_image + '?t=' + Date.now() + ')'
+      cover.style.backgroundPosition = data.cover_position || '50% 50%'
     }
 
     closeProfileModalDirect()
