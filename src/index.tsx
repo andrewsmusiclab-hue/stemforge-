@@ -4764,8 +4764,8 @@ app.post('/api/job/extend', async (c) => {
       }
     }
 
-    // chain_target_ms: aim for 80 seconds total output (~1 min 20s, 5 steps max)
-    const CHAIN_TARGET_MS = 80000
+    // chain_target_ms: aim for 120 seconds total output (~2 min, 8 steps max)
+    const CHAIN_TARGET_MS = 120000
 
     // Step 3: Create a new job record in D1 to track the extend result
     const newJobId = crypto.randomUUID()
@@ -4787,7 +4787,7 @@ app.post('/api/job/extend', async (c) => {
       // ── Chain extend metadata ────────────────────────────────────────────
       chain_target_ms: CHAIN_TARGET_MS,
       chain_step: 0,
-      chain_max_steps: 5,
+      chain_max_steps: 8,
       chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
       chain_style: styleStr || null,
       continue_at_ms: extend_at || Math.max(1, (sourceJob.duration_ms || 0))
@@ -7232,7 +7232,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-23'
+const ASSET_VER = '20260824-24'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
