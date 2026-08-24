@@ -11,7 +11,7 @@
  * so it reappears every time they log in / open a new session, but
  * doesn't spam on every internal page navigation within the same session.
  */
-window._sfOutageNoticeActive = true;
+window._sfOutageNoticeActive = false;
 window._sfShowOutageNotice = function() {
   if (!window._sfOutageNoticeActive) return;
   const overlay = document.getElementById('outage-notice-overlay');
@@ -422,14 +422,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
-      id: 'aug2026-server-outage-notice',
+      id: 'aug2026-service-restored',
       date: 'August 2026',
-      title: 'Temporary Service Issue — Song Extend & Creation',
-      tag: 'SERVICE NOTICE',
-      tagColor: '#f59e0b',
+      title: 'Service Restored — Song Extend & Creation Back Online',
+      tag: 'ALL SYSTEMS GO',
+      tagColor: '#22c55e',
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
-        <li><b style="color:#f59e0b">We're experiencing a server side issue on our end.</b> Features like <b style="color:#e2e8f0">Song Extend</b>, and <b style="color:#e2e8f0">creating a song or instrumentals</b> might temporarily not work.</li>
-        <li><b style="color:#e2e8f0">We're on it</b> — our team is working to resolve this issue as quickly as possible. Thank you for your patience.</li>
+        <li><b style="color:#4ade80">Everything is back to normal.</b> <b style="color:#e2e8f0">Song Extend</b>, <b style="color:#e2e8f0">Song Creation</b>, and <b style="color:#e2e8f0">Instrumental generation</b> are all fully operational again.</li>
+        <li><b style="color:#e2e8f0">Extend fix shipped</b> — We identified and resolved the root cause of the 2-second garbage audio bug. Extends now produce full-length clips as expected.</li>
+        <li><b style="color:#e2e8f0">Thank you for your patience</b> — Sorry for any disruption. The team is monitoring closely to make sure things stay stable.</li>
       </ul>`
     },
     {
