@@ -5005,6 +5005,145 @@ app.get('/api/debug/producer-task/:task_id', async (c) => {
   return c.json({ status: res.status, ok: res.ok, raw: text })
 })
 
+// POST /api/debug/test-binary-extend?admin_key=EMAIL — full binary multipart + URL upload-extend test
+// Accepts multipart { file, continue_at? } OR JSON { url, continue_at }
+// Returns raw Sonic response so we can diagnose what works end-to-end
+app.post('/api/debug/test-binary-extend', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const adminKey = c.req.query('admin_key')
+  const isAdminKey = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
+  if (!isAdminKey) return c.json({ error: 'admin_key required' }, 401)
+
+  // JSON body = URL-based test
+  const ct = c.req.header('content-type') || ''
+  if (ct.includes('application/json')) {
+    const body = await c.req.json<{ url: string; continue_at?: number; make_instrumental?: boolean }>()
+    const url = body.url
+    if (!url) return c.json({ error: 'url required' }, 400)
+    const continueAt = body.continue_at || 60
+    const makeInstrumental = body.make_instrumental !== false
+
+    const results: any = { url, continue_at: continueAt, make_instrumental: makeInstrumental }
+
+    // Test 1: URL-based sonic/upload
+    {
+      const r = await fetch(`${MUSICAPI_SONIC}/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      })
+      const t = await r.text()
+      results.sonic_upload_url = { status: r.status, raw: t.slice(0, 400) }
+      try { results.sonic_upload_url.parsed = JSON.parse(t) } catch {}
+    }
+
+    // Test 2: URL-based sonic/upload-extend
+    {
+      const body2: any = { url, mv: 'sonic-v5', continue_at: continueAt, custom_mode: false,
+        make_instrumental: makeInstrumental,
+        gpt_description_prompt: 'Continue this instrumental track in the same style' }
+      const r2 = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body2)
+      })
+      const t2 = await r2.text()
+      results.sonic_upload_extend_url = { status: r2.status, raw: t2.slice(0, 600), body_sent: body2 }
+      try { results.sonic_upload_extend_url.parsed = JSON.parse(t2) } catch {}
+    }
+
+    // Test 3: fetch bytes then binary multipart sonic/upload-extend
+    {
+      try {
+        const af = await fetch(url)
+        if (af.ok) {
+          const ab = await af.arrayBuffer()
+          const act = af.headers.get('content-type') || 'audio/mpeg'
+          const fd = new FormData()
+          fd.append('file', new Blob([ab], { type: act }), 'audio.mp3')
+          fd.append('continue_at', String(continueAt))
+          fd.append('mv', 'sonic-v5')
+          fd.append('custom_mode', 'false')
+          fd.append('make_instrumental', makeInstrumental ? 'true' : 'false')
+          fd.append('gpt_description_prompt', 'Continue this instrumental track in the same style')
+          const r3 = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
+            body: fd
+          })
+          const t3 = await r3.text()
+          results.sonic_upload_extend_binary_from_url = { status: r3.status, raw: t3.slice(0, 600), bytes: ab.byteLength }
+          try { results.sonic_upload_extend_binary_from_url.parsed = JSON.parse(t3) } catch {}
+        } else {
+          results.sonic_upload_extend_binary_from_url = { error: `fetch ${af.status}` }
+        }
+      } catch (e: any) {
+        results.sonic_upload_extend_binary_from_url = { error: e?.message }
+      }
+    }
+
+    return c.json(results)
+  }
+
+  // Multipart body = binary file test
+  const formData = await c.req.formData()
+  const file = formData.get('file') as File | null
+  const continueAt = parseInt((formData.get('continue_at') as string) || '60', 10)
+  const makeInstrumental = (formData.get('make_instrumental') as string) === 'true'
+
+  if (!file) return c.json({ error: 'file or JSON body with url required' }, 400)
+
+  const audioBytes = await file.arrayBuffer()
+  const audioCtype = file.type || 'audio/mpeg'
+  const ext = audioCtype.includes('wav') ? 'wav' : 'm4a' === audioCtype ? 'm4a' : 'mp3'
+
+  const results: any = {
+    file_size: audioBytes.byteLength,
+    file_type: audioCtype,
+    continue_at: continueAt,
+    make_instrumental: makeInstrumental
+  }
+
+  // Test 1: binary multipart to /sonic/upload (just upload, get clip_id)
+  {
+    const fd = new FormData()
+    fd.append('file', new Blob([audioBytes], { type: audioCtype }), `audio.${ext}`)
+    const r = await fetch(`${MUSICAPI_SONIC}/upload`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
+      body: fd
+    })
+    const t = await r.text()
+    results.sonic_upload_binary = { status: r.status, raw: t.slice(0, 400) }
+    try { results.sonic_upload_binary.parsed = JSON.parse(t) } catch {}
+  }
+
+  // Test 2: binary multipart to /sonic/upload-extend
+  {
+    const fd2 = new FormData()
+    fd2.append('file', new Blob([audioBytes], { type: audioCtype }), `audio.${ext}`)
+    fd2.append('continue_at', String(continueAt))
+    fd2.append('mv', 'sonic-v5')
+    fd2.append('custom_mode', 'false')
+    if (makeInstrumental) {
+      fd2.append('make_instrumental', 'true')
+      fd2.append('gpt_description_prompt', 'Continue this instrumental track in the same style')
+    } else {
+      fd2.append('gpt_description_prompt', 'Continue this track in the same style')
+    }
+    const r2 = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` },
+      body: fd2
+    })
+    const t2 = await r2.text()
+    results.sonic_upload_extend_binary = { status: r2.status, raw: t2.slice(0, 600) }
+    try { results.sonic_upload_extend_binary.parsed = JSON.parse(t2) } catch {}
+  }
+
+  return c.json(results)
+})
+
 // POST /api/debug/test-sonic-create — test /sonic/create with continue_clip_id (admin only)
 // Body: { clip_id: string, continue_at?: number }
 app.post('/api/debug/test-sonic-create', async (c) => {
