@@ -4696,28 +4696,25 @@ app.post('/api/job/extend', async (c) => {
         console.log(`[job/extend] Path B: using Worker proxy URL`)
       }
 
-      // If we still have a Worker proxy or R2 URL (MusicAPI will likely reject it),
-      // try to recover the original CDN URL via the clip_id → /sonic/task poll
-      if (audioUrlForMusicApi && (isWorkerProxy(audioUrlForMusicApi) || audioUrlForMusicApi.includes('r2.dev'))) {
-        const clipIdForResolve = sourceJob.clip_id as string | undefined
-        if (clipIdForResolve && c.env.MUSICAPI_KEY) {
-          try {
-            // Poll the original task to get the original CDN audio URL
-            const taskRes = await fetch(`${MUSICAPI_SONIC}/task/${clipIdForResolve}`, {
-              headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      // If we ended up with an R2 public URL (rejected by MusicAPI), mirror the R2 content
+      // into extend-uploads/ and serve via the stemforge.studio/api/extend-audio-proxy/ Worker,
+      // which sends proper Content-Length and is on a domain MusicAPI accepts.
+      if (audioUrlForMusicApi && audioUrlForMusicApi.includes('r2.dev') && c.env.IMAGES && sourceJob.r2_audio_key) {
+        try {
+          const r2Obj = await c.env.IMAGES.get(sourceJob.r2_audio_key)
+          if (r2Obj) {
+            const buf = await r2Obj.arrayBuffer()
+            const ext = sourceJob.r2_audio_key.endsWith('.mp3') ? 'mp3' : 'm4a'
+            const proxyKey = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-ext.${ext}`
+            await c.env.IMAGES.put(`extend-uploads/${proxyKey}`, buf, {
+              httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
             })
-            if (taskRes.ok) {
-              const taskData: any = await taskRes.json()
-              const clips: any[] = taskData?.data || []
-              const cdnUrl = clips[0]?.audio_url || null
-              if (cdnUrl && cdnUrl.startsWith('http') && !isWorkerProxy(cdnUrl)) {
-                audioUrlForMusicApi = cdnUrl
-                console.log(`[job/extend] Path B: resolved original CDN URL via clip_id: ${cdnUrl.slice(0, 80)}`)
-              }
-            }
-          } catch (resolveErr: any) {
-            console.warn('[job/extend] Path B: clip_id CDN resolve failed:', resolveErr?.message)
+            audioUrlForMusicApi = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(proxyKey)}`
+            console.log(`[job/extend] Path B: mirrored R2 → extend-uploads/${proxyKey}, using proxy URL`)
           }
+        } catch (mirrorErr: any) {
+          console.warn('[job/extend] Path B: R2 mirror failed:', mirrorErr?.message)
+          // Keep R2 URL as-is and hope MusicAPI accepts it
         }
       }
 
@@ -7229,7 +7226,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-21'
+const ASSET_VER = '20260824-22'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
