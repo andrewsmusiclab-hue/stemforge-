@@ -4665,27 +4665,59 @@ app.post('/api/job/extend', async (c) => {
     // Used when: no clip_id, or Path A failed (MusicAPI system error on continue_clip_id)
     if (pathAFailed) {
       const R2_PUB_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
-      let audioUrlForMusicApi = sourceJob.r2_audio_key
-        ? `${R2_PUB_BASE}/${sourceJob.r2_audio_key}`
-        : (sourceJob.stereo_url_alt || sourceJob.stereo_url || '')
+      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
 
-      // If no R2 key yet, mirror the audio into R2 so MusicAPI gets a stable URL
-      if (!sourceJob.r2_audio_key && c.env.IMAGES && audioUrlForMusicApi) {
-        try {
-          const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
-          const audioFetch = await fetch(audioUrlForMusicApi)
-          if (audioFetch.ok) {
-            const audioBuffer = await audioFetch.arrayBuffer()
-            const ext = audioUrlForMusicApi.includes('.mp3') ? 'mp3' : 'm4a'
-            const r2Filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.${ext}`
-            await c.env.IMAGES.put(`extend-uploads/${r2Filename}`, audioBuffer, {
-              httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
+      // ── URL priority for MusicAPI upload-extend ───────────────────────────────
+      // CONFIRMED: R2 public bucket URLs (pub-*.r2.dev) are rejected by MusicAPI uploader
+      // with HTTP 400. Original CDN URLs (storage.googleapis.com, cdn1.suno.ai, etc.) work fine.
+      // Priority order:
+      //   1. stereo_url — if it's a direct CDN URL (not a Worker proxy), use it directly
+      //   2. stereo_url_alt — same logic
+      //   3. R2 public URL — last resort only (MusicAPI may reject, but it's all we have)
+      const rawStereoUrl = sourceJob.stereo_url || ''
+      const rawStereoAlt = sourceJob.stereo_url_alt || ''
+      const isWorkerProxy = (u: string) => u.includes(siteUrl) || u.includes('/api/track-audio/')
+
+      let audioUrlForMusicApi: string
+      if (rawStereoUrl && !isWorkerProxy(rawStereoUrl)) {
+        // Direct CDN URL (Google, Suno, etc.) — works with MusicAPI
+        audioUrlForMusicApi = rawStereoUrl
+        console.log(`[job/extend] Path B: using direct CDN stereo_url`)
+      } else if (rawStereoAlt && !isWorkerProxy(rawStereoAlt)) {
+        audioUrlForMusicApi = rawStereoAlt
+        console.log(`[job/extend] Path B: using direct CDN stereo_url_alt`)
+      } else if (sourceJob.r2_audio_key) {
+        // R2 — last resort. May fail with MusicAPI uploader, but try anyway.
+        audioUrlForMusicApi = `${R2_PUB_BASE}/${sourceJob.r2_audio_key}`
+        console.log(`[job/extend] Path B: using R2 public URL (last resort, may fail)`)
+      } else {
+        // Worker proxy / unknown — only option left
+        audioUrlForMusicApi = rawStereoUrl || rawStereoAlt
+        console.log(`[job/extend] Path B: using Worker proxy URL`)
+      }
+
+      // If we still have a Worker proxy or R2 URL (MusicAPI will likely reject it),
+      // try to recover the original CDN URL via the clip_id → /sonic/task poll
+      if (audioUrlForMusicApi && (isWorkerProxy(audioUrlForMusicApi) || audioUrlForMusicApi.includes('r2.dev'))) {
+        const clipIdForResolve = sourceJob.clip_id as string | undefined
+        if (clipIdForResolve && c.env.MUSICAPI_KEY) {
+          try {
+            // Poll the original task to get the original CDN audio URL
+            const taskRes = await fetch(`${MUSICAPI_SONIC}/task/${clipIdForResolve}`, {
+              headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
             })
-            audioUrlForMusicApi = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Filename)}`
-            console.log(`[job/extend] Path B mirrored to R2: extend-uploads/${r2Filename}`)
+            if (taskRes.ok) {
+              const taskData: any = await taskRes.json()
+              const clips: any[] = taskData?.data || []
+              const cdnUrl = clips[0]?.audio_url || null
+              if (cdnUrl && cdnUrl.startsWith('http') && !isWorkerProxy(cdnUrl)) {
+                audioUrlForMusicApi = cdnUrl
+                console.log(`[job/extend] Path B: resolved original CDN URL via clip_id: ${cdnUrl.slice(0, 80)}`)
+              }
+            }
+          } catch (resolveErr: any) {
+            console.warn('[job/extend] Path B: clip_id CDN resolve failed:', resolveErr?.message)
           }
-        } catch (mirrorErr: any) {
-          console.warn('[job/extend] Path B R2 mirror failed, using original URL:', mirrorErr?.message)
         }
       }
 
@@ -4891,6 +4923,7 @@ app.get('/api/debug/extend-probe', async (c) => {
 
   const jobId = c.req.query('job_id')
   const continueAt = parseInt(c.req.query('continue_at') || '74', 10)
+  const forcePathB = c.req.query('force_b') === '1'
   if (!jobId) return c.json({ error: 'job_id required' }, 400)
 
   await ensureTable(c.env.DB)
@@ -4898,6 +4931,7 @@ app.get('/api/debug/extend-probe', async (c) => {
   if (!row) return c.json({ error: 'job not found' }, 404)
   const job = JSON.parse(row.data) as any
 
+  const usePathB = forcePathB || !job.clip_id
   const result: any = {
     job_id: jobId,
     job_title: job.title || job.prompt?.slice(0, 60),
@@ -4906,11 +4940,11 @@ app.get('/api/debug/extend-probe', async (c) => {
     stereo_url: job.stereo_url?.slice(0, 100) || null,
     duration_ms: job.duration_ms || null,
     continue_at_used: continueAt,
-    path: job.clip_id ? 'A (continue_clip_id)' : 'B (upload-extend)',
+    path: usePathB ? 'B (upload-extend)' : 'A (continue_clip_id)',
     musicapi_response: null
   }
 
-  if (job.clip_id) {
+  if (!usePathB) {
     // Path A probe
     const body = { task_type: 'extend_music', continue_clip_id: job.clip_id, mv: 'sonic-v5', continue_at: continueAt, custom_mode: false, make_instrumental: true }
     const res = await fetch(`${MUSICAPI_SONIC}/create`, {
@@ -4921,7 +4955,7 @@ app.get('/api/debug/extend-probe', async (c) => {
     const text = await res.text()
     result.musicapi_response = { endpoint: '/sonic/create', http_status: res.status, ok: res.ok, request_body: body, raw: text.slice(0, 1000) }
   } else {
-    // Path B probe
+    // Path B probe — always uses upload-extend
     const R2_PUB_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
     const audioUrl = job.r2_audio_key ? `${R2_PUB_BASE}/${job.r2_audio_key}` : (job.stereo_url || '')
     const body: any = { url: audioUrl, mv: 'sonic-v5', continue_at: continueAt, custom_mode: false, make_instrumental: true, gpt_description_prompt: 'Continue this track as an instrumental in the same style' }
@@ -7195,7 +7229,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-19'
+const ASSET_VER = '20260824-21'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
