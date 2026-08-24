@@ -7035,9 +7035,10 @@ window.renderEditInstrumentPills = function (bp) {
           _extPollUploadTask(taskId, name, 0);
           return;
         }
-        // Final fallback: use R2 proxy URL (extend-upload will use upload-extend path)
+        // Final fallback: use R2 public URL if available (Sonic can fetch directly without CF bot protection)
+        // Fall back to proxy URL only if r2_public_url is absent (older response format)
         if (data.audio_url || data.status === 'ready') {
-          extUploadAudioId = data.audio_url;
+          extUploadAudioId = data.r2_public_url || data.audio_url;
           setExtZoneState('done', name);
           return;
         }

@@ -4442,9 +4442,12 @@ app.post('/api/job/extend-upload', async (c) => {
         if (!extTaskId) return c.json({ error: 'MusicAPI returned no task_id', raw: scText.slice(0, 800) }, 500)
       } else {
         // sonic/upload failed — fall back to upload-extend
-        console.log(`[extend-upload] Path B fallback: /sonic/upload-extend url=${audioSrc.slice(0, 100)}`)
+        // Use R2 public URL (starts with pub-) when available — Sonic's downloader can fetch it.
+        // Proxy URLs (going through our CF Worker) get blocked by Cloudflare bot protection.
+        const uploadExtSrc = upload_audio_id.startsWith('https://pub-') ? upload_audio_id : audioSrc
+        console.log(`[extend-upload] Path B fallback: /sonic/upload-extend url=${uploadExtSrc.slice(0, 100)}`)
         const uploadExtBody: Record<string, any> = {
-          url: audioSrc, mv: 'sonic-v5', continue_at: uploadContinueAt
+          url: uploadExtSrc, mv: 'sonic-v5', continue_at: uploadContinueAt
         }
         if (isInstrumental) {
           uploadExtBody.custom_mode = false
@@ -5881,6 +5884,82 @@ app.get('/api/admin/ping', async (c) => {
   return c.json({ ok: true, admin: isAdmin(user, c.env), email: user?.email || null, plan: user?.plan || null, ts: Date.now() })
 })
 
+// POST /api/admin/debug-sonic-upload — test sonic/upload with a given URL (admin only)
+// Body: { url: string }  Returns the raw Sonic response so we can diagnose why it rejects proxy URLs.
+app.post('/api/admin/debug-sonic-upload', async (c) => {
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Admin only' }, 403)
+  const { url } = await c.req.json<{ url: string }>()
+  if (!url) return c.json({ error: 'url required' }, 400)
+  // Test HEAD to see what Sonic sees when it fetches our URL
+  let headResult: any = {}
+  try {
+    const headRes = await fetch(url, { method: 'HEAD' })
+    headResult = { status: headRes.status, contentType: headRes.headers.get('content-type'), contentLength: headRes.headers.get('content-length') }
+  } catch (e: any) { headResult = { error: e?.message } }
+  // Test 1: sonic/upload with URL
+  const sonicUrlRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url })
+  })
+  const sonicUrlText = await sonicUrlRes.text()
+  // Test 2: fetch the bytes ourselves, then POST as multipart to sonic/upload
+  let sonicBinaryUpload = { status: 0, raw: '' }
+  // Test 3: fetch bytes, POST as multipart to sonic/upload-extend
+  let sonicBinaryExtend = { status: 0, raw: '' }
+  try {
+    const audioRes = await fetch(url)
+    if (audioRes.ok) {
+      const audioBytes = await audioRes.arrayBuffer()
+      const ctype = audioRes.headers.get('content-type') || 'audio/mpeg'
+      const ext   = ctype.includes('wav') ? 'wav' : 'mp3'
+      // Test 2: binary multipart to /upload
+      {
+        const fd = new FormData()
+        fd.append('file', new Blob([audioBytes], { type: ctype }), `audio.${ext}`)
+        const r = await fetch(`${MUSICAPI_SONIC}/upload`, {
+          method: 'POST', headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }, body: fd
+        })
+        sonicBinaryUpload = { status: r.status, raw: (await r.text()).slice(0, 400) }
+      }
+      // Test 3: binary multipart to /upload-extend
+      {
+        const fd2 = new FormData()
+        fd2.append('file', new Blob([audioBytes], { type: ctype }), `audio.${ext}`)
+        fd2.append('continue_at', '60')
+        fd2.append('mv', 'sonic-v5')
+        fd2.append('make_instrumental', 'true')
+        const r2 = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+          method: 'POST', headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }, body: fd2
+        })
+        sonicBinaryExtend = { status: r2.status, raw: (await r2.text()).slice(0, 400) }
+      }
+      // Test 4: URL-based /upload-extend with the original URL
+      {
+        const body4: Record<string, any> = { url, mv: 'sonic-v5', continue_at: 60, make_instrumental: true }
+        const r4 = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body4)
+        })
+        sonicBinaryExtend.url_extend_status = r4.status
+        sonicBinaryExtend.url_extend_raw = (await r4.text()).slice(0, 400)
+      }
+    } else {
+      sonicBinaryUpload.raw = `fetch failed: HTTP ${audioRes.status}`
+    }
+  } catch (e: any) { sonicBinaryUpload.raw = `error: ${e?.message}` }
+  return c.json({
+    head_result: headResult,
+    sonic_url_status: sonicUrlRes.status,
+    sonic_url_raw: sonicUrlText.slice(0, 600),
+    sonic_binary_upload: sonicBinaryUpload,
+    sonic_binary_extend: sonicBinaryExtend
+  })
+})
+
 // GET /api/admin/fix-indexes — one-shot: create missing DB indexes for performance
 app.get('/api/admin/fix-indexes', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
@@ -6427,7 +6506,9 @@ app.post('/api/generate-lyrics', async (c) => {
 })
 
 // GET /api/extend-audio-proxy/:key — serve R2-stored audio files (extend + remix uploads)
-// Used by upload-extend-audio and upload-remix-audio routes to give MusicAPI a public URL
+// Used by upload-extend-audio and upload-remix-audio routes to give MusicAPI a public URL.
+// IMPORTANT: Must send Content-Length — Sonic's /upload endpoint rejects responses without it.
+// We materialise the R2 object as ArrayBuffer so we know the exact byte count before responding.
 app.get('/api/extend-audio-proxy/:key', async (c) => {
   if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
   const rawKey = c.req.param('key')
@@ -6435,9 +6516,35 @@ app.get('/api/extend-audio-proxy/:key', async (c) => {
   let obj = await c.env.IMAGES.get(`extend-uploads/${rawKey}`)
   if (!obj) obj = await c.env.IMAGES.get(`remix-uploads/${rawKey}`)
   if (!obj) return c.json({ error: 'Not found' }, 404)
-  return new Response(obj.body, {
+  const ctype = obj.httpMetadata?.contentType || 'audio/mpeg'
+  // Materialise into ArrayBuffer so we can provide Content-Length (required by Sonic's uploader)
+  const buf = await obj.arrayBuffer()
+  const rangeHeader = c.req.header('Range')
+  if (rangeHeader) {
+    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/)
+    if (match) {
+      const total = buf.byteLength
+      const start = parseInt(match[1])
+      const end   = match[2] ? parseInt(match[2]) : total - 1
+      const chunk = buf.slice(start, end + 1)
+      return new Response(chunk, {
+        status: 206,
+        headers: {
+          'Content-Type': ctype,
+          'Content-Range': `bytes ${start}-${end}/${total}`,
+          'Content-Length': String(chunk.byteLength),
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=3600',
+          'Access-Control-Allow-Origin': '*'
+        }
+      })
+    }
+  }
+  return new Response(buf, {
     headers: {
-      'Content-Type': obj.httpMetadata?.contentType || 'audio/mpeg',
+      'Content-Type': ctype,
+      'Content-Length': String(buf.byteLength),
+      'Accept-Ranges': 'bytes',
       'Cache-Control': 'public, max-age=3600',
       'Access-Control-Allow-Origin': '*'
     }
@@ -6532,30 +6639,31 @@ app.post('/api/upload-extend-audio', async (c) => {
   if (!file) return c.json({ error: 'No file or url provided' }, 400)
   if (!c.env.IMAGES) return c.json({ error: 'File storage not configured' }, 500)
 
-  // Use clean timestamp+random key (NO filename/extension) — Sonic rejects URLs with
-  // filenames or extensions like .mp3 / .wav (HTTP 400 from upload step).
-  // The proxy serves the correct content-type from R2 metadata regardless of the URL path.
+  // Use clean timestamp+random key (NO filename/extension).
   const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-  // Store original content-type so proxy serves correct MIME type
   const fileContentType = file.type || (file.name?.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
   await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
     httpMetadata: { contentType: fileContentType }
   })
-  const audioUrl = `${siteUrl}/api/extend-audio-proxy/${r2Key}`
-  console.log(`[upload-extend-audio] R2 stored, proxy URL: ${audioUrl}`)
+  // audioUrl = Worker proxy URL (for browser playback — requires auth context)
+  // r2PublicUrl = direct R2 public URL (for Sonic — no CF Worker bot protection)
+  const R2_PUBLIC_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
+  const audioUrl    = `${siteUrl}/api/extend-audio-proxy/${r2Key}`
+  const r2PublicUrl = `${R2_PUBLIC_BASE}/extend-uploads/${r2Key}`
+  console.log(`[upload-extend-audio] R2 stored. proxy=${audioUrl} r2public=${r2PublicUrl}`)
 
-  // Call Sonic upload — returns clip_id directly or task_id for polling
-  const sonic = await sonicUploadUrl(audioUrl)
+  // Try sonic/upload with direct R2 public URL (bypasses Cloudflare bot protection)
+  const sonic = await sonicUploadUrl(r2PublicUrl)
   if (sonic.clip_id) {
-    console.log(`[upload-extend-audio] /sonic/upload clip_id (direct): ${sonic.clip_id}`)
-    return c.json({ ok: true, audio_url: audioUrl, clip_id: sonic.clip_id })
+    console.log(`[upload-extend-audio] /sonic/upload clip_id: ${sonic.clip_id}`)
+    return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, clip_id: sonic.clip_id })
   }
   if (sonic.task_id) {
-    console.log(`[upload-extend-audio] /sonic/upload task_id (async): ${sonic.task_id}`)
-    return c.json({ ok: true, audio_url: audioUrl, task_id: sonic.task_id })
+    console.log(`[upload-extend-audio] /sonic/upload task_id: ${sonic.task_id}`)
+    return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, task_id: sonic.task_id })
   }
-  // Sonic upload failed — return R2 URL as fallback (extend-upload will use upload-extend)
-  return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
+  // Sonic upload failed — return both URLs; extend-upload will use r2_public_url for upload-extend fallback
+  return c.json({ ok: true, audio_url: audioUrl, r2_public_url: r2PublicUrl, status: 'ready' })
 })
 
 // POST /api/upload-remix-audio — upload audio for AI Remix (parallel to upload-extend-audio)
@@ -7069,7 +7177,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-09'
+const ASSET_VER = '20260824-11'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
