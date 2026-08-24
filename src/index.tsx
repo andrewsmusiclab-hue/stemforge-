@@ -4393,44 +4393,91 @@ app.post('/api/job/extend-upload', async (c) => {
         return c.json({ error: 'MusicAPI returned no task_id', raw: sonicText.slice(0, 800) }, 500)
       }
     } else {
-      // ── Path B: R2 URL fallback — use /sonic/upload-extend ────────────────
-      const siteUrl2 = (c.env as any).SITE_URL || 'https://stemforge.studio'
+      // ── Path B: R2 URL — try sonic/upload first to get clip_id, then continue_clip_id ──
+      // sonic/upload-extend often rejects R2 proxy URLs with HTTP 400.
+      // sonic/upload (the synchronous upload endpoint) is more reliable with arbitrary URLs.
       const audioSrc = upload_audio_id
-      console.log(`[extend-upload] fallback upload-extend url=${audioSrc.slice(0, 100)}`)
-      const uploadExtBody: Record<string, any> = {
-        url: audioSrc, mv: 'sonic-v5', continue_at: uploadContinueAt
+      console.log(`[extend-upload] Path B: sonic/upload url=${audioSrc.slice(0, 100)}`)
+      let pathBClipId: string | null = null
+      try {
+        const sonicUploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: audioSrc })
+        })
+        const sonicUploadText = await sonicUploadRes.text()
+        console.log(`[extend-upload] Path B sonic/upload HTTP ${sonicUploadRes.status} raw: ${sonicUploadText.slice(0, 300)}`)
+        if (sonicUploadRes.ok) {
+          let ud: any = {}
+          try { ud = JSON.parse(sonicUploadText) } catch {}
+          pathBClipId = ud.clip_id || null
+          if (pathBClipId) console.log(`[extend-upload] Path B sonic/upload clip_id=${pathBClipId}`)
+        }
+      } catch (uploadErr: any) {
+        console.warn('[extend-upload] Path B sonic/upload threw:', uploadErr?.message)
       }
-      if (isInstrumental) {
-        uploadExtBody.custom_mode = false
-        uploadExtBody.gpt_description_prompt = 'Continue this track as an instrumental in the same style'
-        uploadExtBody.make_instrumental = true
-      } else if (hasCustomLyrics) {
-        uploadExtBody.custom_mode = true
-        uploadExtBody.prompt = typedLyricsUpload
+
+      if (pathBClipId) {
+        // Got clip_id — use continue_clip_id just like Path A
+        const extBody: Record<string, any> = {
+          task_type: 'extend_music',
+          continue_clip_id: pathBClipId,
+          mv: 'sonic-v5',
+          continue_at: uploadContinueAt
+        }
+        if (hasCustomLyrics) extBody.prompt = typedLyricsUpload
+        if (isInstrumental) extBody.make_instrumental = true
+        console.log(`[extend-upload] Path B /sonic/create clip_id=${pathBClipId} continue_at=${uploadContinueAt}`)
+        const scRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(extBody)
+        })
+        const scText = await scRes.text()
+        console.log(`[extend-upload] Path B /sonic/create HTTP ${scRes.status} raw: ${scText.slice(0, 400)}`)
+        if (!scRes.ok) return c.json({ error: `MusicAPI Sonic extend error: HTTP ${scRes.status}`, raw: scText.slice(0, 800) }, 500)
+        let scData: any = {}
+        try { scData = JSON.parse(scText) } catch {}
+        extTaskId = scData.task_id || scData.id || scData.data?.[0]?.id
+        if (!extTaskId) return c.json({ error: 'MusicAPI returned no task_id', raw: scText.slice(0, 800) }, 500)
       } else {
-        uploadExtBody.custom_mode = false
-        uploadExtBody.gpt_description_prompt = 'Continue this track in the same style'
-      }
-      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(uploadExtBody)
-      })
-      const sonicErrText = await sonicRes.text()
-      console.log(`[extend-upload] /sonic/upload-extend HTTP ${sonicRes.status} raw: ${sonicErrText.slice(0, 600)}`)
-      if (!sonicRes.ok) {
-        return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: sonicErrText.slice(0, 800) }, 500)
-      }
-      let sonicData: any
-      try { sonicData = JSON.parse(sonicErrText) } catch (_) { sonicData = {} }
-      console.log('[extend-upload] /sonic/upload-extend response:', JSON.stringify(sonicData).slice(0, 600))
-      if (sonicData.error || sonicData.message?.toLowerCase().includes('fail')) {
-        return c.json({ error: `MusicAPI Sonic extend error: ${sonicData.message || sonicData.error}`, raw: sonicErrText.slice(0, 800) }, 500)
-      }
-      extTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id
-      if (!extTaskId) {
-        console.error('[extend-upload] missing task_id:', JSON.stringify(sonicData).slice(0, 500))
-        return c.json({ error: `MusicAPI returned unexpected response`, raw: sonicErrText.slice(0, 800) }, 500)
+        // sonic/upload failed — fall back to upload-extend
+        console.log(`[extend-upload] Path B fallback: /sonic/upload-extend url=${audioSrc.slice(0, 100)}`)
+        const uploadExtBody: Record<string, any> = {
+          url: audioSrc, mv: 'sonic-v5', continue_at: uploadContinueAt
+        }
+        if (isInstrumental) {
+          uploadExtBody.custom_mode = false
+          uploadExtBody.gpt_description_prompt = 'Continue this track as an instrumental in the same style'
+          uploadExtBody.make_instrumental = true
+        } else if (hasCustomLyrics) {
+          uploadExtBody.custom_mode = true
+          uploadExtBody.prompt = typedLyricsUpload
+        } else {
+          uploadExtBody.custom_mode = false
+          uploadExtBody.gpt_description_prompt = 'Continue this track in the same style'
+        }
+        const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(uploadExtBody)
+        })
+        const sonicErrText = await sonicRes.text()
+        console.log(`[extend-upload] /sonic/upload-extend HTTP ${sonicRes.status} raw: ${sonicErrText.slice(0, 600)}`)
+        if (!sonicRes.ok) {
+          return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: sonicErrText.slice(0, 800) }, 500)
+        }
+        let sonicData: any
+        try { sonicData = JSON.parse(sonicErrText) } catch (_) { sonicData = {} }
+        console.log('[extend-upload] /sonic/upload-extend response:', JSON.stringify(sonicData).slice(0, 600))
+        if (sonicData.error || sonicData.message?.toLowerCase().includes('fail')) {
+          return c.json({ error: `MusicAPI Sonic extend error: ${sonicData.message || sonicData.error}`, raw: sonicErrText.slice(0, 800) }, 500)
+        }
+        extTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id
+        if (!extTaskId) {
+          console.error('[extend-upload] missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+          return c.json({ error: `MusicAPI returned unexpected response`, raw: sonicErrText.slice(0, 800) }, 500)
+        }
       }
     } // end Path B
 
@@ -4595,14 +4642,16 @@ app.post('/api/job/extend', async (c) => {
       console.warn('[job/extend] /sonic/upload threw:', uploadErr?.message)
     }
 
-    if (sonicNativeClipId && !isInstrumental) {
+    if (sonicNativeClipId) {
       // ── Path A: use Sonic-native clip_id with continue_clip_id ──────────────
+      // Works for BOTH instrumental and vocal — the !isInstrumental guard was a bug
       const extBody: Record<string, any> = {
         task_type: 'extend_music',
         continue_clip_id: sonicNativeClipId,
         mv: 'sonic-v5',
         continue_at: continueAt
       }
+      if (isInstrumental) extBody.make_instrumental = true
       if (hasCustomLyricsExtend) extBody.prompt = typedLyricsExtend
       if (styleStr) extBody.tags = styleStr.slice(0, 200)
       console.log(`[job/extend] /sonic/create continue_clip_id=${sonicNativeClipId} continue_at=${continueAt} instrumental=${isInstrumental}`)
@@ -6483,12 +6532,16 @@ app.post('/api/upload-extend-audio', async (c) => {
   if (!file) return c.json({ error: 'No file or url provided' }, 400)
   if (!c.env.IMAGES) return c.json({ error: 'File storage not configured' }, 500)
 
-  const safeFilename = (file.name || 'upload').replace(/[^a-zA-Z0-9._-]/g, '_')
-  const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${safeFilename}`
+  // Use clean timestamp+random key (NO filename/extension) — Sonic rejects URLs with
+  // filenames or extensions like .mp3 / .wav (HTTP 400 from upload step).
+  // The proxy serves the correct content-type from R2 metadata regardless of the URL path.
+  const r2Key = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  // Store original content-type so proxy serves correct MIME type
+  const fileContentType = file.type || (file.name?.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
   await c.env.IMAGES.put(`extend-uploads/${r2Key}`, await file.arrayBuffer(), {
-    httpMetadata: { contentType: file.type || 'audio/mpeg' }
+    httpMetadata: { contentType: fileContentType }
   })
-  const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
+  const audioUrl = `${siteUrl}/api/extend-audio-proxy/${r2Key}`
   console.log(`[upload-extend-audio] R2 stored, proxy URL: ${audioUrl}`)
 
   // Call Sonic upload — returns clip_id directly or task_id for polling
@@ -7016,7 +7069,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-06'
+const ASSET_VER = '20260824-09'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
