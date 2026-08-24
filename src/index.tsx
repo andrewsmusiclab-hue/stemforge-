@@ -7413,7 +7413,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-14'
+const ASSET_VER = '20260824-15'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7714,6 +7714,54 @@ function globalSidebar() {
       <!-- Update entries -->
       <div id="whats-new-entries" style="padding:16px 24px 24px;display:flex;flex-direction:column;gap:14px">
         <!-- Entries injected by _sfWhatsNewEntries array -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Service Outage Notice Modal -->
+  <div id="outage-notice-overlay" style="
+    display:none;position:fixed;inset:0;z-index:999998;
+    background:rgba(0,0,0,.85);backdrop-filter:blur(10px);
+    align-items:center;justify-content:center;padding:24px;
+    font-family:Inter,system-ui,sans-serif;
+  " onclick="if(event.target===this)window._sfCloseOutageNotice && window._sfCloseOutageNotice()">
+    <div style="
+      background:#0d1117;border:1px solid rgba(245,158,11,.35);
+      border-radius:18px;max-width:520px;width:100%;
+      box-shadow:0 40px 100px rgba(0,0,0,.9),0 0 0 1px rgba(245,158,11,.1);
+      overflow:hidden;position:relative;
+    ">
+      <button onclick="window._sfCloseOutageNotice && window._sfCloseOutageNotice()" style="
+        position:absolute;top:16px;right:16px;background:none;border:1px solid rgba(255,255,255,.15);
+        color:#9ca3af;width:30px;height:30px;border-radius:50%;cursor:pointer;
+        font-size:1rem;display:flex;align-items:center;justify-content:center;z-index:2;
+      ">×</button>
+      <!-- Amber header bar -->
+      <div style="background:linear-gradient(135deg,#78350f,#451a03);padding:24px 28px 20px;border-bottom:1px solid rgba(245,158,11,.2)">
+        <div style="display:flex;align-items:center;gap:14px">
+          <div style="width:44px;height:44px;border-radius:12px;background:rgba(245,158,11,.2);border:1px solid rgba(245,158,11,.4);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <i class="fas fa-triangle-exclamation" style="color:#f59e0b;font-size:1.1rem"></i>
+          </div>
+          <div>
+            <div style="font-size:1.1rem;font-weight:800;color:#fff;letter-spacing:.2px">Temporary Service Issue</div>
+            <div style="font-size:.75rem;color:rgba(255,255,255,.5);margin-top:2px">StemForge System Notice</div>
+          </div>
+        </div>
+      </div>
+      <!-- Body -->
+      <div style="padding:24px 28px">
+        <p style="margin:0 0 14px;font-size:.92rem;color:#e2e8f0;line-height:1.65">
+          We're currently experiencing a <strong style="color:#f59e0b">server side issue on our end</strong>.
+        </p>
+        <div style="background:rgba(245,158,11,.07);border:1px solid rgba(245,158,11,.2);border-radius:10px;padding:14px 16px;margin-bottom:18px">
+          <div style="font-size:.78rem;font-weight:700;color:#f59e0b;letter-spacing:.4px;margin-bottom:6px">⚠ AFFECTED FEATURES</div>
+          <p style="margin:0;font-size:.84rem;color:#94a3b8;line-height:1.6">
+            <strong style="color:#cbd5e1">Song Extend</strong>, and <strong style="color:#cbd5e1">creating a song or instrumentals</strong> might temporarily not work.
+          </p>
+        </div>
+        <p style="margin:0;font-size:.82rem;color:#64748b;line-height:1.6">
+          Our team is working to resolve this issue as quickly as possible. Thank you for your patience.
+        </p>
       </div>
     </div>
   </div>

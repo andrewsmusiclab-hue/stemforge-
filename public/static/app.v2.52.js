@@ -4,6 +4,27 @@
 ═══════════════════════════════════════════════════════════════ */
 
 /**
+ * ── Service Outage Notice ──────────────────────────────────────
+ * Set OUTAGE_NOTICE_ACTIVE to false in ONE place once the MusicAPI
+ * issue is resolved to stop showing this popup to everyone.
+ * Shows once per browser session (sessionStorage) per logged-in user
+ * so it reappears every time they log in / open a new session, but
+ * doesn't spam on every internal page navigation within the same session.
+ */
+window._sfOutageNoticeActive = true;
+window._sfShowOutageNotice = function() {
+  if (!window._sfOutageNoticeActive) return;
+  const overlay = document.getElementById('outage-notice-overlay');
+  if (!overlay) return;
+  overlay.style.display = 'flex';
+};
+window._sfCloseOutageNotice = function() {
+  const overlay = document.getElementById('outage-notice-overlay');
+  if (overlay) overlay.style.display = 'none';
+  try { sessionStorage.setItem('sf_outage_notice_seen', '1'); } catch (e) {}
+};
+
+/**
  * _sfUpdateSidebarBonus(bonusCredits)
  * Shows/hides the bonus points row in the sidebar credits widget.
  * Bonus points are purchased top-up credits (consumed FIRST before subscription points).
@@ -401,6 +422,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'aug2026-server-outage-notice',
+      date: 'August 2026',
+      title: 'Temporary Service Issue — Song Extend & Creation',
+      tag: 'SERVICE NOTICE',
+      tagColor: '#f59e0b',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#f59e0b">We're experiencing a server side issue on our end.</b> Features like <b style="color:#e2e8f0">Song Extend</b>, and <b style="color:#e2e8f0">creating a song or instrumentals</b> might temporarily not work.</li>
+        <li><b style="color:#e2e8f0">We're on it</b> — our team is working to resolve this issue as quickly as possible. Thank you for your patience.</li>
+      </ul>`
+    },
+    {
       id: 'aug2026-creator-autosplit-v2',
       date: 'August 2026',
       title: 'Creator Plan — Auto Split Now Available',
@@ -581,6 +613,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (getCreditsBtn) getCreditsBtn.style.display = 'flex'; // show inside nav
       // Re-check badge now that button is visible
       if (typeof window._sfCheckWhatsNewBadge === 'function') window._sfCheckWhatsNewBadge();
+
+      // ── Service outage notice ───────────────────────────────────
+      // Shows every login (new session) until window._sfOutageNoticeActive is set to false.
+      if (window._sfOutageNoticeActive && !user.account_locked) {
+        let alreadySeenThisSession = false;
+        try { alreadySeenThisSession = !!sessionStorage.getItem('sf_outage_notice_seen'); } catch (e) {}
+        if (!alreadySeenThisSession) {
+          window._sfShowOutageNotice();
+        }
+      }
 
       // ── Account locked overlay ────────────────────────────────
       if (user.account_locked) {
