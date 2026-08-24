@@ -4862,6 +4862,63 @@ app.get('/api/debug/sonic-task/:task_id', async (c) => {
   return c.json({ status: res.status, ok: res.ok, raw: text })
 })
 
+// GET /api/debug/extend-probe?admin_key=EMAIL&job_id=JOB&continue_at=N
+// Fires the EXACT same MusicAPI call that /api/job/extend would fire, no credit deduction.
+// Returns full raw response so we can see the actual 500 error body.
+app.get('/api/debug/extend-probe', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const adminKey = c.req.query('admin_key')
+  const isAdmin = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
+  if (!isAdmin) return c.json({ error: 'admin_key required' }, 401)
+
+  const jobId = c.req.query('job_id')
+  const continueAt = parseInt(c.req.query('continue_at') || '74', 10)
+  if (!jobId) return c.json({ error: 'job_id required' }, 400)
+
+  await ensureTable(c.env.DB)
+  const row = await c.env.DB.prepare(`SELECT data FROM jobs WHERE id = ?`).bind(jobId).first<{ data: string }>()
+  if (!row) return c.json({ error: 'job not found' }, 404)
+  const job = JSON.parse(row.data) as any
+
+  const result: any = {
+    job_id: jobId,
+    job_title: job.title || job.prompt?.slice(0, 60),
+    clip_id: job.clip_id || null,
+    r2_audio_key: job.r2_audio_key || null,
+    stereo_url: job.stereo_url?.slice(0, 100) || null,
+    duration_ms: job.duration_ms || null,
+    continue_at_used: continueAt,
+    path: job.clip_id ? 'A (continue_clip_id)' : 'B (upload-extend)',
+    musicapi_response: null
+  }
+
+  if (job.clip_id) {
+    // Path A probe
+    const body = { task_type: 'extend_music', continue_clip_id: job.clip_id, mv: 'sonic-v5', continue_at: continueAt, custom_mode: false, make_instrumental: true }
+    const res = await fetch(`${MUSICAPI_SONIC}/create`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const text = await res.text()
+    result.musicapi_response = { endpoint: '/sonic/create', http_status: res.status, ok: res.ok, request_body: body, raw: text.slice(0, 1000) }
+  } else {
+    // Path B probe
+    const R2_PUB_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
+    const audioUrl = job.r2_audio_key ? `${R2_PUB_BASE}/${job.r2_audio_key}` : (job.stereo_url || '')
+    const body: any = { url: audioUrl, mv: 'sonic-v5', continue_at: continueAt, custom_mode: false, make_instrumental: true, gpt_description_prompt: 'Continue this track as an instrumental in the same style' }
+    const res = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    })
+    const text = await res.text()
+    result.musicapi_response = { endpoint: '/sonic/upload-extend', http_status: res.status, ok: res.ok, audio_url_used: audioUrl.slice(0, 100), request_body: body, raw: text.slice(0, 1000) }
+  }
+
+  return c.json(result)
+})
+
 // GET /api/debug/producer-task/:task_id — poll a MusicAPI Producer task (developer only)
 // Also accepts ?admin_key=<ADMIN_EMAIL> as an alternative to session auth for CLI testing
 app.get('/api/debug/producer-task/:task_id', async (c) => {
@@ -7120,7 +7177,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-17'
+const ASSET_VER = '20260824-18'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

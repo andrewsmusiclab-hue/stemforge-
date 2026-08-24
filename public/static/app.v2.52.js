@@ -4198,10 +4198,14 @@ window.selectBarPreset = function(btn, bars) {
           }
           // Reset scrubber to "End of track" position
           if (window.extUpdateScrubberUI) window.extUpdateScrubberUI(1.0);
-          // Draw waveform — must be after metadata + double rAF so canvas has dimensions
+          // Draw REAL waveform by fetching + decoding the audio via Web Audio API
           requestAnimationFrame(function() {
             requestAnimationFrame(function() {
-              if (window.extDrawFlatWaveform) window.extDrawFlatWaveform();
+              if (window.extDrawWaveformFromUrl) {
+                window.extDrawWaveformFromUrl(stereoUrl);
+              } else if (window.extDrawFlatWaveform) {
+                window.extDrawFlatWaveform();
+              }
             });
           });
         };
@@ -4278,7 +4282,7 @@ window.selectBarPreset = function(btn, bars) {
         body: JSON.stringify({ source_job_id: extSelectedJob.id, extend_at: extendAt, lyrics: isInstr ? '' : lyrics, make_instrumental: isInstr })
       });
       const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) throw new Error(data.error + (data.raw ? ' | API: ' + data.raw.slice(0, 200) : ''));
       var extJobId = data.job_id;
 
       // Reset button so user can submit again if they want
@@ -7184,6 +7188,47 @@ window.renderEditInstrumentPills = function (bp) {
   }
   // Expose to window so other IIFEs (initSongExtend) can call it
   window.extDrawFlatWaveform = extDrawFlatWaveform;
+
+  // ── Draw REAL waveform by fetching & decoding audio URL via Web Audio API ──
+  // Falls back to flat waveform if fetch fails (CORS, network, etc.)
+  function extDrawWaveformFromUrl(url) {
+    var canvas = document.getElementById('ext-waveform-canvas');
+    if (!canvas || !url || (!window.AudioContext && !window.webkitAudioContext)) {
+      extDrawFlatWaveform();
+      return;
+    }
+    // Show flat placeholder immediately so canvas isn't blank while fetching
+    extDrawFlatWaveform();
+    fetch(url)
+      .then(function(r) { return r.arrayBuffer(); })
+      .then(function(buf) {
+        var actx = new (window.AudioContext || window.webkitAudioContext)();
+        actx.decodeAudioData(buf, function(buffer) {
+          var dpr = window.devicePixelRatio || 1;
+          var W   = Math.round((canvas.offsetWidth || 300) * dpr);
+          var H   = Math.round((canvas.offsetHeight || 54) * dpr);
+          canvas.width  = W;
+          canvas.height = H;
+          var n    = Math.floor(W / 3);
+          var data = buffer.getChannelData(0);
+          var step = Math.max(1, Math.floor(data.length / n));
+          var peaks = new Float32Array(n);
+          for (var i = 0; i < n; i++) {
+            var max = 0;
+            for (var j = 0; j < step; j++) {
+              var v = Math.abs(data[i * step + j] || 0);
+              if (v > max) max = v;
+            }
+            peaks[i] = max;
+          }
+          extWaveData = peaks;
+          extPaintWaveform(0);
+          actx.close();
+        }, function() { /* decode failed — keep flat */ });
+      })
+      .catch(function() { /* fetch failed — keep flat */ });
+  }
+  window.extDrawWaveformFromUrl = extDrawWaveformFromUrl;
 
   function extPaintWaveform(progress) {
     var canvas = document.getElementById('ext-waveform-canvas');
