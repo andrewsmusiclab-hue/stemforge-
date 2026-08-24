@@ -4608,11 +4608,17 @@ app.post('/api/job/extend', async (c) => {
 
     let extTaskId: string
 
-    // ── Path A: clip_id exists on source job — use continue_clip_id directly ──
-    // This is the fast, reliable path. The clip_id stored on Sonic-generated jobs
-    // is a real Sonic clip_id — pass it straight to /sonic/create, no upload needed.
-    const sourceClipId = sourceJob.clip_id as string | undefined
+    // ── DIAGNOSTICS NOTE (2026-08-24) ──────────────────────────────────────────
+    // MusicAPI /sonic/create with continue_clip_id returns HTTP 500
+    // "Submission failed, system exception." for ALL tracks (confirmed via probe).
+    // /sonic/upload-extend returns HTTP 200 and works correctly.
+    // Strategy: try Path A first (fast, no upload), fall through to Path B on failure.
+    // ────────────────────────────────────────────────────────────────────────────
 
+    const sourceClipId = sourceJob.clip_id as string | undefined
+    let pathAFailed = false
+
+    // ── Path A: clip_id exists → try /sonic/create with continue_clip_id ──────
     if (sourceClipId) {
       const extBody: Record<string, any> = {
         task_type: 'extend_music',
@@ -4624,34 +4630,46 @@ app.post('/api/job/extend', async (c) => {
       if (isInstrumental) extBody.make_instrumental = true
       if (hasCustomLyricsExtend) { extBody.custom_mode = true; extBody.prompt = typedLyricsExtend }
       if (styleStr) extBody.tags = styleStr.slice(0, 200)
-      console.log(`[job/extend] Path A: /sonic/create continue_clip_id=${sourceClipId} continue_at=${continueAt} instrumental=${isInstrumental}`)
-      const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(extBody)
-      })
-      const sonicText = await sonicRes.text()
-      console.log(`[job/extend] Path A /sonic/create HTTP ${sonicRes.status} raw: ${sonicText.slice(0, 400)}`)
-      if (!sonicRes.ok) {
-        return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: sonicText.slice(0, 800) }, 500)
+      console.log(`[job/extend] Path A attempt: /sonic/create continue_clip_id=${sourceClipId} continue_at=${continueAt}`)
+      try {
+        const sonicRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(extBody)
+        })
+        const sonicText = await sonicRes.text()
+        console.log(`[job/extend] Path A /sonic/create HTTP ${sonicRes.status} raw: ${sonicText.slice(0, 400)}`)
+        if (sonicRes.ok) {
+          let sonicData: any
+          try { sonicData = JSON.parse(sonicText) } catch (_) { sonicData = {} }
+          extTaskId = sonicData.task_id || sonicData.id || sonicData.data?.[0]?.id
+          if (extTaskId) {
+            console.log(`[job/extend] Path A succeeded: task_id=${extTaskId}`)
+          } else {
+            console.warn('[job/extend] Path A: no task_id in response, falling back to Path B')
+            pathAFailed = true
+          }
+        } else {
+          console.warn(`[job/extend] Path A failed HTTP ${sonicRes.status}: ${sonicText.slice(0, 200)} — falling back to Path B`)
+          pathAFailed = true
+        }
+      } catch (pathAErr: any) {
+        console.warn('[job/extend] Path A threw:', pathAErr?.message, '— falling back to Path B')
+        pathAFailed = true
       }
-      let sonicData: any
-      try { sonicData = JSON.parse(sonicText) } catch (_) { sonicData = {} }
-      extTaskId = sonicData.task_id || sonicData.id || sonicData.data?.[0]?.id
-      if (!extTaskId) {
-        return c.json({ error: 'MusicAPI returned no task_id', raw: sonicText.slice(0, 800) }, 500)
-      }
-
     } else {
-      // ── Path B: no clip_id — use /sonic/upload-extend (single-call URL upload+extend) ──
-      // This is the original working fallback. Mirror to R2 first so MusicAPI gets
-      // a fast, reliable static URL with proper Content-Length instead of a slow CDN.
+      pathAFailed = true // no clip_id, go straight to Path B
+    }
+
+    // ── Path B: /sonic/upload-extend — upload audio URL + extend in one call ──
+    // Used when: no clip_id, or Path A failed (MusicAPI system error on continue_clip_id)
+    if (pathAFailed) {
       const R2_PUB_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
       let audioUrlForMusicApi = sourceJob.r2_audio_key
         ? `${R2_PUB_BASE}/${sourceJob.r2_audio_key}`
         : (sourceJob.stereo_url_alt || sourceJob.stereo_url || '')
 
-      // If no R2 key, mirror the audio into R2 now so MusicAPI gets a stable URL
+      // If no R2 key yet, mirror the audio into R2 so MusicAPI gets a stable URL
       if (!sourceJob.r2_audio_key && c.env.IMAGES && audioUrlForMusicApi) {
         try {
           const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
@@ -4664,7 +4682,7 @@ app.post('/api/job/extend', async (c) => {
               httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
             })
             audioUrlForMusicApi = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Filename)}`
-            console.log(`[job/extend] Path B mirrored audio to R2: extend-uploads/${r2Filename}`)
+            console.log(`[job/extend] Path B mirrored to R2: extend-uploads/${r2Filename}`)
           }
         } catch (mirrorErr: any) {
           console.warn('[job/extend] Path B R2 mirror failed, using original URL:', mirrorErr?.message)
@@ -7177,7 +7195,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-18'
+const ASSET_VER = '20260824-19'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
