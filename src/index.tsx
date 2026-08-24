@@ -4809,6 +4809,32 @@ app.get('/api/debug/producer-task/:task_id', async (c) => {
   return c.json({ status: res.status, ok: res.ok, raw: text })
 })
 
+// POST /api/debug/test-sonic-create — test /sonic/create with continue_clip_id (admin only)
+// Body: { clip_id: string, continue_at?: number }
+app.post('/api/debug/test-sonic-create', async (c) => {
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  const adminKey = c.req.query('admin_key')
+  const token    = getSessionCookie(c.req.raw)
+  const user     = token ? await getSessionUser(c.env.DB, token) : null
+  const isAdminOk = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
+                 || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
+  if (!isAdminOk) return c.json({ error: 'Admin only' }, 401)
+  const body = await c.req.json<{ clip_id?: string; admin_key?: string; continue_at?: number }>()
+  const clipId = body.clip_id
+  if (!clipId) return c.json({ error: 'clip_id required' }, 400)
+  const continueAt = body.continue_at || 10
+  const extBody = { task_type: 'extend_music', continue_clip_id: clipId, mv: 'sonic-v5', continue_at: continueAt }
+  const r = await fetch(`${MUSICAPI_SONIC}/create`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(extBody)
+  })
+  const t = await r.text()
+  let parsed: any = {}
+  try { parsed = JSON.parse(t) } catch {}
+  return c.json({ status: r.status, ok: r.ok, body_sent: extBody, response: parsed, raw: t.slice(0, 800) })
+})
+
 // POST /api/debug/test-cover-url — test /sonic/upload-cover with a direct audio URL (admin only)
 // Body: { url: string, tags?: string }
 app.post('/api/debug/test-cover-url', async (c) => {
@@ -6899,7 +6925,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-03'
+const ASSET_VER = '20260824-04'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7009,7 +7035,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.49.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.50.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
