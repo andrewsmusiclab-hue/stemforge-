@@ -4467,44 +4467,62 @@ app.post('/api/job/extend-upload', async (c) => {
         extTaskId = scData.task_id || scData.id || scData.data?.[0]?.id
         if (!extTaskId) return c.json({ error: 'MusicAPI returned no task_id', raw: scText.slice(0, 800) }, 500)
       } else {
-        // sonic/upload not available — use upload-extend directly.
-        // Use R2 public URL when available (Sonic can fetch it; CF Worker proxy gets bot-blocked).
-        const uploadExtSrc = isR2PubUrl ? audioSrc : audioSrc
-        console.log(`[extend-upload] Path B: /sonic/upload-extend url=${uploadExtSrc.slice(0, 100)}`)
-        const uploadExtBody: Record<string, any> = {
-          url: uploadExtSrc, mv: 'sonic-v5', continue_at: uploadContinueAt
+        // sonic/upload not available — use binary multipart upload-extend.
+        // URL-mode upload-extend produces 2-second garbage. Binary multipart is reliable.
+        // The file is already in R2 — fetch its bytes from the R2 public URL.
+        console.log(`[extend-upload] Path B binary multipart: fetching audio from ${audioSrc.slice(0, 80)}`)
+        let ueBytes: ArrayBuffer | null = null
+        let ueCtype = 'audio/mpeg'
+        try {
+          const ueAudioFetch = await fetch(audioSrc)
+          if (ueAudioFetch.ok) {
+            ueBytes = await ueAudioFetch.arrayBuffer()
+            ueCtype = ueAudioFetch.headers.get('content-type') || 'audio/mpeg'
+            console.log(`[extend-upload] fetched ${ueBytes.byteLength} bytes ctype=${ueCtype}`)
+          } else {
+            console.warn(`[extend-upload] audio fetch HTTP ${ueAudioFetch.status}`)
+          }
+        } catch (ueErr: any) {
+          console.warn('[extend-upload] audio fetch threw:', ueErr?.message)
         }
+
+        if (!ueBytes) {
+          return c.json({ error: 'Failed to fetch uploaded audio for extend — please try again' }, 500)
+        }
+
+        const ueExt = ueCtype.includes('wav') ? 'wav' : ueCtype.includes('m4a') || ueCtype.includes('mp4') ? 'm4a' : 'mp3'
+        const ueFd = new FormData()
+        ueFd.append('file', new Blob([ueBytes], { type: ueCtype }), `audio.${ueExt}`)
+        ueFd.append('continue_at', String(uploadContinueAt))
+        ueFd.append('mv', 'sonic-v5')
+        ueFd.append('custom_mode', 'false')
         if (isInstrumental) {
-          uploadExtBody.custom_mode = false
-          uploadExtBody.gpt_description_prompt = 'Continue this track as an instrumental in the same style'
-          uploadExtBody.make_instrumental = true
+          ueFd.append('make_instrumental', 'true')
+          ueFd.append('gpt_description_prompt', 'Continue this track as an instrumental in the same style')
         } else if (hasCustomLyrics) {
-          uploadExtBody.custom_mode = true
-          uploadExtBody.prompt = typedLyricsUpload
+          ueFd.append('custom_mode', 'true')
+          ueFd.append('prompt', typedLyricsUpload as string)
         } else {
-          uploadExtBody.custom_mode = false
-          uploadExtBody.gpt_description_prompt = 'Continue this track in the same style'
+          ueFd.append('gpt_description_prompt', 'Continue this track in the same style')
         }
+
+        console.log(`[extend-upload] binary /sonic/upload-extend bytes=${ueBytes.byteLength} continue_at=${uploadContinueAt}`)
         const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(uploadExtBody)
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }, // NO Content-Type — multipart boundary auto-set
+          body: ueFd
         })
         const sonicErrText = await sonicRes.text()
-        console.log(`[extend-upload] /sonic/upload-extend HTTP ${sonicRes.status} raw: ${sonicErrText.slice(0, 600)}`)
+        console.log(`[extend-upload] binary /sonic/upload-extend HTTP ${sonicRes.status} raw: ${sonicErrText.slice(0, 600)}`)
         if (!sonicRes.ok) {
           return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: sonicErrText.slice(0, 800) }, 500)
         }
         let sonicData: any
         try { sonicData = JSON.parse(sonicErrText) } catch (_) { sonicData = {} }
-        console.log('[extend-upload] /sonic/upload-extend response:', JSON.stringify(sonicData).slice(0, 600))
-        if (sonicData.error || sonicData.message?.toLowerCase().includes('fail')) {
-          return c.json({ error: `MusicAPI Sonic extend error: ${sonicData.message || sonicData.error}`, raw: sonicErrText.slice(0, 800) }, 500)
-        }
         extTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id
         if (!extTaskId) {
-          console.error('[extend-upload] missing task_id:', JSON.stringify(sonicData).slice(0, 500))
-          return c.json({ error: `MusicAPI returned unexpected response`, raw: sonicErrText.slice(0, 800) }, 500)
+          console.error('[extend-upload] binary missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+          return c.json({ error: 'MusicAPI returned no task_id', raw: JSON.stringify(sonicData).slice(0, 800) }, 500)
         }
       }
     } // end Path B
@@ -4707,73 +4725,113 @@ app.post('/api/job/extend', async (c) => {
       }
 
     } else {
-      // ── Path B: /sonic/upload-extend fallback (sonic/upload returned 400) ──
-      // Mirror audio into R2 first — use R2 PUBLIC URL for Sonic (not proxy).
-      // The Worker proxy URL going through our CF Worker gets bot-blocked by Cloudflare.
-      // R2 public CDN URL (pub-*.r2.dev) bypasses that protection.
-      const R2_PUBLIC_BASE_B = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
-      let audioUrlForMusicApi = sourceJob.stereo_url
-      if (c.env.IMAGES) {
-        try {
-          const audioFetch = await fetch(sourceJob.stereo_url)
-          if (audioFetch.ok) {
-            const audioBuffer = await audioFetch.arrayBuffer()
-            const ext = sourceJob.stereo_url.includes('.mp3') ? 'mp3' : 'm4a'
-            const r2Filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.${ext}`
-            await c.env.IMAGES.put(`extend-uploads/${r2Filename}`, audioBuffer, {
-              httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
-            })
-            // Use R2 public URL — Sonic can fetch directly without CF bot protection
-            audioUrlForMusicApi = `${R2_PUBLIC_BASE_B}/extend-uploads/${r2Filename}`
-            console.log(`[job/extend] mirrored audio to R2 public: ${audioUrlForMusicApi.slice(0, 100)}`)
-          }
-        } catch (mirrorErr: any) {
-          console.warn('[job/extend] R2 mirror failed, using original URL:', mirrorErr?.message)
+      // ── Path B: binary multipart upload-extend fallback ──────────────────────
+      // /sonic/upload (URL mode) is returning 400 globally right now.
+      // URL-based /sonic/upload-extend produces 2-second garbage clips.
+      // Solution: fetch the audio bytes ourselves and POST as multipart/form-data
+      // binary directly to /sonic/upload-extend — this is the most reliable path.
+      console.log(`[job/extend] Path B: fetching audio bytes for binary multipart upload-extend`)
+      let audioBytes: ArrayBuffer | null = null
+      let audioCtype = 'audio/mpeg'
+      try {
+        const audioFetch = await fetch(sourceJob.stereo_url)
+        if (audioFetch.ok) {
+          audioBytes = await audioFetch.arrayBuffer()
+          audioCtype = audioFetch.headers.get('content-type') || 'audio/mpeg'
+          console.log(`[job/extend] fetched ${audioBytes.byteLength} bytes, ctype=${audioCtype}`)
+        } else {
+          console.warn(`[job/extend] audio fetch failed: HTTP ${audioFetch.status}`)
         }
+      } catch (fetchErr: any) {
+        console.warn('[job/extend] audio fetch threw:', fetchErr?.message)
       }
 
-      const uploadExtBody: Record<string, any> = {
-        url: audioUrlForMusicApi,
-        mv: 'sonic-v5',
-        continue_at: continueAt
-      }
-      if (styleStr) uploadExtBody.tags = styleStr.slice(0, 200)
-      if (isInstrumental) {
-        uploadExtBody.custom_mode = false
-        uploadExtBody.gpt_description_prompt = styleStr
+      if (audioBytes) {
+        // Binary multipart POST to /sonic/upload-extend
+        const ext = audioCtype.includes('wav') ? 'wav' : audioCtype.includes('m4a') || audioCtype.includes('mp4') ? 'm4a' : 'mp3'
+        const fd = new FormData()
+        fd.append('file', new Blob([audioBytes], { type: audioCtype }), `audio.${ext}`)
+        fd.append('continue_at', String(continueAt))
+        fd.append('mv', 'sonic-v5')
+        fd.append('custom_mode', 'false')
+        if (isInstrumental) {
+          fd.append('make_instrumental', 'true')
+          fd.append('gpt_description_prompt', styleStr
+            ? `Continue this instrumental track in the same style: ${styleStr.slice(0, 150)}`
+            : 'Continue this track as an instrumental in the same style')
+        } else if (hasCustomLyricsExtend) {
+          fd.append('custom_mode', 'true')
+          fd.append('prompt', typedLyricsExtend as string)
+        } else {
+          fd.append('gpt_description_prompt', styleStr
+            ? `Continue this track in the same style: ${styleStr.slice(0, 150)}`
+            : 'Continue this track in the same style')
+        }
+        if (styleStr) fd.append('tags', styleStr.slice(0, 200))
+
+        console.log(`[job/extend] binary multipart /sonic/upload-extend continue_at=${continueAt} instrumental=${isInstrumental} bytes=${audioBytes.byteLength}`)
+        const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }, // NO Content-Type — browser sets multipart boundary
+          body: fd
+        })
+        const errText = await sonicRes.text()
+        console.log(`[job/extend] binary /sonic/upload-extend HTTP ${sonicRes.status} raw: ${errText.slice(0, 600)}`)
+        if (!sonicRes.ok) {
+          return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: errText.slice(0, 800) }, 500)
+        }
+        let sonicData: any
+        try { sonicData = JSON.parse(errText) } catch (_) { sonicData = {} }
+        extTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id
+        if (!extTaskId) {
+          console.error('[job/extend] binary upload-extend missing task_id:', JSON.stringify(sonicData).slice(0, 500))
+          return c.json({ error: 'MusicAPI returned no task_id', raw: JSON.stringify(sonicData).slice(0, 800) }, 500)
+        }
+      } else {
+        // Audio fetch failed — last resort: URL-based upload-extend with R2 public URL
+        const R2_PUBLIC_BASE_B = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
+        let fallbackUrl = sourceJob.stereo_url
+        if (c.env.IMAGES) {
+          try {
+            const af = await fetch(sourceJob.stereo_url)
+            if (af.ok) {
+              const ab = await af.arrayBuffer()
+              const ext2 = sourceJob.stereo_url.includes('.mp3') ? 'mp3' : 'm4a'
+              const key2 = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-src.${ext2}`
+              await c.env.IMAGES.put(`extend-uploads/${key2}`, ab, {
+                httpMetadata: { contentType: ext2 === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
+              })
+              fallbackUrl = `${R2_PUBLIC_BASE_B}/extend-uploads/${key2}`
+            }
+          } catch (_) {}
+        }
+        const fallbackBody: Record<string, any> = {
+          url: fallbackUrl, mv: 'sonic-v5', continue_at: continueAt, custom_mode: false,
+          make_instrumental: isInstrumental,
+          gpt_description_prompt: styleStr
+            ? `Continue this track in the same style: ${styleStr.slice(0, 150)}`
+            : 'Continue this track in the same style'
+        }
+        if (isInstrumental) fallbackBody.gpt_description_prompt = styleStr
           ? `Continue this instrumental track in the same style: ${styleStr.slice(0, 150)}`
           : 'Continue this track as an instrumental in the same style'
-        uploadExtBody.make_instrumental = true
-      } else if (hasCustomLyricsExtend) {
-        uploadExtBody.custom_mode = true
-        uploadExtBody.prompt = typedLyricsExtend
-      } else {
-        uploadExtBody.custom_mode = false
-        uploadExtBody.gpt_description_prompt = styleStr
-          ? `Continue this track in the same style: ${styleStr.slice(0, 150)}`
-          : 'Continue this track in the same style'
-      }
-      console.log(`[job/extend] /sonic/upload-extend url=${audioUrlForMusicApi.slice(0,80)} instrumental=${isInstrumental} continue_at=${continueAt}`)
-      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(uploadExtBody)
-      })
-      const errText = await sonicRes.text()
-      console.log(`[job/extend] /sonic/upload-extend HTTP ${sonicRes.status} raw: ${errText.slice(0, 600)}`)
-      if (!sonicRes.ok) {
-        return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: errText.slice(0, 800) }, 500)
-      }
-      let sonicData: any
-      try { sonicData = JSON.parse(errText) } catch (_) { sonicData = {} }
-      console.log('[job/extend] /sonic/upload-extend response:', JSON.stringify(sonicData).slice(0, 600))
-      if (sonicData.error || sonicData.message?.toLowerCase().includes('fail')) {
-        return c.json({ error: `MusicAPI Sonic extend error: ${sonicData.message || sonicData.error}`, raw: errText.slice(0, 800) }, 500)
-      }
-      extTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id
-      if (!extTaskId) {
-        console.error('[job/extend] missing task_id:', JSON.stringify(sonicData).slice(0, 500))
-        return c.json({ error: 'MusicAPI returned unexpected response', raw: JSON.stringify(sonicData).slice(0, 800) }, 500)
+        console.log(`[job/extend] URL fallback /sonic/upload-extend url=${fallbackUrl.slice(0, 80)}`)
+        const sonicRes2 = await fetch(`${MUSICAPI_SONIC}/upload-extend`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(fallbackBody)
+        })
+        const errText2 = await sonicRes2.text()
+        console.log(`[job/extend] URL fallback HTTP ${sonicRes2.status} raw: ${errText2.slice(0, 400)}`)
+        if (!sonicRes2.ok) {
+          return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes2.status}`, raw: errText2.slice(0, 800) }, 500)
+        }
+        let sonicData2: any
+        try { sonicData2 = JSON.parse(errText2) } catch (_) { sonicData2 = {} }
+        extTaskId = sonicData2.task_id || sonicData2.steps?.extend?.task_id || sonicData2.data?.[0]?.id
+        if (!extTaskId) {
+          return c.json({ error: 'MusicAPI returned no task_id (URL fallback)', raw: JSON.stringify(sonicData2).slice(0, 800) }, 500)
+        }
       }
     }
 
@@ -7255,7 +7313,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-12'
+const ASSET_VER = '20260824-13'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
