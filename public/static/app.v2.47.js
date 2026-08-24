@@ -4143,25 +4143,20 @@ window.selectBarPreset = function(btn, bars) {
         audio.load();
         audio.onloadedmetadata = function() {
           extSelectedJob.audioDuration = Math.round(audio.duration * 1000);
-          // Update the IIFE-scoped duration variables so the scrubber drag works correctly
-          extAudioDuration = audio.duration;
-          extExtendAtMs    = 0;
           var durEl = document.getElementById('ext-duration-label');
           if (durEl) {
             var s = Math.round(audio.duration);
             durEl.textContent = Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
           }
-          // Reset scrubber to "End of track" position
-          extUpdateScrubberUI(1.0);
-          // Draw waveform AFTER metadata is loaded and canvas is visible.
-          // For URL-based audio we have no File object, so extDrawFlatWaveform()
-          // generates a realistic pseudo-waveform using the canvas dimensions.
-          // Double rAF ensures the canvas has been laid out and has non-zero w/h.
+          // Reset scrubber to "End of track" — call via window so we reach
+          // the real extUpdateScrubberUI inside initExtendUpload (different IIFE scope)
+          if (window.extUpdateScrubberUI) window.extUpdateScrubberUI(1.0);
+          // Draw waveform after metadata loads and canvas has painted dimensions.
+          // extDrawFlatWaveform lives in initExtendUpload (different IIFE) so call
+          // via window. Double rAF ensures canvas offsetWidth/Height are non-zero.
           requestAnimationFrame(function() {
             requestAnimationFrame(function() {
-              if (typeof extDrawFlatWaveform === 'function') {
-                extDrawFlatWaveform();
-              }
+              if (window.extDrawFlatWaveform) window.extDrawFlatWaveform();
             });
           });
         };
@@ -7066,6 +7061,8 @@ window.renderEditInstrumentPills = function (bp) {
     extWaveData = peaks;
     extPaintWaveform(0);
   }
+  // Expose to window so other IIFEs (initSongExtend) can call it
+  window.extDrawFlatWaveform = extDrawFlatWaveform;
 
   function extPaintWaveform(progress) {
     var canvas = document.getElementById('ext-waveform-canvas');
@@ -7165,6 +7162,8 @@ window.renderEditInstrumentPills = function (bp) {
     if (badge) badge.textContent = (pct >= 0.999 || extExtendAtMs <= 0) ? 'End of track' : extFmtTime(extExtendAtMs / 1000);
     extPaintWaveform(pct);
   }
+  // Expose to window so initSongExtend (different IIFE) can call it
+  window.extUpdateScrubberUI = extUpdateScrubberUI;
 
   // ── Play / pause ──────────────────────────────────────────────────────────
   window.extTogglePlay = function() {
