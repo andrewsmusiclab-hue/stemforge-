@@ -4602,9 +4602,15 @@ app.post('/api/job/extend', async (c) => {
     // extend_at is ms from frontend. If not provided, use near end of track.
     const srcDurationSec = (sourceJob.duration_ms ? sourceJob.duration_ms / 1000 : 0)
     const extendAtSec = extend_at ? extend_at / 1000 : srcDurationSec
-    // continue_at: aim for 2s before end, minimum 5s. If duration unknown (0), use 60s fallback.
-    const bestContinueAt = extendAtSec > 5 ? Math.floor(extendAtSec - 2) : Math.max(5, Math.floor(extendAtSec))
-    const continueAt = extendAtSec > 0 ? bestContinueAt : 60  // 60s fallback when duration unknown
+    // continue_at must leave MusicAPI at least 30s of audio AFTER the split point
+    // so it has enough context to analyse the track style and generate a real extension.
+    // Without this cap, extending from "end of track" (e.g. 155s in 155s track) gives
+    // MusicAPI only 2s of context → it outputs a 2-second stub.
+    const maxSafeContinueAt = srcDurationSec > 35
+      ? Math.floor(srcDurationSec - 30)          // leave 30s context window
+      : Math.max(5, Math.floor(srcDurationSec * 0.7))   // short tracks: keep 30% as context
+    const rawContinueAt = extendAtSec > 5 ? Math.floor(extendAtSec - 2) : Math.max(5, Math.floor(extendAtSec))
+    const continueAt = extendAtSec > 0 ? Math.min(rawContinueAt, maxSafeContinueAt) : 60
 
     let extTaskId: string
 
@@ -7226,7 +7232,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-22'
+const ASSET_VER = '20260824-23'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
