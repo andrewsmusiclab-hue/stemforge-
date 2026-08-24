@@ -4554,9 +4554,9 @@ app.post('/api/job/extend', async (c) => {
     // extend_at is ms from frontend. If not provided, use near end of track.
     const srcDurationSec = (sourceJob.duration_ms ? sourceJob.duration_ms / 1000 : 0)
     const extendAtSec = extend_at ? extend_at / 1000 : srcDurationSec
-    // continue_at must be >= 1 (MusicAPI requirement). Use track duration - 2s to
-    // land near the end, or the user's chosen scrubber position.
-    const continueAt = Math.max(1, Math.floor(extendAtSec > 2 ? extendAtSec - 2 : extendAtSec))
+    // continue_at: aim for 2s before end, minimum 5s. If duration unknown (0), use 60s fallback.
+    const bestContinueAt = extendAtSec > 5 ? Math.floor(extendAtSec - 2) : Math.max(5, Math.floor(extendAtSec))
+    const continueAt = extendAtSec > 0 ? bestContinueAt : 60  // 60s fallback when duration unknown
 
     let extTaskId: string
 
@@ -4718,7 +4718,7 @@ app.post('/api/job/extend', async (c) => {
       chain_max_steps: 5,
       chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
       chain_style: styleStr || null,
-      continue_at_ms: extend_at || Math.max(1, (srcJob.duration_ms || 0))
+      continue_at_ms: extend_at || Math.max(1, (sourceJob.duration_ms || 0))
     }
     await c.env.DB.prepare(
       `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
@@ -7016,7 +7016,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-05'
+const ASSET_VER = '20260824-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7126,7 +7126,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.51.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.52.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
