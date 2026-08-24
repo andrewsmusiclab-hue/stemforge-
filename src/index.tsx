@@ -310,6 +310,9 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // ── Migrate: add avatar_position + cover_position (CSS position strings for drag crop) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN avatar_position TEXT`).run() } catch {}
   try { await db.prepare(`ALTER TABLE users ADD COLUMN cover_position  TEXT`).run() } catch {}
+  // ── Migrate: add signup_source column (first referrer URL captured at registration) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN signup_source TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN signup_referrer TEXT`).run() } catch {}
   // Backfill: any free user without cycle_start gets created_at as their cycle start
   try { await db.prepare(`UPDATE users SET cycle_start = created_at WHERE plan = 'free' AND cycle_start IS NULL`).run() } catch {}
   // ── Opportunistic reset on cold start — catches any overdue free users ──
@@ -463,18 +466,20 @@ async function getUserByEmail(db: D1Database, email: string): Promise<any | null
 
 async function createUser(db: D1Database, data: {
   id: string, email: string, name: string, avatar?: string,
-  password_hash?: string, google_id?: string, plan?: string, registration_ip?: string
+  password_hash?: string, google_id?: string, plan?: string, registration_ip?: string,
+  signup_source?: string, signup_referrer?: string
 }): Promise<void> {
   await ensureAuthTables(db)
   const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
   const plan = data.plan || 'free'
   const now = Date.now()
   await db.prepare(
-    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at, cycle_start)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at, cycle_start, signup_source, signup_referrer)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
     planLimits[plan] || 60, data.password_hash || null, data.google_id || null,
-    data.registration_ip || null, now, plan === 'free' ? now : null).run()
+    data.registration_ip || null, now, plan === 'free' ? now : null,
+    data.signup_source || null, data.signup_referrer || null).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
@@ -3115,10 +3120,31 @@ app.post('/api/auth/signup', async (c) => {
 
     const passwordHash = await hashPassword(password)
     const userId = generateId()
+    // Capture referrer from Referer header for traffic attribution
+    const signupReferer = c.req.header('Referer') || c.req.header('referer') || null
+    const signupSrc = signupReferer ? (() => {
+      try {
+        const u = new URL(signupReferer)
+        const h = u.hostname.replace(/^www\./, '')
+        if (/tiktok\.com/i.test(h))    return 'tiktok'
+        if (/facebook\.com|fb\.com/i.test(h)) return 'facebook'
+        if (/instagram\.com/i.test(h)) return 'instagram'
+        if (/youtube\.com|youtu\.be/i.test(h)) return 'youtube'
+        if (/twitter\.com|x\.com/i.test(h)) return 'twitter'
+        if (/snapchat\.com/i.test(h)) return 'snapchat'
+        if (/pinterest\.com/i.test(h)) return 'pinterest'
+        if (/reddit\.com/i.test(h)) return 'reddit'
+        if (/linkedin\.com/i.test(h)) return 'linkedin'
+        if (/google\.com/i.test(h)) return 'google'
+        if (/bing\.com/i.test(h)) return 'bing'
+        return 'referral:' + h
+      } catch { return 'referral' }
+    })() : 'direct'
     await createUser(c.env.DB, {
       id: userId, email: email.toLowerCase(), name: name.trim(),
       password_hash: passwordHash, plan: plan || 'free',
-      registration_ip: registrationIp || undefined
+      registration_ip: registrationIp || undefined,
+      signup_source: signupSrc, signup_referrer: signupReferer?.slice(0, 500) || undefined
     })
 
     const token = await createSession(c.env.DB, userId)
@@ -3386,10 +3412,30 @@ app.get('/api/auth/google/callback', async (c) => {
         }
       }
       const userId = generateId()
+      const gReferer = c.req.header('Referer') || c.req.header('referer') || null
+      const gSrc = gReferer ? (() => {
+        try {
+          const u = new URL(gReferer)
+          const h = u.hostname.replace(/^www\./, '')
+          if (/tiktok\.com/i.test(h))    return 'tiktok'
+          if (/facebook\.com|fb\.com/i.test(h)) return 'facebook'
+          if (/instagram\.com/i.test(h)) return 'instagram'
+          if (/youtube\.com|youtu\.be/i.test(h)) return 'youtube'
+          if (/twitter\.com|x\.com/i.test(h)) return 'twitter'
+          if (/snapchat\.com/i.test(h)) return 'snapchat'
+          if (/pinterest\.com/i.test(h)) return 'pinterest'
+          if (/reddit\.com/i.test(h)) return 'reddit'
+          if (/linkedin\.com/i.test(h)) return 'linkedin'
+          if (/google\.com/i.test(h)) return 'google'
+          if (/bing\.com/i.test(h)) return 'bing'
+          return 'referral:' + h
+        } catch { return 'referral' }
+      })() : 'direct'
       await createUser(c.env.DB, {
         id: userId, email: profile.email.toLowerCase(),
         name: profile.name, avatar: profile.picture, google_id: profile.sub,
-        registration_ip: googleIp || undefined
+        registration_ip: googleIp || undefined,
+        signup_source: gSrc, signup_referrer: gReferer?.slice(0, 500) || undefined
       })
       user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
     } else if (!user.google_id) {
@@ -4304,8 +4350,15 @@ app.post('/api/job/extend-upload', async (c) => {
     const typedLyricsUpload = lyrics && lyrics.trim()
     const hasCustomLyrics = !isInstrumental && typedLyricsUpload && typedLyricsUpload !== '[Verse]' && typedLyricsUpload !== '[Instrumental]'
     const uploadSrcDurSec = source_duration_ms ? source_duration_ms / 1000 : 0
-    const extendAtSec = extend_at ? extend_at / 1000 : uploadSrcDurSec
-    const uploadContinueAt = Math.max(1, Math.floor(extendAtSec))
+    // extend_at overrides source_duration; if neither is set, use full track length.
+    // If we still have no duration, default to 60s so Sonic doesn't extend from second 1.
+    const rawExtendAtSec = extend_at ? extend_at / 1000 : uploadSrcDurSec
+    // continue_at must be >= 5 to avoid AI model collapse (extending from second 1 = garbage output).
+    // Use rawExtendAtSec - 2 so Sonic has context overlap; fall back to rawExtendAtSec if < 5.
+    const bestContinueAt = rawExtendAtSec > 5
+      ? Math.floor(rawExtendAtSec - 2)
+      : Math.max(5, Math.floor(rawExtendAtSec))
+    const uploadContinueAt = rawExtendAtSec > 0 ? bestContinueAt : 60  // 60s fallback if duration unknown
 
     let extTaskId: string
 
@@ -4407,7 +4460,7 @@ app.post('/api/job/extend-upload', async (c) => {
       chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
       chain_style: null, // no blueprint for uploaded tracks
       continue_at_ms: extend_at || (source_duration_ms || 0),
-      upload_audio_url: audioSrc
+      upload_audio_url: upload_audio_id
     }
     await c.env.DB.prepare(
       `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
@@ -4994,6 +5047,44 @@ app.post('/api/admin/patch-job-field', async (c) => {
   return c.json({ ok: true, job_id, patched_keys: Object.keys(fields) })
 })
 
+
+// GET /api/admin/stuck-jobs — list all currently stuck (generating) jobs for admin visibility
+app.get('/api/admin/stuck-jobs', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  const token    = getSessionCookie(c.req.raw)
+  const user     = token ? await getSessionUser(c.env.DB, token) : null
+  const isAdminUser = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
+                   || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
+  if (!isAdminUser) return c.json({ error: 'Unauthorized' }, 401)
+
+  await ensureTable(c.env.DB)
+
+  const nowMs = Date.now()
+  const rows = await c.env.DB.prepare(
+    `SELECT j.id, j.user_id, j.data, u.email FROM jobs j LEFT JOIN users u ON u.id = j.user_id
+     WHERE json_extract(j.data,'$.status')='generating' ORDER BY j.created_at ASC LIMIT 200`
+  ).all<{ id: string; user_id: string; data: string; email: string }>()
+
+  const jobs = (rows.results || []).map(row => {
+    const d = (() => { try { return JSON.parse(row.data) } catch { return {} } })() as any
+    const ageMs = nowMs - (d.created_at || nowMs)
+    const ageMin = Math.round(ageMs / 60000)
+    return {
+      id: row.id,
+      user_email: row.email || row.user_id,
+      title: d.title || d.prompt?.slice(0, 40) || '(no title)',
+      status: d.status,
+      stereo_task_id: d.stereo_task_id || null,
+      extend_task_type: d.extend_task_type || null,
+      age_min: ageMin,
+      stuck: ageMin >= 10,
+      created_at: d.created_at ? new Date(d.created_at).toISOString() : null,
+    }
+  })
+
+  const stuck = jobs.filter(j => j.stuck)
+  return c.json({ total_generating: jobs.length, stuck_count: stuck.length, jobs })
+})
 
 // GET /api/admin/rescue-stuck-jobs — find generating jobs older than 15min and try to resolve them
 // Polls MusicAPI for their task status; marks ready or error accordingly.
@@ -5796,11 +5887,11 @@ app.get('/api/admin/users', async (c) => {
   if (q) {
     const like = `%${q}%`
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
     ).bind(like, like).all<any>()
   } else {
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start FROM users ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer FROM users ORDER BY created_at DESC LIMIT 200`
     ).all<any>()
   }
   // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
@@ -6925,7 +7016,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-04'
+const ASSET_VER = '20260824-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7035,7 +7126,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.50.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.51.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -10860,6 +10951,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
       <button class="admin-tab" data-tab="signups" onclick="adminTab('signups')"><i class="fab fa-google"></i> Signups</button>
+      <button class="admin-tab" data-tab="stuckjobs" onclick="adminTab('stuckjobs')" id="stuck-jobs-tab-btn"><i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs</button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -10955,6 +11047,18 @@ function adminPage(user: User) {
     <div id="admin-tab-users" style="display:none">
       <div id="admin-users-list" style="overflow-x:auto">
         <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading users…</p>
+      </div>
+    </div>
+
+    <!-- STUCK JOBS TAB -->
+    <div id="admin-tab-stuckjobs" style="display:none">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap">
+        <button onclick="loadStuckJobs()" class="btn btn--primary btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
+        <button onclick="rescueStuckJobs()" class="btn btn--sm" style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);color:#f59e0b"><i class="fas fa-wrench"></i> Rescue All Stuck</button>
+        <span id="stuck-jobs-summary" style="font-size:.82rem;color:var(--muted)"></span>
+      </div>
+      <div id="stuck-jobs-list" style="overflow-x:auto">
+        <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Click Refresh to load…</p>
       </div>
     </div>
 

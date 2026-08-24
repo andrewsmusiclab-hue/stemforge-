@@ -73,7 +73,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','signups'];
+var adminTabs=['analytics','revenue','users','signups','stuckjobs'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -82,6 +82,7 @@ function adminTab(tab){
   if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
+  if(tab==='stuckjobs'){ loadStuckJobs(); }
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
@@ -291,6 +292,7 @@ async function loadUsers(q){
     tableEl.innerHTML='<div style="overflow-x:auto"><table class="admin-table"><thead><tr>'+
       '<th>Email / Name</th><th>Plan</th><th>Status</th>'+
       '<th>Points</th><th>Bonus</th>'+
+      '<th>Source</th>'+
       '<th>Signed Up</th><th>Renewal</th><th>Actions</th>'+
     '</tr></thead><tbody id="admin-users-tbody">'+
       data.users.map(function(u){
@@ -303,6 +305,15 @@ async function loadUsers(q){
           :'<span style="color:#10b981;font-size:.75rem">Active</span>';
         var signupDate=u.created_at?new Date(u.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'—';
         var hasSub=!!u.stripe_subscription_id;
+        // Traffic source badge
+        var srcRaw=u.signup_source||'';
+        var srcRef=u.signup_referrer||'';
+        var srcIcon=SOCIAL_ICONS[srcRaw]||SOCIAL_ICONS[srcRaw.split(':')[0]]||'';
+        var srcLabel=srcRaw.replace('referral:','').replace('direct','🔗 direct')||'—';
+        var srcBadge=srcRaw
+          ? (srcIcon?'<span title="'+srcRef.replace(/"/g,'&quot;')+'" style="display:inline-flex;align-items:center;gap:4px;font-size:.78rem;white-space:nowrap">'+srcIcon+' <span style="max-width:90px;overflow:hidden;text-overflow:ellipsis;display:inline-block">'+srcLabel+'</span></span>'
+             : '<span title="'+srcRef.replace(/"/g,'&quot;')+'" style="font-size:.75rem;color:var(--muted)">'+srcLabel+'</span>')
+          : '<span style="color:var(--muted);font-size:.75rem">—</span>';
         var renewalCell;
         if(hasSub){
           renewalCell='<span id="renew-'+u.id+'" style="color:var(--muted);font-size:.78rem" data-user-id="'+u.id+'" data-loaded="0">Loading…</span>';
@@ -323,6 +334,7 @@ async function loadUsers(q){
           '<td>'+lockBadge+'</td>'+
           '<td style="color:'+remColor+';font-weight:700">'+rem+'<small style="font-weight:400;color:var(--muted)"> / '+u.gens_limit+'</small></td>'+
           '<td style="color:'+(bonus>0?'#a78bfa':'var(--muted)')+';font-weight:700">'+(bonus>0?'+'+bonus:'—')+'</td>'+
+          '<td>'+srcBadge+'</td>'+
           '<td style="font-size:.78rem;color:var(--muted)">'+signupDate+'</td>'+
           '<td style="font-size:.78rem">'+renewalCell+'</td>'+
           '<td><div style="display:flex;gap:4px;flex-wrap:wrap">'+
@@ -509,5 +521,66 @@ async function umodSave(){
     if(!amt||isNaN(amt)||amt<=0){ statusEl.style.color='#ef4444'; statusEl.textContent='Enter a positive number.'; return; }
     var res2=await fetch('/api/admin/user/add-credits',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify({user_id:userId,amount:amt})});
     var data2=await res2.json(); if(data2.ok){ statusEl.style.color='#10b981'; statusEl.textContent='Added '+amt+' pts, new limit: '+data2.gens_limit; window._usersLoaded=false; loadUsers(); setTimeout(umodClose,1800); } else { statusEl.style.color='#ef4444'; statusEl.textContent='Error: '+(data2.error||'Failed'); }
+  }
+}
+
+// ── Stuck Jobs Tab ──────────────────────────────────────────────────────────
+async function loadStuckJobs(){
+  var listEl=document.getElementById('stuck-jobs-list');
+  var summaryEl=document.getElementById('stuck-jobs-summary');
+  if(!listEl) return;
+  listEl.innerHTML='<p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading stuck jobs…</p>';
+  try{
+    var res=await fetch('/api/admin/stuck-jobs',{credentials:'include'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    var d=await res.json();
+    if(d.error){ listEl.innerHTML='<p style="color:#ef4444">Error: '+d.error+'</p>'; return; }
+    if(summaryEl) summaryEl.textContent='Total generating: '+d.total_generating+' | Stuck (≥10min): '+d.stuck_count;
+    // Update tab badge
+    var tabBtn=document.getElementById('stuck-jobs-tab-btn');
+    if(tabBtn && d.stuck_count>0){
+      tabBtn.innerHTML='<i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs <span style="background:#ef4444;color:#fff;font-size:.65rem;padding:1px 6px;border-radius:999px;margin-left:4px">'+d.stuck_count+'</span>';
+    } else if(tabBtn){
+      tabBtn.innerHTML='<i class="fas fa-exclamation-triangle" style="color:#10b981"></i> Stuck Jobs';
+    }
+    if(!d.jobs||!d.jobs.length){
+      listEl.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)"><i class="fas fa-check-circle" style="font-size:2rem;color:#10b981;margin-bottom:12px;display:block"></i><p>No generating jobs right now.</p></div>';
+      return;
+    }
+    var rows=d.jobs.map(function(j){
+      var ageColor=j.age_min>=30?'#ef4444':j.age_min>=10?'#f59e0b':'#10b981';
+      var stuckBadge=j.stuck?'<span style="background:rgba(239,68,68,.15);color:#ef4444;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">STUCK</span>':'<span style="color:#10b981;font-size:.72rem">running</span>';
+      var taskChip=j.stereo_task_id?'<code style="font-size:.68rem;background:var(--surface);padding:2px 6px;border-radius:4px;color:var(--muted)">'+j.stereo_task_id.slice(0,16)+'…</code>':'—';
+      return '<tr>'+
+        '<td style="font-size:.8rem;font-family:monospace;max-width:120px;overflow:hidden;text-overflow:ellipsis">'+j.id.slice(0,16)+'…</td>'+
+        '<td style="font-size:.82rem">'+j.user_email+'</td>'+
+        '<td style="font-size:.82rem;max-width:180px;overflow:hidden;text-overflow:ellipsis">'+j.title+'</td>'+
+        '<td>'+stuckBadge+'</td>'+
+        '<td style="color:'+ageColor+';font-weight:700">'+j.age_min+'m</td>'+
+        '<td>'+taskChip+'</td>'+
+        '<td style="font-size:.75rem;color:var(--muted)">'+j.extend_task_type||'—'+'</td>'+
+        '<td style="font-size:.72rem;color:var(--muted)">'+j.created_at?.replace('T',' ').slice(0,16)+' UTC</td>'+
+      '</tr>';
+    }).join('');
+    listEl.innerHTML='<table class="admin-table"><thead><tr>'+
+      '<th>Job ID</th><th>User</th><th>Title</th><th>Status</th>'+
+      '<th>Age</th><th>Task ID</th><th>Type</th><th>Started</th>'+
+    '</tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){
+    listEl.innerHTML='<p style="color:#ef4444">Failed to load: '+String(e.message||e)+'</p>';
+  }
+}
+
+async function rescueStuckJobs(){
+  var summaryEl=document.getElementById('stuck-jobs-summary');
+  if(summaryEl) summaryEl.textContent='Rescuing stuck jobs…';
+  try{
+    var res=await fetch('/api/admin/rescue-stuck-jobs',{credentials:'include'});
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    var d=await res.json();
+    if(summaryEl) summaryEl.textContent='Rescue complete: '+d.rescued+' jobs processed. Refreshing…';
+    setTimeout(loadStuckJobs,1500);
+  }catch(e){
+    if(summaryEl) summaryEl.textContent='Rescue failed: '+String(e.message||e);
   }
 }
