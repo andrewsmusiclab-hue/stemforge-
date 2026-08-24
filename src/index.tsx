@@ -191,6 +191,7 @@ interface User {
   email: string
   name: string
   avatar?: string
+  cover_image?: string
   plan: 'free' | 'creator' | 'pro' | 'developer'
   gens_used: number
   gens_limit: number       // base plan limit (resets on billing cycle)
@@ -302,6 +303,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // ── Migrate: add cycle_start column (tracks when free user's current 30-day window began) ──
   // Defaults to created_at so existing users get their first reset ~30 days after signup
   try { await db.prepare(`ALTER TABLE users ADD COLUMN cycle_start INTEGER`).run() } catch {}
+  // ── Migrate: add cover_image column (stores R2 URL for profile banner/cover photo) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN cover_image TEXT`).run() } catch {}
   // Backfill: any free user without cycle_start gets created_at as their cycle start
   try { await db.prepare(`UPDATE users SET cycle_start = created_at WHERE plan = 'free' AND cycle_start IS NULL`).run() } catch {}
   // ── Opportunistic reset on cold start — catches any overdue free users ──
@@ -417,6 +420,7 @@ async function getSessionUser(db: D1Database, token: string): Promise<User | nul
     if (!row) return null
     return {
       id: row.id, email: row.email, name: row.name, avatar: row.avatar,
+      cover_image: row.cover_image ?? null,
       plan: row.plan, gens_used: row.gens_used, gens_limit: row.gens_limit,
       bonus_credits: row.bonus_credits ?? 0,
       stripe_customer_id: row.stripe_customer_id,
@@ -3168,6 +3172,85 @@ app.post('/api/auth/logout', async (c) => {
     status: 200,
     headers: { 'Content-Type': 'application/json', 'Set-Cookie': clearSessionCookie() }
   })
+})
+
+// POST /api/profile/update — update name, avatar, and/or cover image
+// Accepts multipart/form-data with optional fields: name, avatar (file), cover (file)
+app.post('/api/profile/update', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  try {
+    const formData = await c.req.formData()
+    const newName = (formData.get('name') as string | null)?.trim() || null
+    const avatarFile = formData.get('avatar') as File | null
+    const coverFile  = formData.get('cover')  as File | null
+
+    let avatarUrl: string | null = null
+    let coverUrl:  string | null = null
+
+    // ── Upload avatar to R2 ──────────────────────────────────────────────────
+    if (avatarFile && avatarFile.size > 0 && c.env.IMAGES) {
+      if (avatarFile.size > 5 * 1024 * 1024) return c.json({ error: 'Avatar must be under 5 MB' }, 400)
+      const ext = avatarFile.type === 'image/png' ? 'png' : avatarFile.type === 'image/webp' ? 'webp' : 'jpg'
+      const r2Key = `profiles/avatars/${user.id}.${ext}`
+      const buf = await avatarFile.arrayBuffer()
+      await c.env.IMAGES.put(r2Key, buf, { httpMetadata: { contentType: avatarFile.type } })
+      avatarUrl = `${c.env.SITE_URL}/api/profile-image/${r2Key}`
+    }
+
+    // ── Upload cover to R2 ───────────────────────────────────────────────────
+    if (coverFile && coverFile.size > 0 && c.env.IMAGES) {
+      if (coverFile.size > 10 * 1024 * 1024) return c.json({ error: 'Cover image must be under 10 MB' }, 400)
+      const ext = coverFile.type === 'image/png' ? 'png' : coverFile.type === 'image/webp' ? 'webp' : 'jpg'
+      const r2Key = `profiles/covers/${user.id}.${ext}`
+      const buf = await coverFile.arrayBuffer()
+      await c.env.IMAGES.put(r2Key, buf, { httpMetadata: { contentType: coverFile.type } })
+      coverUrl = `${c.env.SITE_URL}/api/profile-image/${r2Key}`
+    }
+
+    // ── Build and run UPDATE query ───────────────────────────────────────────
+    const setParts: string[] = []
+    const binds: any[] = []
+    if (newName && newName.length >= 1) { setParts.push('name = ?'); binds.push(newName.slice(0, 60)) }
+    if (avatarUrl) { setParts.push('avatar = ?'); binds.push(avatarUrl) }
+    if (coverUrl)  { setParts.push('cover_image = ?'); binds.push(coverUrl) }
+
+    if (setParts.length === 0) return c.json({ ok: true, message: 'Nothing to update' })
+
+    binds.push(user.id)
+    await c.env.DB.prepare(`UPDATE users SET ${setParts.join(', ')} WHERE id = ?`).bind(...binds).run()
+
+    return c.json({
+      ok: true,
+      name:        newName    ?? user.name,
+      avatar:      avatarUrl  ?? user.avatar  ?? null,
+      cover_image: coverUrl   ?? user.cover_image ?? null,
+    })
+  } catch (err: any) {
+    console.error('[profile/update] error:', err?.message)
+    return c.json({ error: 'Failed to update profile' }, 500)
+  }
+})
+
+// GET /api/profile-image/* — serve images stored in R2 under profiles/ prefix
+app.get('/api/profile-image/*', async (c) => {
+  if (!c.env.IMAGES) return c.notFound()
+  const r2Key = c.req.path.replace('/api/profile-image/', '')
+  if (!r2Key.startsWith('profiles/')) return c.notFound()
+  try {
+    const obj = await c.env.IMAGES.get(r2Key)
+    if (!obj) return c.notFound()
+    const ct = obj.httpMetadata?.contentType ?? 'image/jpeg'
+    return new Response(obj.body, {
+      headers: {
+        'Content-Type': ct,
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      }
+    })
+  } catch { return c.notFound() }
 })
 
 // POST /api/account/delete — permanently delete account and all data
@@ -9038,44 +9121,55 @@ function profilePage(user: User | null) {
   const planLabel = user.plan === 'pro' ? 'Pro Artist' : user.plan === 'creator' ? 'Creator' : 'Free'
   const planClass = user.plan === 'pro' ? 'plan-badge--pro' : user.plan === 'creator' ? 'plan-badge--creator' : ''
   const memberSince = new Date(user.created_at).toLocaleDateString('en-US',{year:'numeric',month:'long'})
+  const coverStyle = user.cover_image
+    ? `background-image:url('${user.cover_image}');background-size:cover;background-position:center;`
+    : ''
+
   return shell('Profile', `
 <main class="inner-page gs-content profile-page">
   <div class="container">
     <div class="profile-wrap">
-      <div class="profile-cover"></div>
+
+      <!-- ── Cover / Banner ── -->
+      <div class="profile-cover" id="profileCover" style="${coverStyle}">
+        <button class="profile-cover-edit-btn" onclick="triggerCoverPick()" title="Change cover photo">
+          <i class="fas fa-camera"></i> Change cover
+        </button>
+        <input type="file" id="coverFileInput" accept="image/*" style="display:none" onchange="previewCover(this)">
+      </div>
+
       <div class="profile-body">
+        <!-- ── Avatar ── -->
         <div class="profile-avatar-wrap">
           ${user.avatar
-            ? `<img src="${user.avatar}" class="profile-avatar" alt="${user.name}"/>`
-            : `<div class="profile-avatar profile-avatar--initials">${initials}</div>`
+            ? `<img src="${user.avatar}" class="profile-avatar" id="profileAvatarImg" alt="${user.name}"/>`
+            : `<div class="profile-avatar profile-avatar--initials" id="profileAvatarImg">${initials}</div>`
           }
         </div>
+
         <div class="profile-info">
           <div class="profile-info__top">
             <div>
-              <h1 class="profile-name">${user.name}</h1>
+              <h1 class="profile-name" id="profileNameDisplay">${user.name}</h1>
               <p class="profile-handle">@${user.email.split('@')[0]}</p>
             </div>
             <div class="profile-actions">
               <span class="plan-badge ${planClass}">${planLabel}</span>
-              <a href="/account" class="btn btn--outline btn--sm"><i class="fas fa-pencil-alt"></i> Edit</a>
+              <button class="btn btn--outline btn--sm" onclick="openProfileModal()">
+                <i class="fas fa-pencil-alt"></i> Edit
+              </button>
             </div>
           </div>
+
+          <!-- ── Stats — Member since only ── -->
           <div class="profile-stats">
-            <div class="profile-stat">
-              <span class="profile-stat__val">${user.gens_used}</span>
-              <span class="profile-stat__label">Beats generated</span>
-            </div>
-            <div class="profile-stat">
-              <span class="profile-stat__val">${Math.max(0, user.gens_limit - user.gens_used)}</span>
-              <span class="profile-stat__label">Remaining</span>
-            </div>
             <div class="profile-stat">
               <span class="profile-stat__val">${memberSince}</span>
               <span class="profile-stat__label">Member since</span>
             </div>
           </div>
         </div>
+
         <div class="profile-section">
           <h3>Quick links</h3>
           <div class="profile-links">
@@ -9088,7 +9182,179 @@ function profilePage(user: User | null) {
       </div>
     </div>
   </div>
-</main>`)
+</main>
+
+<!-- ══════════════════════════════════════════════════════════
+     PROFILE EDIT MODAL
+══════════════════════════════════════════════════════════ -->
+<div id="profileEditModal" class="pedit-overlay" style="display:none" onclick="closeProfileModal(event)">
+  <div class="pedit-modal" role="dialog" aria-modal="true" aria-label="Edit profile">
+
+    <div class="pedit-header">
+      <h2 class="pedit-title">Edit Profile</h2>
+      <button class="pedit-close" onclick="closeProfileModalDirect()" aria-label="Close">&times;</button>
+    </div>
+
+    <!-- Cover image preview inside modal -->
+    <div class="pedit-cover-row">
+      <label class="pedit-label">Cover Photo</label>
+      <div class="pedit-cover-preview" id="modalCoverPreview" style="${coverStyle}">
+        <button type="button" class="pedit-cover-pick-btn" onclick="triggerCoverPick()">
+          <i class="fas fa-camera"></i>
+          <span>${user.cover_image ? 'Change photo' : 'Add cover photo'}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Avatar preview inside modal -->
+    <div class="pedit-avatar-row">
+      <label class="pedit-label">Profile Picture</label>
+      <div class="pedit-avatar-preview-wrap">
+        <div class="pedit-avatar-preview" id="modalAvatarPreview">
+          ${user.avatar
+            ? `<img src="${user.avatar}" id="modalAvatarImg" alt="avatar"/>`
+            : `<div class="pedit-avatar-initials" id="modalAvatarImg">${initials}</div>`
+          }
+        </div>
+        <button type="button" class="btn btn--outline btn--sm" onclick="triggerAvatarPick()">
+          <i class="fas fa-upload"></i> Upload photo
+        </button>
+      </div>
+      <input type="file" id="avatarFileInput" accept="image/*" style="display:none" onchange="previewAvatar(this)">
+    </div>
+
+    <!-- Name field -->
+    <div class="pedit-field-row">
+      <label class="pedit-label" for="peditNameInput">Display Name</label>
+      <input class="pedit-input" id="peditNameInput" type="text"
+             value="${user.name.replace(/"/g, '&quot;')}" maxlength="60" placeholder="Your name">
+    </div>
+
+    <div id="peditError" class="pedit-error" style="display:none"></div>
+
+    <div class="pedit-actions">
+      <button class="btn btn--ghost" onclick="closeProfileModalDirect()">Cancel</button>
+      <button class="btn btn--primary" id="peditSaveBtn" onclick="saveProfile()">
+        <i class="fas fa-check"></i> Save changes
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Profile edit modal state ──────────────────────────────────────────────────
+let _pendingAvatarFile = null
+let _pendingCoverFile  = null
+
+function openProfileModal() {
+  document.getElementById('profileEditModal').style.display = 'flex'
+  document.body.style.overflow = 'hidden'
+}
+function closeProfileModal(e) {
+  if (e.target === document.getElementById('profileEditModal')) closeProfileModalDirect()
+}
+function closeProfileModalDirect() {
+  document.getElementById('profileEditModal').style.display = 'none'
+  document.body.style.overflow = ''
+}
+
+// ── Avatar pick & preview ─────────────────────────────────────────────────────
+function triggerAvatarPick() { document.getElementById('avatarFileInput').click() }
+
+function previewAvatar(input) {
+  const file = input.files[0]
+  if (!file) return
+  _pendingAvatarFile = file
+  const url = URL.createObjectURL(file)
+  // Update modal preview
+  const wrap = document.getElementById('modalAvatarPreview')
+  wrap.innerHTML = '<img src="' + url + '" id="modalAvatarImg" alt="avatar"/>'
+}
+
+// ── Cover pick & preview ──────────────────────────────────────────────────────
+function triggerCoverPick() { document.getElementById('coverFileInput').click() }
+
+function previewCover(input) {
+  const file = input.files[0]
+  if (!file) return
+  _pendingCoverFile = file
+  const url = URL.createObjectURL(file)
+  // Update both: the actual cover div on page and modal preview
+  document.getElementById('profileCover').style.backgroundImage = 'url(' + url + ')'
+  document.getElementById('profileCover').style.backgroundSize  = 'cover'
+  document.getElementById('profileCover').style.backgroundPosition = 'center'
+  const modalPrev = document.getElementById('modalCoverPreview')
+  if (modalPrev) {
+    modalPrev.style.backgroundImage = 'url(' + url + ')'
+    modalPrev.style.backgroundSize  = 'cover'
+    modalPrev.style.backgroundPosition = 'center'
+    const btn = modalPrev.querySelector('.pedit-cover-pick-btn')
+    if (btn) btn.querySelector('span').textContent = 'Change photo'
+  }
+}
+
+// ── Save profile ──────────────────────────────────────────────────────────────
+async function saveProfile() {
+  const btn = document.getElementById('peditSaveBtn')
+  const errEl = document.getElementById('peditError')
+  const name = document.getElementById('peditNameInput').value.trim()
+  errEl.style.display = 'none'
+
+  if (!name) { showPeditError('Name cannot be empty'); return }
+
+  btn.disabled = true
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving…'
+
+  try {
+    const fd = new FormData()
+    fd.append('name', name)
+    if (_pendingAvatarFile) fd.append('avatar', _pendingAvatarFile)
+    if (_pendingCoverFile)  fd.append('cover',  _pendingCoverFile)
+
+    const res = await fetch('/api/profile/update', { method: 'POST', body: fd })
+    const data = await res.json()
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Update failed')
+
+    // ── Apply changes to page without reload ────────────────────────────────
+    // Update name
+    document.getElementById('profileNameDisplay').textContent = data.name
+
+    // Update avatar on main page
+    if (data.avatar) {
+      const avatarWrap = document.getElementById('profileAvatarImg')
+      if (avatarWrap) {
+        const newImg = document.createElement('img')
+        newImg.src = data.avatar + '?t=' + Date.now()
+        newImg.className = 'profile-avatar'
+        newImg.id = 'profileAvatarImg'
+        newImg.alt = data.name
+        avatarWrap.parentNode.replaceChild(newImg, avatarWrap)
+      }
+    }
+
+    // Update cover on main page (already previewed live, but update with server URL for consistency)
+    if (data.cover_image) {
+      const cover = document.getElementById('profileCover')
+      cover.style.backgroundImage = 'url(' + data.cover_image + '?t=' + Date.now() + ')'
+    }
+
+    closeProfileModalDirect()
+    _pendingAvatarFile = null
+    _pendingCoverFile  = null
+  } catch (err) {
+    showPeditError(err.message || 'Something went wrong. Please try again.')
+  } finally {
+    btn.disabled = false
+    btn.innerHTML = '<i class="fas fa-check"></i> Save changes'
+  }
+}
+
+function showPeditError(msg) {
+  const el = document.getElementById('peditError')
+  el.textContent = msg
+  el.style.display = 'block'
+}
+</script>`)
 }
 
 // ─── SUBSCRIPTION PAGE ────────────────────────────────────────────────────────

@@ -1431,6 +1431,123 @@ p  { color: var(--sub); }
 .profile-link-card i { font-size: 1.4rem; color: var(--primary); }
 .profile-link-card:hover { background: rgba(78,159,255,.08); border-color: var(--primary); transform: translateY(-2px); }
 
+/* ── Profile cover edit button ──────────────────────────────── */
+.profile-cover {
+  position: relative;
+}
+.profile-cover-edit-btn {
+  position: absolute; bottom: 12px; right: 14px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px;
+  background: rgba(0,0,0,.52); color: #fff;
+  border: 1px solid rgba(255,255,255,.18);
+  font-size: .78rem; font-weight: 600; cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background .2s;
+  opacity: 0;
+  transition: opacity .2s;
+}
+.profile-cover:hover .profile-cover-edit-btn { opacity: 1; }
+.profile-cover-edit-btn:hover { background: rgba(0,0,0,.72); }
+
+/* ══════════════════════════════════════════════════════════════
+   PROFILE EDIT MODAL  (.pedit-*)
+══════════════════════════════════════════════════════════════ */
+.pedit-overlay {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(0,0,0,.72);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  backdrop-filter: blur(4px);
+}
+.pedit-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 100%; max-width: 520px;
+  max-height: 90vh; overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(0,0,0,.6);
+}
+.pedit-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 20px 24px 0;
+}
+.pedit-title { font-size: 1.2rem; font-weight: 800; margin: 0; }
+.pedit-close {
+  background: none; border: none; color: var(--muted);
+  font-size: 1.6rem; line-height: 1; cursor: pointer; padding: 0 4px;
+  transition: color .15s;
+}
+.pedit-close:hover { color: var(--text); }
+.pedit-label {
+  display: block; font-size: .78rem; font-weight: 700;
+  color: var(--muted); text-transform: uppercase; letter-spacing: .06em;
+  margin-bottom: 8px;
+}
+
+/* Cover preview row */
+.pedit-cover-row { padding: 20px 24px 0; }
+.pedit-cover-preview {
+  height: 130px; border-radius: var(--radius);
+  background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+  background-size: cover; background-position: center;
+  position: relative; overflow: hidden;
+  border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+}
+.pedit-cover-pick-btn {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.2);
+  color: #fff; border-radius: var(--radius); padding: 10px 20px;
+  cursor: pointer; font-size: .82rem; font-weight: 600;
+  backdrop-filter: blur(4px); transition: background .2s;
+}
+.pedit-cover-pick-btn i { font-size: 1.1rem; }
+.pedit-cover-pick-btn:hover { background: rgba(0,0,0,.72); }
+
+/* Avatar preview row */
+.pedit-avatar-row { padding: 20px 24px 0; display: flex; flex-direction: column; gap: 10px; }
+.pedit-avatar-preview-wrap { display: flex; align-items: center; gap: 16px; }
+.pedit-avatar-preview {
+  width: 72px; height: 72px; border-radius: 50%;
+  overflow: hidden; border: 3px solid var(--border); flex-shrink: 0;
+}
+.pedit-avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
+.pedit-avatar-initials {
+  width: 72px; height: 72px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem; font-weight: 700; color: #fff;
+}
+
+/* Name field row */
+.pedit-field-row { padding: 20px 24px 0; }
+.pedit-input {
+  width: 100%; padding: 10px 14px;
+  background: var(--surface-2, rgba(255,255,255,.04));
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); font-size: .95rem;
+  transition: border-color .2s;
+  box-sizing: border-box;
+}
+.pedit-input:focus { outline: none; border-color: var(--primary); }
+
+/* Error */
+.pedit-error {
+  margin: 12px 24px 0;
+  padding: 10px 14px;
+  background: rgba(239,68,68,.1);
+  border: 1px solid rgba(239,68,68,.3);
+  border-radius: var(--radius);
+  color: #f87171; font-size: .85rem;
+}
+
+/* Actions row */
+.pedit-actions {
+  display: flex; justify-content: flex-end; gap: 10px;
+  padding: 24px;
+}
+
 /* ══════════════════════════════════════════════════════════════
    SUBSCRIPTION PAGE
 ══════════════════════════════════════════════════════════════ */
