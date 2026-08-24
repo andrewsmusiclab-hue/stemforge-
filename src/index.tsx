@@ -9373,24 +9373,50 @@ function openReposOverlay(target, file) {
   _dreposObjUrl = URL.createObjectURL(file)
 
   const overlay = document.getElementById('dragReposOverlay')
-  const img     = document.getElementById('dreposImg')
   const title   = document.getElementById('dreposTitle')
-  const frame   = document.getElementById('dreposFrame')
-  const stage   = document.getElementById('dreposStage')
-
   title.textContent = target === 'cover' ? 'Position cover photo' : 'Position profile picture'
 
-  // ── Set up crop frame dimensions ────────────────────────────────────────
-  // For cover: the crop window is 80% wide × full height of stage (banner shape)
-  // For avatar: square crop window centred (circle shown via border-radius)
-  // The stage is larger so the dimmed "outside" area is visible around the frame.
+  // ── Show overlay FIRST so the browser lays it out and offsetWidth is real ──
+  overlay.style.display = 'flex'
+  document.body.style.overflow = 'hidden'
+
+  // Use rAF × 2 to guarantee the browser has painted and dimensions are available
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() {
+      _initReposStage(target)
+    })
+  })
+
+  // Attach drag listeners immediately (safe — they just set _dragging)
+  const s = document.getElementById('dreposStage')
+  s.addEventListener('mousedown',  onDragStart)
+  s.addEventListener('touchstart', onDragStart, { passive: false })
+  window.addEventListener('mousemove',  onDragMove)
+  window.addEventListener('touchmove',  onDragMove, { passive: false })
+  window.addEventListener('mouseup',   onDragEnd)
+  window.addEventListener('touchend',  onDragEnd)
+}
+
+// ── Called after overlay is visible so offsetWidth/Height are real ────────────
+function _initReposStage(target) {
+  const img   = document.getElementById('dreposImg')
+  const frame = document.getElementById('dreposFrame')
+  const stage = document.getElementById('dreposStage')
+
   _stageW = stage.offsetWidth
   _stageH = stage.offsetHeight
 
+  // Guard: if stage still has no size, retry once more after 50ms
+  if (_stageW === 0 || _stageH === 0) {
+    setTimeout(function() { _initReposStage(target) }, 50)
+    return
+  }
+
+  // ── Set crop-frame dimensions ──────────────────────────────────────────────
   if (target === 'cover') {
-    // Banner crop: wide rectangle, 8:3 ratio like the real banner (160px tall / 900px wide ≈ 0.178)
-    const fW = Math.round(_stageW * 0.82)
-    const fH = Math.round(fW * 0.22)   // ~4.5:1 ratio matching the real banner
+    // Match real banner aspect ratio (~5:1 wide)
+    const fW = Math.round(_stageW * 0.84)
+    const fH = Math.round(fW * 0.21)
     const fX = Math.round((_stageW - fW) / 2)
     const fY = Math.round((_stageH - fH) / 2)
     _frameX = fX; _frameY = fY; _frameW = fW; _frameH = fH
@@ -9400,7 +9426,7 @@ function openReposOverlay(target, file) {
     frame.style.left   = fX + 'px'
     frame.style.top    = fY + 'px'
   } else {
-    // Avatar crop: circle
+    // Circle crop for avatar
     const sz = Math.round(Math.min(_stageW, _stageH) * 0.58)
     const fX = Math.round((_stageW - sz) / 2)
     const fY = Math.round((_stageH - sz) / 2)
@@ -9411,47 +9437,35 @@ function openReposOverlay(target, file) {
     frame.style.left   = fX + 'px'
     frame.style.top    = fY + 'px'
   }
+
   updateVignette()
 
-  // Position the snap crosshair lines at the frame centre
+  // Position snap crosshair lines at frame centre
   const snapH = document.getElementById('dreposSnapH')
   const snapV = document.getElementById('dreposSnapV')
   if (snapH) snapH.style.top  = (_frameY + _frameH / 2) + 'px'
   if (snapV) snapV.style.left = (_frameX + _frameW / 2) + 'px'
 
+  // ── Load the image — onload fires after layout is ready ───────────────────
   img.onload = function() {
-    _stageW = stage.offsetWidth
-    _stageH = stage.offsetHeight
-    _imgW   = img.naturalWidth
-    _imgH   = img.naturalHeight
+    const natW = img.naturalWidth
+    const natH = img.naturalHeight
 
-    // Scale image so it fully covers the crop frame (not the whole stage) + 25% extra to drag
-    const scaleW = _frameW / _imgW
-    const scaleH = _frameH / _imgH
-    const scale  = Math.max(scaleW, scaleH) * 1.4
-    _imgW = Math.round(_imgW * scale)
-    _imgH = Math.round(_imgH * scale)
+    // Scale so image fills the crop frame + 40% extra room to drag
+    const scale = Math.max(_frameW / natW, _frameH / natH) * 1.4
+    _imgW = Math.round(natW * scale)
+    _imgH = Math.round(natH * scale)
     img.style.width  = _imgW + 'px'
     img.style.height = _imgH + 'px'
+    img.style.opacity = '1'
 
-    // Start with image centred over the frame
+    // Centre over frame
     _imgOffX = _frameX + Math.round((_frameW - _imgW) / 2)
     _imgOffY = _frameY + Math.round((_frameH - _imgH) / 2)
-    clampAndApplyOffset(true)  // true = skip snap check on load
+    clampAndApplyOffset(true)
   }
+  img.style.opacity = '0'   // hide until sized correctly
   img.src = _dreposObjUrl
-
-  overlay.style.display = 'flex'
-  document.body.style.overflow = 'hidden'
-
-  // Attach drag listeners
-  const s = document.getElementById('dreposStage')
-  s.addEventListener('mousedown',  onDragStart)
-  s.addEventListener('touchstart', onDragStart, { passive: false })
-  window.addEventListener('mousemove',  onDragMove)
-  window.addEventListener('touchmove',  onDragMove, { passive: false })
-  window.addEventListener('mouseup',   onDragEnd)
-  window.addEventListener('touchend',  onDragEnd)
 }
 
 function cancelRepos() {
