@@ -535,7 +535,7 @@ async function loadStuckJobs(){
     if(!res.ok) throw new Error('HTTP '+res.status);
     var d=await res.json();
     if(d.error){ listEl.innerHTML='<p style="color:#ef4444">Error: '+d.error+'</p>'; return; }
-    if(summaryEl) summaryEl.textContent='Total generating: '+d.total_generating+' | Stuck (≥10min): '+d.stuck_count;
+    if(summaryEl) summaryEl.textContent='Generating: '+d.total_generating+' | Errors (24h): '+(d.total_errored_24h||0)+' | Stuck: '+d.stuck_count;
     // Update tab badge
     var tabBtn=document.getElementById('stuck-jobs-tab-btn');
     if(tabBtn && d.stuck_count>0){
@@ -544,27 +544,32 @@ async function loadStuckJobs(){
       tabBtn.innerHTML='<i class="fas fa-exclamation-triangle" style="color:#10b981"></i> Stuck Jobs';
     }
     if(!d.jobs||!d.jobs.length){
-      listEl.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)"><i class="fas fa-check-circle" style="font-size:2rem;color:#10b981;margin-bottom:12px;display:block"></i><p>No generating jobs right now.</p></div>';
+      listEl.innerHTML='<div style="text-align:center;padding:40px;color:var(--muted)"><i class="fas fa-check-circle" style="font-size:2rem;color:#10b981;margin-bottom:12px;display:block"></i><p>No stuck or errored jobs right now.</p></div>';
       return;
     }
     var rows=d.jobs.map(function(j){
       var ageColor=j.age_min>=30?'#ef4444':j.age_min>=10?'#f59e0b':'#10b981';
-      var stuckBadge=j.stuck?'<span style="background:rgba(239,68,68,.15);color:#ef4444;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">STUCK</span>':'<span style="color:#10b981;font-size:.72rem">running</span>';
+      var isErr=j.status==='error';
+      var stuckBadge=isErr
+        ?'<span style="background:rgba(239,68,68,.15);color:#ef4444;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(239,68,68,.3)">ERROR</span>'
+        :j.stuck?'<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(245,158,11,.3)">STUCK</span>'
+        :'<span style="color:#10b981;font-size:.72rem">running</span>';
       var taskChip=j.stereo_task_id?'<code style="font-size:.68rem;background:var(--surface);padding:2px 6px;border-radius:4px;color:var(--muted)">'+j.stereo_task_id.slice(0,16)+'…</code>':'—';
+      var errCell=isErr&&j.error_msg?'<td style="font-size:.72rem;color:#ef4444;max-width:200px;overflow:hidden;text-overflow:ellipsis" title="'+j.error_msg+'">'+j.error_msg.slice(0,60)+(j.error_msg.length>60?'…':'')+'</td>':'<td style="color:var(--muted);font-size:.72rem">—</td>';
       return '<tr>'+
         '<td style="font-size:.8rem;font-family:monospace;max-width:120px;overflow:hidden;text-overflow:ellipsis">'+j.id.slice(0,16)+'…</td>'+
         '<td style="font-size:.82rem">'+j.user_email+'</td>'+
-        '<td style="font-size:.82rem;max-width:180px;overflow:hidden;text-overflow:ellipsis">'+j.title+'</td>'+
+        '<td style="font-size:.82rem;max-width:160px;overflow:hidden;text-overflow:ellipsis">'+j.title+'</td>'+
         '<td>'+stuckBadge+'</td>'+
         '<td style="color:'+ageColor+';font-weight:700">'+j.age_min+'m</td>'+
         '<td>'+taskChip+'</td>'+
-        '<td style="font-size:.75rem;color:var(--muted)">'+j.extend_task_type||'—'+'</td>'+
+        errCell+
         '<td style="font-size:.72rem;color:var(--muted)">'+j.created_at?.replace('T',' ').slice(0,16)+' UTC</td>'+
       '</tr>';
     }).join('');
     listEl.innerHTML='<table class="admin-table"><thead><tr>'+
       '<th>Job ID</th><th>User</th><th>Title</th><th>Status</th>'+
-      '<th>Age</th><th>Task ID</th><th>Type</th><th>Started</th>'+
+      '<th>Age</th><th>Task ID</th><th>Error</th><th>Started</th>'+
     '</tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){
     listEl.innerHTML='<p style="color:#ef4444">Failed to load: '+String(e.message||e)+'</p>';

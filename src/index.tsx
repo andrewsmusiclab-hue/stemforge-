@@ -921,13 +921,13 @@ async function startInstrumentalGeneration(blueprint: Blueprint, apiKey: string,
     if (res.status === 429 || res.status === 503 || String(err?.message || err?.error || '').toLowerCase().includes('concurrent')) {
       throw new Error('SERVER_BUSY: Our beat generation server is currently at capacity. Please try again in 30–60 seconds.')
     }
-    throw new Error(`MusicAPI Producer error: ${err?.message || err?.error || res.status}`)
+    throw new Error(`Stemforge generation error: ${err?.message || err?.error || res.status}`)
   }
 
   const data = await res.json() as any
   // Producer returns { task_id: "..." } or { data: { task_id: "..." } }
   const taskId = data.task_id || data.data?.task_id
-  if (!taskId) throw new Error(`MusicAPI Producer returned no task_id: ${JSON.stringify(data).slice(0, 200)}`)
+  if (!taskId) throw new Error(`Stemforge returned no task ID: ${JSON.stringify(data).slice(0, 200)}`)
   return taskId as string
 }
 
@@ -985,13 +985,13 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
     if (res.status === 429 || res.status === 503 || String(err?.message || err?.error || '').toLowerCase().includes('concurrent')) {
       throw new Error('SERVER_BUSY: Our beat generation server is currently at capacity. Please try again in 30–60 seconds.')
     }
-    throw new Error(`MusicAPI Sonic error: ${err?.message || err?.error || res.status}`)
+    throw new Error(`Stemforge error: ${err?.message || err?.error || res.status}`)
   }
 
   const data = await res.json() as any
   // Sonic returns { data: [{ id, state, ... }] } or { task_id }
   const taskId = data.task_id || data.data?.[0]?.id
-  if (!taskId) throw new Error(`MusicAPI Sonic returned no task_id: ${JSON.stringify(data).slice(0, 200)}`)
+  if (!taskId) throw new Error(`Stemforge returned no task ID: ${JSON.stringify(data).slice(0, 200)}`)
   return taskId as string
 }
 
@@ -1067,9 +1067,9 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{
     // 500 with type=failed means the task itself failed upstream (credits refunded)
     try {
       const errData = JSON.parse(txt)
-      if (errData.type === 'failed') throw new Error(errData.error || 'MusicAPI task failed')
+      if (errData.type === 'failed') throw new Error(errData.error || 'Stemforge generation failed')
     } catch (parseErr: any) {
-      if (parseErr.message !== 'MusicAPI task failed' && !parseErr.message?.startsWith('MusicAPI')) {
+      if (parseErr.message !== 'Stemforge generation failed' && !parseErr.message?.startsWith('MusicAPI')) {
         // JSON parse error — not a known failure shape, treat as not-ready
         return null
       }
@@ -1085,7 +1085,7 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{
   // Check all clips — if any still pending/running, not ready yet
   const allDone = clips.every((c: any) => c.state === 'succeeded' || c.state === 'failed')
   if (!allDone) return null
-  if (clips.every((c: any) => c.state === 'failed')) throw new Error(clips[0]?.error || 'MusicAPI instrumental generation failed')
+  if (clips.every((c: any) => c.state === 'failed')) throw new Error(clips[0]?.error || 'Stemforge instrumental generation failed')
   const clip1 = clips.find((c: any) => c.state === 'succeeded')
   if (!clip1) return null
   const clip2 = clips.find((c: any, i: number) => c.state === 'succeeded' && i !== clips.indexOf(clip1)) || null
@@ -1119,7 +1119,7 @@ async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ u
     const urlAlt: string | undefined = (clip2 && clip2.state === 'succeeded' && clip2.audio_url) ? clip2.audio_url : undefined
     return { url, urlAlt, durationMs, clipId }
   }
-  if (clip.state === 'failed') throw new Error(clip.error || 'MusicAPI song extend failed')
+  if (clip.state === 'failed') throw new Error(clip.error || 'Stemforge extend failed')
   return null // still processing
 }
 
@@ -1292,7 +1292,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
         const ageMs = Date.now() - job.created_at
         if (ageMs > 10 * 60 * 1000) {
           job.status = 'error'
-          job.error = 'MusicAPI generation timed out after 10 minutes'
+          job.error = 'Stemforge generation timed out after 10 minutes'
           await setJob(db, { ...job })
         }
         return job
@@ -1321,7 +1321,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
       const timeoutMs = (job as any).chain_target_ms ? 15 * 60 * 1000 : 10 * 60 * 1000
       if (ageMs > timeoutMs) {
         job.status = 'error'
-        job.error = 'MusicAPI generation timed out'
+        job.error = 'Stemforge generation timed out'
         await setJob(db, { ...job })
       }
       return job
@@ -2421,7 +2421,7 @@ app.post('/api/job/regen-stem', async (c) => {
     const uploadTaskId = uploadData.task_id || uploadData.data?.task_id
     if (!uploadTaskId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No task_id from MusicAPI upload' }, 500)
+      return c.json({ error: 'Stemforge returned no task ID for upload' }, 500)
     }
 
     // Poll for clip_id
@@ -2443,7 +2443,7 @@ app.post('/api/job/regen-stem', async (c) => {
     }
     if (!clipId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'MusicAPI upload timed out or failed' }, 500)
+      return c.json({ error: 'Stemforge audio processing timed out or failed' }, 500)
     }
   } catch (err: any) {
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
@@ -2474,7 +2474,7 @@ app.post('/api/job/regen-stem', async (c) => {
     taskId = genData.task_id || genData.data?.task_id
     if (!taskId) {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'No task_id from MusicAPI Producer' }, 500)
+      return c.json({ error: 'Stemforge returned no task ID' }, 500)
     }
     console.log(`[regen] Producer started: task=${taskId} stem=${stemLabel} job=${job_id}`)
   } catch (err: any) {
@@ -2523,7 +2523,7 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 
     if (clip.state === 'succeeded') {
       const url: string = clip.audio_url || ''
-      if (!url) return c.json({ status: 'error', error: 'No audio URL in MusicAPI response' })
+      if (!url) return c.json({ status: 'error', error: 'No audio URL in Stemforge response' })
       console.log(`[regen poll] ready: task=${taskId} stem=${stemType} url=${url.slice(0,60)}...`)
       return c.json({ status: 'ready', task_id: taskId,
         stems: [{ name: stemType.toLowerCase(), url }] })
@@ -2678,7 +2678,7 @@ app.post('/api/job/remix', async (c) => {
     if (!genTaskId) {
       console.error(`[remix] upload-cover returned no task_id: ${coverText.slice(0,200)}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
-      return c.json({ error: 'Remix failed to start — MusicAPI returned no task ID. Please try again.' }, 500)
+      return c.json({ error: 'Remix failed to start — please try again. Please try again.' }, 500)
     }
     console.log(`[remix] upload-cover task started: ${genTaskId}`)
   } catch (err: any) {
@@ -4396,13 +4396,13 @@ app.post('/api/job/extend-upload', async (c) => {
       const sonicText = await sonicRes.text()
       console.log(`[extend-upload] /sonic/create HTTP ${sonicRes.status} raw: ${sonicText.slice(0, 400)}`)
       if (!sonicRes.ok) {
-        return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: sonicText.slice(0, 800) }, 500)
+        return c.json({ error: `Stemforge extend error: HTTP ${sonicRes.status}`, raw: sonicText.slice(0, 800) }, 500)
       }
       let sonicData: any
       try { sonicData = JSON.parse(sonicText) } catch (_) { sonicData = {} }
       extTaskId = sonicData.task_id || sonicData.id || sonicData.data?.[0]?.id
       if (!extTaskId) {
-        return c.json({ error: 'MusicAPI returned no task_id', raw: sonicText.slice(0, 800) }, 500)
+        return c.json({ error: 'Stemforge returned no task ID', raw: sonicText.slice(0, 800) }, 500)
       }
     } else {
       // ── Path B: HTTP URL — the upload_audio_id is a URL (Worker proxy or other CDN) ──
@@ -4458,11 +4458,11 @@ app.post('/api/job/extend-upload', async (c) => {
         })
         const scText = await scRes.text()
         console.log(`[extend-upload] Path B /sonic/create HTTP ${scRes.status} raw: ${scText.slice(0, 400)}`)
-        if (!scRes.ok) return c.json({ error: `MusicAPI Sonic extend error: HTTP ${scRes.status}`, raw: scText.slice(0, 800) }, 500)
+        if (!scRes.ok) return c.json({ error: `Stemforge extend error: HTTP ${scRes.status}`, raw: scText.slice(0, 800) }, 500)
         let scData: any = {}
         try { scData = JSON.parse(scText) } catch {}
         extTaskId = scData.task_id || scData.id || scData.data?.[0]?.id
-        if (!extTaskId) return c.json({ error: 'MusicAPI returned no task_id', raw: scText.slice(0, 800) }, 500)
+        if (!extTaskId) return c.json({ error: 'Stemforge returned no task ID', raw: scText.slice(0, 800) }, 500)
       } else {
         // /sonic/upload failed — MusicAPI's URL download service is currently unavailable.
         // Binary multipart is NOT supported by MusicAPI (returns HTTP 500 Internal Server Error).
@@ -4754,13 +4754,13 @@ app.post('/api/job/extend', async (c) => {
       const sonicText = await sonicRes.text()
       console.log(`[job/extend] Path B /sonic/upload-extend HTTP ${sonicRes.status} raw: ${sonicText.slice(0, 600)}`)
       if (!sonicRes.ok) {
-        return c.json({ error: `MusicAPI Sonic extend error: HTTP ${sonicRes.status}`, raw: sonicText.slice(0, 800) }, 500)
+        return c.json({ error: `Stemforge extend error: HTTP ${sonicRes.status}`, raw: sonicText.slice(0, 800) }, 500)
       }
       let sonicData: any
       try { sonicData = JSON.parse(sonicText) } catch (_) { sonicData = {} }
       extTaskId = sonicData.task_id || sonicData.steps?.extend?.task_id || sonicData.data?.[0]?.id
       if (!extTaskId) {
-        return c.json({ error: 'MusicAPI returned no task_id', raw: sonicText.slice(0, 800) }, 500)
+        return c.json({ error: 'Stemforge returned no task ID', raw: sonicText.slice(0, 800) }, 500)
       }
     }
 
@@ -5180,7 +5180,9 @@ app.post('/api/admin/patch-job-field', async (c) => {
 })
 
 
-// GET /api/admin/stuck-jobs — list all currently stuck (generating) jobs for admin visibility
+// GET /api/admin/stuck-jobs — list stuck jobs:
+//   • status='generating' (actively stuck / timed out)
+//   • status='error' in the last 24h (failed jobs visible as broken in library)
 app.get('/api/admin/stuck-jobs', async (c) => {
   const adminKey = c.req.query('admin_key')
   const token    = getSessionCookie(c.req.raw)
@@ -5192,12 +5194,22 @@ app.get('/api/admin/stuck-jobs', async (c) => {
   await ensureTable(c.env.DB)
 
   const nowMs = Date.now()
-  const rows = await c.env.DB.prepare(
-    `SELECT j.id, j.user_id, j.data, u.email FROM jobs j LEFT JOIN users u ON u.id = j.user_id
-     WHERE json_extract(j.data,'$.status')='generating' ORDER BY j.created_at ASC LIMIT 200`
-  ).all<{ id: string; user_id: string; data: string; email: string }>()
+  const last24hMs = nowMs - 24 * 60 * 60 * 1000
 
-  const jobs = (rows.results || []).map(row => {
+  // Two queries: generating (all) + error (last 24h)
+  const [generatingRows, errorRows] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT j.id, j.user_id, j.data, u.email FROM jobs j LEFT JOIN users u ON u.id = j.user_id
+       WHERE json_extract(j.data,'$.status')='generating' ORDER BY j.created_at ASC LIMIT 200`
+    ).all<{ id: string; user_id: string; data: string; email: string }>(),
+    c.env.DB.prepare(
+      `SELECT j.id, j.user_id, j.data, u.email FROM jobs j LEFT JOIN users u ON u.id = j.user_id
+       WHERE json_extract(j.data,'$.status')='error'
+         AND j.created_at >= ? ORDER BY j.created_at DESC LIMIT 100`
+    ).bind(last24hMs).all<{ id: string; user_id: string; data: string; email: string }>()
+  ])
+
+  const mapRow = (row: { id: string; user_id: string; data: string; email: string }) => {
     const d = (() => { try { return JSON.parse(row.data) } catch { return {} } })() as any
     const ageMs = nowMs - (d.created_at || nowMs)
     const ageMin = Math.round(ageMs / 60000)
@@ -5206,16 +5218,27 @@ app.get('/api/admin/stuck-jobs', async (c) => {
       user_email: row.email || row.user_id,
       title: d.title || d.prompt?.slice(0, 40) || '(no title)',
       status: d.status,
+      error_msg: d.error || null,
       stereo_task_id: d.stereo_task_id || null,
       extend_task_type: d.extend_task_type || null,
       age_min: ageMin,
-      stuck: ageMin >= 10,
+      // generating = stuck if >10min; error jobs are always flagged as stuck
+      stuck: d.status === 'error' || ageMin >= 10,
       created_at: d.created_at ? new Date(d.created_at).toISOString() : null,
     }
-  })
+  }
 
-  const stuck = jobs.filter(j => j.stuck)
-  return c.json({ total_generating: jobs.length, stuck_count: stuck.length, jobs })
+  const generatingJobs = (generatingRows.results || []).map(mapRow)
+  const errorJobs = (errorRows.results || []).map(mapRow)
+  const allJobs = [...generatingJobs, ...errorJobs]
+  const stuck = allJobs.filter(j => j.stuck)
+
+  return c.json({
+    total_generating: generatingJobs.length,
+    total_errored_24h: errorJobs.length,
+    stuck_count: stuck.length,
+    jobs: allJobs
+  })
 })
 
 // GET /api/admin/rescue-stuck-jobs — find generating jobs older than 15min and try to resolve them
@@ -5263,7 +5286,7 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
       if (!clip) {
         // No clip data — likely expired task; mark as error
         job.status = 'error'
-        job.error = 'MusicAPI task expired or not found'
+        job.error = 'Stemforge task expired or not found'
         await setJob(c.env.DB, job)
         results.push({ id: row.id, title: job.title, action: 'marked_error', reason: 'no_clip_data', task_id: job.stereo_task_id })
         continue
@@ -5291,7 +5314,7 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error = clip.error || 'MusicAPI task failed'
+        job.error = clip.error || 'Stemforge generation failed'
         await setJob(c.env.DB, job)
         results.push({ id: row.id, title: job.title, action: 'marked_error', reason: clip.error || 'task_failed', task_id: job.stereo_task_id })
       } else {
@@ -7232,7 +7255,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-24'
+const ASSET_VER = '20260824-25'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
