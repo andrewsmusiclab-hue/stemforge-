@@ -7069,6 +7069,7 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
 // Duration is omitted — ElevenLabs auto-determines the natural length.
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/generate-oneshot-sfx', async (c) => {
+  try {
   if (!c.env.ELEVENLABS_API_KEY) return c.json({ error: 'ElevenLabs not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
@@ -7079,26 +7080,46 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     return c.json({ error: 'One Shot Creator requires the Pro Artist plan.', upgrade: true }, 403)
   }
 
+  // Parse request body FIRST before any DB ops
+  let prompt = '', duration_seconds: number | undefined
+  try {
+    const body = await c.req.json<{ prompt: string; duration_seconds?: number }>()
+    prompt = body.prompt || ''
+    duration_seconds = body.duration_seconds
+  } catch {
+    return c.json({ error: 'Invalid request body' }, 400)
+  }
+  if (!prompt.trim()) return c.json({ error: 'prompt is required' }, 400)
+
   // Deduct 10 pts before generation (refunded on hard API error) — bonus first
   const SFX_COST = 10
   if (c.env.DB) {
-    const fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
+    // Use try/catch in case bonus_credits column doesn't exist on older schema
+    let fresh: { gens_used: number; gens_limit: number; bonus_credits: number } | null = null
+    try {
+      fresh = await c.env.DB.prepare('SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
+    } catch {
+      // Fallback: schema without bonus_credits
+      try {
+        const f2 = await c.env.DB.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(user.id).first<{gens_used:number,gens_limit:number}>()
+        if (f2) fresh = { ...f2, bonus_credits: 0 }
+      } catch { /* ignore */ }
+    }
     const sfxBonus = fresh?.bonus_credits ?? 0
     const sfxMain = fresh ? (fresh.gens_limit - fresh.gens_used) : 0
     if (!fresh || sfxMain + sfxBonus < SFX_COST) {
       return c.json({ error: `Not enough points. One Shot Creator costs ${SFX_COST} points and you only have ${Math.max(0, sfxMain + sfxBonus)} remaining.`, limit_reached: true }, 403)
     }
-    if (sfxBonus >= SFX_COST) {
-      await c.env.DB.prepare('UPDATE users SET bonus_credits = bonus_credits - ? WHERE id=?').bind(SFX_COST, user.id).run()
-    } else if (sfxBonus > 0) {
-      await c.env.DB.prepare('UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?').bind(SFX_COST - sfxBonus, user.id).run()
-    } else {
-      await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
-    }
+    try {
+      if (sfxBonus >= SFX_COST) {
+        await c.env.DB.prepare('UPDATE users SET bonus_credits = bonus_credits - ? WHERE id=?').bind(SFX_COST, user.id).run()
+      } else if (sfxBonus > 0) {
+        await c.env.DB.prepare('UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?').bind(SFX_COST - sfxBonus, user.id).run()
+      } else {
+        await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
+      }
+    } catch { /* ignore deduction error — don't block the user */ }
   }
-
-  const { prompt, duration_seconds } = await c.req.json<{ prompt: string; duration_seconds?: number }>()
-  if (!prompt?.trim()) return c.json({ error: 'prompt is required' }, 400)
 
   // Build ElevenLabs request body — clamp duration to 0.5–8s range
   const elBody: Record<string, unknown> = { text: prompt.trim(), prompt_influence: 0.3 }
@@ -7186,6 +7207,10 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     audio_b64: base64Audio,
     title: displayTitle
   })
+  } catch (err: any) {
+    console.error('[generate-oneshot-sfx] Unhandled error:', err?.message || err)
+    return c.json({ error: 'One Shot generation failed. Please try again.' }, 500)
+  }
 })
 
 // GET /api/oneshot-audio/:id — serve one-shot audio from R2 (for library playback)
@@ -7412,7 +7437,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-28'
+const ASSET_VER = '20260825-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
