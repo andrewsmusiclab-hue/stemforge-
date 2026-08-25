@@ -2411,7 +2411,7 @@ app.post('/api/job/regen-stem', async (c) => {
     })
     if (!uploadRes.ok) {
       const errText = await uploadRes.text()
-      let errMsg = `MusicAPI upload error ${uploadRes.status}`
+      let errMsg = `Stemforge upload error ${uploadRes.status}`
       try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
       console.error(`[regen] upload error ${uploadRes.status}: ${errText}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
@@ -2464,7 +2464,7 @@ app.post('/api/job/regen-stem', async (c) => {
     })
     if (!genRes.ok) {
       const errText = await genRes.text()
-      let errMsg = `MusicAPI Producer error ${genRes.status}`
+      let errMsg = `Stemforge generation error ${genRes.status}`
       try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
       console.error(`[regen] producer/create error ${genRes.status}: ${errText}`)
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 30) WHERE id=?`).bind(user.id).run()
@@ -4476,7 +4476,7 @@ app.post('/api/job/extend-upload', async (c) => {
           console.log(`[extend-upload] Refunded ${EXTEND_COST} credits to user ${user.id} (upload service unavailable)`)
         } catch (_) { /* ignore refund failure */ }
         return c.json({
-          error: 'Song Extend from uploaded tracks is temporarily unavailable — MusicAPI\'s audio upload service is experiencing an outage. Please try again in a few minutes. Your points have been refunded.',
+          error: 'Song Extend from uploaded tracks is temporarily unavailable — Stemforge audio service is experiencing an outage. Please try again in a few minutes. Your points have been refunded.',
           code: 'upload_service_unavailable'
         }, 503)
       }
@@ -4673,39 +4673,24 @@ app.post('/api/job/extend', async (c) => {
       const R2_PUB_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
       const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
 
-      // ── URL priority for MusicAPI upload-extend ───────────────────────────────
-      // CONFIRMED: R2 public bucket URLs (pub-*.r2.dev) are rejected by MusicAPI uploader
-      // with HTTP 400. Original CDN URLs (storage.googleapis.com, cdn1.suno.ai, etc.) work fine.
-      // Priority order:
-      //   1. stereo_url — if it's a direct CDN URL (not a Worker proxy), use it directly
-      //   2. stereo_url_alt — same logic
-      //   3. R2 public URL — last resort only (MusicAPI may reject, but it's all we have)
+      // ── URL priority ──────────────────────────────────────────────────────────
+      // 1. Direct CDN URL (Google, Suno, etc.) — works with MusicAPI directly
+      // 2. Proxy URL via extend-audio-proxy — MusicAPI accepts stemforge.studio domain
+      // 3. R2 public URL — try /sonic/upload first to get a clip_id, then extend_music
       const rawStereoUrl = sourceJob.stereo_url || ''
       const rawStereoAlt = sourceJob.stereo_url_alt || ''
-      const isWorkerProxy = (u: string) => u.includes(siteUrl) || u.includes('/api/track-audio/')
+      const isWorkerProxy = (u: string) =>
+        u.includes(siteUrl) || u.includes('/api/track-audio/') || u.includes('stemforge.studio')
 
       let audioUrlForMusicApi: string
       if (rawStereoUrl && !isWorkerProxy(rawStereoUrl)) {
-        // Direct CDN URL (Google, Suno, etc.) — works with MusicAPI
         audioUrlForMusicApi = rawStereoUrl
         console.log(`[job/extend] Path B: using direct CDN stereo_url`)
       } else if (rawStereoAlt && !isWorkerProxy(rawStereoAlt)) {
         audioUrlForMusicApi = rawStereoAlt
         console.log(`[job/extend] Path B: using direct CDN stereo_url_alt`)
-      } else if (sourceJob.r2_audio_key) {
-        // R2 — last resort. May fail with MusicAPI uploader, but try anyway.
-        audioUrlForMusicApi = `${R2_PUB_BASE}/${sourceJob.r2_audio_key}`
-        console.log(`[job/extend] Path B: using R2 public URL (last resort, may fail)`)
-      } else {
-        // Worker proxy / unknown — only option left
-        audioUrlForMusicApi = rawStereoUrl || rawStereoAlt
-        console.log(`[job/extend] Path B: using Worker proxy URL`)
-      }
-
-      // If we ended up with an R2 public URL (rejected by MusicAPI), mirror the R2 content
-      // into extend-uploads/ and serve via the stemforge.studio/api/extend-audio-proxy/ Worker,
-      // which sends proper Content-Length and is on a domain MusicAPI accepts.
-      if (audioUrlForMusicApi && audioUrlForMusicApi.includes('r2.dev') && c.env.IMAGES && sourceJob.r2_audio_key) {
+      } else if (sourceJob.r2_audio_key && c.env.IMAGES) {
+        // Mirror R2 → extend-uploads/ and serve via proxy (Content-Length + accepted domain)
         try {
           const r2Obj = await c.env.IMAGES.get(sourceJob.r2_audio_key)
           if (r2Obj) {
@@ -4716,12 +4701,85 @@ app.post('/api/job/extend', async (c) => {
               httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : 'audio/mp4' }
             })
             audioUrlForMusicApi = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(proxyKey)}`
-            console.log(`[job/extend] Path B: mirrored R2 → extend-uploads/${proxyKey}, using proxy URL`)
+            console.log(`[job/extend] Path B: mirrored R2 → extend-uploads/${proxyKey}`)
+
+            // ── Path B1: try /sonic/upload first to get a clip_id ──────────────
+            // If we can get a clip_id from /sonic/upload, extend via /sonic/create
+            // with continue_clip_id — avoids the broken upload-extend pipeline entirely.
+            try {
+              const uploadRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: audioUrlForMusicApi })
+              })
+              const uploadText = await uploadRes.text()
+              console.log(`[job/extend] Path B1 /sonic/upload HTTP ${uploadRes.status} raw: ${uploadText.slice(0, 300)}`)
+              if (uploadRes.ok) {
+                let uploadData: any = {}
+                try { uploadData = JSON.parse(uploadText) } catch {}
+                const uploadedClipId = uploadData.clip_id || uploadData.data?.[0]?.clip_id || null
+                if (uploadedClipId) {
+                  // Got a clip_id — extend via /sonic/create (no upload-extend needed)
+                  const extBodyB1: Record<string, any> = {
+                    task_type: 'extend_upload_music',
+                    continue_clip_id: uploadedClipId,
+                    mv: 'sonic-v5',
+                    continue_at: continueAt,
+                    custom_mode: false
+                  }
+                  if (isInstrumental) extBodyB1.make_instrumental = true
+                  if (hasCustomLyricsExtend) { extBodyB1.custom_mode = true; extBodyB1.prompt = typedLyricsExtend }
+                  const createRes = await fetch(`${MUSICAPI_SONIC}/create`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(extBodyB1)
+                  })
+                  const createText = await createRes.text()
+                  console.log(`[job/extend] Path B1 /sonic/create HTTP ${createRes.status} raw: ${createText.slice(0, 300)}`)
+                  if (createRes.ok) {
+                    let createData: any = {}
+                    try { createData = JSON.parse(createText) } catch {}
+                    const b1TaskId = createData.task_id || createData.data?.[0]?.id
+                    if (b1TaskId) {
+                      // Success via B1 — skip upload-extend entirely
+                      const newJobId = crypto.randomUUID()
+                      const now = Date.now()
+                      const newJob = {
+                        id: newJobId, user_id: user.id, status: 'generating',
+                        prompt: `[Extended from: ${sourceJob.title || source_job_id}] ${sourceJob.prompt || ''}`.trim(),
+                        title: `${sourceJob.title || 'Track'} (Extended)`,
+                        blueprint: { ...(sourceJob.blueprint || {}), make_instrumental: isInstrumental },
+                        stereo_task_id: b1TaskId, stereo_url: null, created_at: now,
+                        source_job_id, extend_task_type: 'song_extend', make_instrumental: isInstrumental,
+                        chain_clip_id: uploadedClipId, chain_target_ms: 120000, chain_step: 0, chain_max_steps: 8,
+                        chain_lyrics: (lyrics && lyrics.trim() && lyrics.trim() !== '[Verse]' && lyrics.trim() !== '[Instrumental]') ? lyrics.trim() : '',
+                        chain_style: styleStr || null,
+                        continue_at_ms: extend_at || Math.max(1, (sourceJob.duration_ms || 0))
+                      }
+                      await c.env.DB.prepare(
+                        `INSERT INTO jobs (id, user_id, data, created_at, is_oneshot) VALUES (?, ?, ?, ?, 0)`
+                      ).bind(newJobId, user.id, JSON.stringify(newJob), now).run()
+                      console.log(`[job/extend] Path B1 success: job=${newJobId} task=${b1TaskId}`)
+                      return c.json({ ok: true, job_id: newJobId, task_id: b1TaskId })
+                    }
+                  }
+                }
+              }
+            } catch (b1Err: any) {
+              console.warn('[job/extend] Path B1 /sonic/upload attempt failed:', b1Err?.message)
+            }
+            // B1 failed — fall through to upload-extend (Path B2)
+          } else {
+            audioUrlForMusicApi = rawStereoUrl || rawStereoAlt
+            console.log(`[job/extend] Path B: R2 object not found, using raw URL`)
           }
         } catch (mirrorErr: any) {
           console.warn('[job/extend] Path B: R2 mirror failed:', mirrorErr?.message)
-          // Keep R2 URL as-is and hope MusicAPI accepts it
+          audioUrlForMusicApi = rawStereoUrl || rawStereoAlt
         }
+      } else {
+        audioUrlForMusicApi = rawStereoUrl || rawStereoAlt
+        console.log(`[job/extend] Path B: using raw URL (no R2 key)`)
       }
 
       const uploadExtBody: Record<string, any> = {
@@ -6874,7 +6932,7 @@ app.post('/api/generate-oneshot', async (c) => {
 
   if (!res.ok) {
     const err = await res.json() as any
-    return c.json({ error: err?.message || err?.error || `MusicAPI error ${res.status}` }, 500)
+    return c.json({ error: err?.message || err?.error || `Stemforge error ${res.status}` }, 500)
   }
 
   const data = await res.json() as any
@@ -7275,7 +7333,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-26'
+const ASSET_VER = '20260824-27'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
