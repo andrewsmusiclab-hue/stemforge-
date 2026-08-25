@@ -5336,6 +5336,26 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
   return c.json({ rescued: results.length, results })
 })
 
+// DELETE /api/admin/job/:id — hard-delete a single job from the DB (admin only)
+app.delete('/api/admin/job/:id', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  const token    = getSessionCookie(c.req.raw)
+  const user     = token ? await getSessionUser(c.env.DB, token) : null
+  const isAdmin  = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
+                || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
+  if (!isAdmin) return c.json({ error: 'Unauthorized' }, 401)
+
+  const jobId = c.req.param('id')
+  if (!jobId) return c.json({ error: 'job id required' }, 400)
+
+  await ensureTable(c.env.DB)
+  const existing = await c.env.DB.prepare(`SELECT id FROM jobs WHERE id=?`).bind(jobId).first()
+  if (!existing) return c.json({ error: 'Job not found' }, 404)
+
+  await c.env.DB.prepare(`DELETE FROM jobs WHERE id=?`).bind(jobId).run()
+  return c.json({ ok: true, deleted: jobId })
+})
+
 // GET /api/stripe/portal — redirect to Stripe billing portal
 app.get('/api/stripe/portal', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
@@ -7255,7 +7275,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-25'
+const ASSET_VER = '20260824-26'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

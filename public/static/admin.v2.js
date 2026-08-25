@@ -555,21 +555,23 @@ async function loadStuckJobs(){
         :j.stuck?'<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.65rem;padding:2px 7px;border-radius:999px;font-weight:700;border:1px solid rgba(245,158,11,.3)">STUCK</span>'
         :'<span style="color:#10b981;font-size:.72rem">running</span>';
       var taskChip=j.stereo_task_id?'<code style="font-size:.68rem;background:var(--surface);padding:2px 6px;border-radius:4px;color:var(--muted)">'+j.stereo_task_id.slice(0,16)+'…</code>':'—';
-      var errCell=isErr&&j.error_msg?'<td style="font-size:.72rem;color:#ef4444;max-width:200px;overflow:hidden;text-overflow:ellipsis" title="'+j.error_msg+'">'+j.error_msg.slice(0,60)+(j.error_msg.length>60?'…':'')+'</td>':'<td style="color:var(--muted);font-size:.72rem">—</td>';
-      return '<tr>'+
-        '<td style="font-size:.8rem;font-family:monospace;max-width:120px;overflow:hidden;text-overflow:ellipsis">'+j.id.slice(0,16)+'…</td>'+
+      var errCell=isErr&&j.error_msg?'<td style="font-size:.72rem;color:#ef4444;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+j.error_msg+'">'+j.error_msg.slice(0,50)+(j.error_msg.length>50?'…':'')+'</td>':'<td style="color:var(--muted);font-size:.72rem">—</td>';
+      var deleteBtn='<button onclick="adminDeleteJob(\''+j.id+'\',this)" style="background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);color:#ef4444;border-radius:6px;padding:3px 10px;font-size:.72rem;cursor:pointer;font-weight:600">Delete</button>';
+      return '<tr id="stuck-row-'+j.id+'">'+
+        '<td style="font-size:.8rem;font-family:monospace;max-width:100px;overflow:hidden;text-overflow:ellipsis" title="'+j.id+'">'+j.id.slice(0,14)+'…</td>'+
         '<td style="font-size:.82rem">'+j.user_email+'</td>'+
-        '<td style="font-size:.82rem;max-width:160px;overflow:hidden;text-overflow:ellipsis">'+j.title+'</td>'+
+        '<td style="font-size:.82rem;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+j.title+'</td>'+
         '<td>'+stuckBadge+'</td>'+
         '<td style="color:'+ageColor+';font-weight:700">'+j.age_min+'m</td>'+
         '<td>'+taskChip+'</td>'+
         errCell+
         '<td style="font-size:.72rem;color:var(--muted)">'+j.created_at?.replace('T',' ').slice(0,16)+' UTC</td>'+
+        '<td>'+deleteBtn+'</td>'+
       '</tr>';
     }).join('');
     listEl.innerHTML='<table class="admin-table"><thead><tr>'+
       '<th>Job ID</th><th>User</th><th>Title</th><th>Status</th>'+
-      '<th>Age</th><th>Task ID</th><th>Error</th><th>Started</th>'+
+      '<th>Age</th><th>Task ID</th><th>Error</th><th>Started</th><th></th>'+
     '</tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){
     listEl.innerHTML='<p style="color:#ef4444">Failed to load: '+String(e.message||e)+'</p>';
@@ -587,5 +589,22 @@ async function rescueStuckJobs(){
     setTimeout(loadStuckJobs,1500);
   }catch(e){
     if(summaryEl) summaryEl.textContent='Rescue failed: '+String(e.message||e);
+  }
+}
+
+async function adminDeleteJob(jobId, btnEl){
+  if(!confirm('Delete job '+jobId.slice(0,14)+'… from the database? This removes it from the user\'s library permanently.')) return;
+  if(btnEl){ btnEl.disabled=true; btnEl.textContent='Deleting…'; }
+  try{
+    var res=await fetch('/api/admin/job/'+jobId,{method:'DELETE',credentials:'include'});
+    if(!res.ok){ var e=await res.json().catch(function(){return{};}); throw new Error(e.error||'HTTP '+res.status); }
+    // Remove row from table immediately
+    var row=document.getElementById('stuck-row-'+jobId);
+    if(row) row.remove();
+    var summaryEl=document.getElementById('stuck-jobs-summary');
+    if(summaryEl) summaryEl.textContent='Deleted job '+jobId.slice(0,14)+'…';
+  }catch(e){
+    alert('Delete failed: '+String(e.message||e));
+    if(btnEl){ btnEl.disabled=false; btnEl.textContent='Delete'; }
   }
 }
