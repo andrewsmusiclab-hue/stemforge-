@@ -4621,7 +4621,34 @@ app.post('/api/job/extend', async (c) => {
     // Strategy: try Path A first (fast, no upload), fall through to Path B on failure.
     // ────────────────────────────────────────────────────────────────────────────
 
-    const sourceClipId = sourceJob.clip_id as string | undefined
+    let sourceClipId = sourceJob.clip_id as string | undefined
+
+    // ── Auto-backfill clip_id from stereo_task_id if missing ─────────────────
+    // Tracks generated before clip_id storage was added have stereo_task_id but no clip_id.
+    // Fetch the clip_id from MusicAPI now so Path A can run (avoids broken URL upload path).
+    if (!sourceClipId && sourceJob.stereo_task_id && c.env.MUSICAPI_KEY) {
+      try {
+        const bfRes = await fetch(`${MUSICAPI_SONIC}/task/${sourceJob.stereo_task_id}`, {
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+        })
+        if (bfRes.ok) {
+          const bfData = await bfRes.json() as any
+          const bfClips = Array.isArray(bfData) ? bfData : (bfData.data || [])
+          const bfClipId = bfClips[0]?.id || bfClips[0]?.clip_id || null
+          if (bfClipId) {
+            sourceClipId = bfClipId
+            // Write back to DB so future extends are instant
+            sourceJob.clip_id = bfClipId
+            await c.env.DB.prepare(`UPDATE jobs SET data=? WHERE id=?`)
+              .bind(JSON.stringify(sourceJob), source_job_id).run()
+            console.log(`[job/extend] auto-backfilled clip_id=${bfClipId} for job ${source_job_id}`)
+          }
+        }
+      } catch (bfErr: any) {
+        console.warn('[job/extend] clip_id backfill failed:', bfErr?.message)
+      }
+    }
+
     let pathAFailed = false
 
     // ── Path A: clip_id exists → try /sonic/create with continue_clip_id ──────
@@ -5392,6 +5419,58 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
   }
 
   return c.json({ rescued: results.length, results })
+})
+
+// GET /api/admin/backfill-clip-ids — fetch clip_id from MusicAPI for all jobs missing it
+// Polls each job's stereo_task_id against /sonic/task/:id and writes clip_id back to DB.
+app.get('/api/admin/backfill-clip-ids', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  const token    = getSessionCookie(c.req.raw)
+  const user     = token ? await getSessionUser(c.env.DB, token) : null
+  const isAdmin  = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
+                || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
+  if (!isAdmin) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+
+  await ensureTable(c.env.DB)
+  // Find all ready jobs that have a stereo_task_id but no clip_id
+  const rows = await c.env.DB.prepare(
+    `SELECT id, data FROM jobs
+     WHERE json_extract(data,'$.status')='ready'
+       AND json_extract(data,'$.stereo_task_id') IS NOT NULL
+       AND json_extract(data,'$.clip_id') IS NULL
+     LIMIT 50`
+  ).all<{ id: string; data: string }>()
+
+  const results: any[] = []
+  for (const row of (rows.results || [])) {
+    const job = JSON.parse(row.data) as any
+    try {
+      const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${job.stereo_task_id}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (!pollRes.ok) {
+        results.push({ id: row.id, title: job.title, action: 'skip', reason: `poll HTTP ${pollRes.status}` })
+        continue
+      }
+      const pollData = await pollRes.json() as any
+      const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
+      const clip = clips[0]
+      const clipId = clip?.id || clip?.clip_id || null
+      if (clipId) {
+        job.clip_id = clipId
+        await c.env.DB.prepare(`UPDATE jobs SET data=? WHERE id=?`)
+          .bind(JSON.stringify(job), row.id).run()
+        results.push({ id: row.id, title: job.title, action: 'backfilled', clip_id: clipId })
+      } else {
+        results.push({ id: row.id, title: job.title, action: 'skip', reason: 'no clip_id in response', raw: JSON.stringify(pollData).slice(0, 200) })
+      }
+    } catch (e: any) {
+      results.push({ id: row.id, title: job.title, action: 'error', error: e?.message?.slice(0, 200) })
+    }
+  }
+
+  return c.json({ total: rows.results?.length || 0, results })
 })
 
 // DELETE /api/admin/job/:id — hard-delete a single job from the DB (admin only)
@@ -7333,7 +7412,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260824-27'
+const ASSET_VER = '20260824-28'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
