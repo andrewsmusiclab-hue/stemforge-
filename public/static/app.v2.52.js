@@ -3655,6 +3655,58 @@ function _setEditCoverStatus(msg, isError) {
   });
 }());
 
+// Generate AI cover art for the current track in the edit modal.
+window.generateAICover = function() {
+  var jobId = (document.getElementById('edit-job-id') || {}).value;
+  if (!jobId) return;
+
+  var btn = document.getElementById('edit-cover-ai-btn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
+  _setEditCoverStatus('Generating AI cover art…', false);
+
+  fetch('/api/cover-image/' + jobId)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Generate AI Cover'; }
+      if (data.url) {
+        // Show the AI cover in the thumb preview
+        var thumb = document.getElementById('edit-cover-thumb');
+        if (thumb) {
+          thumb.style.backgroundImage = 'url(' + data.url + ')';
+          thumb.style.backgroundSize  = 'cover';
+          thumb.style.backgroundPosition = 'center';
+          var icon = thumb.querySelector('.edit-cover-thumb__icon');
+          if (icon) icon.style.display = 'none';
+          thumb.dataset.prevUrl = data.url;
+        }
+        // Update library card if visible
+        var card = document.querySelector('.project-card[data-job-id="' + jobId + '"]');
+        if (card) {
+          var artEl = card.querySelector('.project-card__art');
+          if (artEl) {
+            var img = artEl.querySelector('img.sf-ai-cover');
+            if (!img) {
+              img = document.createElement('img');
+              img.className = 'sf-ai-cover';
+              img.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;z-index:2';
+              artEl.appendChild(img);
+            }
+            img.src = data.url;
+          }
+        }
+        // Cache in sessionStorage for instant reload
+        try { sessionStorage.setItem('cover_img_' + jobId, data.url); } catch(e) {}
+        _setEditCoverStatus(data.cached ? 'Cover loaded.' : 'AI cover generated!', false);
+      } else {
+        _setEditCoverStatus(data.error || 'Generation failed. Try again.', true);
+      }
+    })
+    .catch(function() {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Generate AI Cover'; }
+      _setEditCoverStatus('Network error. Try again.', true);
+    });
+};
+
 // Remove custom cover image — called by the "Remove custom image" button.
 window.removeCoverImage = function() {
   var jobId = (document.getElementById('edit-job-id') || {}).value;

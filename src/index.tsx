@@ -7843,6 +7843,9 @@ function globalSidebar() {
               <i class="fas fa-upload"></i> Upload image
             </label>
             <input type="file" id="edit-cover-file" accept="image/jpeg,image/png,image/webp" style="display:none"/>
+            <button class="btn btn--outline btn--sm" id="edit-cover-ai-btn" onclick="generateAICover()" style="margin-top:6px">
+              <i class="fas fa-magic"></i> Generate AI Cover
+            </button>
             <p class="edit-cover-hint">JPG, PNG or WebP · max 5 MB</p>
             <button class="edit-cover-remove" id="edit-cover-remove" style="display:none" onclick="removeCoverImage()">
               <i class="fas fa-trash-alt"></i> Remove custom image
