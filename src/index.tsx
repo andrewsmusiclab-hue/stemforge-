@@ -2818,16 +2818,22 @@ app.post('/api/job/cover-song', async (c) => {
     if (genre && genre.toLowerCase() !== 'music') tagParts.push(genre)
     if (mood)  tagParts.push(mood)
     if (bpm)   tagParts.push(`${bpm} BPM`)
+    const isInstrumental = vocal_gender === 'instrumental'
     // Vocal gender tag
-    if (vocal_gender === 'm') tagParts.push('male vocal')
-    else if (vocal_gender === 'f') tagParts.push('female vocal')
+    if (isInstrumental) {
+      tagParts.push('no vocals', 'instrumental')
+    } else {
+      if (vocal_gender === 'm') tagParts.push('male vocal')
+      else if (vocal_gender === 'f') tagParts.push('female vocal')
+    }
     const tags = tagParts.join(', ').slice(0, 800)
 
-    const descParts: string[] = [`Cover song in the same style and groove`]
+    const descParts: string[] = [isInstrumental ? 'Instrumental cover, no vocals' : 'Cover song in the same style and groove']
     if (genre && genre.toLowerCase() !== 'music') descParts.push(`${genre} style`)
     if (mood)  descParts.push(`${mood} mood`)
     if (bpm)   descParts.push(`${bpm} BPM`)
     descParts.push('keep the same energy, tempo and feel as the original')
+    if (isInstrumental) descParts.push('purely instrumental, remove all vocals')
     if (extra_prompt && extra_prompt.trim()) descParts.push(extra_prompt.trim())
     const gptPrompt = descParts.join(', ').slice(0, 400)
 
@@ -2841,8 +2847,11 @@ app.post('/api/job/cover-song', async (c) => {
       style_weight: 0.8,
     }
     if (tags) coverBody.tags = tags
-    if (vocal_gender === 'm') coverBody.vocal_gender = 'm'
-    else if (vocal_gender === 'f') coverBody.vocal_gender = 'f'
+    // Only set vocal_gender for non-instrumental (omitting it = AI decides; instrumental = no vocals)
+    if (!isInstrumental) {
+      if (vocal_gender === 'm') coverBody.vocal_gender = 'm'
+      else if (vocal_gender === 'f') coverBody.vocal_gender = 'f'
+    }
 
     console.log(`[cover-song] /upload-cover url=${sourceAudioUrl.slice(0,80)} audio_weight=${audioWeight} tags="${tags}"`)
     const coverRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
@@ -7650,7 +7659,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260901-01'
+const ASSET_VER = '20260901-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9289,7 +9298,11 @@ function generatorPage() {
           <button id="cov-vocal-ai" onclick="covSetVocal('ai')" style="flex:1;padding:9px;border-radius:9px;border:1px solid #1e2a3a;background:none;color:#6b7280;font-size:.82rem;font-weight:600;cursor:pointer">
             <i class="fas fa-robot"></i> AI Pick
           </button>
+          <button id="cov-vocal-instrumental" onclick="covSetVocal('instrumental')" style="flex:1;padding:9px;border-radius:9px;border:1px solid #1e2a3a;background:none;color:#6b7280;font-size:.82rem;font-weight:600;cursor:pointer" data-tooltip="No vocals — pure instrumental cover">
+            <i class="fas fa-music"></i> Instrumental
+          </button>
         </div>
+        <div id="cov-vocal-hint" style="font-size:.75rem;color:#6b7280;margin-top:5px;min-height:1em"></div>
       </div>
 
       <!-- Style influence slider -->

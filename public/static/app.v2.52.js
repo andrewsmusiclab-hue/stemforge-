@@ -3796,15 +3796,21 @@ window.removeCoverImage = function() {
   // ── Vocal gender ─────────────────────────────────────────
   window.covSetVocal = function(g) {
     _covVocalGender = g;
-    ['male','female','ai'].forEach(function(id) {
+    ['male','female','ai','instrumental'].forEach(function(id) {
       var btn = document.getElementById('cov-vocal-' + id);
       if (!btn) return;
-      var isActive = (id === 'male' && g === 'm') || (id === 'female' && g === 'f') || (id === 'ai' && g === 'ai');
+      var isActive = (id === 'male' && g === 'm') ||
+                     (id === 'female' && g === 'f') ||
+                     (id === 'ai' && g === 'ai') ||
+                     (id === 'instrumental' && g === 'instrumental');
       btn.style.background = isActive ? 'rgba(239,68,68,.12)' : 'none';
       btn.style.borderColor = isActive ? 'rgba(239,68,68,.5)' : '#1e2a3a';
       btn.style.color = isActive ? '#fca5a5' : '#6b7280';
       btn.style.fontWeight = isActive ? '700' : '600';
     });
+    // Show/hide the vocal style label hint
+    var hint = document.getElementById('cov-vocal-hint');
+    if (hint) hint.textContent = g === 'instrumental' ? 'No vocals — pure instrumental cover' : '';
   };
 
   // ── URL input ─────────────────────────────────────────────
@@ -4056,7 +4062,7 @@ window.removeCoverImage = function() {
 
     var payload = {
       title: title || undefined,
-      vocal_gender: _covVocalGender !== 'ai' ? _covVocalGender : undefined,
+      vocal_gender: (_covVocalGender !== 'ai') ? _covVocalGender : undefined,
       audio_weight: audioWeight,
       extra_prompt: extraPrompt || undefined,
     };
