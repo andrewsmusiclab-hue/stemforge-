@@ -2711,6 +2711,205 @@ app.post('/api/job/remix', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  POST /api/job/cover-song
+//  Create an AI cover of any track.
+//  Accepts:
+//    audio_url  — direct CDN/R2 URL of the source audio (upload flow mirrors to R2)
+//    job_id     — source job from user's library
+//    title      — desired title for the cover
+//    vocal_gender — 'm' | 'f' | undefined (AI picks)
+//    audio_weight — 0–1 float (how close to original; default 0.8)
+//    extra_prompt — optional freeform prompt additions
+//  Uses MusicAPI /sonic/upload-cover with audio_weight to keep original style/groove.
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/job/cover-song', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  // Plan gate — Pro Artist only
+  if (user.plan === 'free') {
+    return c.json({ error: 'Cover Song is a Pro Artist feature. Upgrade to unlock.', upgrade: true }, 403)
+  }
+
+  const COVER_COST = 20
+  const body = await c.req.json<{
+    audio_url?: string
+    job_id?: string
+    title?: string
+    vocal_gender?: string
+    audio_weight?: number
+    extra_prompt?: string
+  }>()
+
+  const { audio_url, job_id, title, vocal_gender, extra_prompt } = body
+  const audioWeight = typeof body.audio_weight === 'number'
+    ? Math.min(1, Math.max(0, body.audio_weight))
+    : 0.8
+
+  // Need either audio_url or job_id
+  if (!audio_url && !job_id) {
+    return c.json({ error: 'Provide audio_url or job_id as the source.' }, 400)
+  }
+
+  // Deduct credits
+  const freshUser = await c.env.DB.prepare('SELECT gens_used, bonus_credits FROM users WHERE id=?').bind(user.id).first<{gens_used:number,bonus_credits:number}>()
+  const freshBonus = freshUser?.bonus_credits ?? 0
+  if (freshBonus >= COVER_COST) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id=?`).bind(COVER_COST, user.id).run()
+  } else if (freshBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(COVER_COST - freshBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(COVER_COST, user.id).run()
+  }
+
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+
+  try {
+    // ── Resolve audio URL ─────────────────────────────────────────────────────
+    let sourceAudioUrl: string
+    let sourceTitle = title || 'Cover'
+    let sourceBp: any = null
+
+    if (job_id) {
+      // Source from library
+      const srcJob = await getJob(c.env.DB, job_id)
+      if (!srcJob) {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?`).bind(COVER_COST, user.id).run()
+        return c.json({ error: 'Source track not found.' }, 404)
+      }
+      sourceAudioUrl = (srcJob as any).stereo_url as string
+      if (!sourceAudioUrl) {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?`).bind(COVER_COST, user.id).run()
+        return c.json({ error: 'Source track has no audio yet.' }, 400)
+      }
+      sourceBp = (srcJob as any).blueprint || null
+      if (!title) sourceTitle = `${(srcJob as any).title || 'Track'} (Cover)`
+    } else {
+      sourceAudioUrl = audio_url!
+      if (!title) sourceTitle = 'My Cover'
+    }
+
+    // ── Mirror to R2 if needed (external CDN URLs sometimes rejected by MusicAPI) ──
+    if (c.env.IMAGES && !sourceAudioUrl.includes(siteUrl)) {
+      try {
+        const audioFetch = await fetch(sourceAudioUrl)
+        if (audioFetch.ok) {
+          const buf = await audioFetch.arrayBuffer()
+          const ext = sourceAudioUrl.includes('.mp3') ? 'mp3' : sourceAudioUrl.includes('.wav') ? 'wav' : 'm4a'
+          const r2Key = `extend-uploads/${Date.now()}-${Math.random().toString(36).slice(2,8)}-cover.${ext}`
+          await c.env.IMAGES.put(r2Key, buf, {
+            httpMetadata: { contentType: ext === 'mp3' ? 'audio/mpeg' : ext === 'wav' ? 'audio/wav' : 'audio/mp4' }
+          })
+          sourceAudioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key.replace('extend-uploads/', ''))}`
+          console.log(`[cover-song] mirrored to R2: ${r2Key}`)
+        }
+      } catch (mirrorErr: any) {
+        console.warn('[cover-song] R2 mirror failed, using original URL:', mirrorErr?.message)
+      }
+    }
+
+    // ── Build tags + prompt ───────────────────────────────────────────────────
+    const genre = sourceBp?.genre || 'music'
+    const mood  = sourceBp?.mood  || ''
+    const bpm   = sourceBp?.bpm   || ''
+    const tagParts: string[] = []
+    if (genre && genre.toLowerCase() !== 'music') tagParts.push(genre)
+    if (mood)  tagParts.push(mood)
+    if (bpm)   tagParts.push(`${bpm} BPM`)
+    // Vocal gender tag
+    if (vocal_gender === 'm') tagParts.push('male vocal')
+    else if (vocal_gender === 'f') tagParts.push('female vocal')
+    const tags = tagParts.join(', ').slice(0, 800)
+
+    const descParts: string[] = [`Cover song in the same style and groove`]
+    if (genre && genre.toLowerCase() !== 'music') descParts.push(`${genre} style`)
+    if (mood)  descParts.push(`${mood} mood`)
+    if (bpm)   descParts.push(`${bpm} BPM`)
+    descParts.push('keep the same energy, tempo and feel as the original')
+    if (extra_prompt && extra_prompt.trim()) descParts.push(extra_prompt.trim())
+    const gptPrompt = descParts.join(', ').slice(0, 400)
+
+    // ── Call MusicAPI /sonic/upload-cover ─────────────────────────────────────
+    const coverBody: Record<string, any> = {
+      url: sourceAudioUrl,
+      mv: 'sonic-v5',
+      custom_mode: false,
+      audio_weight: audioWeight,
+      gpt_description_prompt: gptPrompt,
+      style_weight: 0.8,
+    }
+    if (tags) coverBody.tags = tags
+    if (vocal_gender === 'm') coverBody.vocal_gender = 'm'
+    else if (vocal_gender === 'f') coverBody.vocal_gender = 'f'
+
+    console.log(`[cover-song] /upload-cover url=${sourceAudioUrl.slice(0,80)} audio_weight=${audioWeight} tags="${tags}"`)
+    const coverRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(coverBody)
+    })
+    const coverText = await coverRes.text()
+    console.log(`[cover-song] /upload-cover HTTP ${coverRes.status}: ${coverText.slice(0,600)}`)
+
+    if (!coverRes.ok) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?`).bind(COVER_COST, user.id).run()
+      let errData: any = {}
+      try { errData = JSON.parse(coverText) } catch {}
+      const apiMsg = errData.message || errData.error || coverText.slice(0, 200)
+      const userMsg = apiMsg.toLowerCase().includes('upload failed')
+        ? 'This track could not be covered — it may be copyright-protected. Try uploading an original or royalty-free track.'
+        : `Cover generation failed: ${apiMsg}`
+      return c.json({ error: userMsg }, 500)
+    }
+
+    let coverData: any = {}
+    try { coverData = JSON.parse(coverText) } catch {}
+    const genTaskId = coverData.task_id || coverData.steps?.cover?.task_id || coverData.data?.[0]?.id || ''
+    if (!genTaskId) {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?`).bind(COVER_COST, user.id).run()
+      return c.json({ error: 'Cover generation failed to start — please try again.' }, 500)
+    }
+
+    // ── Create job record ─────────────────────────────────────────────────────
+    const newJobId = makeJobId()
+    const now = Date.now()
+    const newJob: any = {
+      id: newJobId,
+      user_id: user.id,
+      status: 'generating',
+      title: sourceTitle,
+      prompt: `[Cover Song] ${sourceTitle}`,
+      stereo_task_id: genTaskId,
+      stereo_url: null,
+      created_at: now,
+      extend_task_type: 'song_extend',   // tells advancePipeline to poll via Sonic task endpoint
+      is_cover_song: 1,                   // flags for Covers library tab
+      source_job_id: job_id || null,
+      cover_source_url: audio_url || null,
+      cover_audio_weight: audioWeight,
+      vocal_gender: vocal_gender || null,
+      chain_clip_id: null,
+      chain_target_ms: 0,   // covers don't chain — single generation
+      chain_step: 0,
+      chain_max_steps: 1,
+      thumbnail_seed: Math.floor(Math.random() * 360),
+    }
+    if (sourceBp) newJob.blueprint = { ...sourceBp }
+
+    await setJob(c.env.DB, newJob, user.id)
+    console.log(`[cover-song] job ${newJobId} created, task=${genTaskId}`)
+    return c.json({ ok: true, job_id: newJobId, task_id: genTaskId })
+
+  } catch (err: any) {
+    console.error(`[cover-song] unexpected error: ${err?.message}`)
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?`).bind(COVER_COST, user.id).run()
+    return c.json({ error: `Something went wrong: ${err?.message || 'unknown error'}` }, 500)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  GET /api/stem-mix/:jobId
 //  Download the stereo mix (original beat audio) as mp3 or wav.
 //  Plan gating: free → 403, creator → mp3 only, pro/developer → mp3 + wav
@@ -4163,6 +4362,16 @@ app.get('/api/projects', async (c) => {
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
          AND json_extract(data,'$.extend_task_type') = 'song_extend'
+         AND json_extract(data,'$.status') IN ('ready','generating','error')
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
+    } else if (tab === 'covers') {
+      // Cover songs: jobs flagged with is_cover_song = 1
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
+         AND json_extract(data,'$.is_cover_song') = 1
          AND json_extract(data,'$.status') IN ('ready','generating','error')
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
@@ -7437,7 +7646,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260825-04'
+const ASSET_VER = '20260825-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -8630,6 +8839,10 @@ function generatorPage() {
         data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more.">
         <i class="fas fa-bolt"></i> One Shot Creator
       </button>
+      <button class="creator-tab-btn" id="ctab-cover" onclick="openCoverSongGated()"
+        data-tooltip="Cover any song — upload a track, pick from your library, or paste a URL and recreate it in your style with AI vocals.">
+        <i class="fas fa-microphone-alt"></i> Cover Song
+      </button>
     </div>
 
 
@@ -8967,6 +9180,143 @@ function generatorPage() {
         <i class="fas fa-wand-magic-sparkles"></i> Remix It
       </button>
     </div>
+  </div>
+</div>
+
+<!-- ── Cover Song Modal ──────────────────────────────────────────────────── -->
+<div id="cover-song-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.8);backdrop-filter:blur(8px);align-items:flex-start;justify-content:center;padding:24px 16px;overflow-y:auto" onclick="if(event.target===this)window.closeCoverSongModal()">
+  <div style="background:#0d1117;border:1px solid #1e2a3a;border-radius:18px;max-width:520px;width:100%;padding:28px 28px 24px;box-shadow:0 32px 80px rgba(0,0,0,.9);font-family:Inter,system-ui,sans-serif;margin:auto">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:22px">
+      <div style="width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#dc2626,#f97316);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="fas fa-microphone-alt" style="color:#fff;font-size:1rem"></i>
+      </div>
+      <div style="flex:1">
+        <div style="font-size:1.1rem;font-weight:800;color:#fff">Cover Song</div>
+        <div style="font-size:.75rem;color:#6b7280">Recreate any track with AI in your style</div>
+      </div>
+      <button onclick="window.closeCoverSongModal()" style="background:none;border:1px solid #1e2a3a;color:#6b7280;width:30px;height:30px;border-radius:50%;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;flex-shrink:0">×</button>
+    </div>
+
+    <!-- Source tabs: Upload / Library / URL -->
+    <div style="display:flex;gap:0;border-bottom:1px solid #1e2a3a;margin-bottom:18px">
+      <button id="cov-tab-upload" onclick="covSwitchTab('upload')" style="flex:1;background:none;border:none;border-bottom:2px solid #ef4444;color:#ef4444;font-weight:700;padding:9px 0;font-size:.8rem;cursor:pointer">
+        <i class="fas fa-cloud-upload-alt" style="margin-right:4px"></i>Upload
+      </button>
+      <button id="cov-tab-library" onclick="covSwitchTab('library')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:600;padding:9px 0;font-size:.8rem;cursor:pointer">
+        <i class="fas fa-music" style="margin-right:4px"></i>Library
+      </button>
+      <button id="cov-tab-url" onclick="covSwitchTab('url')" style="flex:1;background:none;border:none;border-bottom:2px solid transparent;color:#6b7280;font-weight:600;padding:9px 0;font-size:.8rem;cursor:pointer">
+        <i class="fas fa-link" style="margin-right:4px"></i>URL
+      </button>
+    </div>
+
+    <!-- Upload panel -->
+    <div id="cov-panel-upload">
+      <div id="cov-drop-zone" style="border:2px dashed rgba(239,68,68,.4);border-radius:12px;padding:28px 20px;text-align:center;cursor:pointer;transition:all .2s;background:rgba(239,68,68,.04)"
+        onclick="document.getElementById('cov-file-input').click()"
+        ondragover="event.preventDefault();this.style.borderColor='rgba(239,68,68,.8)';this.style.background='rgba(239,68,68,.1)'"
+        ondragleave="this.style.borderColor='rgba(239,68,68,.4)';this.style.background='rgba(239,68,68,.04)'"
+        ondrop="event.preventDefault();this.style.borderColor='rgba(239,68,68,.4)';this.style.background='rgba(239,68,68,.04)';window.covHandleFileDrop(event)">
+        <div id="cov-drop-idle">
+          <i class="fas fa-cloud-upload-alt" style="font-size:2rem;color:#ef4444;margin-bottom:10px"></i>
+          <div style="font-size:.9rem;font-weight:600;color:#e2e8f0">Drop the original track here</div>
+          <div style="font-size:.78rem;color:#6b7280;margin-top:4px">MP3, WAV or M4A · max 20 MB</div>
+          <button style="margin-top:14px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.4);color:#fca5a5;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.82rem;font-weight:600">Browse files</button>
+        </div>
+        <div id="cov-drop-loading" style="display:none">
+          <i class="fas fa-spinner fa-spin" style="font-size:1.5rem;color:#ef4444;margin-bottom:8px"></i>
+          <div style="font-size:.88rem;color:#fca5a5" id="cov-upload-status">Processing…</div>
+        </div>
+        <div id="cov-drop-done" style="display:none">
+          <i class="fas fa-check-circle" style="font-size:1.5rem;color:#10b981;margin-bottom:8px"></i>
+          <div style="font-size:.88rem;font-weight:700;color:#e2e8f0" id="cov-file-name">track.mp3</div>
+          <div style="font-size:.75rem;color:#6b7280;margin-top:3px">Ready to cover</div>
+        </div>
+      </div>
+      <input type="file" id="cov-file-input" accept=".mp3,.wav,.m4a,audio/mpeg,audio/wav,audio/mp4,audio/x-m4a" style="display:none" onchange="window.covHandleFileSelect(this)"/>
+    </div>
+
+    <!-- Library panel -->
+    <div id="cov-panel-library" style="display:none">
+      <div style="font-size:.8rem;color:#6b7280;margin-bottom:10px">Pick a track from your library as the source:</div>
+      <div id="cov-lib-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:8px">
+        <div style="text-align:center;padding:20px;color:#6b7280;font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+      </div>
+    </div>
+
+    <!-- URL panel -->
+    <div id="cov-panel-url" style="display:none">
+      <div style="font-size:.8rem;color:#6b7280;margin-bottom:8px">Paste a direct MP3/audio URL (must end in .mp3, .m4a, etc.):</div>
+      <input id="cov-url-input" type="url" placeholder="https://cdn.example.com/track.mp3" style="width:100%;box-sizing:border-box;background:#0a0f1a;border:1px solid #1e2a3a;border-radius:10px;padding:11px 14px;color:#e2e8f0;font-size:.88rem;outline:none" oninput="window.covHandleUrlInput(this.value)"/>
+      <div style="font-size:.74rem;color:#6b7280;margin-top:6px"><i class="fas fa-info-circle"></i> YouTube &amp; SoundCloud links are not supported — use a direct audio file URL only.</div>
+    </div>
+
+    <!-- Selected source indicator -->
+    <div id="cov-source-selected" style="display:none;margin-top:14px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:10px 14px;display:none;align-items:center;gap:10px">
+      <i class="fas fa-music" style="color:#ef4444;font-size:.9rem"></i>
+      <span id="cov-source-name" style="flex:1;font-size:.85rem;font-weight:600;color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">track.mp3</span>
+      <button onclick="window.covClearSource()" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:.85rem;padding:0">×</button>
+    </div>
+
+    <!-- Divider -->
+    <div style="border-top:1px solid #1e2a3a;margin:20px 0"></div>
+
+    <!-- Cover options -->
+    <div style="display:flex;flex-direction:column;gap:14px">
+
+      <!-- Cover title -->
+      <div>
+        <label style="font-size:.8rem;font-weight:600;color:#9ca3af;display:block;margin-bottom:6px">Cover Title</label>
+        <input id="cov-title-input" type="text" placeholder="e.g. My Cover of Cold Streets" style="width:100%;box-sizing:border-box;background:#0a0f1a;border:1px solid #1e2a3a;border-radius:10px;padding:11px 14px;color:#e2e8f0;font-size:.88rem;outline:none"/>
+      </div>
+
+      <!-- Vocal gender -->
+      <div>
+        <label style="font-size:.8rem;font-weight:600;color:#9ca3af;display:block;margin-bottom:8px">Vocal Style</label>
+        <div style="display:flex;gap:8px">
+          <button id="cov-vocal-male" onclick="covSetVocal('m')" style="flex:1;padding:9px;border-radius:9px;border:1px solid rgba(239,68,68,.5);background:rgba(239,68,68,.12);color:#fca5a5;font-size:.82rem;font-weight:700;cursor:pointer">
+            <i class="fas fa-male"></i> Male
+          </button>
+          <button id="cov-vocal-female" onclick="covSetVocal('f')" style="flex:1;padding:9px;border-radius:9px;border:1px solid #1e2a3a;background:none;color:#6b7280;font-size:.82rem;font-weight:600;cursor:pointer">
+            <i class="fas fa-female"></i> Female
+          </button>
+          <button id="cov-vocal-ai" onclick="covSetVocal('ai')" style="flex:1;padding:9px;border-radius:9px;border:1px solid #1e2a3a;background:none;color:#6b7280;font-size:.82rem;font-weight:600;cursor:pointer">
+            <i class="fas fa-robot"></i> AI Pick
+          </button>
+        </div>
+      </div>
+
+      <!-- Style influence slider -->
+      <div>
+        <label style="font-size:.8rem;font-weight:600;color:#9ca3af;display:block;margin-bottom:6px">
+          Original Influence: <span id="cov-weight-val" style="color:#ef4444">High (0.8)</span>
+        </label>
+        <input id="cov-audio-weight" type="range" min="0" max="10" value="8" style="width:100%;accent-color:#ef4444" oninput="window.covUpdateWeight(this.value)"/>
+        <div style="display:flex;justify-content:space-between;font-size:.72rem;color:#4b5563;margin-top:3px">
+          <span>Max Creative Freedom</span><span>Closest to Original</span>
+        </div>
+      </div>
+
+      <!-- Optional prompt -->
+      <div>
+        <label style="font-size:.8rem;font-weight:600;color:#9ca3af;display:block;margin-bottom:6px">Add anything extra <span style="color:#4b5563;font-weight:400">(optional)</span></label>
+        <textarea id="cov-prompt-input" placeholder="e.g. make it darker, add guitar solo, aggressive energy…" rows="2" style="width:100%;box-sizing:border-box;background:#0a0f1a;border:1px solid #1e2a3a;border-radius:10px;padding:11px 14px;color:#e2e8f0;font-size:.85rem;resize:vertical;outline:none;font-family:inherit"></textarea>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div id="cov-error" style="display:none;color:#ef4444;font-size:.82rem;margin-top:12px;padding:8px 12px;background:rgba(239,68,68,.08);border-radius:8px;border:1px solid rgba(239,68,68,.2)"></div>
+
+    <!-- Action buttons -->
+    <div style="margin-top:20px;display:flex;gap:10px">
+      <button onclick="window.closeCoverSongModal()" style="flex:1;padding:12px;background:none;border:1px solid #1e2a3a;border-radius:10px;color:#6b7280;cursor:pointer;font-size:.88rem;font-weight:600">Cancel</button>
+      <button id="cov-go-btn" onclick="window.startCoverSong()" disabled style="flex:2;padding:12px;background:linear-gradient(135deg,#dc2626,#f97316);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.9rem;font-weight:700;opacity:.4;transition:opacity .2s">
+        <i class="fas fa-microphone-alt"></i> Create Cover
+      </button>
+    </div>
+
   </div>
 </div>
 
@@ -9740,6 +10090,9 @@ function dashboardPage() {
     <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')">
       <i class="fas fa-bolt"></i> One Shots
     </button>
+    <button class="lib-tab" data-tab="covers" id="lib-tab-covers" onclick="switchLibTab('covers')">
+      <i class="fas fa-microphone-alt"></i> Covers
+    </button>
     <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
@@ -9778,6 +10131,11 @@ function dashboardPage() {
   </div>
   <div id="lib-panel-oneshots" style="display:none">
     <div class="project-grid" id="project-grid-oneshots">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-covers" style="display:none">
+    <div class="project-grid" id="project-grid-covers">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
