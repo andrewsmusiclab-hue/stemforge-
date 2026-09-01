@@ -8,3 +8,5 @@ logs/
 .env.production
 .dev.vars
 .DS_Store
+core
+core.*
