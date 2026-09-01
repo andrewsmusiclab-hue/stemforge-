@@ -3574,7 +3574,9 @@ app.get('/api/auth/google', (c) => {
   const next = c.req.query('next') || ''
   const randomPart = generateToken().slice(0, 16)
   const state = next ? randomPart + '|' + next : randomPart
-  const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, c.env.SITE_URL, state)
+  // Use the actual request origin so OAuth works on any domain (Genspark URL, live site, etc)
+  const reqOrigin = new URL(c.req.url).origin
+  const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, reqOrigin, state)
   return c.redirect(url)
 })
 
@@ -3596,8 +3598,10 @@ app.get('/api/auth/google/callback', async (c) => {
   }
 
   try {
+    // Use the actual request origin so redirect_uri matches what was sent at auth start
+    const callbackOrigin = new URL(c.req.url).origin
     const profile = await exchangeGoogleCode(
-      code, c.env.GOOGLE_CLIENT_ID, c.env.GOOGLE_CLIENT_SECRET, c.env.SITE_URL
+      code, c.env.GOOGLE_CLIENT_ID, c.env.GOOGLE_CLIENT_SECRET, callbackOrigin
     )
     await ensureAuthTables(c.env.DB)
 
@@ -7646,7 +7650,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260825-05'
+const ASSET_VER = '20260901-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
