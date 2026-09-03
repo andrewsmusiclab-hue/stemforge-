@@ -401,6 +401,56 @@ function generateToken(): string {
     .map(b => b.toString(16).padStart(2,'0')).join('')
 }
 
+// ─── TIKTOK SERVER-SIDE EVENTS ────────────────────────────────────────────────
+const TIKTOK_PIXEL_ID = 'D9SVAV3C77UA78AD7EU0'
+
+async function sha256Hex(str: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('')
+}
+
+async function sendTikTokEvent(opts: {
+  token: string
+  event: 'CompleteRegistration' | 'Subscribe'
+  email?: string
+  ip?: string
+  userAgent?: string
+  eventId?: string
+  value?: number
+  currency?: string
+  url?: string
+}): Promise<void> {
+  try {
+    if (!opts.token) return
+    const hashedEmail = opts.email ? await sha256Hex(opts.email.toLowerCase().trim()) : undefined
+    const body: Record<string, any> = {
+      pixel_code: TIKTOK_PIXEL_ID,
+      event: opts.event,
+      event_id: opts.eventId || crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      context: {
+        user: {
+          ...(hashedEmail ? { email: hashedEmail } : {}),
+          ...(opts.ip ? { ip: opts.ip } : {}),
+          ...(opts.userAgent ? { user_agent: opts.userAgent } : {}),
+        },
+        page: { url: opts.url || 'https://stemforge.studio' }
+      },
+      properties: {}
+    }
+    if (opts.event === 'Subscribe' && opts.value) {
+      body.properties = { value: opts.value, currency: opts.currency || 'USD' }
+    }
+    await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
+      method: 'POST',
+      headers: { 'Access-Token': opts.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: [body] })
+    })
+  } catch (e) {
+    console.error('[tiktok-event] failed:', e)
+  }
+}
+
 function generateId(): string {
   return 'u_' + Date.now() + '_' + Math.random().toString(36).slice(2,8)
 }
@@ -3362,6 +3412,17 @@ app.post('/api/auth/signup', async (c) => {
     const token = await createSession(c.env.DB, userId)
     const siteUrl = c.env.SITE_URL || ''
 
+    // TikTok: fire CompleteRegistration server-side
+    sendTikTokEvent({
+      token: (c.env as any).TIKTOK_PIXEL_TOKEN || '',
+      event: 'CompleteRegistration',
+      email: email.toLowerCase(),
+      ip: registrationIp || '',
+      userAgent: c.req.header('User-Agent') || '',
+      eventId: `reg_${userId}`,
+      url: `${siteUrl}/signup`
+    }).catch(() => {})
+
     return new Response(JSON.stringify({ ok: true, redirect: plan && plan !== 'free' ? '/checkout?plan=' + plan : '/dashboard' }), {
       status: 200,
       headers: {
@@ -3660,6 +3721,19 @@ app.get('/api/auth/google/callback', async (c) => {
     }
 
     const token = await createSession(c.env.DB, user.id)
+
+    // TikTok: fire CompleteRegistration server-side (new users only — isNewUser flag)
+    const isNewUser = !user?.google_id && !(await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND created_at < datetime("now","-5 seconds")').bind(user!.id).first())
+    sendTikTokEvent({
+      token: (c.env as any).TIKTOK_PIXEL_TOKEN || '',
+      event: 'CompleteRegistration',
+      email: profile.email.toLowerCase(),
+      ip: c.req.header('CF-Connecting-IP') || '',
+      userAgent: c.req.header('User-Agent') || '',
+      eventId: `reg_google_${user!.id}`,
+      url: `${c.env.SITE_URL}/signup`
+    }).catch(() => {})
+
     return new Response(null, {
       status: 302,
       headers: {
@@ -3746,6 +3820,20 @@ app.post('/api/stripe/webhook', async (c) => {
             event: 'New Subscription',
             timestamp: new Date().toISOString()
           })
+
+          // TikTok: fire Subscribe server-side event
+          const planValue = plan === 'pro' ? 25.00 : plan === 'creator' ? 10.00 : 0
+          if (planValue > 0) {
+            sendTikTokEvent({
+              token: (c.env as any).TIKTOK_PIXEL_TOKEN || '',
+              event: 'Subscribe',
+              email: newUser?.email || session.customer_details?.email || '',
+              eventId: `sub_${session.id}`,
+              value: planValue,
+              currency: 'USD',
+              url: 'https://stemforge.studio/checkout'
+            }).catch(() => {})
+          }
         } catch (mailErr) {
           console.error('[webhook] subscription email failed:', mailErr)
         }
@@ -7659,7 +7747,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260901-02'
+const ASSET_VER = '20260901-03'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
