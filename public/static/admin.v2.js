@@ -608,3 +608,223 @@ async function adminDeleteJob(jobId, btnEl){
     if(btnEl){ btnEl.disabled=false; btnEl.textContent='Delete'; }
   }
 }
+
+// ─── BROADCAST EMAIL BUILDER ─────────────────────────────────────────────────
+var _bcBlocks = [];
+var _bcNextId = 1;
+
+async function loadBroadcastStats() {
+  try {
+    var res = await fetch('/api/admin/broadcast/subscribers', { credentials: 'include' });
+    var d = await res.json();
+    var el = function(id, v) { var e = document.getElementById(id); if(e) e.textContent = v; };
+    el('bc-count-all', d.all || 0);
+    el('bc-count-free', d.free || 0);
+    el('bc-count-paid', d.paid || 0);
+  } catch(e) { console.error('[broadcast] stats failed', e); }
+}
+
+function bcAddBlock(type) {
+  var id = 'bc-block-' + (_bcNextId++);
+  var block = { id: id, type: type };
+  if (type === 'header')  { block.text = 'Your Headline Here'; block.fontSize = '28'; block.color = ''; block.align = 'center'; block.bold = true; }
+  if (type === 'text')    { block.text = 'Write your message here. You can use multiple lines.'; block.fontSize = '16'; block.color = ''; block.align = 'left'; block.bold = false; }
+  if (type === 'image')   { block.src = ''; block.alt = ''; block.link = ''; block.width = '100%'; }
+  if (type === 'button')  { block.text = 'Click Here'; block.url = 'https://stemforge.studio'; block.bgColor = '#4e9fff'; block.textColor = '#ffffff'; block.align = 'center'; }
+  if (type === 'divider') { block.color = '#1e293b'; }
+  if (type === 'spacer')  { block.height = '24'; }
+  _bcBlocks.push(block);
+  bcRenderBlocks();
+  bcUpdatePreview();
+}
+
+function bcRenderBlocks() {
+  var container = document.getElementById('bc-blocks');
+  var empty = document.getElementById('bc-blocks-empty');
+  if (!container) return;
+  if (_bcBlocks.length === 0) { if(empty) empty.style.display=''; container.querySelectorAll('.bc-block-row').forEach(function(el){el.remove()}); return; }
+  if (empty) empty.style.display = 'none';
+  // Remove existing block rows
+  container.querySelectorAll('.bc-block-row').forEach(function(el){el.remove();});
+  _bcBlocks.forEach(function(block, idx) {
+    var row = document.createElement('div');
+    row.className = 'bc-block-row';
+    row.id = 'bc-row-' + block.id;
+    row.style.cssText = 'background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:12px;margin-bottom:8px';
+    var header = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+      + '<span style="font-size:.78rem;color:#a78bfa;font-weight:600;text-transform:uppercase">' + block.type + '</span>'
+      + '<div style="display:flex;gap:6px">'
+      + (idx > 0 ? '<button onclick="bcMoveBlock(\'' + block.id + '\',-1)" style="padding:2px 8px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#94a3b8;cursor:pointer;font-size:.75rem">↑</button>' : '')
+      + (idx < _bcBlocks.length-1 ? '<button onclick="bcMoveBlock(\'' + block.id + '\',1)" style="padding:2px 8px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#94a3b8;cursor:pointer;font-size:.75rem">↓</button>' : '')
+      + '<button onclick="bcRemoveBlock(\'' + block.id + '\')" style="padding:2px 8px;background:rgba(239,68,68,.15);border:1px solid rgba(239,68,68,.3);border-radius:4px;color:#ef4444;cursor:pointer;font-size:.75rem">✕</button>'
+      + '</div></div>';
+    var controls = '';
+    if (block.type === 'header' || block.type === 'text') {
+      controls += '<textarea onchange="bcUpdateField(\'' + block.id + '\',\'text\',this.value)" oninput="bcUpdateField(\'' + block.id + '\',\'text\',this.value)" style="width:100%;padding:8px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.85rem;min-height:' + (block.type==='header'?'48':'80') + 'px;resize:vertical;box-sizing:border-box;margin-bottom:8px">' + escHtml(block.text) + '</textarea>';
+      controls += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block">Font Size</label><input type="number" value="' + block.fontSize + '" min="10" max="72" onchange="bcUpdateField(\'' + block.id + '\',\'fontSize\',this.value)" style="width:70px;padding:4px 8px;background:#0d1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:.82rem"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block">Color</label><input type="color" value="' + (block.color||'#e2e8f0') + '" onchange="bcUpdateField(\'' + block.id + '\',\'color\',this.value)" style="width:50px;height:28px;border-radius:4px;border:1px solid #334155;background:none;cursor:pointer"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block">Align</label><select onchange="bcUpdateField(\'' + block.id + '\',\'align\',this.value)" style="padding:4px 8px;background:#0d1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:.82rem"><option value="left"' + (block.align==='left'?' selected':'') + '>Left</option><option value="center"' + (block.align==='center'?' selected':'') + '>Center</option><option value="right"' + (block.align==='right'?' selected':'') + '>Right</option></select></div>';
+      controls += '<div style="display:flex;align-items:flex-end"><label style="display:flex;align-items:center;gap:4px;font-size:.82rem;color:#94a3b8;cursor:pointer"><input type="checkbox"' + (block.bold?' checked':'') + ' onchange="bcUpdateField(\'' + block.id + '\',\'bold\',this.checked)"/> Bold</label></div>';
+      controls += '</div>';
+    }
+    if (block.type === 'image') {
+      controls += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+      controls += '<div style="grid-column:1/-1"><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Image URL</label><input type="url" value="' + escHtml(block.src) + '" placeholder="https://..." onchange="bcUpdateField(\'' + block.id + '\',\'src\',this.value)" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Link URL (optional)</label><input type="url" value="' + escHtml(block.link) + '" placeholder="https://..." onchange="bcUpdateField(\'' + block.id + '\',\'link\',this.value)" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Width</label><input type="text" value="' + escHtml(block.width) + '" placeholder="100%" onchange="bcUpdateField(\'' + block.id + '\',\'width\',this.value)" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      controls += '</div>';
+    }
+    if (block.type === 'button') {
+      controls += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Button Text</label><input type="text" value="' + escHtml(block.text) + '" onchange="bcUpdateField(\'' + block.id + '\',\'text\',this.value)" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Button URL</label><input type="url" value="' + escHtml(block.url) + '" onchange="bcUpdateField(\'' + block.id + '\',\'url\',this.value)" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Button Color</label><input type="color" value="' + block.bgColor + '" onchange="bcUpdateField(\'' + block.id + '\',\'bgColor\',this.value)" style="width:100%;height:32px;border-radius:4px;border:1px solid #334155;background:none;cursor:pointer"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Text Color</label><input type="color" value="' + block.textColor + '" onchange="bcUpdateField(\'' + block.id + '\',\'textColor\',this.value)" style="width:100%;height:32px;border-radius:4px;border:1px solid #334155;background:none;cursor:pointer"/></div>';
+      controls += '<div style="grid-column:1/-1"><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Alignment</label><select onchange="bcUpdateField(\'' + block.id + '\',\'align\',this.value)" style="padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:.82rem"><option value="center"' + (block.align==='center'?' selected':'') + '>Center</option><option value="left"' + (block.align==='left'?' selected':'') + '>Left</option><option value="right"' + (block.align==='right'?' selected':'') + '>Right</option></select></div>';
+      controls += '</div>';
+    }
+    if (block.type === 'divider') {
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Line Color</label><input type="color" value="' + block.color + '" onchange="bcUpdateField(\'' + block.id + '\',\'color\',this.value)" style="width:60px;height:28px;border-radius:4px;border:1px solid #334155;background:none;cursor:pointer"/></div>';
+    }
+    if (block.type === 'spacer') {
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Height (px)</label><input type="number" value="' + block.height + '" min="4" max="120" onchange="bcUpdateField(\'' + block.id + '\',\'height\',this.value)" style="width:80px;padding:4px 8px;background:#0d1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:.82rem"/></div>';
+    }
+    row.innerHTML = header + controls;
+    container.appendChild(row);
+  });
+}
+
+function escHtml(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function bcUpdateField(id, field, value) {
+  var block = _bcBlocks.find(function(b){return b.id===id;});
+  if (!block) return;
+  block[field] = value;
+  bcUpdatePreview();
+}
+
+function bcRemoveBlock(id) {
+  _bcBlocks = _bcBlocks.filter(function(b){return b.id!==id;});
+  bcRenderBlocks();
+  bcUpdatePreview();
+}
+
+function bcMoveBlock(id, dir) {
+  var idx = _bcBlocks.findIndex(function(b){return b.id===id;});
+  if (idx < 0) return;
+  var newIdx = idx + dir;
+  if (newIdx < 0 || newIdx >= _bcBlocks.length) return;
+  var tmp = _bcBlocks[idx]; _bcBlocks[idx] = _bcBlocks[newIdx]; _bcBlocks[newIdx] = tmp;
+  bcRenderBlocks();
+  bcUpdatePreview();
+}
+
+function bcBuildHtml() {
+  var bg = document.getElementById('bc-bg-color')?.value || '#0d0d1a';
+  var textColor = document.getElementById('bc-text-color')?.value || '#e2e8f0';
+  var accent = document.getElementById('bc-accent-color')?.value || '#4e9fff';
+  var font = document.getElementById('bc-font')?.value || 'Inter,system-ui,sans-serif';
+  var width = document.getElementById('bc-width')?.value || '600px';
+
+  var blocksHtml = _bcBlocks.map(function(block) {
+    if (block.type === 'header') {
+      var c = block.color || accent;
+      return '<h1 style="margin:0 0 16px;font-size:' + block.fontSize + 'px;color:' + c + ';text-align:' + block.align + ';font-weight:' + (block.bold?'700':'400') + ';font-family:' + font + '">' + escHtml(block.text) + '</h1>';
+    }
+    if (block.type === 'text') {
+      var c = block.color || textColor;
+      return '<p style="margin:0 0 16px;font-size:' + block.fontSize + 'px;color:' + c + ';text-align:' + block.align + ';font-weight:' + (block.bold?'700':'400') + ';font-family:' + font + ';line-height:1.6">' + escHtml(block.text).replace(/\n/g,'<br/>') + '</p>';
+    }
+    if (block.type === 'image') {
+      if (!block.src) return '<div style="background:#1e293b;border:2px dashed #334155;border-radius:8px;padding:20px;text-align:center;color:#64748b;font-family:'+font+';margin-bottom:16px">[ Image: paste URL in builder ]</div>';
+      var img = '<img src="' + escHtml(block.src) + '" alt="' + escHtml(block.alt) + '" width="' + escHtml(block.width) + '" style="display:block;max-width:100%;height:auto;border-radius:8px;margin:0 auto 16px"/>';
+      return block.link ? '<a href="' + escHtml(block.link) + '" style="display:block;text-align:center">' + img + '</a>' : img;
+    }
+    if (block.type === 'button') {
+      return '<div style="text-align:' + block.align + ';margin-bottom:20px"><a href="' + escHtml(block.url) + '" style="display:inline-block;padding:14px 32px;background:' + block.bgColor + ';color:' + block.textColor + ';text-decoration:none;border-radius:8px;font-weight:700;font-size:16px;font-family:' + font + '">' + escHtml(block.text) + '</a></div>';
+    }
+    if (block.type === 'divider') {
+      return '<hr style="border:none;border-top:1px solid ' + block.color + ';margin:16px 0"/>';
+    }
+    if (block.type === 'spacer') {
+      return '<div style="height:' + block.height + 'px"></div>';
+    }
+    return '';
+  }).join('\n');
+
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>'
+    + '<body style="margin:0;padding:0;background:' + bg + '">'
+    + '<div style="max-width:' + width + ';margin:0 auto;padding:32px 24px;background:' + bg + ';font-family:' + font + '">'
+    + '<div style="text-align:center;margin-bottom:28px"><a href="https://stemforge.studio" style="text-decoration:none"><span style="font-size:22px;font-weight:800;color:' + accent + ';font-family:' + font + '">StemForge</span></a></div>'
+    + blocksHtml
+    + '</div></body></html>';
+}
+
+function bcUpdatePreview() {
+  var frame = document.getElementById('bc-preview-frame');
+  var subjLine = document.getElementById('bc-preview-subject-line');
+  var subj = document.getElementById('bc-subject')?.value || '';
+  if (subjLine) { var s = subjLine.querySelector('span'); if(s) s.textContent = subj || '(no subject)'; }
+  if (!frame) return;
+  frame.innerHTML = bcBuildHtml();
+}
+
+// Attach live preview updates to style controls
+document.addEventListener('DOMContentLoaded', function() {
+  ['bc-bg-color','bc-text-color','bc-accent-color','bc-font','bc-width','bc-subject'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) { el.addEventListener('input', bcUpdatePreview); el.addEventListener('change', bcUpdatePreview); }
+  });
+});
+
+async function bcSendTest() {
+  var testEmail = document.getElementById('bc-test-email')?.value?.trim();
+  if (!testEmail) { alert('Enter a test email address first.'); return; }
+  var subject = document.getElementById('bc-subject')?.value?.trim();
+  if (!subject) { alert('Enter a subject line first.'); return; }
+  if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
+  bcSetStatus('Sending test email…', '#f59e0b');
+  try {
+    var res = await fetch('/api/admin/broadcast/send', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: 'all', test_email: testEmail })
+    });
+    var d = await res.json();
+    if (d.ok) bcSetStatus('✓ Test sent to ' + testEmail, '#10b981');
+    else bcSetStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
+  } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
+}
+
+async function bcSendBroadcast() {
+  var subject = document.getElementById('bc-subject')?.value?.trim();
+  if (!subject) { alert('Enter a subject line first.'); return; }
+  if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
+  var audience = document.getElementById('bc-audience')?.value || 'all';
+  var label = audience === 'all' ? 'ALL users' : audience === 'free' ? 'free plan users' : 'paid plan users';
+  var countEl = document.getElementById('bc-count-' + audience);
+  var count = countEl ? countEl.textContent : '?';
+  if (!confirm('Send "' + subject + '" to ' + count + ' ' + label + '?\n\nThis cannot be undone.')) return;
+  bcSetStatus('<i class="fas fa-spinner fa-spin"></i> Sending…', '#f59e0b');
+  try {
+    var res = await fetch('/api/admin/broadcast/send', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: audience })
+    });
+    var d = await res.json();
+    if (d.ok) bcSetStatus('✓ Sent to ' + d.sent + ' / ' + d.total + ' users' + (d.errors > 0 ? ' (' + d.errors + ' failed)' : ''), '#10b981');
+    else bcSetStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
+  } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
+}
+
+function bcSetStatus(msg, color) {
+  var el = document.getElementById('bc-status');
+  if (!el) return;
+  el.style.display = 'block';
+  el.style.color = color || '#e2e8f0';
+  el.innerHTML = msg;
+}
