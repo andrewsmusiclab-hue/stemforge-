@@ -3633,6 +3633,13 @@ app.get('/api/auth/me', async (c) => {
 
 // GET /api/auth/google — start Google OAuth flow
 app.get('/api/auth/google', (c) => {
+  // On non-live domains, redirect Google OAuth to the live site so the
+  // registered redirect_uri always matches and users land on the right DB
+  const origin = new URL(c.req.url).origin
+  if (c.env.SITE_URL && origin !== c.env.SITE_URL) {
+    const next = c.req.query('next') || ''
+    return c.redirect(`${c.env.SITE_URL}/api/auth/google${next ? '?next=' + encodeURIComponent(next) : ''}`, 302)
+  }
   if (!googleConfigured(c.env)) {
     return c.html(`<p style="font-family:sans-serif;padding:2rem">
       <strong>Google OAuth not configured yet.</strong><br/><br/>
@@ -3645,9 +3652,7 @@ app.get('/api/auth/google', (c) => {
   const next = c.req.query('next') || ''
   const randomPart = generateToken().slice(0, 16)
   const state = next ? randomPart + '|' + next : randomPart
-  // Use the actual request origin so OAuth works on any domain (Genspark URL, live site, etc)
-  const reqOrigin = new URL(c.req.url).origin
-  const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, reqOrigin, state)
+  const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, c.env.SITE_URL, state)
   return c.redirect(url)
 })
 
@@ -3919,9 +3924,28 @@ app.get('/dashboard', async (c) => {
   return resp
 })
 app.get('/project', (c) => c.html(projectPage()))
-app.get('/signup', (c) => c.html(signupPage()))
-app.get('/register', (c) => c.html(registerPage()))
-app.get('/login', (c) => c.html(loginPage(c.req.query('next') || '')))
+app.get('/signup', (c) => {
+  // On non-live domains (e.g. Genspark staging URL), redirect auth to the live site
+  const origin = new URL(c.req.url).origin
+  if (c.env.SITE_URL && origin !== c.env.SITE_URL) {
+    return c.redirect(`${c.env.SITE_URL}/signup`, 302)
+  }
+  return c.html(signupPage())
+})
+app.get('/register', (c) => {
+  const origin = new URL(c.req.url).origin
+  if (c.env.SITE_URL && origin !== c.env.SITE_URL) {
+    return c.redirect(`${c.env.SITE_URL}/register`, 302)
+  }
+  return c.html(registerPage())
+})
+app.get('/login', (c) => {
+  const origin = new URL(c.req.url).origin
+  if (c.env.SITE_URL && origin !== c.env.SITE_URL) {
+    return c.redirect(`${c.env.SITE_URL}/login${c.req.query('next') ? '?next=' + encodeURIComponent(c.req.query('next')!) : ''}`, 302)
+  }
+  return c.html(loginPage(c.req.query('next') || ''))
+})
 app.get('/checkout', async (c) => {
   // Only block if we actually have a DB — if misconfigured just show the page
   if (c.env.DB) {
