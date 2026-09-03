@@ -423,28 +423,29 @@ async function sendTikTokEvent(opts: {
   try {
     if (!opts.token) return
     const hashedEmail = opts.email ? await sha256Hex(opts.email.toLowerCase().trim()) : undefined
-    const body: Record<string, any> = {
-      pixel_code: TIKTOK_PIXEL_ID,
+    const eventData: Record<string, any> = {
       event: opts.event,
       event_id: opts.eventId || crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      context: {
-        user: {
-          ...(hashedEmail ? { email: hashedEmail } : {}),
-          ...(opts.ip ? { ip: opts.ip } : {}),
-          ...(opts.userAgent ? { user_agent: opts.userAgent } : {}),
-        },
-        page: { url: opts.url || 'https://stemforge.studio' }
+      event_time: Math.floor(Date.now() / 1000),
+      user: {
+        ...(hashedEmail ? { email: hashedEmail } : {}),
+        ...(opts.ip ? { ip: opts.ip } : {}),
+        ...(opts.userAgent ? { user_agent: opts.userAgent } : {}),
       },
+      page: { url: opts.url || 'https://stemforge.studio' },
       properties: {}
     }
     if (opts.event === 'Subscribe' && opts.value) {
-      body.properties = { value: opts.value, currency: opts.currency || 'USD' }
+      eventData.properties = { value: opts.value, currency: opts.currency || 'USD' }
     }
     await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
       method: 'POST',
       headers: { 'Access-Token': opts.token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data: [body] })
+      body: JSON.stringify({
+        event_source: 'web',
+        event_source_id: TIKTOK_PIXEL_ID,
+        data: [eventData]
+      })
     })
   } catch (e) {
     console.error('[tiktok-event] failed:', e)
