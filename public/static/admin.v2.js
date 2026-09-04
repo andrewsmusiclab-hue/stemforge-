@@ -941,9 +941,10 @@ async function bcSaveTemplate() {
     var res = await fetch(url, { method: method, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     var d = await res.json();
     if (d.ok || d.id) {
-      if (!_bcEditId && d.id) _bcEditId = d.id;
-      bcSetStatus('✓ Template "' + name.trim() + '" saved!', '#10b981');
+      var savedName = name.trim();
       bcLoadTemplates(); // refresh list
+      bcNewTemplate();   // clear builder, reset to new
+      bcSetStatus('✓ Template "' + savedName + '" saved! Builder reset — ready for a new template.', '#10b981');
     } else {
       bcSetStatus('Error: ' + (d.error || 'Save failed'), '#ef4444');
     }
