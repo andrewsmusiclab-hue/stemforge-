@@ -83,7 +83,7 @@ function adminTab(tab){
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
-  if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); window._broadcastsLoaded=true; }
+  if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); window._broadcastsLoaded=true; }
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
@@ -828,4 +828,134 @@ function bcSetStatus(msg, color) {
   el.style.display = 'block';
   el.style.color = color || '#e2e8f0';
   el.innerHTML = msg;
+}
+
+// ── Saved Templates ──────────────────────────────────────────────────────────
+var _bcEditId = null; // null = new template, number = editing existing
+
+async function bcLoadTemplates() {
+  var el = document.getElementById('bc-templates-list');
+  if (!el) return;
+  el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;margin:0"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
+  try {
+    var res = await fetch('/api/admin/templates', { credentials: 'include' });
+    var d = await res.json();
+    if (!d.templates || !d.templates.length) {
+      el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;margin:0">No saved templates yet. Build one and click <strong>Save Template</strong>.</p>';
+      return;
+    }
+    el.innerHTML = d.templates.map(function(t) {
+      var badge = t.is_system ? '<span style="font-size:.65rem;background:rgba(167,139,250,.2);color:#a78bfa;border-radius:4px;padding:1px 6px;margin-left:6px">system</span>' : '';
+      var delBtn = t.is_system ? '' : '<button onclick="bcDeleteTemplate(' + t.id + ',\'' + escHtml(t.name) + '\')" style="background:none;border:none;color:#475569;cursor:pointer;padding:2px 6px;font-size:.8rem" title="Delete"><i class="fas fa-trash"></i></button>';
+      return '<div style="display:flex;align-items:center;gap:8px;background:#0f172a;border:1px solid var(--border);border-radius:10px;padding:10px 14px;cursor:pointer;transition:border-color .2s" onmouseover="this.style.borderColor=\'#4e9fff\'" onmouseout="this.style.borderColor=\'var(--border)\'">'+
+        '<div style="flex:1" onclick="bcLoadTemplate(' + t.id + ')">'+
+          '<div style="font-size:.88rem;font-weight:600;color:#e2e8f0">' + escHtml(t.name) + badge + '</div>'+
+          '<div style="font-size:.75rem;color:#64748b;margin-top:2px">' + escHtml(t.subject || '(no subject)') + '</div>'+
+        '</div>'+
+        '<button onclick="bcLoadTemplate(' + t.id + ')" style="background:none;border:none;color:#4e9fff;cursor:pointer;padding:2px 6px;font-size:.8rem" title="Load"><i class="fas fa-edit"></i> Edit</button>'+
+        delBtn +
+      '</div>';
+    }).join('');
+    // store templates for lookup
+    window._bcTemplates = d.templates;
+  } catch(e) {
+    el.innerHTML = '<p style="color:#ef4444;font-size:.85rem;margin:0">Failed to load templates: ' + e.message + '</p>';
+  }
+}
+
+function bcLoadTemplate(id) {
+  var t = (window._bcTemplates || []).find(function(x){ return x.id == id; });
+  if (!t) return;
+  _bcEditId = id;
+  // Load name + subject
+  var nameEl = document.getElementById('bc-template-name');
+  var subjectEl = document.getElementById('bc-subject');
+  if (nameEl) nameEl.value = t.name || '';
+  if (subjectEl) subjectEl.value = t.subject || '';
+  // Load styles
+  try {
+    var styles = JSON.parse(t.styles_json || '{}');
+    var bg = document.getElementById('bc-bg-color');
+    var tc = document.getElementById('bc-text-color');
+    var ac = document.getElementById('bc-accent-color');
+    var fn = document.getElementById('bc-font');
+    var wd = document.getElementById('bc-width');
+    if (bg && styles.bgColor) bg.value = styles.bgColor;
+    if (tc && styles.textColor) tc.value = styles.textColor;
+    if (ac && styles.accentColor) ac.value = styles.accentColor;
+    if (fn && styles.font) fn.value = styles.font;
+    if (wd && styles.width) wd.value = styles.width;
+  } catch(e) {}
+  // Load blocks
+  try {
+    var rawBlocks = JSON.parse(t.blocks_json || '[]');
+    // Convert from server block format to client format
+    window._bcBlocks = rawBlocks.map(function(b) {
+      if (b.type === 'header' || b.type === 'text') {
+        return { id: b.id || ('b'+Date.now()+Math.random()), type: b.type, text: b.text || '', align: b.align || 'left', fontSize: (b.fontSize||'').replace('px','')||'16', bold: b.bold || false };
+      }
+      if (b.type === 'image') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'image', src: b.url || b.src || '', alt: b.alt || '', link: b.link || '', width: (b.width||'100%').replace('px','')+'px', align: b.align || 'center' };
+      if (b.type === 'button') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'button', text: b.text || 'Click Here', url: b.url || '#', align: b.align || 'center', bgColor: b.bgColor || '#4e9fff', textColor: b.textColor || '#050c1a' };
+      if (b.type === 'divider') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'divider' };
+      if (b.type === 'spacer') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'spacer', height: (b.height||'16px').replace('px','') };
+      return b;
+    });
+  } catch(e) { window._bcBlocks = []; }
+  bcRenderBlocks();
+  bcUpdatePreview();
+  bcSetStatus('✓ Template "' + t.name + '" loaded — edit and save changes', '#10b981');
+  // Scroll to builder
+  var builder = document.querySelector('#admin-tab-broadcasts');
+  if (builder) builder.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function bcNewTemplate() {
+  _bcEditId = null;
+  var nameEl = document.getElementById('bc-template-name');
+  var subjectEl = document.getElementById('bc-subject');
+  if (nameEl) nameEl.value = '';
+  if (subjectEl) subjectEl.value = '';
+  window._bcBlocks = [];
+  bcRenderBlocks();
+  bcUpdatePreview();
+  bcSetStatus('New template — add blocks and click Save Template', '#64748b');
+}
+
+async function bcSaveTemplate() {
+  var name = (document.getElementById('bc-template-name') || {}).value || '';
+  var subject = (document.getElementById('bc-subject') || {}).value || '';
+  if (!name.trim()) { bcSetStatus('Please enter a template name first', '#f59e0b'); return; }
+  var blocks = window._bcBlocks || [];
+  var styles = {
+    bgColor: (document.getElementById('bc-bg-color') || {}).value || '#0d0d1a',
+    textColor: (document.getElementById('bc-text-color') || {}).value || '#e2e8f0',
+    accentColor: (document.getElementById('bc-accent-color') || {}).value || '#4e9fff',
+    font: (document.getElementById('bc-font') || {}).value || 'Inter,system-ui,sans-serif',
+    width: (document.getElementById('bc-width') || {}).value || '600px'
+  };
+  var payload = { name: name.trim(), subject: subject, blocks_json: JSON.stringify(blocks), styles_json: JSON.stringify(styles) };
+  bcSetStatus('<i class="fas fa-spinner fa-spin"></i> Saving…', '#f59e0b');
+  try {
+    var url = _bcEditId ? '/api/admin/templates/' + _bcEditId : '/api/admin/templates';
+    var method = _bcEditId ? 'PUT' : 'POST';
+    var res = await fetch(url, { method: method, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    var d = await res.json();
+    if (d.ok || d.id) {
+      if (!_bcEditId && d.id) _bcEditId = d.id;
+      bcSetStatus('✓ Template "' + name.trim() + '" saved!', '#10b981');
+      bcLoadTemplates(); // refresh list
+    } else {
+      bcSetStatus('Error: ' + (d.error || 'Save failed'), '#ef4444');
+    }
+  } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
+}
+
+async function bcDeleteTemplate(id, name) {
+  if (!confirm('Delete template "' + name + '"? This cannot be undone.')) return;
+  try {
+    var res = await fetch('/api/admin/templates/' + id, { method: 'DELETE', credentials: 'include' });
+    var d = await res.json();
+    if (d.ok) { bcLoadTemplates(); bcSetStatus('Template deleted', '#64748b'); }
+    else bcSetStatus('Error: ' + (d.error || 'Delete failed'), '#ef4444');
+  } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
 }
