@@ -73,7 +73,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','signups','stuckjobs'];
+var adminTabs=['analytics','revenue','users','signups','stuckjobs','broadcasts'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -83,6 +83,7 @@ function adminTab(tab){
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
+  if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); window._broadcastsLoaded=true; }
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
