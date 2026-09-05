@@ -83,7 +83,7 @@ function adminTab(tab){
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
-  if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); window._broadcastsLoaded=true; }
+  if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
 }
 loadAnalytics(); window._analyticsLoaded=true;
 
@@ -805,6 +805,7 @@ async function bcSendBroadcast() {
   if (!subject) { alert('Enter a subject line first.'); return; }
   if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
   var audience = document.getElementById('bc-audience')?.value || 'all';
+  var broadcastName = document.getElementById('bc-template-name')?.value?.trim() || subject;
   var label = audience === 'all' ? 'ALL users' : audience === 'free' ? 'free plan users' : 'paid plan users';
   var countEl = document.getElementById('bc-count-' + audience);
   var count = countEl ? countEl.textContent : '?';
@@ -814,11 +815,15 @@ async function bcSendBroadcast() {
     var res = await fetch('/api/admin/broadcast/send', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: audience })
+      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: audience, broadcast_name: broadcastName })
     });
     var d = await res.json();
-    if (d.ok) bcSetStatus('✓ Sent to ' + d.sent + ' / ' + d.total + ' users' + (d.errors > 0 ? ' (' + d.errors + ' failed)' : ''), '#10b981');
-    else bcSetStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
+    if (d.ok) {
+      bcSetStatus('✓ Sent to ' + d.sent + ' / ' + d.total + ' users' + (d.errors > 0 ? ' (' + d.errors + ' failed)' : ''), '#10b981');
+      bcLoadHistory(); // refresh history table
+    } else {
+      bcSetStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
+    }
   } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
 }
 
@@ -980,4 +985,37 @@ async function bcDeleteTemplate(id, name) {
     if (d.ok) { bcLoadTemplates(); bcSetStatus('Template deleted', '#64748b'); }
     else bcSetStatus('Error: ' + (d.error || 'Delete failed'), '#ef4444');
   } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
+}
+
+async function bcLoadHistory() {
+  var el = document.getElementById('bc-history-table');
+  if (!el) return;
+  el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;margin:0"><i class="fas fa-spinner fa-spin"></i> Loading\u2026</p>';
+  try {
+    var res = await fetch('/api/admin/broadcast/history', { credentials: 'include' });
+    var d = await res.json();
+    if (!d.sends || !d.sends.length) {
+      el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;margin:0">No broadcasts sent yet.</p>';
+      return;
+    }
+    el.innerHTML = '<div style="overflow-x:auto"><table class="admin-table"><thead><tr>' +
+      '<th>Name</th><th>Subject</th><th>Audience</th><th>Sent</th><th>Opened</th><th>Open Rate</th><th>Date</th>' +
+      '</tr></thead><tbody>' +
+      d.sends.map(function(s) {
+        var rate = s.sent_count > 0 ? Math.round((s.opened_count / s.sent_count) * 100) : 0;
+        var rateColor = rate >= 30 ? '#10b981' : rate >= 15 ? '#f59e0b' : '#94a3b8';
+        return '<tr>' +
+          '<td style="font-weight:600">' + escHtml(s.name) + '</td>' +
+          '<td style="color:#94a3b8;font-size:.85rem">' + escHtml(s.subject || '') + '</td>' +
+          '<td><span style="background:rgba(78,159,255,.15);color:#4e9fff;border-radius:4px;padding:2px 8px;font-size:.78rem">' + escHtml(s.audience || 'all') + '</span></td>' +
+          '<td style="font-weight:700">' + (s.sent_count || 0) + '</td>' +
+          '<td style="font-weight:700;color:#10b981">' + (s.opened_count || 0) + '</td>' +
+          '<td><span style="font-weight:700;color:' + rateColor + '">' + rate + '%</span></td>' +
+          '<td style="color:#64748b;font-size:.82rem">' + new Date(s.sent_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) + '</td>' +
+          '</tr>';
+      }).join('') +
+      '</tbody></table></div>';
+  } catch(e) {
+    el.innerHTML = '<p style="color:#ef4444;font-size:.85rem;margin:0">Failed to load history: ' + escHtml(e.message) + '</p>';
+  }
 }
