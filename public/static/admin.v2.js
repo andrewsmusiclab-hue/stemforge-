@@ -903,13 +903,18 @@ function bcLoadTemplate(id) {
   } catch(e) { window._bcBlocks = []; }
   bcRenderBlocks();
   bcUpdatePreview();
-  bcSetStatus('✓ Template "' + t.name + '" loaded — edit and save changes', '#10b981');
-  // Scroll to builder
-  var builder = document.querySelector('#admin-tab-broadcasts');
-  if (builder) builder.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  var wrap = document.getElementById('bc-builder-wrap');
+  if (wrap) { wrap.style.display = 'block'; wrap.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  bcSetStatus('✓ Template "' + t.name + '" loaded — edit and click Save Template', '#10b981');
 }
 
-function bcNewTemplate() {
+function bcCloseBuilder() {
+  var wrap = document.getElementById('bc-builder-wrap');
+  if (wrap) wrap.style.display = 'none';
+  _bcEditId = null;
+}
+
+function bcOpenNew() {
   _bcEditId = null;
   var nameEl = document.getElementById('bc-template-name');
   var subjectEl = document.getElementById('bc-subject');
@@ -918,7 +923,23 @@ function bcNewTemplate() {
   window._bcBlocks = [];
   bcRenderBlocks();
   bcUpdatePreview();
+  var wrap = document.getElementById('bc-builder-wrap');
+  if (wrap) { wrap.style.display = 'block'; wrap.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   bcSetStatus('New template — add blocks and click Save Template', '#64748b');
+}
+
+function bcNewTemplate() {
+  // Internal reset only (called after save) — does NOT show builder
+  _bcEditId = null;
+  var nameEl = document.getElementById('bc-template-name');
+  var subjectEl = document.getElementById('bc-subject');
+  if (nameEl) nameEl.value = '';
+  if (subjectEl) subjectEl.value = '';
+  window._bcBlocks = [];
+  bcRenderBlocks();
+  bcUpdatePreview();
+  var wrap = document.getElementById('bc-builder-wrap');
+  if (wrap) wrap.style.display = 'none';
 }
 
 async function bcSaveTemplate() {
