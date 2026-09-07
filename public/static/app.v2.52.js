@@ -271,7 +271,16 @@ document.addEventListener('DOMContentLoaded', () => {
           setLoading(signupBtn, false);
           return;
         }
-        // Account created — redirect
+        // Account created — fire TikTok CompleteRegistration then redirect
+        if (window.ttq) {
+          try {
+            // Hash email client-side for TikTok identify + CompleteRegistration
+            const msgBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(email.toLowerCase().trim()));
+            const hashHex = Array.from(new Uint8Array(msgBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+            window.ttq.identify({ email: hashHex });
+            window.ttq.track('CompleteRegistration', {});
+          } catch(e) {}
+        }
         signupBtn.innerHTML = '<i class="fas fa-check"></i> Account created!';
         signupBtn.style.background = '#10b981';
         setTimeout(() => window.location.href = data.redirect || '/dashboard', 800);
@@ -350,6 +359,19 @@ document.addEventListener('DOMContentLoaded', () => {
       const coError = document.getElementById('co-error');
       if (coError) coError.style.display = 'none';
       setLoading(checkoutSubmit, true, 'Redirecting to Stripe...');
+
+      // Fire TikTok InitiateCheckout
+      if (window.ttq) {
+        try {
+          const planPrices = { creator: 10, pro: 26 };
+          const planNames  = { creator: 'Creator Plan', pro: 'Pro Artist Plan' };
+          window.ttq.track('InitiateCheckout', {
+            contents: [{ content_id: urlPlan, content_type: 'product', content_name: planNames[urlPlan] || urlPlan }],
+            value: planPrices[urlPlan] || 10,
+            currency: 'USD'
+          });
+        } catch(e) {}
+      }
 
       try {
         const res = await fetch('/api/stripe/checkout', {
@@ -568,6 +590,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const { user } = await res.json();
       if (!user) return;
       window._sfUser = user;
+
+      // ── TikTok identify — link this session to the known user ─
+      if (window.ttq && user.email) {
+        try {
+          const emailBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(user.email.toLowerCase().trim()));
+          const emailHash = Array.from(new Uint8Array(emailBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+          const idBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(user.id || user.email));
+          const idHash = Array.from(new Uint8Array(idBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+          window.ttq.identify({ email: emailHash, external_id: idHash });
+        } catch(e) {}
+      }
 
       // ── Populate global sidebar ───────────────────────────────
       const gsUserBlock = document.getElementById('gs-user-block');
