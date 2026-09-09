@@ -275,6 +275,16 @@ function onUserSearch(q){
   _userSearchTimeout=setTimeout(function(){ loadUsers(q); },320);
 }
 
+async function resendWelcomeEmail(email){
+  if(!confirm('Send welcome email to '+email+'?')) return;
+  try {
+    var res=await fetch('/api/admin/resend-welcome',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email})});
+    var data=await res.json();
+    if(res.ok && data.ok){ alert('✅ Welcome email sent to '+email); }
+    else { alert('❌ Error: '+(data.error||'Unknown error')); }
+  } catch(e){ alert('❌ Request failed: '+e.message); }
+}
+
 async function loadUsers(q){
   initUserSearch();
   var tableEl=document.getElementById('admin-users-table');
@@ -343,6 +353,7 @@ async function loadUsers(q){
             '<button onclick="addCredits(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.72rem;padding:4px 8px">+Pts</button>'+
             '<button onclick="toggleLockUser(\''+u.id+'\',\''+u.email+'\','+(isLocked?1:0)+')" class="btn btn--sm" style="font-size:.72rem;padding:4px 8px;background:'+(isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)')+';border:1px solid '+(isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)')+';color:'+(isLocked?'#10b981':'#ef4444')+'">'+(isLocked?'Unlock':'Lock')+'</button>'+
             '<button onclick="deleteUserAccount(\''+u.id+'\',\''+u.email+'\')" class="btn btn--sm" style="font-size:.72rem;padding:4px 8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i></button>'+
+            '<button onclick="resendWelcomeEmail(\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.72rem;padding:4px 8px" title="Resend welcome email">✉ Welcome</button>'+
           '</div></td>'+
         '</tr>';
       }).join('')+'</tbody></table></div>';
