@@ -315,6 +315,61 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN signup_referrer TEXT`).run() } catch {}
   // ── Migrate: add email_unsubscribed column (broadcast opt-out) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN email_unsubscribed INTEGER NOT NULL DEFAULT 0`).run() } catch {}
+  // ── Migrate: broadcast tracking tables ──
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS broadcast_sends (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL DEFAULT '',
+      subject TEXT NOT NULL DEFAULT '',
+      audience TEXT NOT NULL DEFAULT 'all',
+      sent_count INTEGER NOT NULL DEFAULT 0,
+      opened_count INTEGER NOT NULL DEFAULT 0,
+      sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run()
+    await db.prepare(`CREATE TABLE IF NOT EXISTS broadcast_opens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      send_id INTEGER NOT NULL,
+      token TEXT NOT NULL,
+      opened_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run()
+    await db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_broadcast_opens_unique ON broadcast_opens(send_id, token)`).run()
+  } catch {}
+  // ── Migrate: email_templates table for saved broadcast templates ──
+  try {
+    await db.prepare(`CREATE TABLE IF NOT EXISTS email_templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      subject TEXT NOT NULL DEFAULT '',
+      blocks_json TEXT NOT NULL DEFAULT '[]',
+      styles_json TEXT NOT NULL DEFAULT '{}',
+      is_system INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`).run()
+  } catch {}
+  // ── Seed welcome template if not already present ──
+  try {
+    const existing = await db.prepare(`SELECT id FROM email_templates WHERE name='Welcome to StemForge' LIMIT 1`).first()
+    if (!existing) {
+      const welcomeBlocks = JSON.stringify([
+        { id:'b1', type:'header', text:'Welcome to StemForge 🎵', fontSize:'28px', align:'center', bold:true },
+        { id:'b2', type:'image', url:'https://stemforge.studio/static/logo.png', alt:'StemForge', width:'120px', align:'center' },
+        { id:'b3', type:'spacer', height:'16px' },
+        { id:'b4', type:'text', text:"Hey {{name}}, you're in! 🎉\n\nStemForge is an AI-powered music production studio built for creators who want to move fast. Split stems, isolate vocals, extend tracks, and create instrumentals — all from your browser, no plugins, no downloads.", align:'left', fontSize:'15px' },
+        { id:'b5', type:'divider' },
+        { id:'b6', type:'text', text:'Here\'s what you can do right now:', align:'left', fontSize:'14px', bold:true },
+        { id:'b7', type:'text', text:'🎤  Vocal Remover — strip vocals from any track\n🥁  Stem Splitter — isolate drums, bass, melody\n🔁  Song Extender — AI extends your track seamlessly\n🎹  Instrumental Creator — generate custom backing tracks', align:'left', fontSize:'14px' },
+        { id:'b8', type:'spacer', height:'8px' },
+        { id:'b9', type:'button', text:'Start Creating Now →', url:'https://stemforge.studio', align:'center', bgColor:'#4e9fff', textColor:'#050c1a' },
+        { id:'b10', type:'spacer', height:'16px' },
+        { id:'b11', type:'text', text:'Made with 🎧 by the StemForge team\nstemforge.studio', align:'center', fontSize:'12px' }
+      ])
+      const welcomeStyles = JSON.stringify({ bgColor:'#080e1a', textColor:'#e2e8f0', accentColor:'#4e9fff', font:'Inter,system-ui,sans-serif', width:'600px' })
+      await db.prepare(`INSERT INTO email_templates (name,subject,blocks_json,styles_json,is_system) VALUES (?,?,?,?,1)`)
+        .bind('Welcome to StemForge', 'Welcome to StemForge — your AI music studio is ready 🎵', welcomeBlocks, welcomeStyles)
+        .run()
+    }
+  } catch {}
   // Backfill: any free user without cycle_start gets created_at as their cycle start
   try { await db.prepare(`UPDATE users SET cycle_start = created_at WHERE plan = 'free' AND cycle_start IS NULL`).run() } catch {}
   // ── Opportunistic reset on cold start — catches any overdue free users ──
@@ -405,12 +460,14 @@ function generateToken(): string {
 
 // ─── TIKTOK SERVER-SIDE EVENTS ───────────────────────────────────────────────
 const TIKTOK_PIXEL_ID = 'D9SVAV3C77UA78AD7EU0'
+const TIKTOK_PIXEL_ID_2 = 'DAE836RC77UDHLL3ILBG'
+const TIKTOK_PIXEL_ID_3 = 'DAFIT1JC77UES974NPK0'
 async function sha256Hex(str: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('')
 }
 async function sendTikTokEvent(opts: {
-  token: string; event: 'CompleteRegistration' | 'Subscribe'
+  token: string; token2?: string; token3?: string; event: 'CompleteRegistration' | 'Subscribe'
   email?: string; ip?: string; userAgent?: string; eventId?: string
   value?: number; currency?: string; url?: string
 }): Promise<void> {
@@ -432,12 +489,157 @@ async function sendTikTokEvent(opts: {
     if (opts.event === 'Subscribe' && opts.value) {
       eventData.properties = { value: opts.value, currency: opts.currency || 'USD' }
     }
+    // Fire for pixel 1 (original account)
     await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
       method: 'POST',
       headers: { 'Access-Token': opts.token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ event_source: 'web', event_source_id: TIKTOK_PIXEL_ID, data: [eventData] })
     })
+    // Fire for pixel 2 (second account) — only if a second token is configured
+    if (opts.token2) {
+      await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
+        method: 'POST',
+        headers: { 'Access-Token': opts.token2, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_source: 'web', event_source_id: TIKTOK_PIXEL_ID_2, data: [eventData] })
+      })
+    }
+    // Fire for pixel 3 (third account) — only if a third token is configured
+    if (opts.token3) {
+      await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
+        method: 'POST',
+        headers: { 'Access-Token': opts.token3, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_source: 'web', event_source_id: TIKTOK_PIXEL_ID_3, data: [eventData] })
+      })
+    }
   } catch (e) { console.error('[tiktok-event] failed:', e) }
+}
+
+// ── Send welcome email to new signup ─────────────────────────
+async function sendWelcomeEmail(opts: { db: D1Database; resendKey?: string; mailerKey?: string; name: string; email: string; siteUrl: string }): Promise<void> {
+  const { db, resendKey, mailerKey, name, email, siteUrl } = opts
+  console.log(`[welcome-email] triggered for ${email} resendKey=${!!resendKey} mailerKey=${!!mailerKey}`)
+  if (!resendKey && !mailerKey) {
+    console.error('[welcome-email] SKIP — no API key set (RESEND_API_KEY and MAILERSEND_API_KEY both missing)')
+    return
+  }
+  const displayName = name?.split(' ')[0] || 'there'
+  const url = siteUrl || 'https://stemforge.studio'
+
+  // ── Hardcoded fallback HTML (always works even if D1 template query fails) ──
+  const fallbackSubject = 'Welcome to StemForge — your AI music studio is ready 🎵'
+  const fallbackHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
+<body style="margin:0;padding:0;background:#080e1a;font-family:Inter,system-ui,sans-serif">
+<div style="max-width:600px;margin:0 auto;padding:40px 20px;color:#e2e8f0">
+<h1 style="margin:0 0 16px;font-size:28px;color:#e2e8f0;text-align:center;font-weight:700;line-height:1.6">Welcome to StemForge 🎵</h1>
+<div style="height:16px"></div>
+<p style="margin:0 0 16px;font-size:15px;color:#e2e8f0;text-align:left;font-weight:400;line-height:1.6">Hey ${displayName}, you're in! 🎉<br/><br/>StemForge is an AI-powered music generator built for creators who want to move fast. Split stems, isolate vocals, extend tracks, and create instrumentals — StemForge is designed to accelerate your creative process.</p>
+<hr style="border:none;border-top:1px solid #1e293b;margin:16px 0"/>
+<div style="height:8px"></div>
+<div style="text-align:center;margin-bottom:16px"><a href="${url}" style="display:inline-block;background:#4e9fff;color:#050c1a;font-weight:700;font-size:15px;padding:13px 32px;border-radius:50px;text-decoration:none;font-family:Inter,system-ui,sans-serif">Start Creating Now →</a></div>
+<div style="height:16px"></div>
+<p style="margin:0 0 16px;font-size:12px;color:#e2e8f0;text-align:center;font-weight:400;line-height:1.6">stemforge.studio</p>
+<div style="margin-top:40px;padding-top:16px;border-top:1px solid #1e293b;text-align:center;font-size:11px;color:#475569;font-family:sans-serif">
+  You're receiving this because you signed up at <a href="${url}" style="color:#4e9fff">${url.replace('https://','')}</a><br/>
+  <a href="${url}/api/unsubscribe?id=0&t=welcome" style="color:#475569">Unsubscribe</a>
+</div>
+</div>
+</body></html>`
+
+  let subject = fallbackSubject
+  let html = fallbackHtml
+
+  // ── Try to pull the latest saved welcome template from D1 ──
+  try {
+    const tpl = await db.prepare(
+      `SELECT subject, blocks_json, styles_json FROM email_templates WHERE name='Welcome to StemForge' ORDER BY updated_at DESC LIMIT 1`
+    ).first<{ subject: string; blocks_json: string; styles_json: string }>()
+
+    if (tpl && tpl.blocks_json) {
+      const blocks: any[] = JSON.parse(tpl.blocks_json || '[]')
+      const styles: any = JSON.parse(tpl.styles_json || '{}')
+      const bg = styles.bgColor || '#080e1a'
+      const tc = styles.textColor || '#e2e8f0'
+      const ac = styles.accentColor || '#4e9fff'
+      const font = styles.font || 'Inter,system-ui,sans-serif'
+      const width = styles.width || '600px'
+      const unsubUrl = `${url}/api/unsubscribe?id=0&t=welcome`
+
+      const blockHtml = blocks.map((b: any) => {
+        if (b.type === 'header' || b.type === 'text') {
+          const fs = b.fontSize ? (String(b.fontSize).includes('px') ? b.fontSize : b.fontSize + 'px') : (b.type === 'header' ? '24px' : '15px')
+          const fw = b.bold ? '700' : '400'
+          const tag = b.type === 'header' ? 'h1' : 'p'
+          const txt = (b.text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/{{name}}/g, displayName).replace(/\n/g,'<br/>')
+          return `<${tag} style="margin:0 0 16px;font-size:${fs};color:${tc};text-align:${b.align||'left'};font-weight:${fw};font-family:${font};line-height:1.6">${txt}</${tag}>`
+        }
+        if (b.type === 'image') {
+          const img = `<img src="${b.src||b.url||''}" alt="${b.alt||''}" width="${b.width||'100%'}" style="display:block;max-width:100%;height:auto;border-radius:8px;margin:0 auto 16px"/>`
+          return b.link ? `<a href="${b.link}" style="display:block;text-align:${b.align||'center'}">${img}</a>` : `<div style="text-align:${b.align||'center'}">${img}</div>`
+        }
+        if (b.type === 'button') {
+          return `<div style="text-align:${b.align||'center'};margin-bottom:16px"><a href="${b.url||'#'}" style="display:inline-block;background:${b.bgColor||ac};color:${b.textColor||'#050c1a'};font-weight:700;font-size:15px;padding:13px 32px;border-radius:50px;text-decoration:none;font-family:${font}">${(b.text||'Click Here').replace(/&/g,'&amp;')}</a></div>`
+        }
+        if (b.type === 'divider') return `<hr style="border:none;border-top:1px solid #1e293b;margin:16px 0"/>`
+        if (b.type === 'spacer') return `<div style="height:${b.height ? (String(b.height).includes('px') ? b.height : b.height+'px') : '16px'}"></div>`
+        return ''
+      }).join('\n')
+
+      const tplHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
+<body style="margin:0;padding:0;background:${bg};font-family:${font}">
+<div style="max-width:${width};margin:0 auto;padding:40px 20px;color:${tc}">
+${blockHtml}
+<div style="margin-top:40px;padding-top:16px;border-top:1px solid #1e293b;text-align:center;font-size:11px;color:#475569;font-family:sans-serif">
+  You're receiving this because you signed up at <a href="${url}" style="color:${ac}">${url.replace('https://','')}</a><br/>
+  <a href="${unsubUrl}" style="color:#475569">Unsubscribe</a>
+</div>
+</div>
+</body></html>`
+
+      if (tplHtml && tplHtml.length > 100) {
+        subject = tpl.subject || subject
+        html = tplHtml
+        console.log('[welcome-email] using D1 template, blocks:', blocks.length)
+      } else {
+        console.warn('[welcome-email] D1 template rendered empty, using fallback')
+      }
+    } else {
+      console.warn('[welcome-email] no D1 template found, using hardcoded fallback')
+    }
+  } catch (e) {
+    console.error('[welcome-email] D1 template fetch failed, using fallback:', e)
+    // continue with fallbackHtml — do NOT return
+  }
+
+  // ── Send via Resend (primary) or MailerSend (fallback) ──
+  try {
+    if (resendKey) {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: 'StemForge <noreply@stemforge.studio>', to: [email], subject, html })
+      })
+      const resBody = await res.text()
+      if (!res.ok) {
+        console.error(`[welcome-email] Resend error ${res.status}:`, resBody)
+      } else {
+        console.log(`[welcome-email] Resend OK for ${email}:`, resBody)
+      }
+    } else if (mailerKey) {
+      const res = await fetch('https://api.mailersend.com/v1/email', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: { email: 'noreply@stemforge.studio', name: 'StemForge' }, to: [{ email }], subject, html })
+      })
+      const resBody = await res.text()
+      if (!res.ok) {
+        console.error(`[welcome-email] MailerSend error ${res.status}:`, resBody)
+      } else {
+        console.log(`[welcome-email] MailerSend OK for ${email}:`, resBody)
+      }
+    }
+  } catch (e) {
+    console.error('[welcome-email] send failed:', e)
+  }
 }
 
 function generateId(): string {
@@ -598,7 +800,7 @@ async function sendAdminSubscriptionEmail(
         method: 'POST',
         headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: 'StemForge <onboarding@resend.dev>',
+          from: 'StemForge <noreply@stemforge.studio>',
           to: [adminEmail],
           subject,
           html: bodyHtml
@@ -3192,7 +3394,8 @@ app.post('/api/auth/signup', async (c) => {
 
     const token = await createSession(c.env.DB, userId)
     const siteUrl = c.env.SITE_URL || ''
-    sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', event: 'CompleteRegistration', email: email.toLowerCase(), ip: registrationIp || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_${userId}`, url: `${siteUrl}/signup` }).catch(() => {})
+    sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token2: (c.env as any).TIKTOK_PIXEL_TOKEN_2 || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'CompleteRegistration', email: email.toLowerCase(), ip: registrationIp || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_${userId}`, url: `${siteUrl}/signup` }).catch(() => {})
+    sendWelcomeEmail({ db: c.env.DB, resendKey: (c.env as any).RESEND_API_KEY, mailerKey: (c.env as any).MAILERSEND_API_KEY, name, email, siteUrl: c.env.SITE_URL || 'https://stemforge.studio' }).catch(() => {})
 
     return new Response(JSON.stringify({ ok: true, redirect: plan && plan !== 'free' ? '/checkout?plan=' + plan : '/dashboard' }), {
       status: 200,
@@ -3443,7 +3646,9 @@ app.get('/api/auth/google/callback', async (c) => {
     await ensureAuthTables(c.env.DB)
 
     let user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
+    let isNewUser = false
     if (!user) {
+      isNewUser = true
       const googleIp = c.req.header('CF-Connecting-IP') ||
                        c.req.header('X-Forwarded-For')?.split(',')[0]?.trim() || null
       // IP check for Google OAuth new accounts too
@@ -3488,7 +3693,8 @@ app.get('/api/auth/google/callback', async (c) => {
     }
 
     const token = await createSession(c.env.DB, user.id)
-    sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', event: 'CompleteRegistration', email: profile.email.toLowerCase(), ip: c.req.header('CF-Connecting-IP') || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_google_${user!.id}`, url: `${c.env.SITE_URL}/signup` }).catch(() => {})
+    sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token2: (c.env as any).TIKTOK_PIXEL_TOKEN_2 || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'CompleteRegistration', email: profile.email.toLowerCase(), ip: c.req.header('CF-Connecting-IP') || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_google_${user!.id}`, url: `${c.env.SITE_URL}/signup` }).catch(() => {})
+    if (isNewUser) sendWelcomeEmail({ db: c.env.DB, resendKey: (c.env as any).RESEND_API_KEY, mailerKey: (c.env as any).MAILERSEND_API_KEY, name: profile.name, email: profile.email.toLowerCase(), siteUrl: c.env.SITE_URL || 'https://stemforge.studio' }).catch(() => {})
     return new Response(null, {
       status: 302,
       headers: {
@@ -3576,7 +3782,7 @@ app.post('/api/stripe/webhook', async (c) => {
             timestamp: new Date().toISOString()
           })
           const planValue = plan === 'pro' ? 25.00 : plan === 'creator' ? 10.00 : 0
-          if (planValue > 0) { sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', event: 'Subscribe', email: newUser?.email || session.customer_details?.email || '', eventId: `sub_${session.id}`, value: planValue, currency: 'USD', url: 'https://stemforge.studio/checkout' }).catch(() => {}) }
+          if (planValue > 0) { sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token2: (c.env as any).TIKTOK_PIXEL_TOKEN_2 || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'Subscribe', email: newUser?.email || session.customer_details?.email || '', eventId: `sub_${session.id}`, value: planValue, currency: 'USD', url: 'https://stemforge.studio/checkout' }).catch(() => {}) }
         } catch (mailErr) {
           console.error('[webhook] subscription email failed:', mailErr)
         }
@@ -3846,7 +4052,7 @@ app.post('/api/feedback', async (c) => {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from: 'StemForge Feedback <onboarding@resend.dev>',
+          from: 'StemForge Feedback <noreply@stemforge.studio>',
           to: [feedbackToEmail],
           reply_to: replyEmail || undefined,
           subject,
@@ -6052,6 +6258,120 @@ async function checkPreviewGate(c: any): Promise<Response | null> {
 //  BROADCAST EMAIL ROUTES
 // ═══════════════════════════════════════════════════════════════
 
+// GET /api/admin/templates — list saved email templates
+app.get('/api/admin/templates', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const rows = await c.env.DB.prepare(`SELECT id,name,subject,blocks_json,styles_json,is_system,updated_at FROM email_templates ORDER BY is_system DESC, updated_at DESC`).all<any>()
+  return c.json({ templates: rows.results || [] })
+})
+
+// POST /api/admin/templates — save new template
+app.post('/api/admin/templates', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const { name, subject, blocks_json, styles_json } = await c.req.json<any>()
+  if (!name?.trim()) return c.json({ error: 'Template name required' }, 400)
+  const result = await c.env.DB.prepare(`INSERT INTO email_templates (name,subject,blocks_json,styles_json,is_system) VALUES (?,?,?,?,0)`)
+    .bind(name.trim(), subject || '', blocks_json || '[]', styles_json || '{}')
+    .run()
+  return c.json({ ok: true, id: result.meta.last_row_id })
+})
+
+// PUT /api/admin/templates/:id — update existing template
+app.put('/api/admin/templates/:id', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const id = c.req.param('id')
+  const { name, subject, blocks_json, styles_json } = await c.req.json<any>()
+  await c.env.DB.prepare(`UPDATE email_templates SET name=?,subject=?,blocks_json=?,styles_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+    .bind(name || '', subject || '', blocks_json || '[]', styles_json || '{}', id)
+    .run()
+  return c.json({ ok: true })
+})
+
+// DELETE /api/admin/templates/:id — delete template
+app.delete('/api/admin/templates/:id', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const id = c.req.param('id')
+  await c.env.DB.prepare(`DELETE FROM email_templates WHERE id=? AND is_system=0`).bind(id).run()
+  return c.json({ ok: true })
+})
+
+// GET /api/track/open — 1x1 tracking pixel for broadcast open tracking
+app.get('/api/track/open', async (c) => {
+  try {
+    const sid = c.req.query('sid')
+    const token = c.req.query('t')
+    if (sid && token && c.env.DB) {
+      const sendId = parseInt(sid)
+      if (!isNaN(sendId)) {
+        // Insert open (unique per send+token — duplicate ignored)
+        try {
+          await c.env.DB.prepare(`INSERT OR IGNORE INTO broadcast_opens (send_id, token) VALUES (?,?)`).bind(sendId, token).run()
+          // Update opened_count on the send record
+          await c.env.DB.prepare(`UPDATE broadcast_sends SET opened_count = (SELECT COUNT(*) FROM broadcast_opens WHERE send_id=?) WHERE id=?`).bind(sendId, sendId).run()
+        } catch {}
+      }
+    }
+  } catch {}
+  // Return 1x1 transparent GIF
+  const gif = new Uint8Array([71,73,70,56,57,97,1,0,1,0,0,0,0,59])
+  return new Response(gif, { headers: { 'Content-Type': 'image/gif', 'Cache-Control': 'no-store, no-cache', 'Pragma': 'no-cache' } })
+})
+
+// POST /api/admin/resend-welcome — resend the welcome email to any user by email (admin only)
+// Accepts session cookie OR ?admin_key=<ADMIN_EMAIL> query param
+app.post('/api/admin/resend-welcome', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const adminKey = c.req.query('admin_key')
+  const adminEmailVal = c.env.ADMIN_EMAIL || 'andrewsmusiclab@gmail.com'
+  const isKeyAuth = adminKey && adminKey === adminEmailVal
+  if (!isKeyAuth) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  }
+  const { email } = await c.req.json().catch(() => ({ email: '' }))
+  if (!email) return c.json({ error: 'email required' }, 400)
+  const target = await getUserByEmail(c.env.DB, email.toLowerCase())
+  if (!target) return c.json({ error: 'User not found' }, 404)
+  try {
+    await sendWelcomeEmail({
+      db: c.env.DB,
+      resendKey: (c.env as any).RESEND_API_KEY,
+      mailerKey: (c.env as any).MAILERSEND_API_KEY,
+      name: target.name,
+      email: target.email,
+      siteUrl: c.env.SITE_URL || 'https://stemforge.studio'
+    })
+    return c.json({ ok: true, message: `Welcome email sent to ${target.email}` })
+  } catch (e: any) {
+    return c.json({ error: e?.message || 'Send failed' }, 500)
+  }
+})
+
+// GET /api/admin/broadcast/history — list all past broadcast sends
+app.get('/api/admin/broadcast/history', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const rows = await c.env.DB.prepare(
+    `SELECT id, name, subject, audience, sent_count, opened_count, sent_at FROM broadcast_sends ORDER BY sent_at DESC LIMIT 100`
+  ).all<any>()
+  return c.json({ sends: rows.results || [] })
+})
+
 // GET /api/admin/broadcast/subscribers — get subscriber list + counts
 app.get('/api/admin/broadcast/subscribers', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
@@ -6076,69 +6396,131 @@ app.post('/api/admin/broadcast/send', async (c) => {
     html: string
     audience: 'all' | 'free' | 'paid'
     test_email?: string
+    broadcast_name?: string
   }>()
 
   const { subject, html, audience, test_email } = body
   if (!subject?.trim() || !html?.trim()) return c.json({ error: 'Subject and HTML content required' }, 400)
 
+  const resendKey = (c.env as any).RESEND_API_KEY
   const mailerKey = (c.env as any).MAILERSEND_API_KEY
-  const fromEmail = (c.env as any).FEEDBACK_FROM_EMAIL || (c.env as any).ADMIN_EMAIL || 'andrewsmusiclab@gmail.com'
-  if (!mailerKey) return c.json({ error: 'MAILERSEND_API_KEY secret not set' }, 500)
+  if (!resendKey && !mailerKey) return c.json({ error: 'No email API key set (RESEND_API_KEY or MAILERSEND_API_KEY)' }, 500)
 
+  const fromEmail = 'StemForge <noreply@stemforge.studio>'
   const siteUrl = c.env.SITE_URL || 'https://stemforge.studio'
 
-  // Test send — just send to one email
-  if (test_email) {
-    const testHtml = html + `<div style="margin-top:32px;padding-top:16px;border-top:1px solid #334155;text-align:center;font-size:11px;color:#64748b">⚠️ TEST EMAIL — not sent to real users</div>`
+  // Helper: build personalised HTML for one recipient (sequential — no concurrent crypto)
+  async function buildPersonalHtml(r: {id:string,email:string,name:string}, sendId: number, rawHtml: string): Promise<string> {
+    const secret = (c.env as any).SESSION_SECRET || 'sf'
+    const unsubToken = await sha256Hex(r.id + secret)
+    const openToken  = await sha256Hex(`${sendId}:${r.id}:${secret}`)
+    const unsubUrl   = `${siteUrl}/api/unsubscribe?id=${r.id}&t=${unsubToken}`
+    const pixelUrl   = `${siteUrl}/api/track/open?sid=${sendId}&t=${openToken}`
+    return rawHtml + `
+<div style="margin-top:40px;padding-top:16px;border-top:1px solid #1e293b;text-align:center;font-size:11px;color:#475569;font-family:sans-serif">
+  You're receiving this because you have a StemForge account.<br/>
+  <a href="${unsubUrl}" style="color:#4e9fff">Unsubscribe</a>
+</div>
+<img src="${pixelUrl}" width="1" height="1" style="display:block;width:1px;height:1px;border:0;opacity:0" alt=""/>`
+  }
+
+  // Helper: send one email via Resend (primary) or MailerSend (fallback)
+  async function sendOne(to: string, subj: string, htmlBody: string): Promise<boolean> {
+    if (resendKey) {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: fromEmail, to: [to], subject: subj, html: htmlBody })
+      })
+      return res.ok
+    }
+    const feedbackFrom = (c.env as any).FEEDBACK_FROM_EMAIL || 'noreply@stemforge.studio'
     const res = await fetch('https://api.mailersend.com/v1/email', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: { email: fromEmail, name: 'StemForge' }, to: [{ email: test_email }], subject: `[TEST] ${subject}`, html: testHtml })
+      body: JSON.stringify({ from: { email: feedbackFrom, name: 'StemForge' }, to: [{ email: to }], subject: subj, html: htmlBody })
     })
-    if (!res.ok && res.status !== 202) {
-      const err = await res.text()
-      return c.json({ error: `MailerSend error: ${err.slice(0, 200)}` }, 500)
+    return res.ok || res.status === 202
+  }
+
+  // Helper: send a batch of up to 100 via Resend Batch API (single HTTP call)
+  // Falls back to MailerSend one-by-one if no Resend key
+  async function sendBatch(messages: {to:string, subject:string, html:string}[]): Promise<{sent:number, errors:number}> {
+    if (resendKey) {
+      const payload = messages.map(m => ({ from: fromEmail, to: [m.to], subject: m.subject, html: m.html }))
+      const res = await fetch('https://api.resend.com/emails/batch', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (res.ok) {
+        const d = await res.json() as { data?: any[] }
+        const count = d.data?.length ?? messages.length
+        return { sent: count, errors: messages.length - count }
+      }
+      // Batch call itself failed — count all as errors
+      return { sent: 0, errors: messages.length }
     }
+    // MailerSend fallback: sequential one-by-one
+    let sent = 0, errors = 0
+    for (const m of messages) {
+      const ok = await sendOne(m.to, m.subject, m.html)
+      if (ok) sent++; else errors++
+    }
+    return { sent, errors }
+  }
+
+  // Test send — just send to one email (no tracking record)
+  if (test_email) {
+    const testHtml = html + `<div style="margin-top:32px;padding-top:16px;border-top:1px solid #334155;text-align:center;font-size:11px;color:#64748b">⚠️ TEST EMAIL — not sent to real users</div>`
+    const ok = await sendOne(test_email, `[TEST] ${subject}`, testHtml)
+    if (!ok) return c.json({ error: 'Email send failed — check API key and domain verification' }, 500)
     return c.json({ ok: true, sent: 1, mode: 'test' })
   }
 
-  // Real broadcast — fetch recipients
+  // Real broadcast — create send record first to get an ID for tracking
+  const broadcastName = body.broadcast_name?.trim() || subject.slice(0, 60)
+  const sendRecord = await c.env.DB.prepare(
+    `INSERT INTO broadcast_sends (name, subject, audience, sent_count, opened_count) VALUES (?,?,?,0,0)`
+  ).bind(broadcastName, subject, audience).run()
+  const sendId = sendRecord.meta.last_row_id as number
+
+  // Fetch recipients
   let whereClause = `(email_unsubscribed IS NULL OR email_unsubscribed = 0)`
   if (audience === 'free') whereClause += ` AND plan='free'`
   if (audience === 'paid') whereClause += ` AND plan!='free'`
   const recipients = await c.env.DB.prepare(`SELECT id, email, name FROM users WHERE ${whereClause} ORDER BY created_at ASC`).all<{id:string,email:string,name:string}>()
   const rows = recipients.results || []
-  if (rows.length === 0) return c.json({ ok: true, sent: 0 })
-
-  // Send in batches of 50 (MailerSend bulk limit)
-  let sent = 0
-  let errors = 0
-  const BATCH = 50
-  for (let i = 0; i < rows.length; i += BATCH) {
-    const batch = rows.slice(i, i + BATCH)
-    const promises = batch.map(async (r) => {
-      const unsubUrl = `${siteUrl}/api/unsubscribe?id=${r.id}&t=${await sha256Hex(r.id + (c.env as any).SESSION_SECRET || 'sf')}`
-      const personalHtml = html + `
-<div style="margin-top:40px;padding-top:16px;border-top:1px solid #1e293b;text-align:center;font-size:11px;color:#475569;font-family:sans-serif">
-  You're receiving this because you have a StemForge account.<br/>
-  <a href="${unsubUrl}" style="color:#4e9fff">Unsubscribe</a>
-</div>`
-      try {
-        const res = await fetch('https://api.mailersend.com/v1/email', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: { email: fromEmail, name: 'StemForge' }, to: [{ email: r.email, name: r.name || '' }], subject, html: personalHtml })
-        })
-        if (res.ok || res.status === 202) sent++
-        else errors++
-      } catch { errors++ }
-    })
-    await Promise.all(promises)
-    // Small delay between batches to respect rate limits
-    if (i + BATCH < rows.length) await new Promise(r => setTimeout(r, 500))
+  if (rows.length === 0) {
+    await c.env.DB.prepare(`DELETE FROM broadcast_sends WHERE id=?`).bind(sendId).run()
+    return c.json({ ok: true, sent: 0 })
   }
 
-  return c.json({ ok: true, sent, errors, total: rows.length })
+  // Build all personalised messages sequentially (avoids parallel crypto CPU spike)
+  // then send in Resend Batch API chunks of 100 (single HTTP call each)
+  let sent = 0
+  let errors = 0
+  const CHUNK = 100
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK)
+    // Build HTML sequentially — no Promise.all to keep CPU usage flat
+    const messages: {to:string, subject:string, html:string}[] = []
+    for (const r of chunk) {
+      const personalHtml = await buildPersonalHtml(r, sendId, html)
+      messages.push({ to: r.email, subject, html: personalHtml })
+    }
+    // One HTTP call for up to 100 emails
+    const result = await sendBatch(messages)
+    sent += result.sent
+    errors += result.errors
+    // Brief pause between chunks if more remain
+    if (i + CHUNK < rows.length) await new Promise(r => setTimeout(r, 500))
+  }
+
+  // Update final sent count on the record
+  await c.env.DB.prepare(`UPDATE broadcast_sends SET sent_count=? WHERE id=?`).bind(sent, sendId).run()
+
+  return c.json({ ok: true, sent, errors, total: rows.length, send_id: sendId })
 })
 
 // GET /api/unsubscribe — one-click unsubscribe
@@ -6648,7 +7030,7 @@ fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=440081228562920&ev=PageView&noscript=1"/></noscript>
 <!-- TikTok Pixel -->
 <script>
-!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.page()}(window,document,'ttq');
+!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAE836RC77UDHLL3ILBG');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
 </script>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
 <link href="/static/style.css?v=${ASSET_VER}" rel="stylesheet"/>
@@ -7584,7 +7966,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260903-01'
+const ASSET_VER = '20260909-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7616,7 +7998,7 @@ fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=440081228562920&ev=PageView&noscript=1"/></noscript>
 <!-- TikTok Pixel -->
 <script>
-!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.page()}(window,document,'ttq');
+!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAE836RC77UDHLL3ILBG');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -11716,12 +12098,38 @@ function adminPage(user: User) {
         <div class="sub-stat"><span class="sub-stat__label">Paid Plan</span><span class="sub-stat__val" id="bc-count-paid">…</span></div>
       </div>
 
+      <!-- Saved Templates Panel -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-bottom:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <h3 style="margin:0;font-size:.95rem"><i class="fas fa-folder-open" style="color:#f59e0b;margin-right:8px"></i>Saved Templates</h3>
+          <div style="display:flex;gap:8px">
+            <button onclick="bcOpenNew()" class="btn btn--outline btn--sm" style="border-color:#10b981;color:#10b981"><i class="fas fa-plus"></i> New Template</button>
+            <button onclick="bcLoadTemplates()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
+          </div>
+        </div>
+        <div id="bc-templates-list" style="display:flex;flex-wrap:wrap;gap:10px">
+          <p style="color:var(--muted);font-size:.85rem;margin:0"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+        </div>
+      </div>
+
+      <!-- Builder + Preview (hidden until user clicks Edit or New Template) -->
+      <div id="bc-builder-wrap" style="display:none">
       <div style="display:grid;grid-template-columns:1fr 380px;gap:24px;align-items:start">
 
         <!-- LEFT: Template Builder -->
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px">
-          <h3 style="margin:0 0 20px;font-size:1rem"><i class="fas fa-paint-brush" style="color:#a78bfa;margin-right:8px"></i>Email Template Builder</h3>
-
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+            <h3 style="margin:0;font-size:1rem"><i class="fas fa-paint-brush" style="color:#a78bfa;margin-right:8px"></i>Email Template Builder</h3>
+            <div style="display:flex;gap:8px">
+              <button onclick="bcSaveTemplate()" class="btn btn--outline btn--sm" style="border-color:#f59e0b;color:#f59e0b"><i class="fas fa-save"></i> Save Template</button>
+              <button onclick="bcCloseBuilder()" style="background:none;border:1px solid #475569;color:#94a3b8;border-radius:8px;padding:5px 10px;cursor:pointer;font-size:.88rem" title="Close builder"><i class="fas fa-times"></i></button>
+            </div>
+          </div>
+          <!-- Template Name -->
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:.82rem;color:var(--muted);margin-bottom:6px;font-weight:600">Template Name</label>
+            <input id="bc-template-name" type="text" placeholder="e.g. Welcome Email, Monthly Update…" style="width:100%;padding:9px 14px;background:#0f172a;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.88rem;box-sizing:border-box"/>
+          </div>
           <!-- Subject -->
           <div style="margin-bottom:16px">
             <label style="display:block;font-size:.82rem;color:var(--muted);margin-bottom:6px;font-weight:600">Subject Line</label>
@@ -11734,21 +12142,21 @@ function adminPage(user: User) {
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
               <div>
                 <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">Background</label>
-                <input type="color" id="bc-bg-color" value="#0d0d1a" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);background:none;cursor:pointer"/>
+                <input type="color" id="bc-bg-color" value="#0d0d1a" oninput="bcUpdatePreview()" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);background:none;cursor:pointer"/>
               </div>
               <div>
                 <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">Text Color</label>
-                <input type="color" id="bc-text-color" value="#e2e8f0" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);background:none;cursor:pointer"/>
+                <input type="color" id="bc-text-color" value="#e2e8f0" oninput="bcUpdatePreview()" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);background:none;cursor:pointer"/>
               </div>
               <div>
                 <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">Accent Color</label>
-                <input type="color" id="bc-accent-color" value="#4e9fff" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);background:none;cursor:pointer"/>
+                <input type="color" id="bc-accent-color" value="#4e9fff" oninput="bcUpdatePreview()" style="width:100%;height:32px;border-radius:6px;border:1px solid var(--border);background:none;cursor:pointer"/>
               </div>
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
               <div>
                 <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">Font Family</label>
-                <select id="bc-font" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem">
+                <select id="bc-font" onchange="bcUpdatePreview()" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem">
                   <option value="Inter,system-ui,sans-serif">Inter (Modern)</option>
                   <option value="Georgia,serif">Georgia (Classic)</option>
                   <option value="'Courier New',monospace">Courier (Mono)</option>
@@ -11758,7 +12166,7 @@ function adminPage(user: User) {
               </div>
               <div>
                 <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:4px">Email Width</label>
-                <select id="bc-width" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem">
+                <select id="bc-width" onchange="bcUpdatePreview()" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.82rem">
                   <option value="600px">600px (Standard)</option>
                   <option value="500px">500px (Compact)</option>
                   <option value="700px">700px (Wide)</option>
@@ -11822,6 +12230,18 @@ function adminPage(user: User) {
           </div>
         </div>
 
+      </div>
+      </div><!-- /bc-builder-wrap -->
+
+      <!-- Broadcast History -->
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px;margin-top:24px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <h3 style="margin:0;font-size:.95rem"><i class="fas fa-history" style="color:#4e9fff;margin-right:8px"></i>Broadcast History</h3>
+          <button onclick="bcLoadHistory()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
+        </div>
+        <div id="bc-history-table">
+          <p style="color:var(--muted);font-size:.85rem;margin:0"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+        </div>
       </div>
     </div>
 
