@@ -280,8 +280,10 @@ async function resendWelcomeEmail(email){
   try {
     var res=await fetch('/api/admin/resend-welcome',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email})});
     var data=await res.json();
-    if(res.ok && data.ok){ alert('✅ Welcome email sent to '+email); }
-    else { alert('❌ Error: '+(data.error||'Unknown error')); }
+    if(res.ok && data.ok){
+      alert('✅ Welcome email sent to '+email);
+      window._usersLoaded=false; loadUsers(); // refresh table so ✅ appears
+    } else { alert('❌ Error: '+(data.error||'Unknown error')); }
   } catch(e){ alert('❌ Request failed: '+e.message); }
 }
 
@@ -304,6 +306,7 @@ async function loadUsers(q){
       '<th>Email / Name</th><th>Plan</th><th>Status</th>'+
       '<th>Points</th><th>Bonus</th>'+
       '<th>Source</th>'+
+      '<th>Welcome</th>'+
       '<th>Signed Up</th><th>Renewal</th><th>Actions</th>'+
     '</tr></thead><tbody id="admin-users-tbody">'+
       data.users.map(function(u){
@@ -325,6 +328,19 @@ async function loadUsers(q){
           ? (srcIcon?'<span title="'+srcRef.replace(/"/g,'&quot;')+'" style="display:inline-flex;align-items:center;gap:4px;font-size:.78rem;white-space:nowrap">'+srcIcon+' <span style="max-width:90px;overflow:hidden;text-overflow:ellipsis;display:inline-block">'+srcLabel+'</span></span>'
              : '<span title="'+srcRef.replace(/"/g,'&quot;')+'" style="font-size:.75rem;color:var(--muted)">'+srcLabel+'</span>')
           : '<span style="color:var(--muted);font-size:.75rem">—</span>';
+        // Welcome email status cell
+        var welcomeCell;
+        if(u.welcome_sent_at){
+          var wDate=new Date(u.welcome_sent_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+          var wTime=new Date(u.welcome_sent_at).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+          welcomeCell='<span title="Sent '+wDate+' at '+wTime+'" style="display:inline-flex;align-items:center;gap:4px;color:#10b981;font-size:.78rem;font-weight:600">'+
+            '<i class="fas fa-check-circle"></i> '+wDate+'</span>';
+        } else {
+          welcomeCell='<button onclick="resendWelcomeEmail(\''+u.email+'\')" class="btn btn--sm" '+
+            'style="font-size:.7rem;padding:3px 8px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);color:#4e9fff" '+
+            'title="Welcome email not sent — click to send now">'+
+            '<i class="fas fa-paper-plane"></i> Send</button>';
+        }
         var renewalCell;
         if(hasSub){
           renewalCell='<span id="renew-'+u.id+'" style="color:var(--muted);font-size:.78rem" data-user-id="'+u.id+'" data-loaded="0">Loading…</span>';
@@ -346,6 +362,7 @@ async function loadUsers(q){
           '<td style="color:'+remColor+';font-weight:700">'+rem+'<small style="font-weight:400;color:var(--muted)"> / '+u.gens_limit+'</small></td>'+
           '<td style="color:'+(bonus>0?'#a78bfa':'var(--muted)')+';font-weight:700">'+(bonus>0?'+'+bonus:'—')+'</td>'+
           '<td>'+srcBadge+'</td>'+
+          '<td style="white-space:nowrap">'+welcomeCell+'</td>'+
           '<td style="font-size:.78rem;color:var(--muted)">'+signupDate+'</td>'+
           '<td style="font-size:.78rem">'+renewalCell+'</td>'+
           '<td><div style="display:flex;gap:4px;flex-wrap:wrap">'+
@@ -353,7 +370,6 @@ async function loadUsers(q){
             '<button onclick="addCredits(\''+u.id+'\',\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.72rem;padding:4px 8px">+Pts</button>'+
             '<button onclick="toggleLockUser(\''+u.id+'\',\''+u.email+'\','+(isLocked?1:0)+')" class="btn btn--sm" style="font-size:.72rem;padding:4px 8px;background:'+(isLocked?'rgba(16,185,129,.15)':'rgba(239,68,68,.15)')+';border:1px solid '+(isLocked?'rgba(16,185,129,.3)':'rgba(239,68,68,.3)')+';color:'+(isLocked?'#10b981':'#ef4444')+'">'+(isLocked?'Unlock':'Lock')+'</button>'+
             '<button onclick="deleteUserAccount(\''+u.id+'\',\''+u.email+'\')" class="btn btn--sm" style="font-size:.72rem;padding:4px 8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3);color:#ef4444"><i class="fas fa-trash"></i></button>'+
-            '<button onclick="resendWelcomeEmail(\''+u.email+'\')" class="btn btn--outline btn--sm" style="font-size:.72rem;padding:4px 8px" title="Resend welcome email">✉ Welcome</button>'+
           '</div></td>'+
         '</tr>';
       }).join('')+'</tbody></table></div>';
