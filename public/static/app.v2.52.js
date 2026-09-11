@@ -263,7 +263,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await fetch('/api/auth/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password, plan })
+          body: JSON.stringify({ name, email, password, plan, referrer: document.referrer || '' })
         });
         const data = await res.json();
         if (!res.ok) {
