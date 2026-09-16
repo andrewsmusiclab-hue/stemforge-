@@ -99,6 +99,67 @@ async function setJob(db: D1Database | undefined, job: Job, userId?: string): Pr
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  MP3 → TRUE PCM WAV CONVERSION
+//  Uses mpg123-decoder (WASM-based, no Node.js APIs, runs in CF Workers).
+//  Converts MP3 ArrayBuffer → 16-bit PCM WAV ArrayBuffer in-process.
+//  For M4A/AAC we cannot decode in-Worker (no WASM AAC decoder available
+//  at this bundle size) — M4A downloads are served as-is with correct MIME.
+// ═══════════════════════════════════════════════════════════════
+// Import only the non-WebWorker MPEGDecoder — the main index.js also imports
+// MPEGDecoderWebWorker which calls `new Worker()` at class definition time,
+// crashing in Cloudflare Workers (no Web Worker API). Direct src import avoids this.
+import MPEGDecoder from 'mpg123-decoder/src/MPEGDecoder.js'
+
+/**
+ * Convert an MP3 ArrayBuffer to a true 16-bit PCM WAV ArrayBuffer.
+ * Throws if decoding fails — caller should catch and fall back to serving MP3.
+ */
+async function mp3ToWav(mp3Buf: ArrayBuffer): Promise<ArrayBuffer> {
+  const decoder = new (MPEGDecoder as any)({})
+  await decoder.ready
+
+  const { channelData, samplesDecoded, sampleRate } = await decoder.decode(new Uint8Array(mp3Buf))
+  decoder.free()
+
+  if (!samplesDecoded || samplesDecoded < 100) throw new Error('MP3 decode produced no samples')
+
+  const numChannels  = channelData.length   // 1 or 2
+  const bitsPerSample = 16
+  const dataSize     = samplesDecoded * numChannels * 2   // 2 bytes per 16-bit sample
+  const byteRate     = sampleRate * numChannels * 2
+
+  const wavBuf = new ArrayBuffer(44 + dataSize)
+  const view   = new DataView(wavBuf)
+  const str    = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)) }
+
+  // RIFF header
+  str(0,  'RIFF');  view.setUint32(4,  36 + dataSize, true)
+  str(8,  'WAVE')
+  // fmt chunk — PCM format (1), 16-bit
+  str(12, 'fmt ');  view.setUint32(16, 16, true)
+  view.setUint16(20, 1,            true)   // PCM
+  view.setUint16(22, numChannels,  true)
+  view.setUint32(24, sampleRate,   true)
+  view.setUint32(28, byteRate,     true)
+  view.setUint16(32, numChannels * 2, true)  // block align
+  view.setUint16(34, bitsPerSample,   true)
+  // data chunk
+  str(36, 'data'); view.setUint32(40, dataSize, true)
+
+  // Interleave float32 channel samples → int16 PCM
+  let off = 44
+  for (let i = 0; i < samplesDecoded; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const s = Math.max(-1, Math.min(1, channelData[ch][i]))
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
+      off += 2
+    }
+  }
+
+  return wavBuf
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  R2 AUDIO PERSISTENCE — saves beat audio permanently so CDN
 //  expiry never breaks playback. Key pattern: beats/{jobId}.wav
 //  Falls back silently if R2 is unavailable.
@@ -115,7 +176,32 @@ function isR2BeatUrl(url: string, siteUrl: string): boolean {
 }
 
 /**
- * Fetch `cdnUrl`, upload the audio to R2 as `beats/{jobId}.wav`,
+ * Detect the real audio format from magic bytes (first 12 bytes).
+ * Returns 'wav', 'mp3', or 'm4a' regardless of what the URL or Content-Type says.
+ */
+function detectAudioFormat(buf: ArrayBuffer): 'wav' | 'mp3' | 'm4a' {
+  const bytes = new Uint8Array(buf, 0, Math.min(12, buf.byteLength))
+  // WAV: RIFF....WAVE
+  if (bytes[0]===0x52 && bytes[1]===0x49 && bytes[2]===0x46 && bytes[3]===0x46 &&
+      bytes[8]===0x57 && bytes[9]===0x41 && bytes[10]===0x56 && bytes[11]===0x45) return 'wav'
+  // MP3: ID3 tag or sync bytes (FF Fx)
+  if (bytes[0]===0x49 && bytes[1]===0x44 && bytes[2]===0x33) return 'mp3'  // ID3
+  if (bytes[0]===0xFF && (bytes[1] & 0xE0)===0xE0) return 'mp3'            // sync
+  // M4A / MP4: ftyp box at offset 4
+  if (bytes[4]===0x66 && bytes[5]===0x74 && bytes[6]===0x79 && bytes[7]===0x70) return 'm4a'
+  // Default: trust Content-Type
+  return 'wav'
+}
+
+/** Map real format to MIME type */
+function audioMime(fmt: 'wav' | 'mp3' | 'm4a'): string {
+  if (fmt === 'mp3') return 'audio/mpeg'
+  if (fmt === 'm4a') return 'audio/mp4'
+  return 'audio/wav'
+}
+
+/**
+ * Fetch `cdnUrl`, upload the audio to R2 as `beats/{jobId}.{ext}` using the REAL format,
  * update the job record so stereo_url points to our proxy endpoint,
  * and return the permanent proxy URL.
  * Returns null (silently) if anything fails — caller keeps original URL.
@@ -140,15 +226,31 @@ async function persistAudioToR2(
       return null
     }
 
-    // Detect content type (WAV vs MP3/M4A)
-    const ctype = resp.headers.get('Content-Type') || 'audio/wav'
-    const ext = ctype.includes('mp3') || ctype.includes('mpeg') ? 'mp3'
-              : ctype.includes('m4a') || ctype.includes('mp4') ? 'm4a'
-              : 'wav'
-    const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
+    // Detect REAL format from magic bytes — never trust URL extension or Content-Type header
+    let realFmt = detectAudioFormat(buf)
+    let finalBuf: ArrayBuffer = buf
 
-    // Upload to R2
-    await r2.put(r2Key, buf, {
+    // If it's MP3, convert to true PCM WAV before storing in R2 (convert once, serve forever)
+    if (realFmt === 'mp3') {
+      try {
+        console.log(`[R2 persist] job=${jobId} converting MP3→WAV (${Math.round(buf.byteLength/1024)}KB input)`)
+        finalBuf = await mp3ToWav(buf)
+        realFmt  = 'wav'
+        console.log(`[R2 persist] job=${jobId} MP3→WAV done: ${Math.round(finalBuf.byteLength/1024)}KB`)
+      } catch (convErr: any) {
+        console.warn(`[R2 persist] job=${jobId} MP3→WAV failed, storing as MP3:`, convErr?.message)
+        finalBuf = buf
+        realFmt  = 'mp3'
+      }
+    }
+    // M4A: no in-Worker AAC decoder available — store as-is with correct MIME
+    const ctype = audioMime(realFmt)
+    const ext   = realFmt
+    const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
+    console.log(`[R2 persist] job=${jobId} detected format=${realFmt} size=${Math.round(finalBuf.byteLength/1024)}KB`)
+
+    // Upload to R2 (use finalBuf — may be converted WAV, not the raw CDN bytes)
+    await r2.put(r2Key, finalBuf, {
       httpMetadata: { contentType: ctype },
       customMetadata: { jobId, source: 'pipeline', savedAt: Date.now().toString() }
     })
@@ -315,6 +417,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN signup_referrer TEXT`).run() } catch {}
   // ── Migrate: add email_unsubscribed column (broadcast opt-out) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN email_unsubscribed INTEGER NOT NULL DEFAULT 0`).run() } catch {}
+  // ── Migrate: add welcome_sent_at column (tracks when welcome email was successfully delivered) ──
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER`).run() } catch {}
   // ── Migrate: broadcast tracking tables ──
   try {
     await db.prepare(`CREATE TABLE IF NOT EXISTS broadcast_sends (
@@ -460,14 +564,13 @@ function generateToken(): string {
 
 // ─── TIKTOK SERVER-SIDE EVENTS ───────────────────────────────────────────────
 const TIKTOK_PIXEL_ID = 'D9SVAV3C77UA78AD7EU0'
-const TIKTOK_PIXEL_ID_2 = 'DAE836RC77UDHLL3ILBG'
 const TIKTOK_PIXEL_ID_3 = 'DAFIT1JC77UES974NPK0'
 async function sha256Hex(str: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('')
 }
 async function sendTikTokEvent(opts: {
-  token: string; token2?: string; token3?: string; event: 'CompleteRegistration' | 'Subscribe'
+  token: string; token3?: string; event: 'CompleteRegistration' | 'Subscribe'
   email?: string; ip?: string; userAgent?: string; eventId?: string
   value?: number; currency?: string; url?: string
 }): Promise<void> {
@@ -495,14 +598,6 @@ async function sendTikTokEvent(opts: {
       headers: { 'Access-Token': opts.token, 'Content-Type': 'application/json' },
       body: JSON.stringify({ event_source: 'web', event_source_id: TIKTOK_PIXEL_ID, data: [eventData] })
     })
-    // Fire for pixel 2 (second account) — only if a second token is configured
-    if (opts.token2) {
-      await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
-        method: 'POST',
-        headers: { 'Access-Token': opts.token2, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_source: 'web', event_source_id: TIKTOK_PIXEL_ID_2, data: [eventData] })
-      })
-    }
     // Fire for pixel 3 (third account) — only if a third token is configured
     if (opts.token3) {
       await fetch('https://business-api.tiktok.com/open_api/v1.3/event/track/', {
@@ -515,8 +610,8 @@ async function sendTikTokEvent(opts: {
 }
 
 // ── Send welcome email to new signup ─────────────────────────
-async function sendWelcomeEmail(opts: { db: D1Database; resendKey?: string; mailerKey?: string; name: string; email: string; siteUrl: string }): Promise<void> {
-  const { db, resendKey, mailerKey, name, email, siteUrl } = opts
+async function sendWelcomeEmail(opts: { db: D1Database; resendKey?: string; mailerKey?: string; name: string; email: string; siteUrl: string; userId?: string }): Promise<void> {
+  const { db, resendKey, mailerKey, name, email, siteUrl, userId } = opts
   console.log(`[welcome-email] triggered for ${email} resendKey=${!!resendKey} mailerKey=${!!mailerKey}`)
   if (!resendKey && !mailerKey) {
     console.error('[welcome-email] SKIP — no API key set (RESEND_API_KEY and MAILERSEND_API_KEY both missing)')
@@ -623,6 +718,12 @@ ${blockHtml}
         console.error(`[welcome-email] Resend error ${res.status}:`, resBody)
       } else {
         console.log(`[welcome-email] Resend OK for ${email}:`, resBody)
+        // ── Stamp welcome_sent_at on the user row ──
+        if (userId) {
+          try { await db.prepare(`UPDATE users SET welcome_sent_at=? WHERE id=?`).bind(Date.now(), userId).run() } catch {}
+        } else {
+          try { await db.prepare(`UPDATE users SET welcome_sent_at=? WHERE email=?`).bind(Date.now(), email.toLowerCase()).run() } catch {}
+        }
       }
     } else if (mailerKey) {
       const res = await fetch('https://api.mailersend.com/v1/email', {
@@ -635,6 +736,12 @@ ${blockHtml}
         console.error(`[welcome-email] MailerSend error ${res.status}:`, resBody)
       } else {
         console.log(`[welcome-email] MailerSend OK for ${email}:`, resBody)
+        // ── Stamp welcome_sent_at on the user row ──
+        if (userId) {
+          try { await db.prepare(`UPDATE users SET welcome_sent_at=? WHERE id=?`).bind(Date.now(), userId).run() } catch {}
+        } else {
+          try { await db.prepare(`UPDATE users SET welcome_sent_at=? WHERE email=?`).bind(Date.now(), email.toLowerCase()).run() } catch {}
+        }
       }
     }
   } catch (e) {
@@ -2478,16 +2585,34 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
 
     const upContentLength = upstream.headers.get('Content-Length')
     const upContentRange  = upstream.headers.get('Content-Range')
-    const upHeaders: Record<string, string> = {
-      'Content-Type': wantDl ? dlMime2 : (upstream.headers.get('Content-Type') || 'audio/wav'),
+
+    // For downloads: read body to detect real format; for streaming: pass through
+    if (wantDl) {
+      const dlBody    = await upstream.arrayBuffer()
+      const realFmt   = detectAudioFormat(dlBody)
+      const realMime  = audioMime(realFmt)
+      const dlHeaders: Record<string, string> = {
+        'Content-Type': realMime,
+        'Content-Length': String(dlBody.byteLength),
+        'Content-Disposition': `attachment; filename="${safeStemName2}_stem.${realFmt}"`,
+        'Accept-Ranges': 'bytes',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=3600'
+      }
+      console.log(`[stem-audio dl] job=${jobId} stem=${stemName} real format=${realFmt}`)
+      return new Response(dlBody, { headers: dlHeaders })
+    }
+
+    // Streaming (playback) path \u2014 pass upstream through with correct Content-Type
+    const streamHeaders: Record<string, string> = {
+      'Content-Type': upstream.headers.get('Content-Type') || 'audio/wav',
       'Accept-Ranges': 'bytes',
       'Access-Control-Allow-Origin': '*',
       'Cache-Control': 'public, max-age=3600'
     }
-    if (upContentLength) upHeaders['Content-Length'] = upContentLength
-    if (upContentRange)  upHeaders['Content-Range']  = upContentRange
-    if (wantDl) upHeaders['Content-Disposition'] = `attachment; filename="${safeStemName2}_stem.${dlExt2}"`
-    return new Response(upstream.body, { status: upstream.status, headers: upHeaders })
+    if (upContentLength) streamHeaders['Content-Length'] = upContentLength
+    if (upContentRange)  streamHeaders['Content-Range']  = upContentRange
+    return new Response(upstream.body, { status: upstream.status, headers: streamHeaders })
   } catch (err: any) {
     return c.json({ error: err?.message || 'Proxy failed' }, 502)
   }
@@ -2509,7 +2634,7 @@ app.get('/api/remix-dl', async (c) => {
 
   const cdnUrl  = c.req.query('url')   // URL-encoded Mureka CDN URL
   const rawName = c.req.query('name') || 'remix'  // stem name, e.g. "vocals"
-  const fmt     = c.req.query('fmt')  || 'wav'    // 'wav' or 'mp3'
+  const fmtReq  = (c.req.query('fmt') || 'wav').toLowerCase()  // 'wav' | 'mp3' — user's choice
 
   if (!cdnUrl) return c.json({ error: 'url param required' }, 400)
 
@@ -2522,16 +2647,29 @@ app.get('/api/remix-dl', async (c) => {
     const upstream = await fetch(decodedUrl)
     if (!upstream.ok) return c.json({ error: 'CDN fetch failed' }, 502)
 
-    // Build a safe filename from the stem name
+    // Read body and detect REAL format from magic bytes \u2014 never trust URL or Content-Type
+    let body      = await upstream.arrayBuffer()
+    let realFmt   = detectAudioFormat(body)
     const safeStem = rawName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
-    const ext = fmt === 'mp3' ? 'mp3' : 'wav'
-    const mime = fmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
-    const filename = `${safeStem}_ai_remix.${ext}`
 
-    const body = await upstream.arrayBuffer()
+    console.log(`[remix-dl] name=${rawName} source format=${realFmt} user wants=${fmtReq}`)
+
+    // Convert MP3 → true PCM WAV if user requested WAV
+    if (fmtReq === 'wav' && realFmt === 'mp3') {
+      try {
+        body    = await mp3ToWav(body)
+        realFmt = 'wav'
+        console.log(`[remix-dl] MP3→WAV done: ${Math.round(body.byteLength/1024)}KB`)
+      } catch (convErr: any) {
+        console.warn(`[remix-dl] MP3→WAV failed, serving MP3:`, convErr?.message)
+        realFmt = 'mp3'
+      }
+    }
+
+    const filename = `${safeStem}_ai_remix.${realFmt}`
     return new Response(body, {
       headers: {
-        'Content-Type': mime,
+        'Content-Type': audioMime(realFmt),
         'Content-Length': String(body.byteLength),
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Access-Control-Allow-Origin': '*',
@@ -2953,12 +3091,11 @@ app.post('/api/job/remix', async (c) => {
 
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/stem-mix/:jobId
-//  Download the stereo mix (original beat audio) as mp3 or wav.
-//  Plan gating: free → 403, creator → mp3 only, pro/developer → mp3 + wav
-//  For now we proxy the Mureka CDN stereo_url directly (it's already a WAV).
-//  MP3: we serve the WAV with audio/mpeg content-type header (lossy-free for now;
-//  true transcode requires ffmpeg which isn't available in Cloudflare Workers).
-// ═══════════════════════════════════════════════════════════════
+//  Download the stereo mix (original beat audio).
+//  We detect the REAL format from magic bytes and serve it with the correct
+//  extension + MIME \u2014 never lie and call an MP3 a WAV.
+//  Plan gating: free \u2192 403, creator \u2192 any format, pro \u2192 any format
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 app.get('/api/stem-mix/:jobId', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
@@ -2969,8 +3106,8 @@ app.get('/api/stem-mix/:jobId', async (c) => {
     return c.json({ error: 'Download requires a Creator or Pro Artist plan.', upgrade: true }, 403)
   }
 
-  const jobId = c.req.param('jobId')
-  const fmt  = c.req.query('fmt')  || 'wav'   // 'mp3' | 'wav' — WAV is default output
+  const jobId  = c.req.param('jobId')
+  const fmtReq = (c.req.query('fmt') || 'wav').toLowerCase()  // 'wav' | 'mp3' — user's choice
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Job not found' }, 404)
   if (!job.stereo_url) return c.json({ error: 'Audio not ready' }, 400)
@@ -2979,15 +3116,32 @@ app.get('/api/stem-mix/:jobId', async (c) => {
     const upstream = await fetch(job.stereo_url)
     if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
 
-    const ext      = fmt === 'mp3' ? 'mp3' : 'wav'
-    const mime     = fmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
-    const safeName = (job.title || jobId).replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
-    const suffix   = '_mix'
+    let buf       = await upstream.arrayBuffer()
+    let realFmt   = detectAudioFormat(buf)
+    const safeName = jobId.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
 
-    return new Response(upstream.body, {
+    console.log(`[stem-mix dl] job=${jobId} source format=${realFmt} user wants=${fmtReq}`)
+
+    // If user wants WAV and source is MP3 → convert to true PCM WAV
+    if (fmtReq === 'wav' && realFmt === 'mp3') {
+      try {
+        buf     = await mp3ToWav(buf)
+        realFmt = 'wav'
+        console.log(`[stem-mix dl] job=${jobId} MP3→WAV conversion done: ${Math.round(buf.byteLength/1024)}KB`)
+      } catch (convErr: any) {
+        // Conversion failed — serve the MP3 with correct labelling rather than a fake WAV
+        console.warn(`[stem-mix dl] job=${jobId} MP3→WAV failed, serving MP3:`, convErr?.message)
+        realFmt = 'mp3'
+      }
+    }
+    // M4A: serve as-is regardless of fmtReq (no in-Worker AAC decoder)
+    // MP3 requested: serve MP3 as-is
+
+    return new Response(buf, {
       headers: {
-        'Content-Type': mime,
-        'Content-Disposition': `attachment; filename="${safeName}${suffix}.${ext}"`, // suffix = '_mix'
+        'Content-Type': audioMime(realFmt),
+        'Content-Length': String(buf.byteLength),
+        'Content-Disposition': `attachment; filename="${safeName}_mix.${realFmt}"`,
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'private, max-age=300'
       }
@@ -3335,7 +3489,7 @@ app.post('/api/auth/signup', async (c) => {
     return c.json({ error: 'Auth not configured. Add GOOGLE_CLIENT_ID, STRIPE_SECRET_KEY, SESSION_SECRET to secrets.' }, 503)
   }
   try {
-    const { name, email, password, plan } = await c.req.json()
+    const { name, email, password, plan, referrer: bodyReferrer } = await c.req.json()
     if (!name || !email || !password) return c.json({ error: 'name, email and password required' }, 400)
     if (password.length < 8) return c.json({ error: 'Password must be at least 8 characters' }, 400)
 
@@ -3365,12 +3519,19 @@ app.post('/api/auth/signup', async (c) => {
 
     const passwordHash = await hashPassword(password)
     const userId = generateId()
-    // Capture referrer from Referer header for traffic attribution
-    const signupReferer = c.req.header('Referer') || c.req.header('referer') || null
-    const signupSrc = signupReferer ? (() => {
+    // Capture referrer for traffic attribution
+    // Priority: body.referrer (document.referrer captured client-side, real traffic source)
+    //           > Referer header (usually stemforge.studio/register, not real source)
+    // body.referrer is empty string for direct visits (no previous page)
+    const headerReferer = c.req.header('Referer') || c.req.header('referer') || null
+    const signupReferer = (bodyReferrer && bodyReferrer.trim() !== '') ? bodyReferrer.trim() : null
+    const classifyReferer = (ref: string | null): string => {
+      if (!ref) return 'direct'
       try {
-        const u = new URL(signupReferer)
+        const u = new URL(ref)
         const h = u.hostname.replace(/^www\./, '')
+        // Treat stemforge.studio as direct (user navigated within the site, no external source)
+        if (/stemforge\.studio/i.test(h) || h === 'stemforge.pages.dev') return 'direct'
         if (/tiktok\.com/i.test(h))    return 'tiktok'
         if (/facebook\.com|fb\.com/i.test(h)) return 'facebook'
         if (/instagram\.com/i.test(h)) return 'instagram'
@@ -3380,22 +3541,29 @@ app.post('/api/auth/signup', async (c) => {
         if (/pinterest\.com/i.test(h)) return 'pinterest'
         if (/reddit\.com/i.test(h)) return 'reddit'
         if (/linkedin\.com/i.test(h)) return 'linkedin'
-        if (/google\.com/i.test(h)) return 'google'
+        if (/google\.com/i.test(h)) return 'google-organic'
         if (/bing\.com/i.test(h)) return 'bing'
         return 'referral:' + h
       } catch { return 'referral' }
-    })() : 'direct'
+    }
+    const signupSrc = classifyReferer(signupReferer)
     await createUser(c.env.DB, {
       id: userId, email: email.toLowerCase(), name: name.trim(),
       password_hash: passwordHash, plan: plan || 'free',
       registration_ip: registrationIp || undefined,
-      signup_source: signupSrc, signup_referrer: signupReferer?.slice(0, 500) || undefined
+      signup_source: signupSrc, signup_referrer: (signupReferer || headerReferer)?.slice(0, 500) || undefined
     })
 
     const token = await createSession(c.env.DB, userId)
     const siteUrl = c.env.SITE_URL || ''
-    sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token2: (c.env as any).TIKTOK_PIXEL_TOKEN_2 || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'CompleteRegistration', email: email.toLowerCase(), ip: registrationIp || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_${userId}`, url: `${siteUrl}/signup` }).catch(() => {})
-    sendWelcomeEmail({ db: c.env.DB, resendKey: (c.env as any).RESEND_API_KEY, mailerKey: (c.env as any).MAILERSEND_API_KEY, name, email, siteUrl: c.env.SITE_URL || 'https://stemforge.studio' }).catch(() => {})
+    // Use waitUntil() so Cloudflare keeps the Worker alive until these finish
+    // Without waitUntil, Worker shuts down after return and kills floating promises
+    c.executionCtx.waitUntil(
+      sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'CompleteRegistration', email: email.toLowerCase(), ip: registrationIp || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_${userId}`, url: `${siteUrl}/signup` }).catch(() => {})
+    )
+    c.executionCtx.waitUntil(
+      sendWelcomeEmail({ db: c.env.DB, resendKey: (c.env as any).RESEND_API_KEY, mailerKey: (c.env as any).MAILERSEND_API_KEY, name, email, siteUrl: c.env.SITE_URL || 'https://stemforge.studio', userId }).catch(e => console.error('[signup] welcome email waitUntil error:', e))
+    )
 
     return new Response(JSON.stringify({ ok: true, redirect: plan && plan !== 'free' ? '/checkout?plan=' + plan : '/dashboard' }), {
       status: 200,
@@ -3614,10 +3782,15 @@ app.get('/api/auth/google', (c) => {
       <a href="/signup">← Back to signup</a>
     </p>`)
   }
-  // Encode optional next URL into state so callback can redirect there
+  // Encode optional next URL + referrer into state so callback can read them back
+  // Format: randomPart|nextPath|referrer
+  // We capture the Referer header HERE (before Google redirect) — this is the real traffic source
   const next = c.req.query('next') || ''
+  const referrer = c.req.header('Referer') || c.req.header('referer') || ''
   const randomPart = generateToken().slice(0, 16)
-  const state = next ? randomPart + '|' + next : randomPart
+  // Encode referrer as base64 to avoid | conflicts
+  const refEncoded = referrer ? btoa(unescape(encodeURIComponent(referrer.slice(0, 300)))).replace(/=/g, '') : ''
+  const state = randomPart + '|' + next + '|' + refEncoded
   const url = googleAuthUrl(c.env.GOOGLE_CLIENT_ID, c.env.SITE_URL, state)
   return c.redirect(url)
 })
@@ -3626,10 +3799,16 @@ app.get('/api/auth/google', (c) => {
 app.get('/api/auth/google/callback', async (c) => {
   const code = c.req.query('code')
   const error = c.req.query('error')
-  // Extract next URL from state if present (format: randomPart|/next/path)
+  // Extract next URL + referrer from state (format: randomPart|nextPath|referrerBase64)
   const rawState = c.req.query('state') || ''
-  const pipeIdx = rawState.indexOf('|')
-  const nextFromState = pipeIdx !== -1 ? rawState.slice(pipeIdx + 1) : ''
+  const stateParts = rawState.split('|')
+  const nextFromState = stateParts[1] || ''
+  const refFromState = stateParts[2] || ''
+  // Decode referrer from base64
+  let stateReferrer = ''
+  if (refFromState) {
+    try { stateReferrer = decodeURIComponent(escape(atob(refFromState))) } catch {}
+  }
   const redirectAfterLogin = (nextFromState && nextFromState.startsWith('/') && !nextFromState.startsWith('//')) ? nextFromState : '/dashboard'
 
   if (error || !code) {
@@ -3661,22 +3840,25 @@ app.get('/api/auth/google/callback', async (c) => {
         }
       }
       const userId = generateId()
-      const gReferer = c.req.header('Referer') || c.req.header('referer') || null
+      // Use referrer from OAuth state (captured before Google redirect) — NOT the live Referer header
+      // which at callback time is always accounts.google.com, not the real traffic source
+      const gReferer = stateReferrer || c.req.header('Referer') || c.req.header('referer') || null
       const gSrc = gReferer ? (() => {
         try {
           const u = new URL(gReferer)
           const h = u.hostname.replace(/^www\./, '')
           if (/tiktok\.com/i.test(h))    return 'tiktok'
           if (/facebook\.com|fb\.com/i.test(h)) return 'facebook'
-          if (/instagram\.com/i.test(h)) return 'instagram'
+          if (/instagram\.com|fb\.com/i.test(h)) return 'instagram'
           if (/youtube\.com|youtu\.be/i.test(h)) return 'youtube'
           if (/twitter\.com|x\.com/i.test(h)) return 'twitter'
           if (/snapchat\.com/i.test(h)) return 'snapchat'
           if (/pinterest\.com/i.test(h)) return 'pinterest'
           if (/reddit\.com/i.test(h)) return 'reddit'
           if (/linkedin\.com/i.test(h)) return 'linkedin'
-          if (/google\.com/i.test(h)) return 'google'
+          if (/google\.com|accounts\.google\.com/i.test(h)) return 'google-organic'
           if (/bing\.com/i.test(h)) return 'bing'
+          if (/stemforge\.studio/i.test(h)) return 'direct'
           return 'referral:' + h
         } catch { return 'referral' }
       })() : 'direct'
@@ -3693,8 +3875,13 @@ app.get('/api/auth/google/callback', async (c) => {
     }
 
     const token = await createSession(c.env.DB, user.id)
-    sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token2: (c.env as any).TIKTOK_PIXEL_TOKEN_2 || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'CompleteRegistration', email: profile.email.toLowerCase(), ip: c.req.header('CF-Connecting-IP') || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_google_${user!.id}`, url: `${c.env.SITE_URL}/signup` }).catch(() => {})
-    if (isNewUser) sendWelcomeEmail({ db: c.env.DB, resendKey: (c.env as any).RESEND_API_KEY, mailerKey: (c.env as any).MAILERSEND_API_KEY, name: profile.name, email: profile.email.toLowerCase(), siteUrl: c.env.SITE_URL || 'https://stemforge.studio' }).catch(() => {})
+    // Use waitUntil() so Cloudflare keeps the Worker alive until these finish
+    c.executionCtx.waitUntil(
+      sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'CompleteRegistration', email: profile.email.toLowerCase(), ip: c.req.header('CF-Connecting-IP') || '', userAgent: c.req.header('User-Agent') || '', eventId: `reg_google_${user!.id}`, url: `${c.env.SITE_URL}/signup` }).catch(() => {})
+    )
+    if (isNewUser) c.executionCtx.waitUntil(
+      sendWelcomeEmail({ db: c.env.DB, resendKey: (c.env as any).RESEND_API_KEY, mailerKey: (c.env as any).MAILERSEND_API_KEY, name: profile.name, email: profile.email.toLowerCase(), siteUrl: c.env.SITE_URL || 'https://stemforge.studio', userId: user!.id }).catch(e => console.error('[google-signup] welcome email waitUntil error:', e))
+    )
     return new Response(null, {
       status: 302,
       headers: {
@@ -3782,7 +3969,7 @@ app.post('/api/stripe/webhook', async (c) => {
             timestamp: new Date().toISOString()
           })
           const planValue = plan === 'pro' ? 25.00 : plan === 'creator' ? 10.00 : 0
-          if (planValue > 0) { sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token2: (c.env as any).TIKTOK_PIXEL_TOKEN_2 || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'Subscribe', email: newUser?.email || session.customer_details?.email || '', eventId: `sub_${session.id}`, value: planValue, currency: 'USD', url: 'https://stemforge.studio/checkout' }).catch(() => {}) }
+          if (planValue > 0) { sendTikTokEvent({ token: (c.env as any).TIKTOK_PIXEL_TOKEN || '', token3: (c.env as any).TIKTOK_PIXEL_TOKEN_3 || '', event: 'Subscribe', email: newUser?.email || session.customer_details?.email || '', eventId: `sub_${session.id}`, value: planValue, currency: 'USD', url: 'https://stemforge.studio/checkout' }).catch(() => {}) }
         } catch (mailErr) {
           console.error('[webhook] subscription email failed:', mailErr)
         }
@@ -6352,7 +6539,8 @@ app.post('/api/admin/resend-welcome', async (c) => {
       mailerKey: (c.env as any).MAILERSEND_API_KEY,
       name: target.name,
       email: target.email,
-      siteUrl: c.env.SITE_URL || 'https://stemforge.studio'
+      siteUrl: c.env.SITE_URL || 'https://stemforge.studio',
+      userId: target.id
     })
     return c.json({ ok: true, message: `Welcome email sent to ${target.email}` })
   } catch (e: any) {
@@ -6729,11 +6917,11 @@ app.get('/api/admin/users', async (c) => {
   if (q) {
     const like = `%${q}%`
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
     ).bind(like, like).all<any>()
   } else {
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer FROM users ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at FROM users ORDER BY created_at DESC LIMIT 200`
     ).all<any>()
   }
   // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
@@ -7030,7 +7218,7 @@ fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=440081228562920&ev=PageView&noscript=1"/></noscript>
 <!-- TikTok Pixel -->
 <script>
-!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAE836RC77UDHLL3ILBG');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
+!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
 </script>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
 <link href="/static/style.css?v=${ASSET_VER}" rel="stylesheet"/>
@@ -7966,7 +8154,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260909-01'
+const ASSET_VER = '20260909-07'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -7998,7 +8186,7 @@ fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=440081228562920&ev=PageView&noscript=1"/></noscript>
 <!-- TikTok Pixel -->
 <script>
-!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAE836RC77UDHLL3ILBG');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
+!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
