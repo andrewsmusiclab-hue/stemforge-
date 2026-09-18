@@ -1026,24 +1026,85 @@ async function bcLoadHistory() {
       el.innerHTML = '<p style="color:var(--muted);font-size:.85rem;margin:0">No broadcasts sent yet.</p>';
       return;
     }
+    var rows = d.sends.map(function(s) {
+      var rate = s.sent_count > 0 ? Math.round((s.opened_count / s.sent_count) * 100) : 0;
+      var rateColor = rate >= 30 ? '#10b981' : rate >= 15 ? '#f59e0b' : '#94a3b8';
+      var openerId = 'openers-' + s.id;
+      var btnId = 'opener-btn-' + s.id;
+      var openBtn = s.opened_count > 0
+        ? '<button id="' + btnId + '" onclick="bcToggleOpeners(' + s.id + ')" style="background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3);border-radius:4px;padding:2px 8px;font-size:.76rem;cursor:pointer;white-space:nowrap">' +
+          '<i class="fas fa-eye" style="margin-right:4px"></i>' + s.opened_count + ' opened</button>'
+        : '<span style="color:#475569;font-size:.82rem">0</span>';
+      return '<tr>' +
+        '<td style="font-weight:600">' + escHtml(s.name) + '</td>' +
+        '<td style="color:#94a3b8;font-size:.85rem">' + escHtml(s.subject || '') + '</td>' +
+        '<td><span style="background:rgba(78,159,255,.15);color:#4e9fff;border-radius:4px;padding:2px 8px;font-size:.78rem">' + escHtml(s.audience || 'all') + '</span></td>' +
+        '<td style="font-weight:700">' + (s.sent_count || 0) + '</td>' +
+        '<td>' + openBtn + '</td>' +
+        '<td><span style="font-weight:700;color:' + rateColor + '">' + rate + '%</span></td>' +
+        '<td style="color:#64748b;font-size:.82rem">' + new Date(s.sent_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) + '</td>' +
+        '</tr>' +
+        '<tr id="' + openerId + '" style="display:none"><td colspan="7" style="padding:0;background:rgba(16,185,129,.04);border-bottom:1px solid rgba(16,185,129,.15)">' +
+        '<div style="padding:12px 16px"><p style="color:var(--muted);font-size:.82rem;margin:0"><i class="fas fa-spinner fa-spin"></i> Loading openers\u2026</p></div>' +
+        '</td></tr>';
+    }).join('');
     el.innerHTML = '<div style="overflow-x:auto"><table class="admin-table"><thead><tr>' +
       '<th>Name</th><th>Subject</th><th>Audience</th><th>Sent</th><th>Opened</th><th>Open Rate</th><th>Date</th>' +
-      '</tr></thead><tbody>' +
-      d.sends.map(function(s) {
-        var rate = s.sent_count > 0 ? Math.round((s.opened_count / s.sent_count) * 100) : 0;
-        var rateColor = rate >= 30 ? '#10b981' : rate >= 15 ? '#f59e0b' : '#94a3b8';
-        return '<tr>' +
-          '<td style="font-weight:600">' + escHtml(s.name) + '</td>' +
-          '<td style="color:#94a3b8;font-size:.85rem">' + escHtml(s.subject || '') + '</td>' +
-          '<td><span style="background:rgba(78,159,255,.15);color:#4e9fff;border-radius:4px;padding:2px 8px;font-size:.78rem">' + escHtml(s.audience || 'all') + '</span></td>' +
-          '<td style="font-weight:700">' + (s.sent_count || 0) + '</td>' +
-          '<td style="font-weight:700;color:#10b981">' + (s.opened_count || 0) + '</td>' +
-          '<td><span style="font-weight:700;color:' + rateColor + '">' + rate + '%</span></td>' +
-          '<td style="color:#64748b;font-size:.82rem">' + new Date(s.sent_at).toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) + '</td>' +
-          '</tr>';
-      }).join('') +
-      '</tbody></table></div>';
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>';
   } catch(e) {
     el.innerHTML = '<p style="color:#ef4444;font-size:.85rem;margin:0">Failed to load history: ' + escHtml(e.message) + '</p>';
+  }
+}
+
+// Track which opener panels are open
+window._bcOpenersState = {};
+
+async function bcToggleOpeners(sendId) {
+  var row = document.getElementById('openers-' + sendId);
+  var btn = document.getElementById('opener-btn-' + sendId);
+  if (!row) return;
+  var isOpen = window._bcOpenersState[sendId];
+  if (isOpen) {
+    row.style.display = 'none';
+    window._bcOpenersState[sendId] = false;
+    if (btn) btn.innerHTML = btn.innerHTML.replace('fa-chevron-up','fa-eye');
+    return;
+  }
+  // Open: fetch openers
+  row.style.display = '';
+  window._bcOpenersState[sendId] = true;
+  var cell = row.querySelector('td > div');
+  if (cell) cell.innerHTML = '<p style="color:var(--muted);font-size:.82rem;margin:0"><i class="fas fa-spinner fa-spin"></i> Loading openers\u2026</p>';
+  try {
+    var res = await fetch('/api/admin/broadcast/openers/' + sendId, { credentials: 'include' });
+    var d = await res.json();
+    if (!d.openers || !d.openers.length) {
+      if (cell) cell.innerHTML = '<p style="color:var(--muted);font-size:.82rem;margin:0;padding:4px 0"><i class="fas fa-inbox" style="margin-right:6px"></i>No opener data yet — opens will appear here for future sends.</p>';
+      return;
+    }
+    var tableRows = d.openers.map(function(o) {
+      var name = o.name || '—';
+      var email = o.email || (o.user_id ? '(id: ' + o.user_id + ')' : 'Unknown');
+      var plan = o.plan || 'free';
+      var planColor = plan === 'free' ? '#94a3b8' : '#10b981';
+      var openedAt = o.opened_at ? new Date(o.opened_at).toLocaleString('en-US', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+      return '<tr>' +
+        '<td style="font-weight:600;font-size:.85rem">' + escHtml(name) + '</td>' +
+        '<td style="color:#94a3b8;font-size:.82rem">' + escHtml(email) + '</td>' +
+        '<td><span style="background:rgba(78,159,255,.1);color:' + planColor + ';border-radius:3px;padding:1px 6px;font-size:.75rem;font-weight:600">' + escHtml(plan) + '</span></td>' +
+        '<td style="color:#64748b;font-size:.8rem;white-space:nowrap"><i class="fas fa-clock" style="margin-right:4px;opacity:.5"></i>' + escHtml(openedAt) + '</td>' +
+        '</tr>';
+    }).join('');
+    if (cell) cell.innerHTML =
+      '<div style="font-size:.78rem;font-weight:600;color:#10b981;letter-spacing:.05em;margin-bottom:8px;text-transform:uppercase"><i class="fas fa-eye" style="margin-right:5px"></i>Who Opened — ' + d.openers.length + ' ' + (d.openers.length === 1 ? 'person' : 'people') + '</div>' +
+      '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-family:inherit">' +
+      '<thead><tr style="border-bottom:1px solid rgba(255,255,255,.07)">' +
+      '<th style="text-align:left;padding:4px 12px 4px 0;font-size:.75rem;color:#64748b;font-weight:600">Name</th>' +
+      '<th style="text-align:left;padding:4px 12px 4px 0;font-size:.75rem;color:#64748b;font-weight:600">Email</th>' +
+      '<th style="text-align:left;padding:4px 12px 4px 0;font-size:.75rem;color:#64748b;font-weight:600">Plan</th>' +
+      '<th style="text-align:left;padding:4px 0;font-size:.75rem;color:#64748b;font-weight:600">Opened At</th>' +
+      '</tr></thead><tbody>' + tableRows + '</tbody></table></div>';
+  } catch(e) {
+    if (cell) cell.innerHTML = '<p style="color:#ef4444;font-size:.82rem;margin:0">Failed to load openers: ' + escHtml(e.message) + '</p>';
   }
 }
