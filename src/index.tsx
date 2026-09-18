@@ -3436,6 +3436,27 @@ app.get('/api/cover-image/:jobId', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  GET /api/broadcast-asset/*
+//  Serve broadcast assets (thumbnails, images) from R2 broadcast/ prefix.
+//  Auth: none — URLs are not guessable and assets are public-safe.
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/broadcast-asset/*', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const key = 'broadcast/' + c.req.path.replace('/api/broadcast-asset/', '')
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  const data = await obj.arrayBuffer()
+  const mime = obj.httpMetadata?.contentType || 'image/jpeg'
+  return new Response(data, {
+    headers: {
+      'Content-Type': mime,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Content-Length': String(data.byteLength),
+    }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  GET /api/cover-art/:jobId
 //  Serve the cover JPEG directly from R2 with long-lived cache headers.
 //  This avoids needing a public R2 bucket — the worker proxies the bytes.
@@ -8154,7 +8175,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260909-07'
+const ASSET_VER = '20260909-08'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
