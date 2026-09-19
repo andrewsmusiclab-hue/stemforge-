@@ -1108,3 +1108,318 @@ async function bcToggleOpeners(sendId) {
     if (cell) cell.innerHTML = '<p style="color:#ef4444;font-size:.82rem;margin:0">Failed to load openers: ' + escHtml(e.message) + '</p>';
   }
 }
+
+// ─────────────────────────────────────────────
+// MY MUSIC ADMIN FUNCTIONS
+// ─────────────────────────────────────────────
+
+async function adminLoadAlbums() {
+  var el = document.getElementById('admin-albums-list');
+  if (el) el.innerHTML = '<p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
+  try {
+    var res = await fetch('/api/admin/albums', { credentials: 'include' });
+    var d = await res.json();
+    var albums = d.albums || [];
+    if (!albums.length) {
+      if (el) el.innerHTML = '<p style="color:#64748b;font-size:.85rem">No albums found.</p>';
+    } else {
+      var html = '<div style="display:flex;flex-direction:column;gap:10px">';
+      albums.forEach(function(a) {
+        var activeColor = a.is_active ? '#10b981' : '#ef4444';
+        var activeLabel = a.is_active ? 'Active' : 'Hidden';
+        html += '<div style="background:rgba(192,132,252,.06);border:1px solid rgba(192,132,252,.15);border-radius:10px;padding:14px;display:flex;align-items:center;gap:14px">' +
+          (a.cover_key ? '<img src="/api/cover-art/' + escHtml(a.cover_key) + '" style="width:56px;height:56px;border-radius:8px;object-fit:cover;flex-shrink:0" onerror="this.style.display=\'none\'">' : '<div style="width:56px;height:56px;border-radius:8px;background:rgba(192,132,252,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="fas fa-compact-disc" style="color:#c084fc;font-size:1.4rem"></i></div>') +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-weight:700;font-size:.92rem;color:#e2e8f0;margin-bottom:3px">' + escHtml(a.title || 'Untitled') + '</div>' +
+            '<div style="font-size:.78rem;color:#94a3b8">' + escHtml(a.artist || '') + ' &nbsp;·&nbsp; $' + (parseFloat(a.mp3_price)||0).toFixed(2) + ' MP3</div>' +
+            '<div style="margin-top:6px;display:flex;align-items:center;gap:8px">' +
+              '<span style="font-size:.7rem;font-weight:600;padding:1px 8px;border-radius:4px;background:rgba(' + (a.is_active?'16,185,129':'239,68,68') + ',.12);color:' + activeColor + '">' + activeLabel + '</span>' +
+              '<span style="font-size:.7rem;color:#64748b">Sort: ' + (a.sort_order||0) + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">' +
+            '<button onclick="adminToggleAlbumActive(' + a.id + ',' + (a.is_active?0:1) + ')" style="padding:5px 10px;background:rgba(192,132,252,.12);border:1px solid rgba(192,132,252,.25);color:#c084fc;border-radius:7px;font-size:.72rem;font-weight:600;cursor:pointer;white-space:nowrap">' +
+              (a.is_active ? '<i class="fas fa-eye-slash" style="margin-right:4px"></i>Hide' : '<i class="fas fa-eye" style="margin-right:4px"></i>Show') + '</button>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+      if (el) el.innerHTML = html;
+    }
+    // Also load tracks for album 1 (or first album)
+    if (albums.length > 0) {
+      adminLoadTracks(albums[0].id);
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<p style="color:#ef4444;font-size:.82rem">Error: ' + escHtml(e.message) + '</p>';
+  }
+  // Also load singles
+  adminLoadSingles();
+}
+
+async function adminToggleAlbumActive(id, newVal) {
+  try {
+    await fetch('/api/admin/album/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ is_active: newVal })
+    });
+    adminLoadAlbums();
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function adminLoadTracks(albumId) {
+  var el = document.getElementById('admin-tracks-list');
+  if (el) el.innerHTML = '<p style="color:var(--muted);font-size:.82rem"><i class="fas fa-spinner fa-spin"></i> Loading tracks…</p>';
+  try {
+    var res = await fetch('/api/admin/album/' + (albumId||1) + '/tracks', { credentials: 'include' });
+    var d = await res.json();
+    var tracks = d.tracks || [];
+    if (!tracks.length) {
+      if (el) el.innerHTML = '<p style="color:#64748b;font-size:.82rem">No tracks found for this album.</p>';
+      return;
+    }
+    var html = '<div style="display:flex;flex-direction:column;gap:6px">';
+    tracks.forEach(function(t, i) {
+      html += '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:8px;border:1px solid rgba(255,255,255,.06)">' +
+        '<span style="width:24px;text-align:center;font-size:.75rem;color:#64748b;font-weight:600">' + (i+1) + '</span>' +
+        '<span style="flex:1;font-size:.84rem;color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(t.title||t.name||'Track '+t.id) + '</span>' +
+        '<span style="font-size:.72rem;color:#94a3b8;white-space:nowrap">Preview @</span>' +
+        '<input type="number" min="0" value="' + (t.preview_start_sec||0) + '" id="preview-sec-' + t.id + '" style="width:60px;padding:4px 6px;background:#1e293b;border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#e2e8f0;font-size:.8rem;text-align:center">' +
+        '<span style="font-size:.72rem;color:#94a3b8">s</span>' +
+        '<button onclick="adminSaveTrackPreview(' + t.id + ')" style="padding:4px 10px;background:rgba(192,132,252,.15);border:1px solid rgba(192,132,252,.3);color:#c084fc;border-radius:6px;font-size:.72rem;font-weight:600;cursor:pointer">Save</button>' +
+      '</div>';
+    });
+    html += '</div>';
+    if (el) el.innerHTML = html;
+  } catch(e) {
+    if (el) el.innerHTML = '<p style="color:#ef4444;font-size:.82rem">Error: ' + escHtml(e.message) + '</p>';
+  }
+}
+
+async function adminSaveTrackPreview(trackId) {
+  var input = document.getElementById('preview-sec-' + trackId);
+  if (!input) return;
+  var sec = parseInt(input.value) || 0;
+  try {
+    var res = await fetch('/api/admin/album-track/' + trackId + '/preview', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ preview_start_sec: sec })
+    });
+    var d = await res.json();
+    if (d.ok) {
+      // Flash green feedback on the input
+      input.style.borderColor = '#10b981';
+      setTimeout(function() { input.style.borderColor = 'rgba(255,255,255,.12)'; }, 1500);
+    }
+  } catch(e) {
+    alert('Error saving preview start: ' + e.message);
+  }
+}
+
+async function adminLoadSingles() {
+  var el = document.getElementById('admin-singles-list');
+  if (el) el.innerHTML = '<p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
+  try {
+    var res = await fetch('/api/admin/singles', { credentials: 'include' });
+    var d = await res.json();
+    var singles = d.singles || [];
+    if (!singles.length) {
+      if (el) el.innerHTML = '<p style="color:#64748b;font-size:.85rem;padding:10px 0">No singles yet. Click <strong style="color:#34d399">Add Single</strong> to add your first one.</p>';
+      return;
+    }
+    var html = '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.82rem">' +
+      '<thead><tr style="border-bottom:1px solid rgba(255,255,255,.07)">' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Cover</th>' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Title</th>' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Artist</th>' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Price</th>' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Genre</th>' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Preview@</th>' +
+      '<th style="text-align:left;padding:6px 10px;color:#64748b;font-weight:600">Status</th>' +
+      '<th style="text-align:right;padding:6px 10px;color:#64748b;font-weight:600">Actions</th>' +
+      '</tr></thead><tbody>';
+    singles.forEach(function(s) {
+      var activeColor = s.is_active ? '#10b981' : '#ef4444';
+      html += '<tr style="border-bottom:1px solid rgba(255,255,255,.04)">' +
+        '<td style="padding:8px 10px">' +
+          (s.cover_key ? '<img src="/api/cover-art/' + escHtml(s.cover_key) + '" style="width:38px;height:38px;border-radius:6px;object-fit:cover" onerror="this.style.display=\'none\'">' :
+            '<div style="width:38px;height:38px;border-radius:6px;background:rgba(52,211,153,.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-music" style="color:#34d399;font-size:.9rem"></i></div>') +
+        '</td>' +
+        '<td style="padding:8px 10px;font-weight:600;color:#e2e8f0">' + escHtml(s.title||'') + '</td>' +
+        '<td style="padding:8px 10px;color:#94a3b8">' + escHtml(s.artist||'') + '</td>' +
+        '<td style="padding:8px 10px;color:#34d399;font-weight:600">$' + (parseFloat(s.price)||0).toFixed(2) + '</td>' +
+        '<td style="padding:8px 10px;color:#94a3b8">' + escHtml(s.genre||'—') + '</td>' +
+        '<td style="padding:8px 10px;color:#94a3b8">' + (s.preview_start_sec||0) + 's</td>' +
+        '<td style="padding:8px 10px"><span style="font-size:.7rem;font-weight:600;padding:2px 7px;border-radius:4px;background:rgba(' + (s.is_active?'16,185,129':'239,68,68') + ',.1);color:' + activeColor + '">' + (s.is_active?'Active':'Hidden') + '</span></td>' +
+        '<td style="padding:8px 10px;text-align:right">' +
+          '<button onclick="adminToggleSingleActive(' + s.id + ',' + (s.is_active?0:1) + ')" style="margin-right:6px;padding:4px 8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#94a3b8;border-radius:6px;font-size:.72rem;cursor:pointer">' +
+            (s.is_active ? '<i class="fas fa-eye-slash"></i>' : '<i class="fas fa-eye"></i>') + '</button>' +
+          '<button onclick="adminDeleteSingle(' + s.id + ',\'' + escHtml(s.title||'') + '\')" style="padding:4px 8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);color:#ef4444;border-radius:6px;font-size:.72rem;cursor:pointer"><i class="fas fa-trash"></i></button>' +
+        '</td>' +
+      '</tr>';
+    });
+    html += '</tbody></table></div>';
+    if (el) el.innerHTML = html;
+  } catch(e) {
+    if (el) el.innerHTML = '<p style="color:#ef4444;font-size:.82rem">Error: ' + escHtml(e.message) + '</p>';
+  }
+}
+
+function adminShowAddSingle() {
+  var form = document.getElementById('admin-add-single-form');
+  if (!form) return;
+  var isVisible = form.style.display !== 'none';
+  form.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) {
+    // Clear form fields
+    ['as-title','as-artist','as-genre','as-cover','as-r2','as-desc'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el && el.tagName !== 'TEXTAREA') { /* keep defaults */ }
+    });
+    document.getElementById('as-preview').value = '0';
+    document.getElementById('as-price').value = '1.99';
+    document.getElementById('as-artist').value = 'Andrew Pryce';
+    // Scroll to form
+    setTimeout(function() { form.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 100);
+  }
+}
+
+async function adminSaveSingle() {
+  var title = (document.getElementById('as-title')||{}).value || '';
+  if (!title.trim()) { alert('Title is required.'); return; }
+  var body = {
+    title: title.trim(),
+    artist: (document.getElementById('as-artist')||{}).value || 'Andrew Pryce',
+    price: parseFloat((document.getElementById('as-price')||{}).value) || 1.99,
+    genre: (document.getElementById('as-genre')||{}).value || null,
+    cover_key: (document.getElementById('as-cover')||{}).value || null,
+    r2_key: (document.getElementById('as-r2')||{}).value || null,
+    preview_start_sec: parseInt((document.getElementById('as-preview')||{}).value) || 0,
+    description: (document.getElementById('as-desc')||{}).value || null
+  };
+  var btn = document.querySelector('[onclick="adminSaveSingle()"]');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:4px"></i>Saving…'; }
+  try {
+    var res = await fetch('/api/admin/singles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(body)
+    });
+    var d = await res.json();
+    if (d.ok) {
+      document.getElementById('admin-add-single-form').style.display = 'none';
+      adminLoadSingles();
+    } else {
+      alert('Error: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save" style="margin-right:4px"></i>Save'; }
+  }
+}
+
+async function adminToggleSingleActive(id, newVal) {
+  try {
+    await fetch('/api/admin/single/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ is_active: newVal })
+    });
+    adminLoadSingles();
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+async function adminDeleteSingle(id, title) {
+  if (!confirm('Delete single "' + title + '"? This cannot be undone.')) return;
+  try {
+    var res = await fetch('/api/admin/single/' + id, { method: 'DELETE', credentials: 'include' });
+    var d = await res.json();
+    if (d.ok) {
+      adminLoadSingles();
+    } else {
+      alert('Error: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
+
+// ─────────────────────────────────────────────
+// SMART LINKS ADMIN FUNCTIONS
+// ─────────────────────────────────────────────
+
+async function adminLoadSmartLinks() {
+  var el = document.getElementById('admin-sl-list');
+  var countEl = document.getElementById('admin-sl-count');
+  if (el) el.innerHTML = '<p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
+  try {
+    var res = await fetch('/api/admin/smart-links', { credentials: 'include' });
+    var d = await res.json();
+    var links = d.links || [];
+    if (countEl) countEl.textContent = links.length + ' link' + (links.length !== 1 ? 's' : '') + ' total';
+    if (!links.length) {
+      if (el) el.innerHTML = '<p style="color:#64748b;font-size:.85rem;padding:10px 0">No smart links created yet.</p>';
+      return;
+    }
+    var html = '<div style="overflow-x:auto"><table class="admin-table">' +
+      '<thead><tr>' +
+      '<th>Cover</th><th>Title</th><th>Artist</th><th>User</th><th>Slug</th><th>Genre</th><th>Platforms</th><th>Views</th><th>Created</th><th style="text-align:right">Actions</th>' +
+      '</tr></thead><tbody>';
+    links.forEach(function(lk) {
+      var platforms = [];
+      if (lk.spotify_url) platforms.push('<span style="color:#1db954;font-size:.78rem" title="Spotify"><i class="fab fa-spotify"></i></span>');
+      if (lk.apple_url) platforms.push('<span style="color:#fc3c44;font-size:.78rem" title="Apple Music"><i class="fab fa-apple"></i></span>');
+      if (lk.youtube_url) platforms.push('<span style="color:#ff0000;font-size:.78rem" title="YouTube"><i class="fab fa-youtube"></i></span>');
+      if (lk.soundcloud_url) platforms.push('<span style="color:#ff5500;font-size:.78rem" title="SoundCloud"><i class="fab fa-soundcloud"></i></span>');
+      if (lk.tidal_url) platforms.push('<span style="color:#00ffff;font-size:.78rem" title="Tidal"><i class="fas fa-music"></i></span>');
+      if (lk.amazon_url) platforms.push('<span style="color:#ff9900;font-size:.78rem" title="Amazon"><i class="fab fa-amazon"></i></span>');
+      if (lk.deezer_url) platforms.push('<span style="color:#a238ff;font-size:.78rem" title="Deezer"><i class="fas fa-headphones"></i></span>');
+      var createdDate = lk.created_at ? new Date(lk.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+      html += '<tr>' +
+        '<td>' + (lk.cover_url ? '<img src="' + escHtml(lk.cover_url) + '" style="width:36px;height:36px;border-radius:6px;object-fit:cover" onerror="this.style.display=\'none\'">' : '<div style="width:36px;height:36px;border-radius:6px;background:rgba(52,211,153,.1);display:flex;align-items:center;justify-content:center"><i class="fas fa-link" style="color:#34d399;font-size:.8rem"></i></div>') + '</td>' +
+        '<td style="font-weight:600;color:#e2e8f0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(lk.title||'') + '</td>' +
+        '<td style="color:#94a3b8;white-space:nowrap">' + escHtml(lk.artist||'') + '</td>' +
+        '<td style="color:#64748b;font-size:.78rem;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(lk.email||lk.username||'—') + '</td>' +
+        '<td><a href="/s/' + escHtml(lk.slug||'') + '" target="_blank" style="color:#34d399;font-size:.78rem;font-family:monospace">/s/' + escHtml(lk.slug||'') + '</a></td>' +
+        '<td style="color:#94a3b8;font-size:.78rem">' + escHtml(lk.genre||'—') + '</td>' +
+        '<td><div style="display:flex;gap:4px;flex-wrap:wrap">' + (platforms.join(' ')||'<span style="color:#64748b;font-size:.75rem">—</span>') + '</div></td>' +
+        '<td style="color:#94a3b8;font-size:.82rem;text-align:center">' + (lk.view_count||0) + '</td>' +
+        '<td style="color:#64748b;font-size:.78rem;white-space:nowrap">' + createdDate + '</td>' +
+        '<td style="text-align:right">' +
+          '<a href="/s/' + escHtml(lk.slug||'') + '" target="_blank" style="display:inline-block;padding:4px 8px;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.2);color:#34d399;border-radius:6px;font-size:.72rem;text-decoration:none;margin-right:4px"><i class="fas fa-external-link-alt"></i></a>' +
+          '<button onclick="adminDeleteSmartLink(' + lk.id + ',\'' + escHtml(lk.title||lk.slug||'') + '\')" style="padding:4px 8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);color:#ef4444;border-radius:6px;font-size:.72rem;cursor:pointer"><i class="fas fa-trash"></i></button>' +
+        '</td>' +
+      '</tr>';
+    });
+    html += '</tbody></table></div>';
+    if (el) el.innerHTML = html;
+  } catch(e) {
+    if (el) el.innerHTML = '<p style="color:#ef4444;font-size:.82rem">Error: ' + escHtml(e.message) + '</p>';
+  }
+}
+
+async function adminDeleteSmartLink(id, title) {
+  if (!confirm('Delete smart link "' + title + '"? This cannot be undone.')) return;
+  try {
+    var res = await fetch('/api/admin/smart-links/' + id, { method: 'DELETE', credentials: 'include' });
+    var d = await res.json();
+    if (d.ok) {
+      adminLoadSmartLinks();
+    } else {
+      alert('Error: ' + (d.error || 'Unknown error'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
+}
