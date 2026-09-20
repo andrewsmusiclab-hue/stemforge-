@@ -993,17 +993,25 @@ async function bcSendToUser() {
   if (!subject) { alert('Enter a subject line first.'); return; }
   if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
   var u = _bcSelectedUser;
-  if (!confirm('Send "' + subject + '" to ' + u.name + ' (' + u.email + ')?\n\nThis will send immediately.')) return;
+  var broadcastName = document.getElementById('bc-template-name')?.value?.trim() || subject;
+  if (!confirm('Send "' + subject + '" to ' + u.name + ' (' + u.email + ')?\n\nThis will send immediately and appear in Broadcast History.')) return;
   bcSetIndividualStatus('<i class="fas fa-spinner fa-spin"></i> Sending…', '#f59e0b');
   try {
     var res = await fetch('/api/admin/broadcast/send', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: 'all', test_email: u.email })
+      body: JSON.stringify({
+        subject: subject,
+        html: bcBuildHtml(),
+        audience: 'all',
+        single_user_email: u.email,
+        broadcast_name: broadcastName + ' → ' + (u.name || u.email)
+      })
     });
     var d = await res.json();
     if (d.ok) {
-      bcSetIndividualStatus('✓ Sent to ' + u.name + ' (' + u.email + ')', '#10b981');
+      bcSetIndividualStatus('✓ Sent to ' + (d.name || u.name) + ' (' + u.email + ') — visible in Broadcast History', '#10b981');
+      bcLoadHistory(); // refresh history table so it appears immediately
     } else {
       bcSetIndividualStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
     }
@@ -1195,7 +1203,7 @@ async function bcLoadHistory() {
       return '<tr>' +
         '<td style="font-weight:600">' + escHtml(s.name) + '</td>' +
         '<td style="color:#94a3b8;font-size:.85rem">' + escHtml(s.subject || '') + '</td>' +
-        '<td><span style="background:rgba(78,159,255,.15);color:#4e9fff;border-radius:4px;padding:2px 8px;font-size:.78rem">' + escHtml(s.audience || 'all') + '</span></td>' +
+        '<td><span style="background:' + (s.audience==='individual' ? 'rgba(167,139,250,.15)' : 'rgba(78,159,255,.15)') + ';color:' + (s.audience==='individual' ? '#a78bfa' : '#4e9fff') + ';border-radius:4px;padding:2px 8px;font-size:.78rem">' + escHtml(s.audience || 'all') + '</span></td>' +
         '<td style="font-weight:700">' + (s.sent_count || 0) + '</td>' +
         '<td>' + openBtn + '</td>' +
         '<td><span style="font-weight:700;color:' + rateColor + '">' + rate + '%</span></td>' +
