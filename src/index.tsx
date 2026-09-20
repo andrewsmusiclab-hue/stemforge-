@@ -565,6 +565,7 @@ function generateToken(): string {
 // ─── TIKTOK SERVER-SIDE EVENTS ───────────────────────────────────────────────
 const TIKTOK_PIXEL_ID = 'D9SVAV3C77UA78AD7EU0'
 const TIKTOK_PIXEL_ID_3 = 'DAFIT1JC77UES974NPK0'
+const TIKTOK_PIXEL_ID_4 = 'DANT6N3C77U88MSNTF7G'
 async function sha256Hex(str: string): Promise<string> {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('')
@@ -4278,10 +4279,10 @@ app.post('/api/feedback', async (c) => {
   return c.json({ ok: true, note: 'Feedback logged. Add MAILERSEND_API_KEY secret for email delivery.' })
 })
 app.get('/promos', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/promos')
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.redirect('/login')
+  if (!user) return c.redirect('/login?next=/promos')
   return c.html(promoPage())
 })
 
@@ -4294,11 +4295,11 @@ app.get('/profile', async (c) => {
 
 app.get('/subscription', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) {
-    return c.redirect('/login')
+    return c.redirect('/login?next=/subscription')
   }
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.redirect('/login')
+  if (!user) return c.redirect('/login?next=/subscription')
 
   // ── Detect any pending Stripe plan changes + fetch real billing date ──
   let pendingDowngrade: string | null = user.pending_downgrade ?? null  // D1-stored — instant, no Stripe call
@@ -4362,10 +4363,10 @@ app.get('/subscription', async (c) => {
 })
 
 app.get('/account', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login')
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/account')
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.redirect('/login')
+  if (!user) return c.redirect('/login?next=/account')
   return c.html(accountPage(user))
 })
 
@@ -7239,7 +7240,7 @@ fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=440081228562920&ev=PageView&noscript=1"/></noscript>
 <!-- TikTok Pixel -->
 <script>
-!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
+!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAFIT1JC77UES974NPK0');ttq.load('DANT6N3C77U88MSNTF7G');ttq.page()}(window,document,'ttq');
 </script>
 <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
 <link href="/static/style.css?v=${ASSET_VER}" rel="stylesheet"/>
@@ -8175,7 +8176,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260909-08'
+const ASSET_VER = '20260909-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -8207,7 +8208,7 @@ fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=440081228562920&ev=PageView&noscript=1"/></noscript>
 <!-- TikTok Pixel -->
 <script>
-!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAFIT1JC77UES974NPK0');ttq.page()}(window,document,'ttq');
+!function(w,d,t){w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script");n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};ttq.load('D9SVAV3C77UA78AD7EU0');ttq.load('DAFIT1JC77UES974NPK0');ttq.load('DANT6N3C77U88MSNTF7G');ttq.page()}(window,document,'ttq');
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
