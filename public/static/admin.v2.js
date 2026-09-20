@@ -907,6 +907,8 @@ async function bcFetchAllUsers() {
 
 function bcSearchUsers(q) {
   if (!_bcAllUsers.length) { bcFetchAllUsers(); return; }
+  // Clear any previously selected user when the search query changes
+  if (_bcSelectedUser) { bcClearSelectedUser(); }
   q = q.trim().toLowerCase();
   var filtered = q
     ? _bcAllUsers.filter(function(u) {
