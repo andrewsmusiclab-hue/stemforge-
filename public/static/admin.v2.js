@@ -84,8 +84,22 @@ function adminTab(tab){
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
+  // Persist active tab in URL hash so hard refresh restores it
+  try { history.replaceState(null, '', '#tab-' + tab); } catch(e) {}
 }
-loadAnalytics(); window._analyticsLoaded=true;
+// Restore tab from hash on page load
+(function(){
+  var hash = window.location.hash || '';
+  var match = hash.match(/^#tab-(.+)$/);
+  var startTab = match ? match[1] : 'analytics';
+  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email'];
+  if (validTabs.indexOf(startTab) === -1) startTab = 'analytics';
+  if (startTab !== 'analytics') {
+    adminTab(startTab);
+  } else {
+    loadAnalytics(); window._analyticsLoaded=true;
+  }
+})();
 
 var SOCIAL_ICONS={tiktok:'<i class="fab fa-tiktok" style="color:#69C9D0"></i>',facebook:'<i class="fab fa-facebook" style="color:#1877F2"></i>',instagram:'<i class="fab fa-instagram" style="color:#E1306C"></i>',youtube:'<i class="fab fa-youtube" style="color:#FF0000"></i>',twitter:'<i class="fab fa-twitter" style="color:#1DA1F2"></i>',snapchat:'<i class="fab fa-snapchat" style="color:#FFFC00"></i>',pinterest:'<i class="fab fa-pinterest" style="color:#E60023"></i>',reddit:'<i class="fab fa-reddit" style="color:#FF4500"></i>',linkedin:'<i class="fab fa-linkedin" style="color:#0A66C2"></i>',google:'<i class="fab fa-google" style="color:#4285F4"></i>','google-organic':'<i class="fab fa-google" style="color:#4285F4"></i>',bing:'<i class="fas fa-search" style="color:#008373"></i>',direct:'<i class="fas fa-mouse-pointer" style="color:#a78bfa"></i>',referral:'<i class="fas fa-external-link-alt" style="color:var(--muted)"></i>'};
 var SOURCE_LABELS={'google-organic':'Google','direct':'Direct','tiktok':'TikTok','facebook':'Facebook','instagram':'Instagram','youtube':'YouTube','twitter':'Twitter','snapchat':'Snapchat','pinterest':'Pinterest','reddit':'Reddit','linkedin':'LinkedIn','google':'Google','bing':'Bing','referral':'Referral'};
@@ -995,28 +1009,37 @@ async function bcSendToUser() {
   var u = _bcSelectedUser;
   var broadcastName = document.getElementById('bc-template-name')?.value?.trim() || subject;
   if (!confirm('Send "' + subject + '" to ' + u.name + ' (' + u.email + ')?\n\nThis will send immediately and appear in Broadcast History.')) return;
-  bcSetIndividualStatus('<i class="fas fa-spinner fa-spin"></i> Sending…', '#f59e0b');
+  // Make status visible immediately before async call
+  var statusEl = document.getElementById('bc-individual-status');
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#f59e0b'; statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending…'; }
   try {
+    var payload = {
+      subject: subject,
+      html: bcBuildHtml(),
+      audience: 'all',
+      single_user_email: u.email,
+      broadcast_name: broadcastName + ' → ' + (u.name || u.email)
+    };
     var res = await fetch('/api/admin/broadcast/send', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        subject: subject,
-        html: bcBuildHtml(),
-        audience: 'all',
-        single_user_email: u.email,
-        broadcast_name: broadcastName + ' → ' + (u.name || u.email)
-      })
+      body: JSON.stringify(payload)
     });
-    var d = await res.json();
+    var rawText = await res.text();
+    var d;
+    try { d = JSON.parse(rawText); } catch(pe) { d = { error: 'Bad response: ' + rawText.slice(0, 100) }; }
     if (d.ok) {
-      bcSetIndividualStatus('✓ Sent to ' + (d.name || u.name) + ' (' + u.email + ') — visible in Broadcast History', '#10b981');
-      bcLoadHistory(); // refresh history table so it appears immediately
+      if (statusEl) { statusEl.style.color = '#10b981'; statusEl.innerHTML = '✓ Sent to ' + escHtml(d.name || u.name) + ' (' + escHtml(u.email) + ') — check Broadcast History below'; }
+      // Scroll to and refresh broadcast history
+      window._broadcastsLoaded = false; // force reload
+      bcLoadHistory();
+      var histEl = document.getElementById('bc-history-table');
+      if (histEl) histEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } else {
-      bcSetIndividualStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
+      if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.innerHTML = '✗ Error: ' + escHtml(d.error || 'Unknown error (status ' + res.status + ')'); }
     }
   } catch(e) {
-    bcSetIndividualStatus('Network error: ' + e.message, '#ef4444');
+    if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.innerHTML = '✗ Network error: ' + escHtml(e.message); }
   }
 }
 
