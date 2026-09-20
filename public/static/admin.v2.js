@@ -863,6 +863,137 @@ function bcSetStatus(msg, color) {
   el.innerHTML = msg;
 }
 
+// ── Send to Individual User ───────────────────────────────────────────────────
+var _bcAllUsers       = [];   // full list fetched once
+var _bcSelectedUser   = null; // { id, email, name }
+var _bcIndividualOpen = false;
+
+function bcToggleIndividual() {
+  _bcIndividualOpen = !_bcIndividualOpen;
+  var body    = document.getElementById('bc-individual-body');
+  var chevron = document.getElementById('bc-individual-chevron');
+  if (body)    body.style.display    = _bcIndividualOpen ? 'block' : 'none';
+  if (chevron) chevron.style.transform = _bcIndividualOpen ? 'rotate(180deg)' : 'rotate(0deg)';
+  if (_bcIndividualOpen && _bcAllUsers.length === 0) bcFetchAllUsers();
+}
+
+async function bcFetchAllUsers() {
+  var list = document.getElementById('bc-user-list');
+  if (!list) return;
+  list.innerHTML = '<div style="padding:20px;text-align:center;color:#475569;font-size:.85rem"><i class="fas fa-spinner fa-spin" style="margin-right:6px"></i> Loading users…</div>';
+  try {
+    var res = await fetch('/api/admin/users', { credentials: 'include' });
+    var d   = await res.json();
+    _bcAllUsers = d.users || [];
+    bcRenderUserList(_bcAllUsers);
+  } catch(e) {
+    list.innerHTML = '<div style="padding:16px;color:#ef4444;font-size:.85rem">Failed to load users</div>';
+  }
+}
+
+function bcSearchUsers(q) {
+  if (!_bcAllUsers.length) { bcFetchAllUsers(); return; }
+  q = q.trim().toLowerCase();
+  var filtered = q
+    ? _bcAllUsers.filter(function(u) {
+        return (u.email || '').toLowerCase().includes(q) || (u.name || '').toLowerCase().includes(q);
+      })
+    : _bcAllUsers;
+  bcRenderUserList(filtered);
+}
+
+function bcRenderUserList(users) {
+  var list = document.getElementById('bc-user-list');
+  if (!list) return;
+  if (!users.length) {
+    list.innerHTML = '<div style="padding:20px;text-align:center;color:#475569;font-size:.85rem">No users found</div>';
+    return;
+  }
+  var planColor = { free: '#64748b', creator: '#f59e0b', pro: '#a78bfa' };
+  list.innerHTML = users.map(function(u) {
+    var selected = _bcSelectedUser && _bcSelectedUser.id === u.id;
+    var pc = planColor[u.plan] || '#64748b';
+    var initials = ((u.name || u.email || '?')[0]).toUpperCase();
+    return '<div onclick="bcSelectUser(' + JSON.stringify(JSON.stringify(u)) + ')" '
+      + 'style="display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer;border-bottom:1px solid #0f1e35;'
+      + 'background:' + (selected ? '#0d2440' : 'transparent') + ';'
+      + 'transition:background .15s" '
+      + 'onmouseenter="this.style.background=\'' + (selected ? '#0d2440' : '#0c1a2e') + '\'" '
+      + 'onmouseleave="this.style.background=\'' + (selected ? '#0d2440' : 'transparent') + '\'">'
+      // Avatar circle
+      + '<div style="width:32px;height:32px;border-radius:50%;background:#1e293b;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#94a3b8;flex-shrink:0">' + initials + '</div>'
+      // Name + email
+      + '<div style="flex:1;min-width:0">'
+      +   '<div style="font-size:.88rem;font-weight:600;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(u.name || '—') + '</div>'
+      +   '<div style="font-size:.78rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escHtml(u.email) + '</div>'
+      + '</div>'
+      // Plan badge
+      + '<span style="font-size:.68rem;font-weight:600;color:' + pc + ';background:' + pc + '22;border-radius:20px;padding:2px 8px;flex-shrink:0">' + (u.plan || 'free') + '</span>'
+      // Checkmark if selected
+      + (selected ? '<i class="fas fa-check-circle" style="color:#4e9fff;font-size:.9rem;flex-shrink:0"></i>' : '')
+      + '</div>';
+  }).join('');
+}
+
+function bcSelectUser(jsonStr) {
+  var u = JSON.parse(jsonStr);
+  _bcSelectedUser = u;
+  // Show badge
+  var badge = document.getElementById('bc-selected-user');
+  var nameEl = document.getElementById('bc-selected-name');
+  var emailEl = document.getElementById('bc-selected-email');
+  if (badge)  badge.style.display  = 'flex';
+  if (nameEl)  nameEl.textContent  = u.name || u.email;
+  if (emailEl) emailEl.textContent = u.email;
+  // Re-render list to show checkmark
+  var q = document.getElementById('bc-user-search')?.value || '';
+  bcSearchUsers(q);
+  // Clear any previous status
+  bcSetIndividualStatus('', '');
+}
+
+function bcClearSelectedUser() {
+  _bcSelectedUser = null;
+  var badge = document.getElementById('bc-selected-user');
+  if (badge) badge.style.display = 'none';
+  var q = document.getElementById('bc-user-search')?.value || '';
+  bcSearchUsers(q);
+  bcSetIndividualStatus('', '');
+}
+
+async function bcSendToUser() {
+  if (!_bcSelectedUser) { alert('Select a user from the list first.'); return; }
+  var subject = document.getElementById('bc-subject')?.value?.trim();
+  if (!subject) { alert('Enter a subject line first.'); return; }
+  if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
+  var u = _bcSelectedUser;
+  if (!confirm('Send "' + subject + '" to ' + u.name + ' (' + u.email + ')?\n\nThis will send immediately.')) return;
+  bcSetIndividualStatus('<i class="fas fa-spinner fa-spin"></i> Sending…', '#f59e0b');
+  try {
+    var res = await fetch('/api/admin/broadcast/send', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: 'all', test_email: u.email })
+    });
+    var d = await res.json();
+    if (d.ok) {
+      bcSetIndividualStatus('✓ Sent to ' + u.name + ' (' + u.email + ')', '#10b981');
+    } else {
+      bcSetIndividualStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
+    }
+  } catch(e) {
+    bcSetIndividualStatus('Network error: ' + e.message, '#ef4444');
+  }
+}
+
+function bcSetIndividualStatus(msg, color) {
+  var el = document.getElementById('bc-individual-status');
+  if (!el) return;
+  el.style.display = msg ? 'block' : 'none';
+  el.style.color   = color || '#e2e8f0';
+  el.innerHTML     = msg;
+}
+
 // ── Saved Templates ──────────────────────────────────────────────────────────
 var _bcEditId = null; // null = new template, number = editing existing
 
