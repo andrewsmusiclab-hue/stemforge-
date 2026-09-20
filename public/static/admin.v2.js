@@ -902,7 +902,11 @@ function bcSearchUsers(q) {
   bcRenderUserList(filtered);
 }
 
+// Stores the currently rendered filtered list so click handler can look up by index safely
+var _bcRenderedUsers = [];
+
 function bcRenderUserList(users) {
+  _bcRenderedUsers = users;
   var list = document.getElementById('bc-user-list');
   if (!list) return;
   if (!users.length) {
@@ -910,16 +914,13 @@ function bcRenderUserList(users) {
     return;
   }
   var planColor = { free: '#64748b', creator: '#f59e0b', pro: '#a78bfa' };
-  list.innerHTML = users.map(function(u) {
+  list.innerHTML = users.map(function(u, idx) {
     var selected = _bcSelectedUser && _bcSelectedUser.id === u.id;
     var pc = planColor[u.plan] || '#64748b';
     var initials = ((u.name || u.email || '?')[0]).toUpperCase();
-    return '<div onclick="bcSelectUser(' + JSON.stringify(JSON.stringify(u)) + ')" '
+    return '<div data-uindex="' + idx + '" class="bc-user-row" '
       + 'style="display:flex;align-items:center;gap:12px;padding:10px 14px;cursor:pointer;border-bottom:1px solid #0f1e35;'
-      + 'background:' + (selected ? '#0d2440' : 'transparent') + ';'
-      + 'transition:background .15s" '
-      + 'onmouseenter="this.style.background=\'' + (selected ? '#0d2440' : '#0c1a2e') + '\'" '
-      + 'onmouseleave="this.style.background=\'' + (selected ? '#0d2440' : 'transparent') + '\'">'
+      + 'background:' + (selected ? '#0d2440' : 'transparent') + '">'
       // Avatar circle
       + '<div style="width:32px;height:32px;border-radius:50%;background:#1e293b;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:#94a3b8;flex-shrink:0">' + initials + '</div>'
       // Name + email
@@ -933,22 +934,43 @@ function bcRenderUserList(users) {
       + (selected ? '<i class="fas fa-check-circle" style="color:#4e9fff;font-size:.9rem;flex-shrink:0"></i>' : '')
       + '</div>';
   }).join('');
+
+  // Single event listener on the container — no onclick attributes needed
+  list.onclick = function(e) {
+    var row = e.target.closest('.bc-user-row');
+    if (!row) return;
+    var idx = parseInt(row.getAttribute('data-uindex'), 10);
+    var u = _bcRenderedUsers[idx];
+    if (!u) return;
+    bcSelectUser(u);
+  };
 }
 
-function bcSelectUser(jsonStr) {
-  var u = JSON.parse(jsonStr);
+function bcSelectUser(u) {
   _bcSelectedUser = u;
-  // Show badge
-  var badge = document.getElementById('bc-selected-user');
+  // Highlight selected row, un-highlight others
+  document.querySelectorAll('.bc-user-row').forEach(function(row) {
+    var idx = parseInt(row.getAttribute('data-uindex'), 10);
+    var isSelected = _bcRenderedUsers[idx] && _bcRenderedUsers[idx].id === u.id;
+    row.style.background = isSelected ? '#0d2440' : 'transparent';
+    // Add/remove checkmark
+    var existing = row.querySelector('.bc-check');
+    if (isSelected && !existing) {
+      var chk = document.createElement('i');
+      chk.className = 'fas fa-check-circle bc-check';
+      chk.style.cssText = 'color:#4e9fff;font-size:.9rem;flex-shrink:0';
+      row.appendChild(chk);
+    } else if (!isSelected && existing) {
+      existing.remove();
+    }
+  });
+  // Show selected badge
+  var badge  = document.getElementById('bc-selected-user');
   var nameEl = document.getElementById('bc-selected-name');
   var emailEl = document.getElementById('bc-selected-email');
   if (badge)  { badge.style.display = 'flex'; badge.style.alignItems = 'center'; badge.style.justifyContent = 'space-between'; }
   if (nameEl)  nameEl.textContent  = u.name || u.email;
   if (emailEl) emailEl.textContent = u.email;
-  // Re-render list to show checkmark
-  var q = document.getElementById('bc-user-search')?.value || '';
-  bcSearchUsers(q);
-  // Clear any previous status
   bcSetIndividualStatus('', '');
 }
 
@@ -956,8 +978,12 @@ function bcClearSelectedUser() {
   _bcSelectedUser = null;
   var badge = document.getElementById('bc-selected-user');
   if (badge) badge.style.display = 'none';
-  var q = document.getElementById('bc-user-search')?.value || '';
-  bcSearchUsers(q);
+  // Clear all row highlights and checkmarks
+  document.querySelectorAll('.bc-user-row').forEach(function(row) {
+    row.style.background = 'transparent';
+    var chk = row.querySelector('.bc-check');
+    if (chk) chk.remove();
+  });
   bcSetIndividualStatus('', '');
 }
 
