@@ -942,7 +942,7 @@ function bcSelectUser(jsonStr) {
   var badge = document.getElementById('bc-selected-user');
   var nameEl = document.getElementById('bc-selected-name');
   var emailEl = document.getElementById('bc-selected-email');
-  if (badge)  badge.style.display  = 'flex';
+  if (badge)  { badge.style.display = 'flex'; badge.style.alignItems = 'center'; badge.style.justifyContent = 'space-between'; }
   if (nameEl)  nameEl.textContent  = u.name || u.email;
   if (emailEl) emailEl.textContent = u.email;
   // Re-render list to show checkmark
