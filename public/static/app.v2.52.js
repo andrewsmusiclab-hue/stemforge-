@@ -9915,8 +9915,22 @@ window.toggleRefDropdown = function() {
               window.location.href = '/dashboard#covers';
             }
           }, 2000);
+        } else if (data.status === 'error') {
+          // Generation failed — show the exact error message from Suno/MusicAPI
+          clearInterval(_coverPollTimer);
+          window.dismissCoverOverlay();
+          var errMsg = data.error || 'Cover generation failed. Please try a different track.';
+          // Check for "already published" / catalog match error
+          var isCatalogError = errMsg.toLowerCase().includes('catalog') ||
+                               errMsg.toLowerCase().includes('already published') ||
+                               errMsg.toLowerCase().includes('existing recording') ||
+                               errMsg.toLowerCase().includes('matches an existing');
+          var displayMsg = isCatalogError
+            ? '⚠️ This track is already in the music catalog — Suno cannot create a cover of a published song.\n\nTry uploading a different or original track.'
+            : ('Cover generation failed:\n\n' + errMsg);
+          alert(displayMsg);
         }
-        // else pending — keep polling
+        // else 'generating' — keep polling
       } catch(e) {
         // network hiccup — keep polling
       }

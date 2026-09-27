@@ -110,6 +110,7 @@ async function setJob(db: D1Database | undefined, job: Job, userId?: string): Pr
 // MPEGDecoderWebWorker which calls `new Worker()` at class definition time,
 // crashing in Cloudflare Workers (no Web Worker API). Direct src import avoids this.
 import MPEGDecoder from 'mpg123-decoder/src/MPEGDecoder.js'
+import lamejs from '@breezystack/lamejs'
 
 /**
  * Convert an MP3 ArrayBuffer to a true 16-bit PCM WAV ArrayBuffer.
@@ -158,6 +159,89 @@ async function mp3ToWav(mp3Buf: ArrayBuffer): Promise<ArrayBuffer> {
   }
 
   return wavBuf
+}
+
+/**
+ * Convert a PCM WAV ArrayBuffer to an MP3 ArrayBuffer using lamejs.
+ * Reads the WAV header to extract sample rate, bit depth, and channels,
+ * then encodes with LAME at 192kbps. Throws on failure.
+ */
+function wavToMp3(wavBuf: ArrayBuffer): ArrayBuffer {
+  const view = new DataView(wavBuf)
+  // WAV fmt chunk starts at offset 12 (RIFF + chunk size + WAVE = 12 bytes)
+  // fmt  sub-chunk id at 12, size at 16, audioFormat at 20, channels at 22,
+  //      sampleRate at 24, byteRate at 28, blockAlign at 32, bitsPerSample at 34
+  // data sub-chunk starts after fmt (20 bytes fmt body) at offset 36, data at 44
+  const numChannels  = view.getUint16(22, true)
+  const sampleRate   = view.getUint32(24, true)
+  const bitsPerSample = view.getUint16(34, true)
+
+  if (numChannels < 1 || numChannels > 2) throw new Error(`Unsupported channel count: ${numChannels}`)
+  if (bitsPerSample !== 16) throw new Error(`Unsupported bit depth: ${bitsPerSample} (need 16-bit PCM)`)
+
+  // PCM samples start at byte 44 (standard WAV header)
+  const pcmBytes   = new Int16Array(wavBuf, 44)
+  const totalSamples = Math.floor(pcmBytes.length / numChannels)
+
+  const mp3enc = new lamejs.Mp3Encoder(numChannels, sampleRate, 192)
+  const blockSize = 1152  // LAME processes 1152 samples at a time
+
+  const chunks: Uint8Array[] = []
+
+  if (numChannels === 1) {
+    for (let i = 0; i < totalSamples; i += blockSize) {
+      const end   = Math.min(i + blockSize, totalSamples)
+      const chunk = pcmBytes.subarray(i, end)
+      const enc   = mp3enc.encodeBuffer(chunk)
+      if (enc.length > 0) chunks.push(enc)
+    }
+  } else {
+    // Deinterleave stereo L/R
+    const leftSamples  = new Int16Array(totalSamples)
+    const rightSamples = new Int16Array(totalSamples)
+    for (let i = 0; i < totalSamples; i++) {
+      leftSamples[i]  = pcmBytes[i * 2]
+      rightSamples[i] = pcmBytes[i * 2 + 1]
+    }
+    for (let i = 0; i < totalSamples; i += blockSize) {
+      const end  = Math.min(i + blockSize, totalSamples)
+      const enc  = mp3enc.encodeBuffer(leftSamples.subarray(i, end), rightSamples.subarray(i, end))
+      if (enc.length > 0) chunks.push(enc)
+    }
+  }
+
+  // Flush remaining frames
+  const flush = mp3enc.flush()
+  if (flush.length > 0) chunks.push(flush)
+
+  // Concatenate all chunks into one ArrayBuffer
+  const totalBytes = chunks.reduce((acc, c) => acc + c.length, 0)
+  const output = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.length }
+  return output.buffer
+}
+
+/**
+ * Convert any audio source (MP3 or WAV) to MP3.
+ * - WAV → encode with lamejs
+ * - MP3 → return as-is (already MP3)
+ * - M4A → decode to WAV via mp3ToWav is not possible; returns null (caller must handle)
+ * Returns { buf: ArrayBuffer, fmt: 'mp3' | 'wav' | 'm4a' } — fmt is what was actually produced.
+ */
+async function toMp3(srcBuf: ArrayBuffer, srcFmt: 'wav' | 'mp3' | 'm4a'): Promise<{ buf: ArrayBuffer; fmt: 'wav' | 'mp3' | 'm4a' }> {
+  if (srcFmt === 'mp3') return { buf: srcBuf, fmt: 'mp3' }
+  if (srcFmt === 'wav') {
+    try {
+      const mp3Buf = wavToMp3(srcBuf)
+      return { buf: mp3Buf, fmt: 'mp3' }
+    } catch (e: any) {
+      console.warn('[toMp3] WAV→MP3 failed:', e?.message)
+      return { buf: srcBuf, fmt: 'wav' }  // fallback: serve WAV
+    }
+  }
+  // M4A: no AAC decoder in Workers — serve as-is
+  return { buf: srcBuf, fmt: 'm4a' }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2531,9 +2615,22 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       }
 
       const safeStemName = stemName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
-      const dlMime = dlFmt === 'mp3' ? 'audio/mpeg' : 'audio/wav'
-      const dlExt  = dlFmt === 'mp3' ? 'mp3' : 'wav'
-      const totalBytes = audioBuffer.byteLength
+
+      // ZIP stems from Mureka are always WAV (PCM). Convert to MP3 if requested.
+      let serveBuffer: ArrayBuffer = audioBuffer
+      let serveFmt: 'wav' | 'mp3' | 'm4a' = 'wav'   // ZIP stems are always WAV
+      if (wantDl && dlFmt === 'mp3') {
+        try {
+          serveBuffer = wavToMp3(audioBuffer)
+          serveFmt    = 'mp3'
+          console.log(`[stem-audio zip dl] ${stemName} WAV→MP3 done: ${Math.round(serveBuffer.byteLength/1024)}KB`)
+        } catch (encErr: any) {
+          console.warn(`[stem-audio zip dl] ${stemName} WAV→MP3 failed, serving WAV:`, encErr?.message)
+          serveBuffer = audioBuffer
+          serveFmt    = 'wav'
+        }
+      }
+      const totalBytes = serveBuffer.byteLength
 
       // ── HTTP Range support — required for browser seeking ──
       // Without Accept-Ranges + 206 responses, browsers treat audio as non-seekable
@@ -2545,7 +2642,7 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
           const start = parseInt(m[1], 10)
           const end   = m[2] ? parseInt(m[2], 10) : totalBytes - 1
           const safeEnd = Math.min(end, totalBytes - 1)
-          const chunk = audioBuffer.slice(start, safeEnd + 1)
+          const chunk = serveBuffer.slice(start, safeEnd + 1)
           return new Response(chunk, {
             status: 206,
             headers: {
@@ -2561,14 +2658,14 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
       }
 
       const dlHeaders: Record<string, string> = {
-        'Content-Type': wantDl ? dlMime : 'audio/wav',
+        'Content-Type': wantDl ? audioMime(serveFmt) : 'audio/wav',
         'Content-Length': String(totalBytes),
         'Accept-Ranges': 'bytes',
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'public, max-age=3600',
       }
-      if (wantDl) dlHeaders['Content-Disposition'] = `attachment; filename="${safeStemName}_stem.${dlExt}"`
-      return new Response(audioBuffer, { headers: dlHeaders })
+      if (wantDl) dlHeaders['Content-Disposition'] = `attachment; filename="${safeStemName}_stem.${serveFmt}"`
+      return new Response(serveBuffer, { headers: dlHeaders })
     }
 
     // ── Direct CDN URL path (non-zip-entry stems) ──
@@ -2588,20 +2685,37 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
     const upContentLength = upstream.headers.get('Content-Length')
     const upContentRange  = upstream.headers.get('Content-Range')
 
-    // For downloads: read body to detect real format; for streaming: pass through
+    // For downloads: read body, detect real format, convert if needed
     if (wantDl) {
-      const dlBody    = await upstream.arrayBuffer()
-      const realFmt   = detectAudioFormat(dlBody)
-      const realMime  = audioMime(realFmt)
+      let dlBody  = await upstream.arrayBuffer()
+      let realFmt = detectAudioFormat(dlBody)
+      console.log(`[stem-audio dl] job=${jobId} stem=${stemName} source=${realFmt} wants=${dlFmt}`)
+
+      if (dlFmt === 'mp3' && realFmt !== 'mp3') {
+        // Convert WAV → MP3 or M4A → MP3 (M4A falls back to M4A)
+        const converted = await toMp3(dlBody, realFmt)
+        dlBody  = converted.buf
+        realFmt = converted.fmt
+        console.log(`[stem-audio dl] job=${jobId} stem=${stemName} →MP3 done: ${realFmt} ${Math.round(dlBody.byteLength/1024)}KB`)
+      } else if (dlFmt === 'wav' && realFmt === 'mp3') {
+        // MP3 → WAV
+        try {
+          dlBody  = await mp3ToWav(dlBody)
+          realFmt = 'wav'
+        } catch (convErr: any) {
+          console.warn(`[stem-audio dl] MP3→WAV failed, serving MP3:`, convErr?.message)
+          realFmt = 'mp3'
+        }
+      }
+
       const dlHeaders: Record<string, string> = {
-        'Content-Type': realMime,
+        'Content-Type': audioMime(realFmt),
         'Content-Length': String(dlBody.byteLength),
         'Content-Disposition': `attachment; filename="${safeStemName2}_stem.${realFmt}"`,
         'Accept-Ranges': 'bytes',
         'Access-Control-Allow-Origin': '*',
         'Cache-Control': 'public, max-age=3600'
       }
-      console.log(`[stem-audio dl] job=${jobId} stem=${stemName} real format=${realFmt}`)
       return new Response(dlBody, { headers: dlHeaders })
     }
 
@@ -2649,15 +2763,15 @@ app.get('/api/remix-dl', async (c) => {
     const upstream = await fetch(decodedUrl)
     if (!upstream.ok) return c.json({ error: 'CDN fetch failed' }, 502)
 
-    // Read body and detect REAL format from magic bytes \u2014 never trust URL or Content-Type
-    let body      = await upstream.arrayBuffer()
-    let realFmt   = detectAudioFormat(body)
+    // Read body and detect REAL format from magic bytes — never trust URL or Content-Type
+    let body    = await upstream.arrayBuffer()
+    let realFmt = detectAudioFormat(body)
     const safeStem = rawName.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 40)
 
     console.log(`[remix-dl] name=${rawName} source format=${realFmt} user wants=${fmtReq}`)
 
-    // Convert MP3 → true PCM WAV if user requested WAV
     if (fmtReq === 'wav' && realFmt === 'mp3') {
+      // MP3 → true PCM WAV
       try {
         body    = await mp3ToWav(body)
         realFmt = 'wav'
@@ -2666,6 +2780,12 @@ app.get('/api/remix-dl', async (c) => {
         console.warn(`[remix-dl] MP3→WAV failed, serving MP3:`, convErr?.message)
         realFmt = 'mp3'
       }
+    } else if (fmtReq === 'mp3' && realFmt !== 'mp3') {
+      // WAV → MP3 (or M4A falls back to M4A)
+      const converted = await toMp3(body, realFmt)
+      body    = converted.buf
+      realFmt = converted.fmt
+      console.log(`[remix-dl] →MP3 done: ${realFmt} ${Math.round(body.byteLength/1024)}KB`)
     }
 
     const filename = `${safeStem}_ai_remix.${realFmt}`
@@ -3124,20 +3244,24 @@ app.get('/api/stem-mix/:jobId', async (c) => {
 
     console.log(`[stem-mix dl] job=${jobId} source format=${realFmt} user wants=${fmtReq}`)
 
-    // If user wants WAV and source is MP3 → convert to true PCM WAV
+    // Convert to the format the user actually requested
     if (fmtReq === 'wav' && realFmt === 'mp3') {
+      // MP3 → true 16-bit PCM WAV
       try {
         buf     = await mp3ToWav(buf)
         realFmt = 'wav'
-        console.log(`[stem-mix dl] job=${jobId} MP3→WAV conversion done: ${Math.round(buf.byteLength/1024)}KB`)
+        console.log(`[stem-mix dl] job=${jobId} MP3→WAV done: ${Math.round(buf.byteLength/1024)}KB`)
       } catch (convErr: any) {
-        // Conversion failed — serve the MP3 with correct labelling rather than a fake WAV
         console.warn(`[stem-mix dl] job=${jobId} MP3→WAV failed, serving MP3:`, convErr?.message)
         realFmt = 'mp3'
       }
+    } else if (fmtReq === 'mp3' && realFmt !== 'mp3') {
+      // WAV or M4A → MP3 (lamejs for WAV; M4A falls back to serving as-is)
+      const converted = await toMp3(buf, realFmt)
+      buf     = converted.buf
+      realFmt = converted.fmt
+      console.log(`[stem-mix dl] job=${jobId} →MP3 done: realFmt=${realFmt} ${Math.round(buf.byteLength/1024)}KB`)
     }
-    // M4A: serve as-is regardless of fmtReq (no in-Worker AAC decoder)
-    // MP3 requested: serve MP3 as-is
 
     return new Response(buf, {
       headers: {
@@ -8168,7 +8292,7 @@ app.get('/api/download-wav/:id', async (c) => {
     outMime = 'audio/wav'
     outExt  = 'wav'
   } else {
-    // M4A / unknown — serve as-is
+    // M4A / unknown — serve as-is with correct extension
     outBuf  = rawBuf
     outMime = audioMime(fmt)
     outExt  = 'm4a'
@@ -8183,54 +8307,85 @@ app.get('/api/download-wav/:id', async (c) => {
   })
 })
 
-// GET /api/download-mp3/:id — legacy endpoint, now redirects to WAV download
+// GET /api/download-mp3/:id — download stereo audio as a TRUE MP3 file
+// WAV source → encode with lamejs; MP3 source → serve as-is; M4A → serve as M4A (no AAC decoder in Workers)
 app.get('/api/download-mp3/:id', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login')
+  if (user.plan === 'free') {
+    return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan.', locked: true, upgrade: true }, 403)
+  }
   const jobId = c.req.param('id')
-  return c.redirect(`/api/download-wav/${jobId}`, 301)
+  const job = await getJob(c.env.DB, jobId)
+  if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
+  const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
+    .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
+  const upstream = await fetch(job.stereo_url)
+  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  const rawBuf = await upstream.arrayBuffer()
+  const srcFmt = detectAudioFormat(rawBuf)
+  console.log(`[download-mp3] job=${jobId} source format=${srcFmt}`)
+  const { buf: outBuf, fmt: outFmt } = await toMp3(rawBuf, srcFmt)
+  return new Response(outBuf, {
+    headers: {
+      'Content-Type': audioMime(outFmt),
+      'Content-Length': String(outBuf.byteLength),
+      'Content-Disposition': `attachment; filename="${safeTitle}.${outFmt}"`,
+      'Cache-Control': 'no-store'
+    }
+  })
 })
 
-// GET /api/download-wav-url — proxy any audio URL as a REAL PCM WAV download (one shots, covers)
-// Converts MP3 → true 16-bit PCM WAV. M4A served as-is.
+// GET /api/download-wav-url — proxy any audio URL as a download (one shots, covers)
+// ?url=<encoded>&name=<filename>&fmt=wav|mp3 (default: wav)
+// WAV/MP3 source → convert as needed; M4A → served as-is with correct MIME.
 app.get('/api/download-wav-url', async (c) => {
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login')
-  const url = c.req.query('url')
+  const url  = c.req.query('url')
   const name = c.req.query('name') || 'oneshot'
+  const fmtReq = (c.req.query('fmt') || 'wav').toLowerCase()  // 'wav' | 'mp3'
   if (!url) return c.json({ error: 'Missing url param' }, 400)
-  const safeUrl = decodeURIComponent(url)
+  const safeUrl  = decodeURIComponent(url)
   const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '_')
   const upstream = await fetch(safeUrl)
   if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
   const rawBuf = await upstream.arrayBuffer()
-  const fmt = detectAudioFormat(rawBuf)
+  const srcFmt = detectAudioFormat(rawBuf)
+  console.log(`[download-wav-url] name=${safeName} source=${srcFmt} wants=${fmtReq}`)
   let outBuf: ArrayBuffer
-  let outMime: string
-  let outExt: string
-  if (fmt === 'mp3') {
-    try {
-      outBuf  = await mp3ToWav(rawBuf)
-      outMime = 'audio/wav'
-      outExt  = 'wav'
-    } catch {
-      outBuf  = rawBuf
-      outMime = 'audio/mpeg'
-      outExt  = 'mp3'
-    }
-  } else if (fmt === 'wav') {
-    outBuf  = rawBuf
-    outMime = 'audio/wav'
-    outExt  = 'wav'
+  let outFmt: 'wav' | 'mp3' | 'm4a'
+  if (fmtReq === 'mp3') {
+    const result = await toMp3(rawBuf, srcFmt)
+    outBuf = result.buf
+    outFmt = result.fmt
   } else {
-    outBuf  = rawBuf
-    outMime = audioMime(fmt)
-    outExt  = 'm4a'
+    // WAV requested
+    if (srcFmt === 'mp3') {
+      try {
+        outBuf = await mp3ToWav(rawBuf)
+        outFmt = 'wav'
+      } catch {
+        outBuf = rawBuf
+        outFmt = 'mp3'
+      }
+    } else if (srcFmt === 'wav') {
+      outBuf = rawBuf
+      outFmt = 'wav'
+    } else {
+      // M4A → serve as-is
+      outBuf = rawBuf
+      outFmt = 'm4a'
+    }
   }
   return new Response(outBuf, {
     headers: {
-      'Content-Type': outMime,
+      'Content-Type': audioMime(outFmt),
       'Content-Length': String(outBuf.byteLength),
-      'Content-Disposition': `attachment; filename="${safeName}.${outExt}"`,
+      'Content-Disposition': `attachment; filename="${safeName}.${outFmt}"`,
       'Cache-Control': 'no-store'
     }
   })
@@ -8386,16 +8541,27 @@ app.get('/api/poll-cover/:id', async (c) => {
   }
   const failed = clips.find((cl: any) => cl.state === 'failed')
   if (failed) {
-    const updated = { ...job, status: 'error', error: 'Generation failed' }
+    // Preserve the exact error message from Suno/MusicAPI (e.g. "already published" catalog rejection)
+    const apiErrMsg: string = failed.error_message || failed.error || failed.message || 'Generation failed'
+    const updated = { ...job, status: 'error', error: apiErrMsg }
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
-    return c.json({ status: 'error', error: 'Generation failed' })
+    return c.json({ status: 'error', error: apiErrMsg })
   }
+
+  // Also check top-level error from the task response (some MusicAPI error modes)
+  if (pollData.error || pollData.message) {
+    const topErrMsg: string = pollData.error || pollData.message || 'Generation failed'
+    const updated = { ...job, status: 'error', error: topErrMsg }
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    return c.json({ status: 'error', error: topErrMsg })
+  }
+
   return c.json({ status: 'generating' })
 })
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-04'
+const ASSET_VER = '20260927-05'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
