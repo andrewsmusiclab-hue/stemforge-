@@ -9645,6 +9645,8 @@ window.toggleRefDropdown = function() {
     if (panel) panel.style.display = 'none';
     if (btn)   btn.classList.remove('active');
     _setCoverMode(false);
+    // Clear uploaded file + auto-generated style text + badge
+    if (typeof window.clearCoverUpload === 'function') window.clearCoverUpload();
   };
 
   function _showCoverUploadError(msg) {
