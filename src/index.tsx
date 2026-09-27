@@ -9631,7 +9631,15 @@ function generatorPage() {
 
           <!-- Audio mini-player (shown after upload) -->
           <div id="cover-mini-player" style="display:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.25);border-radius:10px;padding:12px 14px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+              <!-- Restart -->
+              <button onclick="coverPlayerRestart()" title="Restart from beginning"
+                style="width:30px;height:30px;border-radius:50%;background:none;border:1px solid rgba(139,92,246,.35);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:rgba(168,85,247,.7);font-size:.75rem;transition:all .15s"
+                onmouseenter="this.style.color='#a855f7';this.style.borderColor='rgba(168,85,247,.7)';this.style.background='rgba(168,85,247,.1)'"
+                onmouseleave="this.style.color='rgba(168,85,247,.7)';this.style.borderColor='rgba(139,92,246,.35)';this.style.background='none'">
+                <i class="fas fa-step-backward"></i>
+              </button>
+              <!-- Play/Pause -->
               <button id="cover-play-btn" onclick="coverPlayerToggle()"
                 style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a855f7);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:transform .15s,opacity .2s">
                 <i id="cover-play-icon" class="fas fa-play" style="color:#fff;font-size:.82rem;margin-left:2px"></i>

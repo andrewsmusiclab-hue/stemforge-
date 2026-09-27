@@ -2191,10 +2191,13 @@ document.addEventListener('DOMContentLoaded', () => {
           <i class="fas fa-pause"></i>
         </button>
 
-        <!-- Repeat -->
-        <button id="dash-repeat-btn" title="Repeat" onclick="dashToggleRepeat()"
-          style="width:32px;height:32px;border-radius:50%;background:none;border:1px solid rgba(255,255,255,.12);cursor:pointer;color:rgba(255,255,255,.4);font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s">
-          <i class="fas fa-redo"></i>
+        <!-- Restart -->
+        <button id="dash-restart-btn" title="Restart from beginning" onclick="dashRestart()"
+          style="width:32px;height:32px;border-radius:50%;background:none;border:1px solid rgba(255,255,255,.12);cursor:pointer;color:rgba(255,255,255,.55);font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s"
+          onmouseenter="this.style.color='#fff';this.style.borderColor='rgba(255,255,255,.4)';this.style.background='rgba(255,255,255,.08)'"
+          onmouseleave="this.style.color='rgba(255,255,255,.55)';this.style.borderColor='rgba(255,255,255,.12)';this.style.background='none'"
+          onmousedown="this.style.transform='scale(.88)'" onmouseup="this.style.transform=''" onmouseleave="this.style.transform='';this.style.color='rgba(255,255,255,.55)';this.style.borderColor='rgba(255,255,255,.12)';this.style.background='none'">
+          <i class="fas fa-step-backward"></i>
         </button>
 
         <!-- Title + seek row -->
@@ -2276,17 +2279,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
     audio.addEventListener('ended', () => {
-      const btn = document.getElementById('dash-repeat-btn');
-      if (btn && btn.dataset.repeat === '1') {
-        audio.currentTime = 0;
-        audio.play().catch(() => {});
-      } else {
-        const ppBtn = document.getElementById('dash-play-pause');
-        if (ppBtn) ppBtn.innerHTML = '<i class="fas fa-play"></i>';
-        seekBar.value = 0;
-        if (seekFill) seekFill.style.width = '0%';
-        if (timeCur) timeCur.textContent = '0:00';
-      }
+      const ppBtn = document.getElementById('dash-play-pause');
+      if (ppBtn) ppBtn.innerHTML = '<i class="fas fa-play"></i>';
+      seekBar.value = 0;
+      if (seekFill) seekFill.style.width = '0%';
+      if (timeCur) timeCur.textContent = '0:00';
     });
   };
 
@@ -2304,22 +2301,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  window.dashToggleRepeat = function() {
+  window.dashRestart = function() {
     const audio = document.getElementById('dash-audio');
-    const btn   = document.getElementById('dash-repeat-btn');
-    if (!btn || !audio) return;
-    const isRepeat = btn.dataset.repeat === '1';
-    btn.dataset.repeat = isRepeat ? '0' : '1';
-    audio.loop = !isRepeat;
-    if (!isRepeat) {
-      btn.style.color       = 'hsl(var(--hue,200),65%,60%)';
-      btn.style.borderColor = 'hsl(var(--hue,200),50%,45%)';
-      btn.style.background  = 'hsla(var(--hue,200),60%,50%,0.12)';
-    } else {
-      btn.style.color       = 'rgba(255,255,255,.4)';
-      btn.style.borderColor = 'rgba(255,255,255,.12)';
-      btn.style.background  = 'none';
-    }
+    if (!audio) return;
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+    const btn = document.getElementById('dash-play-pause');
+    if (btn) btn.innerHTML = '<i class="fas fa-pause"></i>';
   };
 
   // ── Scroll fade-in ─────────────────────────────────────────────
@@ -9776,6 +9764,12 @@ window.toggleRefDropdown = function() {
     if (!_coverAudio) return;
     if (_coverAudio.paused) { _coverAudio.play().catch(function(){}); }
     else { _coverAudio.pause(); }
+  };
+
+  window.coverPlayerRestart = function() {
+    if (!_coverAudio) return;
+    _coverAudio.currentTime = 0;
+    _coverAudio.play().catch(function(){});
   };
 
   function _scrubTo(trackEl, clientX) {
