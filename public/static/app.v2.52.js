@@ -3390,7 +3390,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-    genBtn.addEventListener('click', startGeneration);
+    genBtn.addEventListener('click', function() {
+      // If cover panel is open, delegate to startCoverSong instead
+      var coverPanel = document.getElementById('cover-inline-panel');
+      if (coverPanel && coverPanel.style.display !== 'none') {
+        if (typeof window.startCoverSong === 'function') window.startCoverSong();
+        return;
+      }
+      startGeneration();
+    });
     window.startGeneration = startGeneration;
 
   if (genRetryBtn) genRetryBtn.addEventListener('click', () => {
@@ -9532,6 +9540,19 @@ window.toggleRefDropdown = function() {
   let _coverFilename  = null;
   let _coverPollTimer = null;
 
+  function _setCoverMode(active) {
+    // Show/hide the generator main sections (Prompt, Lyrics, Vocals, Styles)
+    var mainSections = document.getElementById('generator-main-sections');
+    if (mainSections) mainSections.style.display = active ? 'none' : '';
+    // Rename Create button
+    var createBtn = document.getElementById('gen-full-btn');
+    if (createBtn) {
+      createBtn.innerHTML = active
+        ? '<i class="fas fa-microphone-alt"></i> Create Cover'
+        : '<i class="fas fa-music"></i> Create';
+    }
+  }
+
   window.openCoverPanel = function() {
     var panel  = document.getElementById('cover-inline-panel');
     var btn    = document.getElementById('ctab-cover');
@@ -9544,8 +9565,10 @@ window.toggleRefDropdown = function() {
     }
     if (!panel) return;
     var isOpen = panel.style.display !== 'none';
-    panel.style.display = isOpen ? 'none' : 'block';
-    if (btn) btn.classList.toggle('active', !isOpen);
+    var nowOpen = !isOpen;
+    panel.style.display = nowOpen ? 'block' : 'none';
+    if (btn) btn.classList.toggle('active', nowOpen);
+    _setCoverMode(nowOpen);
   };
 
   window.closeCoverPanel = function() {
@@ -9553,6 +9576,7 @@ window.toggleRefDropdown = function() {
     var btn   = document.getElementById('ctab-cover');
     if (panel) panel.style.display = 'none';
     if (btn)   btn.classList.remove('active');
+    _setCoverMode(false);
   };
 
   window.handleCoverFileSelect = function(input) {
@@ -9574,11 +9598,6 @@ window.toggleRefDropdown = function() {
       var res = await fetch('/api/upload-cover-audio', { method: 'POST', body: formData });
       var data = await res.json();
       if (!res.ok || !data.ok) {
-        if (res.status === 402 || res.status === 403) {
-          _setUploadState('idle');
-          alert('Cover Song is a Pro feature. Please upgrade your plan.');
-          return;
-        }
         throw new Error(data.error || 'Upload failed');
       }
       _coverAudioUrl = data.audio_url;
@@ -9626,13 +9645,14 @@ window.toggleRefDropdown = function() {
       });
       var data = await res.json();
       if (!res.ok) {
-        if (res.status === 402 || res.status === 403) {
-          alert('Cover Song is a Pro feature. Please upgrade your plan.');
+        if ((res.status === 402 || res.status === 403) && data.locked) {
+          // Pro-only gate — redirect to pricing
+          window.location.href = '/pricing?ref=cover';
         } else {
           alert(data.error || 'Could not start cover job.');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-microphone-alt"></i> Create Cover'; }
+          if (statusEl) statusEl.style.display = 'none';
         }
-        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Create Cover'; }
-        if (statusEl) statusEl.style.display = 'none';
         return;
       }
       // Job started — show overlay and poll

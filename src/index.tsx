@@ -8127,7 +8127,9 @@ app.get('/api/track-audio/:id', async (c) => {
   }, 502)
 })
 
-// GET /api/download-wav/:id — proxy stereo URL with WAV content-disposition
+// GET /api/download-wav/:id — download stereo audio as a REAL PCM WAV file
+// Detects the actual format from magic bytes; converts MP3 → true 16-bit PCM WAV.
+// M4A/AAC is served as-is (no WASM AAC decoder available at this bundle size).
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -8140,17 +8142,42 @@ app.get('/api/download-wav/:id', async (c) => {
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
   if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
-  // Fetch the audio and re-serve it with a proper filename
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
   const upstream = await fetch(job.stereo_url)
-  if (!upstream.ok) {
-    return c.json({ error: 'Could not fetch audio' }, 502)
+  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  const rawBuf = await upstream.arrayBuffer()
+  const fmt = detectAudioFormat(rawBuf)
+  let outBuf: ArrayBuffer
+  let outMime: string
+  let outExt: string
+  if (fmt === 'mp3') {
+    try {
+      outBuf  = await mp3ToWav(rawBuf)
+      outMime = 'audio/wav'
+      outExt  = 'wav'
+    } catch {
+      // conversion failed — fall back to raw MP3
+      outBuf  = rawBuf
+      outMime = 'audio/mpeg'
+      outExt  = 'mp3'
+    }
+  } else if (fmt === 'wav') {
+    // Already real WAV — serve as-is
+    outBuf  = rawBuf
+    outMime = 'audio/wav'
+    outExt  = 'wav'
+  } else {
+    // M4A / unknown — serve as-is
+    outBuf  = rawBuf
+    outMime = audioMime(fmt)
+    outExt  = 'm4a'
   }
-  return new Response(upstream.body, {
+  return new Response(outBuf, {
     headers: {
-      'Content-Type': 'audio/wav',
-      'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+      'Content-Type': outMime,
+      'Content-Length': String(outBuf.byteLength),
+      'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
       'Cache-Control': 'no-store'
     }
   })
@@ -8162,7 +8189,8 @@ app.get('/api/download-mp3/:id', async (c) => {
   return c.redirect(`/api/download-wav/${jobId}`, 301)
 })
 
-// GET /api/download-wav-url — proxy any audio URL as WAV download (for one shots)
+// GET /api/download-wav-url — proxy any audio URL as a REAL PCM WAV download (one shots, covers)
+// Converts MP3 → true 16-bit PCM WAV. M4A served as-is.
 app.get('/api/download-wav-url', async (c) => {
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
@@ -8174,10 +8202,35 @@ app.get('/api/download-wav-url', async (c) => {
   const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '_')
   const upstream = await fetch(safeUrl)
   if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
-  return new Response(upstream.body, {
+  const rawBuf = await upstream.arrayBuffer()
+  const fmt = detectAudioFormat(rawBuf)
+  let outBuf: ArrayBuffer
+  let outMime: string
+  let outExt: string
+  if (fmt === 'mp3') {
+    try {
+      outBuf  = await mp3ToWav(rawBuf)
+      outMime = 'audio/wav'
+      outExt  = 'wav'
+    } catch {
+      outBuf  = rawBuf
+      outMime = 'audio/mpeg'
+      outExt  = 'mp3'
+    }
+  } else if (fmt === 'wav') {
+    outBuf  = rawBuf
+    outMime = 'audio/wav'
+    outExt  = 'wav'
+  } else {
+    outBuf  = rawBuf
+    outMime = audioMime(fmt)
+    outExt  = 'm4a'
+  }
+  return new Response(outBuf, {
     headers: {
-      'Content-Type': 'audio/wav',
-      'Content-Disposition': `attachment; filename="${safeName}.wav"`,
+      'Content-Type': outMime,
+      'Content-Length': String(outBuf.byteLength),
+      'Content-Disposition': `attachment; filename="${safeName}.${outExt}"`,
       'Cache-Control': 'no-store'
     }
   })
@@ -8186,13 +8239,12 @@ app.get('/api/download-wav-url', async (c) => {
 // ─── COVER SONG FEATURE ────────────────────────────────────────────────────────
 const COVER_UPLOADS_PREFIX = 'cover-uploads'
 
-// POST /api/upload-cover-audio — upload source audio for cover song (Pro only, 20MB max)
+// POST /api/upload-cover-audio — upload source audio for cover song (logged-in only)
 app.post('/api/upload-cover-audio', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Pro plan required for Cover Song feature', upgrade_url: '/pricing' }, 402)
 
   const form = await c.req.formData()
   const file = form.get('file') as File | null
@@ -8221,13 +8273,13 @@ app.get('/api/cover-audio-proxy/:filename', async (c) => {
   return new Response(obj.body, { headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' } })
 })
 
-// POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (15 credits, Pro only)
+// POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (15 credits, Pro Artist only)
 app.post('/api/job/cover-song', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Pro plan required', upgrade_url: '/pricing' }, 402)
+  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Cover Song is a Pro Artist feature. Upgrade to unlock.', upgrade_url: '/pricing', locked: true }, 402)
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not configured' }, 500)
 
   const { audio_url, title, style_prompt, make_instrumental } = await c.req.json()
@@ -8301,7 +8353,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-01'
+const ASSET_VER = '20260927-02'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9494,7 +9546,6 @@ function generatorPage() {
       <button class="creator-tab-btn" id="ctab-cover" onclick="openCoverPanel()"
         data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
         <i class="fas fa-microphone-alt"></i> Cover Song
-        <span class="ctab-pro-badge">PRO</span>
       </button>
     </div>
 
@@ -9540,12 +9591,6 @@ function generatorPage() {
             </label>
           </div>
 
-          <!-- Cost note -->
-          <p style="font-size:.78rem;color:var(--muted);margin:0;display:flex;align-items:center;gap:5px">
-            <i class="fas fa-coins" style="color:#f59e0b"></i>
-            Costs <strong style="color:var(--text)">15 credits</strong> per cover generation.
-          </p>
-
           <!-- Status -->
           <div id="cover-status" style="display:none;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px"></div>
 
@@ -9575,6 +9620,9 @@ function generatorPage() {
       </button>
     </div>
 
+
+    <!-- ── Generator main sections (hidden while Cover Song panel is open) ── -->
+    <div id="generator-main-sections">
 
     <!-- SECTION 1: Prompt — sits above Lyrics/Instrumental -->
     <div class="suno-card" id="card-prompt">
@@ -9653,7 +9701,7 @@ function generatorPage() {
     </div>
 
     <!-- SECTION 1.5: Vocal Gender Toggle — below Lyrics, above Reference Track -->
-    <div class="suno-card suno-card--slim" data-tooltip="Choose vocal gender feel, or turn off for instrumental">
+    <div class="suno-card suno-card--slim" id="card-vocals" data-tooltip="Choose vocal gender feel, or turn off for instrumental">
       <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
         <i class="fas fa-microphone" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
         <span style="font-size:.85rem;font-weight:600;color:var(--text);flex-shrink:0">Vocals</span>
@@ -9709,6 +9757,8 @@ function generatorPage() {
       </div>
     </div>
 
+    </div><!-- /generator-main-sections -->
+
     <!-- SECTION 6: Song Title -->
     <div class="suno-card suno-card--slim">
       <div class="suno-field-row">
@@ -9719,7 +9769,7 @@ function generatorPage() {
     </div>
 
     <!-- CREATE BUTTON — inline below, with tooltip -->
-    <div class="suno-create-inline">
+    <div class="suno-create-inline" id="generator-create-row">
       <button class="suno-create-btn" id="gen-full-btn"
         data-tooltip="Generate your beat using StemForge">
         <i class="fas fa-music"></i> Create
