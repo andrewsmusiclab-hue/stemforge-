@@ -9633,7 +9633,8 @@ window.toggleRefDropdown = function() {
       }
       _coverAudioUrl = data.audio_url;
       _coverFilename = data.filename || file.name;
-      document.getElementById('cover-upload-filename').textContent = _coverFilename;
+      var fnEl = document.getElementById('cover-upload-filename');
+      if (fnEl) { fnEl.textContent = _coverFilename; fnEl.style.display = 'block'; }
       _setUploadState('done');
     } catch(e) {
       _setUploadState('idle');
@@ -9651,12 +9652,27 @@ window.toggleRefDropdown = function() {
   }
 
   function _setUploadState(state) {
-    var idle    = document.getElementById('cover-upload-idle');
-    var loading = document.getElementById('cover-upload-loading');
-    var done    = document.getElementById('cover-upload-done');
-    if (idle)    idle.style.display    = state === 'idle'    ? 'flex' : 'none';
-    if (loading) loading.style.display = state === 'loading' ? 'flex' : 'none';
-    if (done)    done.style.display    = state === 'done'    ? 'flex' : 'none';
+    var zone     = document.getElementById('cover-drop-zone');
+    var icon     = document.getElementById('cover-drop-icon');
+    var label    = document.getElementById('cover-drop-label');
+    var fnameEl  = document.getElementById('cover-upload-filename');
+
+    if (state === 'loading') {
+      if (icon)  { icon.className = 'fas fa-spinner fa-spin'; icon.style.color = '#a855f7'; }
+      if (label) { label.textContent = 'Uploading…'; label.style.color = 'var(--muted)'; }
+      if (zone)  { zone.style.opacity = '0.6'; zone.style.pointerEvents = 'none'; }
+      if (fnameEl) fnameEl.style.display = 'none';
+    } else if (state === 'done') {
+      if (icon)  { icon.className = 'fas fa-check-circle'; icon.style.color = '#22c55e'; }
+      if (label) { label.textContent = 'File ready — click to change'; label.style.color = 'var(--muted)'; }
+      if (zone)  { zone.style.opacity = '1'; zone.style.pointerEvents = ''; zone.style.borderColor = 'rgba(34,197,94,.5)'; }
+      if (fnameEl) { fnameEl.style.display = 'block'; }
+    } else { // idle
+      if (icon)  { icon.className = 'fas fa-cloud-upload-alt'; icon.style.color = '#a855f7'; }
+      if (label) { label.textContent = 'Drag & drop or click to choose a file'; label.style.color = 'var(--muted)'; }
+      if (zone)  { zone.style.opacity = '1'; zone.style.pointerEvents = ''; zone.style.borderColor = ''; }
+      if (fnameEl) { fnameEl.style.display = 'none'; fnameEl.textContent = ''; }
+    }
   }
 
   window.startCoverSong = async function() {

@@ -9577,8 +9577,9 @@ function generatorPage() {
               ondragleave="this.classList.remove('cover-drop-zone--over')"
               ondrop="event.preventDefault();this.classList.remove('cover-drop-zone--over');handleCoverFileSelect(event.dataTransfer.files[0], null)"
               style="border:2px dashed rgba(139,92,246,.4);border-radius:10px;padding:22px 16px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s">
-              <i class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#a855f7;display:block;margin-bottom:8px"></i>
+              <i id="cover-drop-icon" class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#a855f7;display:block;margin-bottom:8px"></i>
               <span id="cover-drop-label" style="font-size:.85rem;color:var(--muted)">Drag &amp; drop or click to choose a file</span>
+              <span id="cover-upload-filename" style="display:none;font-size:.82rem;color:#a855f7;font-weight:600;margin-top:4px;display:none"></span>
             </div>
             <input type="file" id="cover-file-input" accept="audio/*" style="display:none" onchange="handleCoverFileSelect(this.files[0], this)"/>
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
