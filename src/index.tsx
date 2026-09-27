@@ -316,6 +316,49 @@ async function toMp3(srcBuf: ArrayBuffer, srcFmt: 'wav' | 'mp3' | 'm4a'): Promis
 
 const R2_BEATS_PREFIX = 'beats'
 
+// ═══════════════════════════════════════════════════════════════
+//  R2 DOWNLOAD CACHE — convert once, store in R2, serve forever.
+//  Key pattern: dl-cache/{jobId}.{fmt}
+//  R2 egress is FREE; Class B reads are $0.36/million.
+//  This eliminates repeated CPU-intensive transcoding per download.
+// ═══════════════════════════════════════════════════════════════
+
+const R2_DL_CACHE_PREFIX = 'dl-cache'
+
+/**
+ * Look up a pre-converted audio file in R2 download cache.
+ * Returns the ArrayBuffer if found, null if not cached yet.
+ */
+async function getDlCache(r2: R2Bucket, jobId: string, fmt: string): Promise<ArrayBuffer | null> {
+  try {
+    const key = `${R2_DL_CACHE_PREFIX}/${jobId}.${fmt}`
+    const obj = await r2.get(key)
+    if (!obj) return null
+    const buf = await obj.arrayBuffer()
+    console.log(`[dl-cache] HIT job=${jobId} fmt=${fmt} size=${Math.round(buf.byteLength/1024)}KB`)
+    return buf
+  } catch (e: any) {
+    console.warn(`[dl-cache] GET failed job=${jobId} fmt=${fmt}:`, e?.message)
+    return null
+  }
+}
+
+/**
+ * Store a converted audio file in R2 download cache.
+ * Fire-and-forget (non-fatal if it fails).
+ */
+async function putDlCache(r2: R2Bucket, jobId: string, fmt: string, buf: ArrayBuffer): Promise<void> {
+  try {
+    const key = `${R2_DL_CACHE_PREFIX}/${jobId}.${fmt}`
+    await r2.put(key, buf, {
+      httpMetadata: { contentType: audioMime(fmt as 'wav' | 'mp3' | 'm4a') }
+    })
+    console.log(`[dl-cache] PUT job=${jobId} fmt=${fmt} size=${Math.round(buf.byteLength/1024)}KB`)
+  } catch (e: any) {
+    console.warn(`[dl-cache] PUT failed job=${jobId} fmt=${fmt}:`, e?.message)
+  }
+}
+
 /** Returns true if a URL already points to our own R2 proxy (i.e. permanent) */
 function isR2BeatUrl(url: string, siteUrl: string): boolean {
   if (!url) return false
@@ -3297,14 +3340,34 @@ app.get('/api/stem-mix/:jobId', async (c) => {
   if (!job.stereo_url) return c.json({ error: 'Audio not ready' }, 400)
 
   try {
+    const safeName = jobId.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
+    const cacheKey = `mix-${jobId}`   // separate namespace from track downloads
+
+    // ── R2 cache check ──
+    if (c.env.IMAGES && (fmtReq === 'wav' || fmtReq === 'mp3')) {
+      const cached = await getDlCache(c.env.IMAGES, cacheKey, fmtReq)
+      if (cached) {
+        return new Response(cached, {
+          headers: {
+            'Content-Type': audioMime(fmtReq as 'wav' | 'mp3'),
+            'Content-Length': String(cached.byteLength),
+            'Content-Disposition': `attachment; filename="${safeName}_mix.${fmtReq}"`,
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'private, max-age=300',
+            'X-Cache': 'HIT'
+          }
+        })
+      }
+    }
+
+    // ── Cache miss: fetch + convert ──
     const upstream = await fetch(job.stereo_url)
     if (!upstream.ok) return c.json({ error: 'Audio fetch failed' }, 502)
 
     let buf       = await upstream.arrayBuffer()
     let realFmt   = detectAudioFormat(buf)
-    const safeName = jobId.replace(/[^a-z0-9_\-]/gi, '_').slice(0, 60)
 
-    console.log(`[stem-mix dl] job=${jobId} source format=${realFmt} user wants=${fmtReq}`)
+    console.log(`[stem-mix dl] job=${jobId} source format=${realFmt} user wants=${fmtReq} (cache MISS)`)
 
     // Convert to the format the user actually requested
     if (fmtReq === 'wav' && realFmt !== 'wav') {
@@ -3324,13 +3387,19 @@ app.get('/api/stem-mix/:jobId', async (c) => {
       console.log(`[stem-mix dl] job=${jobId} →MP3 done: realFmt=${realFmt} ${Math.round(buf.byteLength/1024)}KB`)
     }
 
+    // ── Store result in R2 cache (fire-and-forget) ──
+    if (c.env.IMAGES && (realFmt === 'wav' || realFmt === 'mp3')) {
+      putDlCache(c.env.IMAGES, cacheKey, realFmt, buf).catch(() => {})
+    }
+
     return new Response(buf, {
       headers: {
         'Content-Type': audioMime(realFmt),
         'Content-Length': String(buf.byteLength),
         'Content-Disposition': `attachment; filename="${safeName}_mix.${realFmt}"`,
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control': 'private, max-age=300'
+        'Cache-Control': 'private, max-age=300',
+        'X-Cache': 'MISS'
       }
     })
   } catch (err: any) {
@@ -8314,6 +8383,7 @@ app.get('/api/track-audio/:id', async (c) => {
 
 // GET /api/download-wav/:id — download stereo audio as a REAL PCM WAV file
 // Detects actual format from magic bytes; converts MP3→WAV and M4A→WAV (via FAAD2 WASM).
+// R2 download cache: converts once, stores result in R2, serves from cache on every repeat download.
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -8328,6 +8398,24 @@ app.get('/api/download-wav/:id', async (c) => {
   if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
+
+  // ── R2 cache check: serve WAV directly if already converted ──
+  if (c.env.IMAGES) {
+    const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
+    if (cached) {
+      return new Response(cached, {
+        headers: {
+          'Content-Type': 'audio/wav',
+          'Content-Length': String(cached.byteLength),
+          'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+          'Cache-Control': 'no-store',
+          'X-Cache': 'HIT'
+        }
+      })
+    }
+  }
+
+  // ── Cache miss: fetch source, convert, cache result ──
   const upstream = await fetch(job.stereo_url)
   if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
   const rawBuf = await upstream.arrayBuffer()
@@ -8363,18 +8451,26 @@ app.get('/api/download-wav/:id', async (c) => {
       outExt  = 'm4a'
     }
   }
+
+  // ── Store in R2 cache (fire-and-forget, only if we produced a WAV) ──
+  if (c.env.IMAGES && outExt === 'wav') {
+    putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
+  }
+
   return new Response(outBuf, {
     headers: {
       'Content-Type': outMime,
       'Content-Length': String(outBuf.byteLength),
       'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
-      'Cache-Control': 'no-store'
+      'Cache-Control': 'no-store',
+      'X-Cache': 'MISS'
     }
   })
 })
 
 // GET /api/download-mp3/:id — download stereo audio as a TRUE MP3 file
 // WAV source → lamejs; MP3 source → as-is; M4A → FAAD2 decode → lamejs encode
+// R2 download cache: converts once, stores result in R2, serves from cache on every repeat download.
 app.get('/api/download-mp3/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -8388,18 +8484,43 @@ app.get('/api/download-mp3/:id', async (c) => {
   if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
+
+  // ── R2 cache check: serve MP3 directly if already converted ──
+  if (c.env.IMAGES) {
+    const cached = await getDlCache(c.env.IMAGES, jobId, 'mp3')
+    if (cached) {
+      return new Response(cached, {
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'Content-Length': String(cached.byteLength),
+          'Content-Disposition': `attachment; filename="${safeTitle}.mp3"`,
+          'Cache-Control': 'no-store',
+          'X-Cache': 'HIT'
+        }
+      })
+    }
+  }
+
+  // ── Cache miss: fetch source, transcode, cache result ──
   const upstream = await fetch(job.stereo_url)
   if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
   const rawBuf = await upstream.arrayBuffer()
   const srcFmt = detectAudioFormat(rawBuf)
-  console.log(`[download-mp3] job=${jobId} source format=${srcFmt}`)
+  console.log(`[download-mp3] job=${jobId} source format=${srcFmt} (cache MISS — transcoding)`)
   const { buf: outBuf, fmt: outFmt } = await toMp3(rawBuf, srcFmt)
+
+  // ── Store in R2 cache (fire-and-forget, only if we produced a true MP3) ──
+  if (c.env.IMAGES && outFmt === 'mp3') {
+    putDlCache(c.env.IMAGES, jobId, 'mp3', outBuf).catch(() => {})
+  }
+
   return new Response(outBuf, {
     headers: {
       'Content-Type': audioMime(outFmt),
       'Content-Length': String(outBuf.byteLength),
       'Content-Disposition': `attachment; filename="${safeTitle}.${outFmt}"`,
-      'Cache-Control': 'no-store'
+      'Cache-Control': 'no-store',
+      'X-Cache': 'MISS'
     }
   })
 })
@@ -8632,7 +8753,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-06'
+const ASSET_VER = '20260927-07'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
