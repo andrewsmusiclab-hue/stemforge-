@@ -8642,6 +8642,18 @@ app.get('/api/cover-audio-proxy/:filename', async (c) => {
   return new Response(obj.body, { headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' } })
 })
 
+// GET /api/debug/poll-cover-task — directly poll a MusicAPI sonic task (admin only, for testing)
+app.get('/api/debug/poll-cover-task', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  if (!adminKey || !c.env.ADMIN_EMAIL || adminKey !== c.env.ADMIN_EMAIL) return c.json({ error: 'admin only' }, 401)
+  const taskId = c.req.query('task_id')
+  if (!taskId) return c.json({ error: 'task_id required' }, 400)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'no key' }, 500)
+  const r = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, { headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } })
+  const raw = await r.text()
+  return c.json({ status: r.status, raw, parsed: JSON.parse(raw) })
+})
+
 // GET /api/cover-auto-desc — generate a Suno-style description from filename/title (called immediately after upload)
 // Returns the description as plain text so the frontend can pre-fill the style textarea for the user to edit.
 app.get('/api/cover-auto-desc', async (c) => {
@@ -8878,8 +8890,10 @@ app.get('/api/poll-cover/:id', async (c) => {
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
     return c.json({ status: 'error', error: apiErrMsg })
   }
-  if (pollData.error || pollData.message) {
-    const topErrMsg: string = pollData.error || pollData.message || 'Generation failed'
+  // MusicAPI returns { message: "task not ready, please wait few seconds." } as a normal
+  // in-progress response — NOT a fatal error. Only treat it as fatal if there's an error code.
+  if (pollData.error) {
+    const topErrMsg: string = pollData.error || 'Generation failed'
     const updated = { ...job, status: 'error', error: topErrMsg }
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
     return c.json({ status: 'error', error: topErrMsg })
