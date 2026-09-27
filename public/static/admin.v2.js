@@ -322,7 +322,7 @@ async function loadUsers(q){
     tableEl.innerHTML='<div style="overflow-x:auto"><table class="admin-table"><thead><tr>'+
       '<th>Email / Name</th><th>Plan</th><th>Status</th>'+
       '<th>Points</th><th>Bonus</th>'+
-      '<th>Source</th><th>Country</th>'+
+      '<th>Source</th>'+
       '<th>Welcome</th>'+
       '<th>Signed Up</th><th>Renewal</th><th>Actions</th>'+
     '</tr></thead><tbody id="admin-users-tbody">'+
@@ -344,13 +344,6 @@ async function loadUsers(q){
         var srcBadge=srcRaw
           ? (srcIcon?'<span title="'+srcRef.replace(/"/g,'&quot;')+'" style="display:inline-flex;align-items:center;gap:4px;font-size:.78rem;white-space:nowrap">'+srcIcon+' <span style="max-width:90px;overflow:hidden;text-overflow:ellipsis;display:inline-block">'+srcLabel+'</span></span>'
              : '<span title="'+srcRef.replace(/"/g,'&quot;')+'" style="font-size:.75rem;color:var(--muted)">'+srcLabel+'</span>')
-          : '<span style="color:var(--muted);font-size:.75rem">—</span>';
-        // Country flag + name cell
-        var uCountry=u.signup_country||'';
-        var uFlag=uCountry.length===2 ? String.fromCodePoint(0x1F1E6+uCountry.charCodeAt(0)-65)+String.fromCodePoint(0x1F1E6+uCountry.charCodeAt(1)-65) : '';
-        var uCountryName=uCountry ? (COUNTRY_NAMES[uCountry]||uCountry) : '';
-        var countryCell=uCountry
-          ? '<span title="'+uCountryName+'" style="display:inline-flex;align-items:center;gap:5px;font-size:.82rem;white-space:nowrap"><span style="font-size:1.1rem">'+uFlag+'</span>'+uCountryName+'</span>'
           : '<span style="color:var(--muted);font-size:.75rem">—</span>';
         // Welcome email status cell
         var welcomeCell;
@@ -386,7 +379,6 @@ async function loadUsers(q){
           '<td style="color:'+remColor+';font-weight:700">'+rem+'<small style="font-weight:400;color:var(--muted)"> / '+u.gens_limit+'</small></td>'+
           '<td style="color:'+(bonus>0?'#a78bfa':'var(--muted)')+';font-weight:700">'+(bonus>0?'+'+bonus:'—')+'</td>'+
           '<td>'+srcBadge+'</td>'+
-          '<td>'+countryCell+'</td>'+
           '<td style="white-space:nowrap">'+welcomeCell+'</td>'+
           '<td style="font-size:.78rem;color:var(--muted)">'+signupDate+'</td>'+
           '<td style="font-size:.78rem">'+renewalCell+'</td>'+

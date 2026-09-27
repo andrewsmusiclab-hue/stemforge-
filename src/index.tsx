@@ -420,8 +420,6 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE users ADD COLUMN email_unsubscribed INTEGER NOT NULL DEFAULT 0`).run() } catch {}
   // ── Migrate: add welcome_sent_at column (tracks when welcome email was successfully delivered) ──
   try { await db.prepare(`ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER`).run() } catch {}
-  // ── Migrate: add signup_country column (ISO 3166-1 alpha-2 from CF-IPCountry at registration) ──
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN signup_country TEXT`).run() } catch {}
   // ── Migrate: broadcast tracking tables ──
   try {
     await db.prepare(`CREATE TABLE IF NOT EXISTS broadcast_sends (
@@ -819,19 +817,19 @@ async function getUserByEmail(db: D1Database, email: string): Promise<any | null
 async function createUser(db: D1Database, data: {
   id: string, email: string, name: string, avatar?: string,
   password_hash?: string, google_id?: string, plan?: string, registration_ip?: string,
-  signup_source?: string, signup_referrer?: string, signup_country?: string
+  signup_source?: string, signup_referrer?: string
 }): Promise<void> {
   await ensureAuthTables(db)
   const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
   const plan = data.plan || 'free'
   const now = Date.now()
   await db.prepare(
-    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at, cycle_start, signup_source, signup_referrer, signup_country)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at, cycle_start, signup_source, signup_referrer)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
     planLimits[plan] || 60, data.password_hash || null, data.google_id || null,
     data.registration_ip || null, now, plan === 'free' ? now : null,
-    data.signup_source || null, data.signup_referrer || null, data.signup_country || null).run()
+    data.signup_source || null, data.signup_referrer || null).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
@@ -3572,13 +3570,11 @@ app.post('/api/auth/signup', async (c) => {
       } catch { return 'referral' }
     }
     const signupSrc = classifyReferer(signupReferer)
-    const signupCountry = (c.req.raw.headers.get('CF-IPCountry') || '').toUpperCase().slice(0, 2) || undefined
     await createUser(c.env.DB, {
       id: userId, email: email.toLowerCase(), name: name.trim(),
       password_hash: passwordHash, plan: plan || 'free',
       registration_ip: registrationIp || undefined,
-      signup_source: signupSrc, signup_referrer: (signupReferer || headerReferer)?.slice(0, 500) || undefined,
-      signup_country: signupCountry || undefined
+      signup_source: signupSrc, signup_referrer: (signupReferer || headerReferer)?.slice(0, 500) || undefined
     })
 
     const token = await createSession(c.env.DB, userId)
@@ -3889,13 +3885,11 @@ app.get('/api/auth/google/callback', async (c) => {
           return 'referral:' + h
         } catch { return 'referral' }
       })() : 'direct'
-      const googleCountry = (c.req.raw.headers.get('CF-IPCountry') || '').toUpperCase().slice(0, 2) || undefined
       await createUser(c.env.DB, {
         id: userId, email: profile.email.toLowerCase(),
         name: profile.name, avatar: profile.picture, google_id: profile.sub,
         registration_ip: googleIp || undefined,
-        signup_source: gSrc, signup_referrer: gReferer?.slice(0, 500) || undefined,
-        signup_country: googleCountry || undefined
+        signup_source: gSrc, signup_referrer: gReferer?.slice(0, 500) || undefined
       })
       user = await getUserByEmail(c.env.DB, profile.email.toLowerCase())
     } else if (!user.google_id) {
@@ -6954,11 +6948,11 @@ app.get('/api/admin/users', async (c) => {
   if (q) {
     const like = `%${q}%`
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at,signup_country FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
     ).bind(like, like).all<any>()
   } else {
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at,signup_country FROM users ORDER BY created_at DESC LIMIT 200`
+      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at FROM users ORDER BY created_at DESC LIMIT 200`
     ).all<any>()
   }
   // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
