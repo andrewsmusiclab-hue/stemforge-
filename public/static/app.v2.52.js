@@ -2241,6 +2241,61 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.body.appendChild(player);
 
+    // ── Drag to move ──────────────────────────────────────────────────────────
+    (function() {
+      var dragEl   = player;
+      var dragging = false;
+      var dragOffX = 0, dragOffY = 0;
+
+      // Use the waveform area as the primary drag handle (feels natural)
+      var handle = dragEl.querySelector('canvas') && dragEl.querySelector('canvas').parentElement;
+      if (!handle) handle = dragEl; // fallback: whole player
+
+      // Show grab cursor on the handle
+      handle.style.cursor = 'grab';
+
+      handle.addEventListener('mousedown', function(e) {
+        // Don't intercept clicks on buttons/inputs inside the handle
+        if (e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+        e.preventDefault();
+
+        // Convert from bottom/left/transform to top/left so we can position freely
+        var rect = dragEl.getBoundingClientRect();
+        dragEl.style.bottom    = 'auto';
+        dragEl.style.transform = 'none';
+        dragEl.style.top       = rect.top + 'px';
+        dragEl.style.left      = rect.left + 'px';
+
+        dragOffX = e.clientX - rect.left;
+        dragOffY = e.clientY - rect.top;
+        dragging = true;
+        handle.style.cursor = 'grabbing';
+        dragEl.style.transition = 'none';
+        dragEl.style.userSelect = 'none';
+      });
+
+      document.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        var x = e.clientX - dragOffX;
+        var y = e.clientY - dragOffY;
+        // Clamp to viewport
+        var maxX = window.innerWidth  - dragEl.offsetWidth;
+        var maxY = window.innerHeight - dragEl.offsetHeight;
+        x = Math.max(0, Math.min(x, maxX));
+        y = Math.max(0, Math.min(y, maxY));
+        dragEl.style.left = x + 'px';
+        dragEl.style.top  = y + 'px';
+      });
+
+      document.addEventListener('mouseup', function() {
+        if (!dragging) return;
+        dragging = false;
+        handle.style.cursor = 'grab';
+        dragEl.style.userSelect = '';
+      });
+    })();
+    // ── End drag ──────────────────────────────────────────────────────────────
+
     const audio   = document.getElementById('dash-audio');
     const seekBar  = document.getElementById('dash-seek');
     const seekFill = document.getElementById('dash-seek-fill');
