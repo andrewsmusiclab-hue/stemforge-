@@ -8250,7 +8250,15 @@ app.post('/api/upload-cover-audio', async (c) => {
   const form = await c.req.formData()
   const file = form.get('file') as File | null
   if (!file) return c.json({ error: 'No file uploaded' }, 400)
-  if (file.size > 20 * 1024 * 1024) return c.json({ error: 'File too large (max 20 MB)' }, 400)
+  if (file.size > 20 * 1024 * 1024) {
+    const isWav = (file.type || '').toLowerCase().includes('wav') ||
+                  (file.name || '').toLowerCase().endsWith('.wav')
+    const sizeMB = (file.size / (1024 * 1024)).toFixed(1)
+    const msg = isWav
+      ? `WAV file is too large (${sizeMB} MB — max 20 MB). WAV is uncompressed; convert to MP3 at 128–256 kbps and upload again.`
+      : `File too large (${sizeMB} MB — max 20 MB). Try exporting as MP3 at 128 kbps to reduce file size.`
+    return c.json({ error: msg }, 400)
+  }
 
   const ext = (file.name.split('.').pop() || 'mp3').toLowerCase().replace(/[^a-z0-9]/g, '')
   const uuid = crypto.randomUUID()
@@ -9567,12 +9575,13 @@ function generatorPage() {
               onclick="document.getElementById('cover-file-input').click()"
               ondragover="event.preventDefault();this.classList.add('cover-drop-zone--over')"
               ondragleave="this.classList.remove('cover-drop-zone--over')"
-              ondrop="event.preventDefault();this.classList.remove('cover-drop-zone--over');handleCoverFileSelect(event.dataTransfer.files[0])"
+              ondrop="event.preventDefault();this.classList.remove('cover-drop-zone--over');handleCoverFileSelect(event.dataTransfer.files[0], null)"
               style="border:2px dashed rgba(139,92,246,.4);border-radius:10px;padding:22px 16px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s">
               <i class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#a855f7;display:block;margin-bottom:8px"></i>
               <span id="cover-drop-label" style="font-size:.85rem;color:var(--muted)">Drag &amp; drop or click to choose a file</span>
             </div>
-            <input type="file" id="cover-file-input" accept="audio/*" style="display:none" onchange="handleCoverFileSelect(this.files[0])"/>
+            <input type="file" id="cover-file-input" accept="audio/*" style="display:none" onchange="handleCoverFileSelect(this.files[0], this)"/>
+            <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
           </div>
 
           <!-- Style prompt -->

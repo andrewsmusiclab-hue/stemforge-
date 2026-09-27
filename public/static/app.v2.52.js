@@ -9574,18 +9574,54 @@ window.toggleRefDropdown = function() {
     _setCoverMode(false);
   };
 
-  window.handleCoverFileSelect = function(input) {
-    if (!input.files || !input.files[0]) return;
-    var file = input.files[0];
-    if (file.size > 20 * 1024 * 1024) {
-      alert('File too large — please upload a file under 20 MB.');
-      input.value = '';
+  function _showCoverUploadError(msg) {
+    var el = document.getElementById('cover-upload-error');
+    if (!el) return;
+    el.innerHTML = '<i class="fas fa-exclamation-triangle" style="margin-right:6px;flex-shrink:0"></i><span>' + msg + '</span>';
+    el.style.display = 'flex';
+    el.style.alignItems = 'flex-start';
+    el.style.gap = '0';
+  }
+
+  function _hideCoverUploadError() {
+    var el = document.getElementById('cover-upload-error');
+    if (el) el.style.display = 'none';
+  }
+
+  function _isWavFile(file) {
+    return file.type === 'audio/wav' || file.type === 'audio/wave' ||
+           file.type === 'audio/x-wav' ||
+           (file.name && file.name.toLowerCase().endsWith('.wav'));
+  }
+
+  window.handleCoverFileSelect = function(file, inputEl) {
+    // Support legacy call pattern where the input element is passed instead of a File
+    if (file && file.files) { inputEl = file; file = file.files[0]; }
+    if (!file) return;
+    _hideCoverUploadError();
+    var MAX = 20 * 1024 * 1024;
+    if (file.size > MAX) {
+      if (_isWavFile(file)) {
+        _showCoverUploadError(
+          'WAV files are uncompressed and can be very large. This file is ' +
+          (file.size / (1024 * 1024)).toFixed(1) + ' MB — over the 20 MB limit.<br><br>' +
+          '<strong>Fix:</strong> Convert to MP3 (128–256 kbps) in your DAW or an audio editor like Audacity, then upload the MP3. ' +
+          'Alternatively, trim the track to a shorter section and export as WAV again.'
+        );
+      } else {
+        _showCoverUploadError(
+          'File is too large (' + (file.size / (1024 * 1024)).toFixed(1) + ' MB) — max is 20 MB. ' +
+          'Try exporting as MP3 at 128 kbps or lower to reduce the file size.'
+        );
+      }
+      if (inputEl && inputEl.value !== undefined) inputEl.value = '';
       return;
     }
     _uploadCoverFile(file);
   };
 
   async function _uploadCoverFile(file) {
+    _hideCoverUploadError();
     _setUploadState('loading');
     var formData = new FormData();
     formData.append('file', file);
@@ -9601,7 +9637,16 @@ window.toggleRefDropdown = function() {
       _setUploadState('done');
     } catch(e) {
       _setUploadState('idle');
-      alert('Upload failed: ' + (e.message || 'Unknown error'));
+      var msg = e.message || 'Upload failed';
+      // Surface a friendly message if the server returned the size error
+      if (msg.toLowerCase().includes('too large') || msg.toLowerCase().includes('20 mb') || msg.toLowerCase().includes('20mb')) {
+        if (_isWavFile(file)) {
+          msg = 'WAV file is too large (max 20 MB). Convert to MP3 (128–256 kbps) and try again.';
+        } else {
+          msg = 'File is too large (max 20 MB). Try compressing to MP3 128 kbps.';
+        }
+      }
+      _showCoverUploadError(msg);
     }
   }
 
