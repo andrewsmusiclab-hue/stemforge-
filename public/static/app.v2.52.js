@@ -4380,6 +4380,19 @@ window.toggleOneShotCard = function() {
   }
 };
 
+// ── Auto-fill song title from uploaded filename ─────────────────────────────
+window._autoFillTitleFromFile = function(filename) {
+  var titleEl = document.getElementById('gen-title');
+  if (!titleEl || titleEl.value.trim()) return; // don't overwrite if user already typed something
+  // Strip extension, replace underscores/hyphens with spaces, trim
+  var clean = filename
+    .replace(/\.[^.]+$/, '')       // remove extension
+    .replace(/[_\-]+/g, ' ')       // underscores/hyphens → spaces
+    .replace(/\s+/g, ' ')          // collapse multiple spaces
+    .trim();
+  if (clean) titleEl.value = clean;
+};
+
 // Handle reference audio file selection
 (function() {
   const fileInput = document.getElementById('ref-audio-file');
@@ -4387,6 +4400,7 @@ window.toggleOneShotCard = function() {
   fileInput.addEventListener('change', async function() {
     const file = this.files?.[0];
     if (!file) return;
+    window._autoFillTitleFromFile(file.name);
     await uploadRefTrack(file, file.name);
   });
 
@@ -4399,7 +4413,7 @@ window.toggleOneShotCard = function() {
       e.preventDefault();
       zone.style.borderColor = '';
       const file = e.dataTransfer?.files?.[0];
-      if (file) await uploadRefTrack(file, file.name);
+      if (file) { window._autoFillTitleFromFile(file.name); await uploadRefTrack(file, file.name); }
     });
   }
 })();
@@ -5617,6 +5631,8 @@ window.uploadRefWithClip = async function() {
     e.stopImmediatePropagation();
     const file = this.files?.[0];
     if (!file) return;
+    // Auto-fill song title from filename (only if user hasn't typed one)
+    window._autoFillTitleFromFile && window._autoFillTitleFromFile(file.name);
     // Show clip picker for WAV or files > 500KB (likely full track)
     // Always show clip picker so user can choose which 30 seconds to use
     const preview = document.getElementById('ref-preview-audio');
