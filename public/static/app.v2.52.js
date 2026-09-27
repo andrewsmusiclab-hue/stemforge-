@@ -1944,6 +1944,32 @@ document.addEventListener('DOMContentLoaded', () => {
       }});
     }
 
+    // Make Cover — for beats tab only (not oneshots, not covers), Pro Artist only
+    if (cardTab === 'beats' && stereoUrl) {
+      const isPro = _plan === 'pro' || _plan === 'developer';
+      items.push({
+        icon: 'fa-microphone-alt',
+        label: 'Make Cover',
+        tooltip: 'Turn this track into an AI cover song',
+        action: () => {
+          if (!isPro) {
+            // Show upgrade toast for non-pro users
+            if (typeof showSubToast === 'function') {
+              showSubToast('<i class="fas fa-crown"></i> Cover Song is a Pro Artist feature. <a href="/pricing" style="color:#fff;text-decoration:underline;margin-left:6px">Upgrade</a>', '#7c3aed', 'rgba(124,58,237,.4)');
+            } else {
+              window.location.href = '/pricing?plan=pro';
+            }
+            return;
+          }
+          // Navigate to generator with cover preload params
+          const enc = encodeURIComponent;
+          window.location.href = '/generator?cover_job=' + enc(jobId) +
+            '&cover_title=' + enc(safeTitle) +
+            '&cover_audio=' + enc(stereoUrl);
+        }
+      });
+    }
+
     // Delete — goes to trash
     items.push({ icon: 'fa-trash-alt', label: 'Move to Trash', danger: true,
       action: () => deleteLibItem(jobId) });
@@ -5288,6 +5314,47 @@ window.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('DOMContentLoaded', () => setTimeout(() => tryOpen(15), 300));
   } else {
     setTimeout(() => tryOpen(15), 300);
+  }
+})();
+
+// ── Auto-open Cover Song panel when arriving at /generator?cover_job=ID&cover_title=TITLE&cover_audio=URL ──
+(function handleCoverQueryParam() {
+  if (!window.location.pathname.includes('/generator')) return;
+  const params = new URLSearchParams(window.location.search);
+  const coverJob   = params.get('cover_job');
+  const coverTitle = params.get('cover_title') || '';
+  const coverAudio = params.get('cover_audio') || '';
+  if (!coverJob && !coverAudio) return;
+
+  // Clean URL so a refresh doesn't re-trigger
+  window.history.replaceState({}, '', window.location.pathname);
+
+  function tryOpen(attemptsLeft) {
+    // Need openCoverPanel and _autoPreloadCover both ready
+    if (window.openCoverPanel && window._autoPreloadCover &&
+        document.getElementById('cover-inline-panel')) {
+      // Open the panel (handles plan gate & toggling)
+      var panel = document.getElementById('cover-inline-panel');
+      if (panel && panel.style.display === 'none') {
+        window.openCoverPanel();
+      }
+      // Small delay so the panel animation completes before we fill it
+      setTimeout(function() {
+        var audioUrl = coverAudio || '';
+        var displayName = coverTitle || 'Imported Track';
+        if (audioUrl) {
+          window._autoPreloadCover(audioUrl, displayName);
+        }
+      }, 150);
+    } else if (attemptsLeft > 0) {
+      setTimeout(function() { tryOpen(attemptsLeft - 1); }, 200);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { setTimeout(function() { tryOpen(20); }, 400); });
+  } else {
+    setTimeout(function() { tryOpen(20); }, 400);
   }
 })();
 
@@ -9938,6 +10005,50 @@ window.toggleRefDropdown = function() {
     if (player) player.style.display = 'block';
     _coverPlayerSync();
   }
+
+  // ── Pre-load cover from a library beat (called by ?cover_job= URL param handler) ──
+  // stereoUrl: direct audio URL from the beat's stereo_url field
+  // displayName: human-readable title shown in the drop zone and player
+  window._autoPreloadCover = function(stereoUrl, displayName) {
+    if (!stereoUrl) return;
+    _coverAudioUrl = stereoUrl;
+    _coverFilename  = displayName || 'Track';
+
+    // Update drop-zone to "done" state
+    _setUploadState('done');
+    var fnameEl = document.getElementById('cover-upload-filename');
+    if (fnameEl) { fnameEl.textContent = _coverFilename; fnameEl.style.display = 'block'; }
+    var clearBtn = document.getElementById('cover-clear-btn');
+    if (clearBtn) clearBtn.style.display = 'inline-flex';
+
+    // Show mini-player
+    _coverPlayerShow(stereoUrl, _coverFilename);
+
+    // Auto-generate style description from title
+    var styleEl = document.getElementById('cover-style-prompt');
+    var badgeEl = document.getElementById('cover-style-ai-badge');
+    if (styleEl && !styleEl.value.trim()) {
+      var cleanTitle = _coverFilename.replace(/\.[^.]+$/, '');
+      styleEl.placeholder = 'Detecting style…';
+      styleEl.disabled = true;
+      fetch('/api/cover-auto-desc?title=' + encodeURIComponent(cleanTitle), { credentials: 'include' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          styleEl.disabled = false;
+          styleEl.placeholder = 'e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…';
+          if (d.description && d.description.trim()) {
+            styleEl.value = d.description.trim();
+            if (badgeEl) { badgeEl.style.display = 'flex'; }
+            styleEl.style.height = 'auto';
+            styleEl.style.height = Math.min(styleEl.scrollHeight, 160) + 'px';
+          }
+        })
+        .catch(function() {
+          styleEl.disabled = false;
+          styleEl.placeholder = 'e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…';
+        });
+    }
+  };
 
   window.coverPlayerToggle = function() {
     if (!_coverAudio) return;
