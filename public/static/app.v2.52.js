@@ -10026,33 +10026,48 @@ window.toggleRefDropdown = function() {
   }
 
   window.renderCoverCard = function renderCoverCard(p, i) {
-    var hue = ((i * 83) + 200) % 360;
+    // Inline hue calculation (same as renderExtendedCard — no cross-IIFE deps)
+    var hue;
+    if (p.thumbnail_seed != null) {
+      hue = p.thumbnail_seed;
+    } else if (i != null) {
+      hue = ((Math.round(i) * 137) % 360 + 360) % 360;
+    } else {
+      var h = 0; var s = String(p.id || '0');
+      for (var k = 0; k < s.length; k++) { h = (Math.imul(31, h) + s.charCodeAt(k)) | 0; }
+      hue = ((Math.abs(h) * 137) % 360);
+    }
+    var hue2 = (hue + 60) % 360;
     var title = p.title || 'Cover Song';
+    var displayTitle = title.replace(/_/g, ' ').trim();
     var safeTitle = title.replace(/"/g, '&quot;');
     var audioUrl = p.stereo_url || p.audio_url || '';
     var dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
     var safeFilename = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'cover';
+    var playBtn = audioUrl
+      ? '<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>'
+      : '<div class="project-card__play" style="opacity:.3;pointer-events:none"><i class="fas fa-hourglass-half"></i></div>';
     return '<div class="project-card project-card--cover"' +
       ' data-stereo="' + audioUrl + '"' +
       ' data-id="' + p.id + '"' +
       ' data-title="' + safeTitle + '"' +
       ' data-hue="' + hue + '">' +
-      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,20%) 0%,hsl(' + ((hue+50)%360) + ',70%,12%) 100%)">' +
-      '<div class="project-card__art-icon"><i class="fas fa-guitar" style="color:hsl(' + hue + ',80%,70%);opacity:.8"></i></div>' +
-      (audioUrl ? '<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>' : '') +
+      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + hue2 + ',70%,10%));position:relative;overflow:hidden">' +
+        '<img src="/static/stemforge-logo.png" alt="StemForge"' +
+          ' style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(' + hue + 'deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>' +
+        playBtn +
       '</div>' +
       '<div class="project-card__body">' +
-      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
-      '<h4 style="margin:0;flex:1">' + safeTitle + '</h4>' +
-      (audioUrl ? '<button class="song-dots-btn" title="More options"' +
-        ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + audioUrl + '\',\'\',\'' + safeFilename + '\',\'covers\')"' +
-        ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' : '') +
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+          '<h4 style="margin:0;flex:1">' + displayTitle + '</h4>' +
+          '<button class="song-dots-btn" title="More options"' +
+            ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + audioUrl + '\',\'\',\'' + safeFilename + '\',\'covers\')"' +
+            ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' +
+        '</div>' +
+        '<p style="margin-bottom:6px;color:var(--muted);font-size:.8rem"><i class="fas fa-guitar" style="font-size:.7rem;margin-right:4px;opacity:.6"></i>Cover · ' + dateStr + '</p>' +
+        (!audioUrl ? '<p style="color:var(--muted);font-size:.78rem"><i class="fas fa-spinner fa-spin"></i> Generating...</p>' : '') +
       '</div>' +
-      '<p style="margin-bottom:8px">Cover · ' + dateStr + '</p>' +
-      (audioUrl
-        ? '<audio class="oneshot-card-audio" src="' + audioUrl + '" controls preload="none" style="width:100%;border-radius:6px"></audio>'
-        : '<div style="font-size:.76rem;color:var(--muted);display:flex;align-items:center;gap:6px"><i class="fas fa-spinner fa-spin"></i> Generating…</div>') +
-      '</div></div>';
+    '</div>';
   }
 
   // Handle dashboard hash #covers on load
