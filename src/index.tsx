@@ -8904,7 +8904,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-12'
+const ASSET_VER = '20260927-13'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9530,6 +9530,7 @@ function homePage() {
             <li><i class="fas fa-check"></i> WAV download + commercial use</li>
             <li><i class="fas fa-check"></i> Reference track upload</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-guitar" style="color:#a855f7;font-size:.75rem"></i> AI Cover Song</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
           <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
@@ -10872,6 +10873,7 @@ function pricingPage() {
           <li><i class="fas fa-check"></i> Priority queue — faster generations</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator — StemForge SFX</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-guitar" style="color:#a855f7;font-size:.75rem"></i> AI Cover Song</li>
         </ul>
         <button class="btn btn--outline btn--full pricing-plan-btn" data-plan="pro" id="pricing-pro-btn">Start Pro Artist — $26/mo</button>
         <div id="pricing-pro-plan-status" style="margin:8px 0 0">
@@ -10893,14 +10895,15 @@ function pricingPage() {
       </div>
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (StemForge SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-guitar" style="color:#a855f7"></i> AI Cover Song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
       </div>
     </div>
 
@@ -12462,6 +12465,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <li><i class="fas fa-check"></i> Priority queue</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-wand-magic-sparkles" style="color:#a855f7;font-size:.8rem"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-guitar" style="color:#a855f7;font-size:.75rem"></i> AI Cover Song</li>
           </ul>
           ${user.plan === 'pro'
             ? `<div class="sub-action-wrap" id="sub-pro-action-wrap">
@@ -12557,8 +12561,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         <div class="credit-table">
           <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Points Cost</span><span>Available On</span></div>
           <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">75 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
           <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -13634,7 +13638,7 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 900 points monthly, Auto Split (35 pts), Vocals &amp; Instrumental (75 pts), WAV download, One Shot Creator (15 pts), commercial use rights</li>
+    <li><strong>Creator Plan ($10/month):</strong> 900 points monthly, Auto Split (30 pts), Vocals &amp; Instrumental (70 pts), WAV download, One Shot Creator (15 pts), commercial use rights</li>
     <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix, Extend song</li>
   </ul>
 
