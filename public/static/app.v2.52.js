@@ -9636,6 +9636,7 @@ window.toggleRefDropdown = function() {
       var fnEl = document.getElementById('cover-upload-filename');
       if (fnEl) { fnEl.textContent = _coverFilename; fnEl.style.display = 'block'; }
       _setUploadState('done');
+      _coverPlayerShow(data.audio_url, _coverFilename);
     } catch(e) {
       _setUploadState('idle');
       var msg = e.message || 'Upload failed';
@@ -9674,6 +9675,93 @@ window.toggleRefDropdown = function() {
       if (fnameEl) { fnameEl.style.display = 'none'; fnameEl.textContent = ''; }
     }
   }
+
+  // ── Cover mini-player ────────────────────────────────────────────
+  var _coverAudio = null;     // HTMLAudioElement
+  var _coverScrubbing = false;
+
+  function _fmtTime(s) {
+    s = Math.floor(s || 0);
+    var m = Math.floor(s / 60);
+    return m + ':' + String(s % 60).padStart(2, '0');
+  }
+
+  function _coverPlayerSync() {
+    if (!_coverAudio) return;
+    var cur  = _coverAudio.currentTime;
+    var dur  = _coverAudio.duration || 0;
+    var pct  = dur ? (cur / dur) * 100 : 0;
+    var fill  = document.getElementById('cover-scrubber-fill');
+    var thumb = document.getElementById('cover-scrubber-thumb');
+    var curEl = document.getElementById('cover-player-cur');
+    var durEl = document.getElementById('cover-player-dur');
+    if (fill)  fill.style.width  = pct + '%';
+    if (thumb) thumb.style.right = 'calc(' + (100 - pct) + '% - 0px)';
+    if (curEl) curEl.textContent = _fmtTime(cur);
+    if (durEl) durEl.textContent = _fmtTime(dur);
+    var icon = document.getElementById('cover-play-icon');
+    if (icon) icon.className = _coverAudio.paused ? 'fas fa-play' : 'fas fa-pause';
+  }
+
+  function _coverPlayerShow(url, filename) {
+    // Tear down any existing audio
+    if (_coverAudio) { _coverAudio.pause(); _coverAudio.src = ''; _coverAudio = null; }
+    _coverAudio = new Audio(url);
+    _coverAudio.addEventListener('timeupdate', function() { if (!_coverScrubbing) _coverPlayerSync(); });
+    _coverAudio.addEventListener('durationchange', _coverPlayerSync);
+    _coverAudio.addEventListener('ended', _coverPlayerSync);
+    _coverAudio.addEventListener('play',  _coverPlayerSync);
+    _coverAudio.addEventListener('pause', _coverPlayerSync);
+    var nameEl = document.getElementById('cover-player-filename');
+    if (nameEl) nameEl.textContent = filename || 'Uploaded track';
+    var player = document.getElementById('cover-mini-player');
+    if (player) player.style.display = 'block';
+    _coverPlayerSync();
+  }
+
+  window.coverPlayerToggle = function() {
+    if (!_coverAudio) return;
+    if (_coverAudio.paused) { _coverAudio.play().catch(function(){}); }
+    else { _coverAudio.pause(); }
+  };
+
+  function _scrubTo(trackEl, clientX) {
+    var rect = trackEl.getBoundingClientRect();
+    var pct  = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    if (_coverAudio && _coverAudio.duration) {
+      _coverAudio.currentTime = pct * _coverAudio.duration;
+    }
+    _coverPlayerSync();
+  }
+
+  window.coverScrubClick = function(e) {
+    _scrubTo(e.currentTarget, e.clientX);
+  };
+
+  window.coverScrubStart = function(e) {
+    _coverScrubbing = true;
+    var track = e.currentTarget;
+    function onMove(mv) { _scrubTo(track, mv.clientX); }
+    function onUp()   { _coverScrubbing = false; document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  };
+
+  window.coverScrubTouchStart = function(e) {
+    _coverScrubbing = true;
+    var track = e.currentTarget;
+    function onMove(mv) { if (mv.touches[0]) _scrubTo(track, mv.touches[0].clientX); }
+    function onEnd()   { _coverScrubbing = false; track.removeEventListener('touchmove', onMove); track.removeEventListener('touchend', onEnd); }
+    track.addEventListener('touchmove', onMove, { passive: true });
+    track.addEventListener('touchend',  onEnd);
+  };
+
+  // Hide player when cover panel closes
+  var _origCloseCover = window.closeCoverPanel;
+  window.closeCoverPanel = function() {
+    if (_coverAudio) { _coverAudio.pause(); }
+    if (_origCloseCover) _origCloseCover();
+  };
 
   window.startCoverSong = async function() {
     if (!_coverAudioUrl) {
