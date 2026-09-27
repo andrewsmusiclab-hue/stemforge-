@@ -8295,10 +8295,24 @@ app.post('/api/job/cover-song', async (c) => {
   if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
 
   const COVER_COST = 15
-  if ((user.credits || 0) < COVER_COST) return c.json({ error: `Not enough credits (need ${COVER_COST}, have ${user.credits || 0})` }, 402)
+  // Use the standard gens_used/gens_limit/bonus_credits system
+  const freshUser = await c.env.DB.prepare(
+    `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
+  if (!freshUser) return c.json({ error: 'User not found' }, 404)
+  const coverAvailable = (freshUser.gens_limit - freshUser.gens_used) + (freshUser.bonus_credits || 0)
+  if (coverAvailable < COVER_COST) return c.json({ error: `Not enough credits (need ${COVER_COST}, have ${coverAvailable})` }, 402)
 
-  // Deduct credits
-  await c.env.DB.prepare(`UPDATE users SET credits = credits - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+  // Deduct from bonus_credits first, then gens_used
+  const coverBonus = Math.min(freshUser.bonus_credits || 0, COVER_COST)
+  const coverMain = COVER_COST - coverBonus
+  if (coverBonus > 0 && coverMain > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ?, gens_used = gens_used + ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
+  } else if (coverBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(coverBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+  }
 
   // Call MusicAPI Sonic /upload-cover
   const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
@@ -8315,7 +8329,13 @@ app.post('/api/job/cover-song', async (c) => {
   const sonicData = await sonicRes.json() as any
   if (!sonicRes.ok || !sonicData.task_id) {
     // Refund credits on failure
-    await c.env.DB.prepare(`UPDATE users SET credits = credits + ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+    if (coverBonus > 0 && coverMain > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
+    } else if (coverBonus > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
+    } else {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+    }
     return c.json({ error: sonicData.message || 'MusicAPI error' }, 502)
   }
 
