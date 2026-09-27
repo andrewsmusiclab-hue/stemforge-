@@ -8322,11 +8322,13 @@ app.post('/api/job/cover-song', async (c) => {
       url: audio_url,
       mv: 'sonic-v4',
       make_instrumental: !!make_instrumental,
+      custom_mode: !!(lyrics && lyrics.trim()),
       gpt_description_prompt: style_prompt || '',
       ...(lyrics && lyrics.trim() ? { lyrics: lyrics.trim() } : {})
     })
   })
-  const sonicData = await sonicRes.json() as any
+  let sonicData: any
+  try { sonicData = await sonicRes.json() } catch { sonicData = {} }
   if (!sonicRes.ok || !sonicData.task_id) {
     // Refund credits on failure
     if (coverBonus > 0 && coverMain > 0) {
@@ -8336,7 +8338,7 @@ app.post('/api/job/cover-song', async (c) => {
     } else {
       await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
     }
-    return c.json({ error: sonicData.message || 'MusicAPI error' }, 502)
+    return c.json({ error: sonicData.message || sonicData.error || `MusicAPI error (HTTP ${sonicRes.status})` }, 502)
   }
 
   const jobId = crypto.randomUUID()
