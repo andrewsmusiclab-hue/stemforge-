@@ -5827,24 +5827,32 @@ app.post('/api/debug/test-sonic-create', async (c) => {
 })
 
 // POST /api/debug/test-cover-url — test /sonic/upload-cover with a direct audio URL (admin only)
-// Body: { url: string, tags?: string }
+// Body: { url: string, tags?: string, admin_key?: string }
 app.post('/api/debug/test-cover-url', async (c) => {
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!isAdmin(user, c.env)) return c.json({ error: 'Admin only' }, 401)
-  const body = await c.req.json<{ url: string; tags?: string }>()
-  const { url, tags } = body
-  if (!url) return c.json({ error: 'url required' }, 400)
-  const coverBody = {
-    url,
-    mv: 'sonic-v5',
-    tags: tags || 'instrumental, no vocals, energetic',
-    custom_mode: false,
-    gpt_description_prompt: 'Instrumental beat, no vocals, energetic mood. Keep same energy and style.',
-    make_instrumental: true
+  const body0 = await c.req.json<{ url: string; tags?: string; admin_key?: string; custom_mode?: boolean; prompt?: string; gpt_description_prompt?: string }>()
+  const adminKeyParam = body0.admin_key || c.req.query('admin_key')
+  const adminKeyOk = adminKeyParam && c.env.ADMIN_EMAIL && adminKeyParam === c.env.ADMIN_EMAIL
+  if (!adminKeyOk) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!isAdmin(user, c.env)) return c.json({ error: 'Admin only' }, 401)
   }
-  console.log(`[debug/test-cover-url] url=${url.slice(0,100)} tags="${coverBody.tags}"`)
+  const { url, tags, custom_mode, prompt, gpt_description_prompt } = body0
+  if (!url) return c.json({ error: 'url required' }, 400)
+  const coverBody: Record<string,any> = {
+    url,
+    mv: 'sonic-v6',
+    tags: tags || 'pop, energetic',
+    custom_mode: !!custom_mode,
+    make_instrumental: false
+  }
+  if (custom_mode && prompt) {
+    coverBody.prompt = prompt
+  } else {
+    coverBody.gpt_description_prompt = gpt_description_prompt || 'upbeat pop cover, keep the same melody and energy'
+  }
+  console.log(`[debug/test-cover-url] url=${url.slice(0,100)} body=${JSON.stringify(coverBody).slice(0,300)}`)
   const r = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
@@ -5853,8 +5861,8 @@ app.post('/api/debug/test-cover-url', async (c) => {
   const t = await r.text()
   let parsed: any = {}
   try { parsed = JSON.parse(t) } catch {}
-  console.log(`[debug/test-cover-url] HTTP ${r.status}: ${t.slice(0,300)}`)
-  return c.json({ status: r.status, ok: r.ok, body_sent: coverBody, response: parsed, raw: t.slice(0,800) })
+  console.log(`[debug/test-cover-url] HTTP ${r.status}: ${t.slice(0,500)}`)
+  return c.json({ status: r.status, ok: r.ok, body_sent: coverBody, response: parsed, raw: t.slice(0,1000) })
 })
 
 // POST /api/debug/test-cover — test cover_music variants (admin_key or developer session)
@@ -8634,7 +8642,7 @@ app.get('/api/cover-audio-proxy/:filename', async (c) => {
   return new Response(obj.body, { headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' } })
 })
 
-// POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (15 credits, Pro Artist only)
+// POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (20 credits, Pro Artist only)
 app.post('/api/job/cover-song', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
@@ -8646,7 +8654,7 @@ app.post('/api/job/cover-song', async (c) => {
   const { audio_url, title, style_prompt, make_instrumental, lyrics } = await c.req.json()
   if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
 
-  const COVER_COST = 15
+  const COVER_COST = 20
   // Use the standard gens_used/gens_limit/bonus_credits system
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
@@ -8666,22 +8674,55 @@ app.post('/api/job/cover-song', async (c) => {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(COVER_COST, user.id).run()
   }
 
-  // Call MusicAPI Sonic /upload-cover
-  const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: audio_url,
-      mv: 'sonic-v4',
-      make_instrumental: !!make_instrumental,
-      custom_mode: !!(lyrics && lyrics.trim()),
-      gpt_description_prompt: style_prompt || '',
-      ...(lyrics && lyrics.trim() ? { lyrics: lyrics.trim() } : {})
+  // Build cover request — field names must match MusicAPI docs exactly
+  const hasLyrics = !!(lyrics && lyrics.trim())
+  const isCustomMode = hasLyrics  // custom_mode=true when caller provides lyrics
+  const coverBody: Record<string, any> = {
+    url:              audio_url,
+    mv:               'sonic-v6',           // always use latest model
+    make_instrumental: !!make_instrumental,
+    custom_mode:      isCustomMode,
+    title:            title || 'Cover Song',
+    tags:             style_prompt || '',    // style tags (not a description)
+  }
+  if (isCustomMode) {
+    coverBody.prompt = lyrics!.trim()        // custom mode: lyrics go in 'prompt'
+  } else if (style_prompt && style_prompt.trim()) {
+    coverBody.gpt_description_prompt = style_prompt.trim().slice(0, 400)  // AI mode: description
+  }
+
+  console.log(`[cover-song] Calling /upload-cover url=${audio_url.slice(0,80)} mv=sonic-v6 custom_mode=${isCustomMode}`)
+  // Use a 55-second timeout — upload-cover can take 30-45s to upload + queue the job
+  const coverAbort = new AbortController()
+  const coverTimeout = setTimeout(() => coverAbort.abort(), 55_000)
+  let sonicRes: Response
+  try {
+    sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(coverBody),
+      signal: coverAbort.signal
     })
-  })
+  } catch (fetchErr: any) {
+    clearTimeout(coverTimeout)
+    // Refund credits on fetch failure / timeout
+    if (coverBonus > 0 && coverMain > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
+    } else if (coverBonus > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
+    } else {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+    }
+    return c.json({ error: 'Cover generation timed out. The audio file may be too large — try an MP3 under 5 minutes.' }, 504)
+  }
+  clearTimeout(coverTimeout)
+  const sonicRawText = await sonicRes.text()
+  console.log(`[cover-song] /upload-cover HTTP ${sonicRes.status}: ${sonicRawText.slice(0, 500)}`)
   let sonicData: any
-  try { sonicData = await sonicRes.json() } catch { sonicData = {} }
-  if (!sonicRes.ok || !sonicData.task_id) {
+  try { sonicData = JSON.parse(sonicRawText) } catch { sonicData = {} }
+  // Accept task_id from top-level OR from steps.cover.task_id (both valid per docs)
+  const coverTaskId = sonicData.task_id || sonicData.steps?.cover?.task_id || ''
+  if (!sonicRes.ok || !coverTaskId) {
     // Refund credits on failure
     if (coverBonus > 0 && coverMain > 0) {
       await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
@@ -8690,16 +8731,18 @@ app.post('/api/job/cover-song', async (c) => {
     } else {
       await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
     }
-    return c.json({ error: sonicData.message || sonicData.error || `Stemforge cover error (HTTP ${sonicRes.status})` }, 502)
+    const errMsg = sonicData.message || sonicData.error || sonicData.detail || `Stemforge cover error (HTTP ${sonicRes.status})`
+    console.error(`[cover-song] API error: ${errMsg} | raw: ${sonicRawText.slice(0, 300)}`)
+    return c.json({ error: errMsg }, 502)
   }
 
   const jobId = crypto.randomUUID()
   const now = Date.now()
-  const jobData = JSON.stringify({ id: jobId, status: 'generating', task_id: sonicData.task_id, title: title || 'Cover Song', created_at: now, user_id: user.id, is_cover: 1 })
+  const jobData = JSON.stringify({ id: jobId, status: 'generating', task_id: coverTaskId, title: title || 'Cover Song', created_at: now, user_id: user.id, is_cover: 1 })
   await ensureTable(c.env.DB)
   await c.env.DB.prepare(`INSERT INTO jobs (id, data, created_at, user_id, is_cover) VALUES (?, ?, ?, ?, 1)`).bind(jobId, jobData, now, user.id).run()
 
-  return c.json({ ok: true, job_id: jobId, task_id: sonicData.task_id })
+  return c.json({ ok: true, job_id: jobId, task_id: coverTaskId })
 })
 
 // GET /api/poll-cover/:id — poll cover song job status
@@ -8753,7 +8796,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-07'
+const ASSET_VER = '20260927-10'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
