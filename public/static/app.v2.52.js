@@ -9926,7 +9926,7 @@ window.toggleRefDropdown = function() {
                                errMsg.toLowerCase().includes('existing recording') ||
                                errMsg.toLowerCase().includes('matches an existing');
           var displayMsg = isCatalogError
-            ? '⚠️ This track is already in the music catalog — Suno cannot create a cover of a published song.\n\nTry uploading a different or original track.'
+            ? '⚠️ This track is already in the music catalog — Stemforge cannot create a cover of a published song.\n\nTry uploading a different or original track.'
             : ('Cover generation failed:\n\n' + errMsg);
           alert(displayMsg);
         }

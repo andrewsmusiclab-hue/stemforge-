@@ -2202,7 +2202,7 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 
 // POST /api/job/stems — start stem extraction
 app.post('/api/job/stems', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Stemforge stem service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2281,9 +2281,9 @@ app.post('/api/job/stems', async (c) => {
   return c.json({ ok: true, cached: false, task_id: stemwaitTaskId, status: 'pending' })
 })
 
-// GET /api/job/stems/:jobId — poll stem extraction status (Mureka)
+// GET /api/job/stems/:jobId — poll stem extraction status
 app.get('/api/job/stems/:jobId', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Mureka not configured' }, 500)
+  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Stemforge stem service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2399,7 +2399,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
           if (!murekaRes.ok) {
             const errText = await murekaRes.text().catch(() => '')
-            let errMsg = `Mureka error ${murekaRes.status}`
+            let errMsg = `Stemforge stem error ${murekaRes.status}`
             try { const j = JSON.parse(errText) as any; errMsg = j?.error?.message || j?.message || j?.error || errMsg } catch {}
             if (murekaRes.status === 429 || murekaRes.status === 503 || errMsg.toLowerCase().includes('concurrent')) {
               errMsg = 'Stem splitting is currently busy — please try again in 30–60 seconds.'
@@ -2423,7 +2423,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
           const data = await murekaRes.json() as any
           const zipUrl = data.zip_url
           if (!zipUrl) {
-            const errMsg = 'Mureka returned no zip_url: ' + JSON.stringify(data).slice(0, 200)
+            const errMsg = 'Stem extraction returned no audio: ' + JSON.stringify(data).slice(0, 200)
             console.error(`[stems/mureka/bg] ${errMsg}`)
             freshStem.status = 'error'
             freshStem.error = errMsg
@@ -2449,7 +2449,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
             const freshStem = freshStems.find((s: StemJob) => s.task_id === bgTaskId)
             if (!freshStem) return
             freshStem.status = 'error'
-            freshStem.error = bgErr?.message || 'Mureka stem extraction failed'
+            freshStem.error = bgErr?.message || 'Stem extraction failed'
             const errJob = { ...freshJob } as any
             errJob.stem_jobs = freshStems.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
             await setJob(bgDb, errJob)
@@ -2833,7 +2833,7 @@ interface RegenJob {
 }
 
 app.post('/api/job/regen-stem', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2991,7 +2991,7 @@ app.post('/api/job/regen-stem', async (c) => {
 // Polls MusicAPI /sonic/task/:taskId directly.
 // Results are NOT stored in D1 — purely pass-through to the frontend.
 app.get('/api/job/regen-stem/:jobId', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -3051,7 +3051,7 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 //  Frontend polls the new job via existing POST /api/poll/:id.
 // ═══════════════════════════════════════════════════════════════
 app.post('/api/job/remix', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -4903,7 +4903,7 @@ app.post('/api/job/purge', async (c) => {
 // When it's an R2 URL (starts with 'http'), falls back to /sonic/upload-extend.
 app.post('/api/job/extend-upload', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
@@ -5121,7 +5121,7 @@ app.post('/api/job/extend-upload', async (c) => {
 // Body: { source_job_id: string, extend_at?: number (ms), lyrics?: string, make_instrumental?: boolean }
 app.post('/api/job/extend', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
@@ -7814,7 +7814,7 @@ app.post('/api/upload-remix-audio', async (c) => {
 // GET /api/poll-upload-task/:taskId — poll MusicAPI Sonic for uploaded clip's clip_id
 // After POST /api/upload-extend-audio returns task_id, client polls here until clip_id is ready
 app.get('/api/poll-upload-task/:taskId', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -7849,7 +7849,7 @@ app.get('/api/poll-upload-task/:taskId', async (c) => {
 
 // POST /api/generate-oneshot — one-shot sound design via MusicAPI Producer (Lyria 3 Pro)
 app.post('/api/generate-oneshot', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -7893,7 +7893,7 @@ app.post('/api/generate-oneshot', async (c) => {
 
 // POST /api/poll-oneshot/:task_id — poll MusicAPI for one-shot status
 app.post('/api/poll-oneshot/:task_id', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MusicAPI not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -8449,7 +8449,7 @@ app.post('/api/job/cover-song', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
   if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Cover Song is a Pro Artist feature.', upgrade_url: '/pricing', locked: true }, 402)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not configured' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
 
   const { audio_url, title, style_prompt, make_instrumental, lyrics } = await c.req.json()
   if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
@@ -8498,7 +8498,7 @@ app.post('/api/job/cover-song', async (c) => {
     } else {
       await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
     }
-    return c.json({ error: sonicData.message || sonicData.error || `MusicAPI error (HTTP ${sonicRes.status})` }, 502)
+    return c.json({ error: sonicData.message || sonicData.error || `Stemforge cover error (HTTP ${sonicRes.status})` }, 502)
   }
 
   const jobId = crypto.randomUUID()
@@ -8541,14 +8541,14 @@ app.get('/api/poll-cover/:id', async (c) => {
   }
   const failed = clips.find((cl: any) => cl.state === 'failed')
   if (failed) {
-    // Preserve the exact error message from Suno/MusicAPI (e.g. "already published" catalog rejection)
+    // Preserve the exact error message from the generation service (e.g. "already published" catalog rejection)
     const apiErrMsg: string = failed.error_message || failed.error || failed.message || 'Generation failed'
     const updated = { ...job, status: 'error', error: apiErrMsg }
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
     return c.json({ status: 'error', error: apiErrMsg })
   }
 
-  // Also check top-level error from the task response (some MusicAPI error modes)
+  // Also check top-level error from the task response (some generation service error modes)
   if (pollData.error || pollData.message) {
     const topErrMsg: string = pollData.error || pollData.message || 'Generation failed'
     const updated = { ...job, status: 'error', error: topErrMsg }
@@ -9228,7 +9228,7 @@ function homePage() {
   </div>
 </div>
 
-<!-- Home page upgrade confirmation modal (Suno-style) -->
+<!-- Home page upgrade confirmation modal -->
 <div id="home-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(8px)">
   <div style="background:var(--surface);border:1px solid rgba(108,58,255,.35);border-radius:24px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 80px rgba(108,58,255,.2)">
     <div style="background:linear-gradient(135deg,rgba(108,58,255,.18),rgba(168,85,247,.12));border-bottom:1px solid rgba(108,58,255,.2);padding:22px 26px 18px">
@@ -10572,7 +10572,7 @@ function pricingPage() {
 </section>
 </main>
 
-<!-- Pricing page upgrade modal (Suno-style) -->
+<!-- Pricing page upgrade modal -->
 <div id="pricing-upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;padding:16px;backdrop-filter:blur(8px)">
   <div style="background:var(--surface);border:1px solid rgba(108,58,255,.35);border-radius:24px;padding:0;max-width:460px;width:100%;overflow:hidden;box-shadow:0 24px 80px rgba(108,58,255,.2)">
     <div style="background:linear-gradient(135deg,rgba(108,58,255,.18),rgba(168,85,247,.12));border-bottom:1px solid rgba(108,58,255,.2);padding:22px 26px 18px">
@@ -12706,7 +12706,7 @@ function adminPage(user: User) {
         <div class="sub-stat"><span class="sub-stat__label">Views Today</span><span class="sub-stat__val" id="an-today">—</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Views This Week</span><span class="sub-stat__val" id="an-week">—</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Views This Month</span><span class="sub-stat__val" id="an-month">—</span></div>
-        <div class="sub-stat" title="MusicAPI + Mureka capacity errors in last 30 days">
+        <div class="sub-stat" title="Stemforge AI service capacity errors in last 30 days">
           <span class="sub-stat__label"><i class="fas fa-exclamation-triangle" style="color:#f59e0b;margin-right:4px;font-size:.7rem"></i>Server Busy (30d)</span>
           <span class="sub-stat__val" id="an-busy-30d">—</span>
           <span id="an-busy-today" style="display:block;font-size:.7rem;color:var(--muted);margin-top:2px">today: —</span>
