@@ -8239,12 +8239,13 @@ app.get('/api/download-wav-url', async (c) => {
 // ─── COVER SONG FEATURE ────────────────────────────────────────────────────────
 const COVER_UPLOADS_PREFIX = 'cover-uploads'
 
-// POST /api/upload-cover-audio — upload source audio for cover song (logged-in only)
+// POST /api/upload-cover-audio — upload source audio for cover song
 app.post('/api/upload-cover-audio', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Cover Song is a Pro Artist feature.', upgrade_url: '/pricing', locked: true }, 402)
 
   const form = await c.req.formData()
   const file = form.get('file') as File | null
@@ -8279,7 +8280,7 @@ app.post('/api/job/cover-song', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Cover Song is a Pro Artist feature. Upgrade to unlock.', upgrade_url: '/pricing', locked: true }, 402)
+  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Cover Song is a Pro Artist feature.', upgrade_url: '/pricing', locked: true }, 402)
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not configured' }, 500)
 
   const { audio_url, title, style_prompt, make_instrumental } = await c.req.json()
@@ -8353,7 +8354,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-02'
+const ASSET_VER = '20260927-03'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

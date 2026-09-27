@@ -3390,15 +3390,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-    genBtn.addEventListener('click', function() {
-      // If cover panel is open, delegate to startCoverSong instead
-      var coverPanel = document.getElementById('cover-inline-panel');
-      if (coverPanel && coverPanel.style.display !== 'none') {
-        if (typeof window.startCoverSong === 'function') window.startCoverSong();
-        return;
-      }
-      startGeneration();
-    });
+    genBtn.addEventListener('click', startGeneration);
     window.startGeneration = startGeneration;
 
   if (genRetryBtn) genRetryBtn.addEventListener('click', () => {
@@ -9544,16 +9536,19 @@ window.toggleRefDropdown = function() {
     // Show/hide the generator main sections (Prompt, Lyrics, Vocals, Styles)
     var mainSections = document.getElementById('generator-main-sections');
     if (mainSections) mainSections.style.display = active ? 'none' : '';
-    // Rename Create button
-    var createBtn = document.getElementById('gen-full-btn');
-    if (createBtn) {
-      createBtn.innerHTML = active
-        ? '<i class="fas fa-microphone-alt"></i> Create Cover'
-        : '<i class="fas fa-music"></i> Create';
-    }
+    // Hide the original Create button row entirely when cover panel is open
+    // (Cover panel has its own Create Cover button)
+    var createRow = document.getElementById('generator-create-row');
+    if (createRow) createRow.style.display = active ? 'none' : '';
   }
 
   window.openCoverPanel = function() {
+    // Gate: Pro Artist only — check before opening
+    var plan = (window._sfUser && window._sfUser.plan) || 'free';
+    if (plan !== 'pro' && plan !== 'developer') {
+      showUpgradeToast('Cover Song is a Pro Artist feature. Upgrade to unlock.');
+      return;
+    }
     var panel  = document.getElementById('cover-inline-panel');
     var btn    = document.getElementById('ctab-cover');
     // Close ref-inline-panel if open
