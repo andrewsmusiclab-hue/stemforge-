@@ -518,8 +518,9 @@ p  { color: var(--sub); }
   box-shadow: 0 0 28px rgba(251,146,60,.12) !important;
 }
 /* Downgrade buttons — compact so text fits inside narrow plan cards */
-.home-plan-btn[data-plan="free"],
 #home-btn-downgrade-to-free,
+.home-plan-btn.btn--outline,
+.pricing-plan-btn.btn--outline,
 .sub-downgrade-btn {
   font-size: .72rem !important;
   padding: 6px 10px !important;
