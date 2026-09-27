@@ -8101,8 +8101,8 @@ window.renderEditInstrumentPills = function (bp) {
         }
         var html = '';
         projects.forEach(function(p, i) {
-          // Use renderCoverCard for proper cover label
-          html += renderCoverCard(p, i);
+          // Use window.renderCoverCard (defined in later IIFE, exposed globally)
+          html += (window.renderCoverCard ? window.renderCoverCard(p, i) : renderExtendedCard(p, i));
         });
         gridEl.innerHTML = html;
         // Update badge
@@ -10020,12 +10020,12 @@ window.toggleRefDropdown = function() {
     }
     var html = '';
     covers.forEach(function(p, i) {
-      html += renderCoverCard(p, i);
+      html += window.renderCoverCard(p, i);
     });
     gridEl.innerHTML = html;
   }
 
-  function renderCoverCard(p, i) {
+  window.renderCoverCard = function renderCoverCard(p, i) {
     var hue = ((i * 83) + 200) % 360;
     var title = p.title || 'Cover Song';
     var safeTitle = title.replace(/"/g, '&quot;');
