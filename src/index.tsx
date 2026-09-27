@@ -8689,8 +8689,10 @@ app.post('/api/job/cover-song', async (c) => {
   }
   if (isCustomMode) {
     coverBody.prompt = lyrics!.trim()        // custom mode: lyrics go in 'prompt'
-  } else if (style_prompt && style_prompt.trim()) {
-    coverBody.gpt_description_prompt = style_prompt.trim().slice(0, 400)  // AI mode: description
+  } else {
+    // MusicAPI requires gpt_description_prompt when custom_mode=false — always send it
+    const desc = (style_prompt && style_prompt.trim()) ? style_prompt.trim().slice(0, 400) : 'A beautiful cover version'
+    coverBody.gpt_description_prompt = desc
   }
 
   // ── Create job record immediately with status 'pending' ─────────────────────
