@@ -103,14 +103,15 @@ async function setJob(db: D1Database | undefined, job: Job, userId?: string): Pr
 //  MP3 → TRUE PCM WAV CONVERSION
 //  Uses mpg123-decoder (WASM-based, no Node.js APIs, runs in CF Workers).
 //  Converts MP3 ArrayBuffer → 16-bit PCM WAV ArrayBuffer in-process.
-//  For M4A/AAC we cannot decode in-Worker (no WASM AAC decoder available
-//  at this bundle size) — M4A downloads are served as-is with correct MIME.
+//  M4A/AAC is decoded using @audio/decode-aac (FAAD2 WASM, 364KB) and then
+//  re-encoded to MP3 via lamejs. Full M4A→MP3 and M4A→WAV pipelines supported.
 // ═══════════════════════════════════════════════════════════════
 // Import only the non-WebWorker MPEGDecoder — the main index.js also imports
 // MPEGDecoderWebWorker which calls `new Worker()` at class definition time,
 // crashing in Cloudflare Workers (no Web Worker API). Direct src import avoids this.
 import MPEGDecoder from 'mpg123-decoder/src/MPEGDecoder.js'
 import lamejs from '@breezystack/lamejs'
+import decodeAac from '@audio/decode-aac'
 
 /**
  * Convert an MP3 ArrayBuffer to a true 16-bit PCM WAV ArrayBuffer.
@@ -223,25 +224,88 @@ function wavToMp3(wavBuf: ArrayBuffer): ArrayBuffer {
 }
 
 /**
- * Convert any audio source (MP3 or WAV) to MP3.
- * - WAV → encode with lamejs
- * - MP3 → return as-is (already MP3)
- * - M4A → decode to WAV via mp3ToWav is not possible; returns null (caller must handle)
- * Returns { buf: ArrayBuffer, fmt: 'mp3' | 'wav' | 'm4a' } — fmt is what was actually produced.
+ * Convert M4A/AAC bytes → true 16-bit PCM WAV ArrayBuffer.
+ * Uses @audio/decode-aac (FAAD2 WASM, 364KB) to decode AAC samples,
+ * then writes a standard PCM WAV header around the int16 data.
+ * Throws on failure — caller should catch and fall back.
+ */
+async function m4aToWav(m4aBuf: ArrayBuffer): Promise<ArrayBuffer> {
+  const input = new Uint8Array(m4aBuf)
+  const { channelData, sampleRate } = await (decodeAac as any)(input) as {
+    channelData: Float32Array[]
+    sampleRate: number
+  }
+
+  const numChannels   = channelData.length
+  const samplesDecoded = channelData[0].length
+  if (!samplesDecoded || samplesDecoded < 100) throw new Error('M4A decode produced no samples')
+
+  const bitsPerSample = 16
+  const dataSize      = samplesDecoded * numChannels * 2
+  const byteRate      = sampleRate * numChannels * 2
+
+  const wavBuf = new ArrayBuffer(44 + dataSize)
+  const view   = new DataView(wavBuf)
+  const str    = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)) }
+
+  str(0,  'RIFF'); view.setUint32(4,  36 + dataSize, true)
+  str(8,  'WAVE')
+  str(12, 'fmt '); view.setUint32(16, 16, true)
+  view.setUint16(20, 1,            true)  // PCM
+  view.setUint16(22, numChannels,  true)
+  view.setUint32(24, sampleRate,   true)
+  view.setUint32(28, byteRate,     true)
+  view.setUint16(32, numChannels * 2, true)
+  view.setUint16(34, bitsPerSample,   true)
+  str(36, 'data'); view.setUint32(40, dataSize, true)
+
+  let off = 44
+  for (let i = 0; i < samplesDecoded; i++) {
+    for (let ch = 0; ch < numChannels; ch++) {
+      const s = Math.max(-1, Math.min(1, channelData[ch][i]))
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true)
+      off += 2
+    }
+  }
+  return wavBuf
+}
+
+/**
+ * Convert M4A bytes → true MP3.
+ * Pipeline: M4A → FAAD2 WASM decode → PCM WAV → lamejs MP3 encode.
+ * Throws on failure — caller should catch and serve M4A as fallback.
+ */
+async function m4aToMp3(m4aBuf: ArrayBuffer): Promise<ArrayBuffer> {
+  const wavBuf = await m4aToWav(m4aBuf)
+  return wavToMp3(wavBuf)
+}
+
+/**
+ * Convert any audio source to MP3.
+ * - MP3 → return as-is
+ * - WAV → lamejs encode
+ * - M4A → FAAD2 decode → lamejs encode (full pipeline)
+ * Returns { buf, fmt } — fmt is what was actually produced (mp3 on success, or original fmt on failure).
  */
 async function toMp3(srcBuf: ArrayBuffer, srcFmt: 'wav' | 'mp3' | 'm4a'): Promise<{ buf: ArrayBuffer; fmt: 'wav' | 'mp3' | 'm4a' }> {
   if (srcFmt === 'mp3') return { buf: srcBuf, fmt: 'mp3' }
   if (srcFmt === 'wav') {
     try {
-      const mp3Buf = wavToMp3(srcBuf)
-      return { buf: mp3Buf, fmt: 'mp3' }
+      return { buf: wavToMp3(srcBuf), fmt: 'mp3' }
     } catch (e: any) {
       console.warn('[toMp3] WAV→MP3 failed:', e?.message)
-      return { buf: srcBuf, fmt: 'wav' }  // fallback: serve WAV
+      return { buf: srcBuf, fmt: 'wav' }
     }
   }
-  // M4A: no AAC decoder in Workers — serve as-is
-  return { buf: srcBuf, fmt: 'm4a' }
+  // M4A → full pipeline: AAC decode (FAAD2) → PCM WAV → lamejs MP3
+  try {
+    const mp3Buf = await m4aToMp3(srcBuf)
+    console.log(`[toMp3] M4A→MP3 done: ${Math.round(mp3Buf.byteLength/1024)}KB`)
+    return { buf: mp3Buf, fmt: 'mp3' }
+  } catch (e: any) {
+    console.warn('[toMp3] M4A→MP3 failed, serving M4A:', e?.message)
+    return { buf: srcBuf, fmt: 'm4a' }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2697,14 +2761,13 @@ app.get('/api/stem-audio/:jobId/:stem', async (c) => {
         dlBody  = converted.buf
         realFmt = converted.fmt
         console.log(`[stem-audio dl] job=${jobId} stem=${stemName} →MP3 done: ${realFmt} ${Math.round(dlBody.byteLength/1024)}KB`)
-      } else if (dlFmt === 'wav' && realFmt === 'mp3') {
-        // MP3 → WAV
+      } else if (dlFmt === 'wav' && realFmt !== 'wav') {
+        // MP3 → WAV or M4A → WAV
         try {
-          dlBody  = await mp3ToWav(dlBody)
+          dlBody  = realFmt === 'm4a' ? await m4aToWav(dlBody) : await mp3ToWav(dlBody)
           realFmt = 'wav'
         } catch (convErr: any) {
-          console.warn(`[stem-audio dl] MP3→WAV failed, serving MP3:`, convErr?.message)
-          realFmt = 'mp3'
+          console.warn(`[stem-audio dl] →WAV failed (${realFmt}), serving original:`, convErr?.message)
         }
       }
 
@@ -2770,15 +2833,14 @@ app.get('/api/remix-dl', async (c) => {
 
     console.log(`[remix-dl] name=${rawName} source format=${realFmt} user wants=${fmtReq}`)
 
-    if (fmtReq === 'wav' && realFmt === 'mp3') {
-      // MP3 → true PCM WAV
+    if (fmtReq === 'wav' && realFmt !== 'wav') {
+      // MP3 → WAV or M4A → WAV (FAAD2 decode)
       try {
-        body    = await mp3ToWav(body)
+        body    = realFmt === 'm4a' ? await m4aToWav(body) : await mp3ToWav(body)
         realFmt = 'wav'
-        console.log(`[remix-dl] MP3→WAV done: ${Math.round(body.byteLength/1024)}KB`)
+        console.log(`[remix-dl] →WAV done: ${Math.round(body.byteLength/1024)}KB`)
       } catch (convErr: any) {
-        console.warn(`[remix-dl] MP3→WAV failed, serving MP3:`, convErr?.message)
-        realFmt = 'mp3'
+        console.warn(`[remix-dl] →WAV failed (${realFmt}):`, convErr?.message)
       }
     } else if (fmtReq === 'mp3' && realFmt !== 'mp3') {
       // WAV → MP3 (or M4A falls back to M4A)
@@ -3245,18 +3307,17 @@ app.get('/api/stem-mix/:jobId', async (c) => {
     console.log(`[stem-mix dl] job=${jobId} source format=${realFmt} user wants=${fmtReq}`)
 
     // Convert to the format the user actually requested
-    if (fmtReq === 'wav' && realFmt === 'mp3') {
-      // MP3 → true 16-bit PCM WAV
+    if (fmtReq === 'wav' && realFmt !== 'wav') {
+      // MP3 → WAV or M4A → WAV (FAAD2 decode)
       try {
-        buf     = await mp3ToWav(buf)
+        buf     = realFmt === 'm4a' ? await m4aToWav(buf) : await mp3ToWav(buf)
         realFmt = 'wav'
-        console.log(`[stem-mix dl] job=${jobId} MP3→WAV done: ${Math.round(buf.byteLength/1024)}KB`)
+        console.log(`[stem-mix dl] job=${jobId} →WAV done: ${Math.round(buf.byteLength/1024)}KB`)
       } catch (convErr: any) {
-        console.warn(`[stem-mix dl] job=${jobId} MP3→WAV failed, serving MP3:`, convErr?.message)
-        realFmt = 'mp3'
+        console.warn(`[stem-mix dl] job=${jobId} →WAV failed (${realFmt}):`, convErr?.message)
       }
     } else if (fmtReq === 'mp3' && realFmt !== 'mp3') {
-      // WAV or M4A → MP3 (lamejs for WAV; M4A falls back to serving as-is)
+      // WAV → lamejs MP3; M4A → FAAD2 decode → lamejs MP3
       const converted = await toMp3(buf, realFmt)
       buf     = converted.buf
       realFmt = converted.fmt
@@ -8252,8 +8313,7 @@ app.get('/api/track-audio/:id', async (c) => {
 })
 
 // GET /api/download-wav/:id — download stereo audio as a REAL PCM WAV file
-// Detects the actual format from magic bytes; converts MP3 → true 16-bit PCM WAV.
-// M4A/AAC is served as-is (no WASM AAC decoder available at this bundle size).
+// Detects actual format from magic bytes; converts MP3→WAV and M4A→WAV (via FAAD2 WASM).
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -8292,10 +8352,16 @@ app.get('/api/download-wav/:id', async (c) => {
     outMime = 'audio/wav'
     outExt  = 'wav'
   } else {
-    // M4A / unknown — serve as-is with correct extension
-    outBuf  = rawBuf
-    outMime = audioMime(fmt)
-    outExt  = 'm4a'
+    // M4A → decode AAC (FAAD2) → true PCM WAV
+    try {
+      outBuf  = await m4aToWav(rawBuf)
+      outMime = 'audio/wav'
+      outExt  = 'wav'
+    } catch {
+      outBuf  = rawBuf
+      outMime = audioMime(fmt)
+      outExt  = 'm4a'
+    }
   }
   return new Response(outBuf, {
     headers: {
@@ -8308,7 +8374,7 @@ app.get('/api/download-wav/:id', async (c) => {
 })
 
 // GET /api/download-mp3/:id — download stereo audio as a TRUE MP3 file
-// WAV source → encode with lamejs; MP3 source → serve as-is; M4A → serve as M4A (no AAC decoder in Workers)
+// WAV source → lamejs; MP3 source → as-is; M4A → FAAD2 decode → lamejs encode
 app.get('/api/download-mp3/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
@@ -8376,9 +8442,14 @@ app.get('/api/download-wav-url', async (c) => {
       outBuf = rawBuf
       outFmt = 'wav'
     } else {
-      // M4A → serve as-is
-      outBuf = rawBuf
-      outFmt = 'm4a'
+      // M4A → decode AAC → WAV (FAAD2 WASM pipeline)
+      try {
+        outBuf = await m4aToWav(rawBuf)
+        outFmt = 'wav'
+      } catch {
+        outBuf = rawBuf
+        outFmt = 'm4a'
+      }
     }
   }
   return new Response(outBuf, {
@@ -8561,7 +8632,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-05'
+const ASSET_VER = '20260927-06'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
