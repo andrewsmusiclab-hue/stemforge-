@@ -8643,6 +8643,8 @@ app.get('/api/cover-audio-proxy/:filename', async (c) => {
 })
 
 // POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (20 credits, Pro Artist only)
+// Uses ctx.waitUntil() to return job_id immediately (<1s) then calls MusicAPI in the background.
+// This avoids Cloudflare's 30-second wall-clock request timeout (MusicAPI /upload-cover takes 30-45s).
 app.post('/api/job/cover-song', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
@@ -8678,12 +8680,12 @@ app.post('/api/job/cover-song', async (c) => {
   const hasLyrics = !!(lyrics && lyrics.trim())
   const isCustomMode = hasLyrics  // custom_mode=true when caller provides lyrics
   const coverBody: Record<string, any> = {
-    url:              audio_url,
-    mv:               'sonic-v6',           // always use latest model
+    url:               audio_url,
+    mv:                'sonic-v6',           // always use latest model
     make_instrumental: !!make_instrumental,
-    custom_mode:      isCustomMode,
-    title:            title || 'Cover Song',
-    tags:             style_prompt || '',    // style tags (not a description)
+    custom_mode:       isCustomMode,
+    title:             title || 'Cover Song',
+    tags:              style_prompt || '',    // style tags (not a description)
   }
   if (isCustomMode) {
     coverBody.prompt = lyrics!.trim()        // custom mode: lyrics go in 'prompt'
@@ -8691,58 +8693,119 @@ app.post('/api/job/cover-song', async (c) => {
     coverBody.gpt_description_prompt = style_prompt.trim().slice(0, 400)  // AI mode: description
   }
 
-  console.log(`[cover-song] Calling /upload-cover url=${audio_url.slice(0,80)} mv=sonic-v6 custom_mode=${isCustomMode}`)
-  // Use a 55-second timeout — upload-cover can take 30-45s to upload + queue the job
-  const coverAbort = new AbortController()
-  const coverTimeout = setTimeout(() => coverAbort.abort(), 55_000)
-  let sonicRes: Response
-  try {
-    sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(coverBody),
-      signal: coverAbort.signal
-    })
-  } catch (fetchErr: any) {
-    clearTimeout(coverTimeout)
-    // Refund credits on fetch failure / timeout
-    if (coverBonus > 0 && coverMain > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
-    } else if (coverBonus > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
-    } else {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
-    }
-    return c.json({ error: 'Cover generation timed out. The audio file may be too large — try an MP3 under 5 minutes.' }, 504)
-  }
-  clearTimeout(coverTimeout)
-  const sonicRawText = await sonicRes.text()
-  console.log(`[cover-song] /upload-cover HTTP ${sonicRes.status}: ${sonicRawText.slice(0, 500)}`)
-  let sonicData: any
-  try { sonicData = JSON.parse(sonicRawText) } catch { sonicData = {} }
-  // Accept task_id from top-level OR from steps.cover.task_id (both valid per docs)
-  const coverTaskId = sonicData.task_id || sonicData.steps?.cover?.task_id || ''
-  if (!sonicRes.ok || !coverTaskId) {
-    // Refund credits on failure
-    if (coverBonus > 0 && coverMain > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
-    } else if (coverBonus > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
-    } else {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
-    }
-    const errMsg = sonicData.message || sonicData.error || sonicData.detail || `Stemforge cover error (HTTP ${sonicRes.status})`
-    console.error(`[cover-song] API error: ${errMsg} | raw: ${sonicRawText.slice(0, 300)}`)
-    return c.json({ error: errMsg }, 502)
-  }
-
+  // ── Create job record immediately with status 'pending' ─────────────────────
+  // This lets us return a job_id to the client RIGHT NOW (< 1 second),
+  // before we even touch MusicAPI. Cloudflare's 30s wall-clock limit won't fire.
   const jobId = crypto.randomUUID()
   const now = Date.now()
-  const jobData = JSON.stringify({ id: jobId, status: 'generating', task_id: coverTaskId, title: title || 'Cover Song', created_at: now, user_id: user.id, is_cover: 1 })
+  const initialJobData = JSON.stringify({
+    id: jobId,
+    status: 'pending',          // will become 'generating' once MusicAPI responds
+    title: title || 'Cover Song',
+    created_at: now,
+    user_id: user.id,
+    is_cover: 1
+  })
   await ensureTable(c.env.DB)
-  await c.env.DB.prepare(`INSERT INTO jobs (id, data, created_at, user_id, is_cover) VALUES (?, ?, ?, ?, 1)`).bind(jobId, jobData, now, user.id).run()
+  await c.env.DB.prepare(
+    `INSERT INTO jobs (id, data, created_at, user_id, is_cover) VALUES (?, ?, ?, ?, 1)`
+  ).bind(jobId, initialJobData, now, user.id).run()
 
-  return c.json({ ok: true, job_id: jobId, task_id: coverTaskId })
+  console.log(`[cover-song] job ${jobId} created (pending). Scheduling background MusicAPI call...`)
+
+  // ── Capture env bindings before entering waitUntil ──────────────────────────
+  // c.env is not accessible inside waitUntil after the response is sent,
+  // so we capture all needed values in local variables now.
+  const db = c.env.DB
+  const musicApiKey = c.env.MUSICAPI_KEY
+
+  // ── Background work: runs AFTER response is sent to client ──────────────────
+  // waitUntil() keeps the Worker alive after the HTTP response is returned.
+  // The MusicAPI /upload-cover call takes 30-45s — no Cloudflare timeout here.
+  c.executionCtx.waitUntil((async () => {
+    try {
+      console.log(`[cover-song] bg job=${jobId}: calling /upload-cover url=${audio_url.slice(0,80)} mv=sonic-v6`)
+      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${musicApiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(coverBody)
+        // No AbortController here — waitUntil has a 30s CPU but no wall-clock limit for fetch
+      })
+
+      const sonicRawText = await sonicRes.text()
+      console.log(`[cover-song] bg job=${jobId}: /upload-cover HTTP ${sonicRes.status}: ${sonicRawText.slice(0, 500)}`)
+      let sonicData: any
+      try { sonicData = JSON.parse(sonicRawText) } catch { sonicData = {} }
+
+      // Accept task_id from top-level OR from steps.cover.task_id (both valid per docs)
+      const coverTaskId = sonicData.task_id || sonicData.steps?.cover?.task_id || ''
+
+      if (sonicRes.ok && coverTaskId) {
+        // ── Success: update job to 'generating' with the real task_id ──────────
+        const updatedData = JSON.stringify({
+          id: jobId,
+          status: 'generating',
+          task_id: coverTaskId,
+          title: title || 'Cover Song',
+          created_at: now,
+          user_id: user.id,
+          is_cover: 1
+        })
+        await db.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(updatedData, jobId).run()
+        console.log(`[cover-song] bg job=${jobId}: status → generating, task_id=${coverTaskId}`)
+      } else {
+        // ── Failure: update job to 'error' and refund credits ─────────────────
+        const errMsg = sonicData.message || sonicData.error || sonicData.detail || `Stemforge cover error (HTTP ${sonicRes.status})`
+        console.error(`[cover-song] bg job=${jobId}: API error: ${errMsg}`)
+        const errorData = JSON.stringify({
+          id: jobId,
+          status: 'error',
+          error: errMsg,
+          title: title || 'Cover Song',
+          created_at: now,
+          user_id: user.id,
+          is_cover: 1
+        })
+        await db.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errorData, jobId).run()
+        // Refund credits
+        if (coverBonus > 0 && coverMain > 0) {
+          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
+        } else if (coverBonus > 0) {
+          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
+        } else {
+          await db.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+        }
+      }
+    } catch (bgErr: any) {
+      // ── Unexpected error in background task ───────────────────────────────────
+      console.error(`[cover-song] bg job=${jobId}: unexpected error:`, bgErr?.message)
+      try {
+        const errorData = JSON.stringify({
+          id: jobId,
+          status: 'error',
+          error: 'Cover generation failed unexpectedly. Credits have been refunded.',
+          title: title || 'Cover Song',
+          created_at: now,
+          user_id: user.id,
+          is_cover: 1
+        })
+        await db.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errorData, jobId).run()
+        // Refund credits
+        if (coverBonus > 0 && coverMain > 0) {
+          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
+        } else if (coverBonus > 0) {
+          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
+        } else {
+          await db.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+        }
+      } catch (refundErr: any) {
+        console.error(`[cover-song] bg job=${jobId}: refund also failed:`, refundErr?.message)
+      }
+    }
+  })())
+
+  // ── Return immediately — client gets job_id in < 1 second ───────────────────
+  return c.json({ ok: true, job_id: jobId })
 })
 
 // GET /api/poll-cover/:id — poll cover song job status
@@ -8760,8 +8823,12 @@ app.get('/api/poll-cover/:id', async (c) => {
   if (job.status === 'ready') return c.json({ status: 'ready', audio_url: job.stereo_url, title: job.title })
   if (job.status === 'error') return c.json({ status: 'error', error: job.error })
 
+  // 'pending' means the background waitUntil task hasn't called MusicAPI yet
+  // (or is still in the middle of the upload). Tell the client to keep polling.
+  if (job.status === 'pending' || !job.task_id) return c.json({ status: 'generating' })
+
   // Poll MusicAPI
-  if (!c.env.MUSICAPI_KEY || !job.task_id) return c.json({ status: 'generating' })
+  if (!c.env.MUSICAPI_KEY) return c.json({ status: 'generating' })
   const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${job.task_id}`, {
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
   })
