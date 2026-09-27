@@ -8238,6 +8238,7 @@ app.get('/api/download-wav-url', async (c) => {
 
 // ─── COVER SONG FEATURE ────────────────────────────────────────────────────────
 const COVER_UPLOADS_PREFIX = 'cover-uploads'
+const R2_PUBLIC_BASE = 'https://pub-8e434559eec949638897e09ecee99a88.r2.dev'
 
 // POST /api/upload-cover-audio — upload source audio for cover song
 app.post('/api/upload-cover-audio', async (c) => {
@@ -8267,9 +8268,13 @@ app.post('/api/upload-cover-audio', async (c) => {
   const arrayBuf = await file.arrayBuffer()
   await c.env.IMAGES.put(key, arrayBuf, { httpMetadata: { contentType: file.type || 'audio/mpeg' } })
 
+  // Use the R2 public bucket URL directly so MusicAPI can fetch it without routing
+  // back through our own Worker (Cloudflare Workers cannot fetch their own zone URLs)
+  const audioUrl = `${R2_PUBLIC_BASE}/${key}`
+  // Keep the proxy URL for the mini-player (it respects auth, but audio player doesn't need it)
   const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
-  const audioUrl = `${siteUrl}/api/cover-audio-proxy/${encodeURIComponent(uuid + '.' + ext)}`
-  return c.json({ ok: true, audio_url: audioUrl, filename: file.name })
+  const proxyUrl = `${siteUrl}/api/cover-audio-proxy/${encodeURIComponent(uuid + '.' + ext)}`
+  return c.json({ ok: true, audio_url: audioUrl, proxy_url: proxyUrl, filename: file.name })
 })
 
 // GET /api/cover-audio-proxy/:filename — serve cover upload from R2
