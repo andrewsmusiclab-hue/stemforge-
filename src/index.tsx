@@ -8642,6 +8642,43 @@ app.get('/api/cover-audio-proxy/:filename', async (c) => {
   return new Response(obj.body, { headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' } })
 })
 
+// ── Auto-generate a Suno-style cover description from title + optional style hint ──────────────────
+// Called when the user leaves the style field blank in the Cover panel.
+// Uses gpt-4o-mini to produce a detailed music description (genre, instruments, tempo, energy, mood)
+// just like Suno does automatically when you give it an audio file.
+async function generateCoverDescription(title: string, styleHint: string, openaiKey: string): Promise<string> {
+  const userMsg = styleHint && styleHint.trim()
+    ? `Song title: "${title}"\nStyle hint from user: "${styleHint.trim()}"`
+    : `Song title: "${title}"`
+
+  try {
+    const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${openaiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a music style analyst. Given a song title (and optional style hints), write a single detailed description of what the song sounds like — covering genre, sub-genre, instruments, tempo, energy level, mood, vocal style, and production characteristics. Be specific and musical, like a Suno-style prompt. Write 1–3 sentences, max 300 characters. Do NOT include artist names, song titles, or copyrighted references. Output ONLY the description text, nothing else.`
+          },
+          { role: 'user', content: userMsg }
+        ],
+        temperature: 0.7,
+        max_tokens: 120
+      })
+    })
+    if (!res.ok) throw new Error(`OpenAI ${res.status}`)
+    const data = await res.json() as any
+    const text: string = data.choices?.[0]?.message?.content?.trim() || ''
+    if (text.length > 10) return text.slice(0, 400)
+  } catch (e: any) {
+    console.warn('[cover-desc] GPT failed, using fallback:', e?.message)
+  }
+  // Fallback if GPT fails — still better than empty
+  return styleHint?.trim() || 'Energetic pop cover with rich instrumentation, melodic vocals, and modern production'
+}
+
 // POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (20 credits, Pro Artist only)
 // Uses ctx.waitUntil() to return job_id immediately (<1s) then calls MusicAPI in the background.
 // This avoids Cloudflare's 30-second wall-clock request timeout (MusicAPI /upload-cover takes 30-45s).
@@ -8690,9 +8727,16 @@ app.post('/api/job/cover-song', async (c) => {
   if (isCustomMode) {
     coverBody.prompt = lyrics!.trim()        // custom mode: lyrics go in 'prompt'
   } else {
-    // MusicAPI requires gpt_description_prompt when custom_mode=false — always send it
-    const desc = (style_prompt && style_prompt.trim()) ? style_prompt.trim().slice(0, 400) : 'A beautiful cover version'
+    // MusicAPI requires gpt_description_prompt when custom_mode=false — always send it.
+    // If the user left the style field blank, auto-generate a detailed Suno-style description
+    // from the song title using GPT-4o-mini (same as Suno's automatic style detection).
+    const desc = await generateCoverDescription(
+      title || 'Cover Song',
+      style_prompt || '',
+      c.env.OPENAI_API_KEY
+    )
     coverBody.gpt_description_prompt = desc
+    console.log(`[cover-song] auto-desc: "${desc.slice(0, 100)}"`)
   }
 
   // ── Create job record immediately with status 'pending' ─────────────────────
