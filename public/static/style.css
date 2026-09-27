@@ -3714,14 +3714,34 @@ a.export-badge:hover {
   color: var(--primary); background: var(--surface);
   border-color: var(--border); border-bottom-color: var(--surface);
 }
-.lib-tab--trash.lib-tab--active { color: var(--danger); }
+/* Per-tab active colours */
+.lib-tab--beats.lib-tab--active    { color: #4e9fff; }
+.lib-tab--remixes.lib-tab--active  { color: #c084fc; }
+.lib-tab--extended.lib-tab--active { color: #22d3ee; }
+.lib-tab--oneshots.lib-tab--active { color: #f59e0b; }
+.lib-tab--covers.lib-tab--active   { color: #f472b6; }
+.lib-tab--trash.lib-tab--active    { color: var(--danger); }
+/* Per-tab hover colours */
+.lib-tab--beats:hover    { color: #4e9fff; }
+.lib-tab--remixes:hover  { color: #c084fc; }
+.lib-tab--extended:hover { color: #22d3ee; }
+.lib-tab--oneshots:hover { color: #f59e0b; }
+.lib-tab--covers:hover   { color: #f472b6; }
+.lib-tab--trash:hover    { color: var(--danger); }
 .lib-tab .lib-tab-count {
   font-size: .7rem; font-weight: 700;
   background: rgba(255,255,255,.1); color: var(--muted);
   border-radius: 99px; padding: 1px 7px; min-width: 20px; text-align: center;
 }
+/* Per-tab badge colours (active state) */
+.lib-tab--beats.lib-tab--active    .lib-tab-count { background: rgba(78,159,255,.15); color: #4e9fff; }
+.lib-tab--remixes.lib-tab--active  .lib-tab-count { background: rgba(192,132,252,.15); color: #c084fc; }
+.lib-tab--extended.lib-tab--active .lib-tab-count { background: rgba(34,211,238,.15);  color: #22d3ee; }
+.lib-tab--oneshots.lib-tab--active .lib-tab-count { background: rgba(245,158,11,.15);  color: #f59e0b; }
+.lib-tab--covers.lib-tab--active   .lib-tab-count { background: rgba(244,114,182,.15); color: #f472b6; }
+.lib-tab--trash.lib-tab--active    .lib-tab-count { background: rgba(248,113,113,.12); color: var(--danger); }
+/* Legacy fallback (non-tab-specific active) */
 .lib-tab--active .lib-tab-count { background: rgba(78,159,255,.15); color: var(--primary); }
-.lib-tab--trash.lib-tab--active .lib-tab-count { background: rgba(248,113,113,.12); color: var(--danger); }
 
 /* ── Library Search ────────────────────────────────────────── */
 .lib-search-wrap {

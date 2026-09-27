@@ -8904,7 +8904,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-13'
+const ASSET_VER = '20260927-14'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -11340,22 +11340,22 @@ function dashboardPage() {
 
   <!-- Library tabs -->
   <div class="lib-tabs" id="lib-tabs">
-    <button class="lib-tab lib-tab--active" data-tab="beats" onclick="switchLibTab('beats')">
+    <button class="lib-tab lib-tab--beats lib-tab--active" data-tab="beats" onclick="switchLibTab('beats')">
       <i class="fas fa-music"></i> Beats / Songs
     </button>
-    <button class="lib-tab" data-tab="remixes" onclick="switchLibTab('remixes')">
+    <button class="lib-tab lib-tab--remixes" data-tab="remixes" onclick="switchLibTab('remixes')">
       <i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc">Remixes</span>
     </button>
-    <button class="lib-tab" data-tab="extended" onclick="switchLibTab('extended')">
-      <i class="fas fa-expand-arrows-alt"></i> Extended
+    <button class="lib-tab lib-tab--extended" data-tab="extended" onclick="switchLibTab('extended')">
+      <i class="fas fa-expand-arrows-alt" style="color:#22d3ee"></i> <span style="color:#22d3ee">Extended</span>
     </button>
-    <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')">
-      <i class="fas fa-bolt"></i> One Shots
+    <button class="lib-tab lib-tab--oneshots" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')">
+      <i class="fas fa-bolt" style="color:#f59e0b"></i> <span style="color:#f59e0b">One Shots</span>
     </button>
-    <button class="lib-tab" data-tab="covers" onclick="switchLibTab('covers')">
-      <i class="fas fa-microphone-alt" style="color:#a855f7"></i> <span style="color:#c084fc">Covers</span>
+    <button class="lib-tab lib-tab--covers" data-tab="covers" onclick="switchLibTab('covers')">
+      <i class="fas fa-microphone-alt" style="color:#f472b6"></i> <span style="color:#f472b6">Covers</span>
     </button>
-    <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
+    <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
   </div>

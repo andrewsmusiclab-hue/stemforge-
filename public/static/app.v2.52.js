@@ -1886,13 +1886,14 @@ document.addEventListener('DOMContentLoaded', () => {
     menu.style.cssText = 'position:fixed;z-index:99999;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);min-width:200px;overflow:hidden;padding:4px 0';
 
     const isOneshot = cardTab === 'oneshots';
+    const isCover   = cardTab === 'covers';
     const _plan = (window._sfUser && window._sfUser.plan) || 'free';
     const isFree = _plan === 'free';
 
     const items = [];
 
-    // Edit only for full beats
-    if (!isOneshot) {
+    // Edit / Extend only for full beats (not oneshots, not covers)
+    if (!isOneshot && !isCover) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
       items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song', action: () => {
         window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
@@ -1909,14 +1910,18 @@ document.addEventListener('DOMContentLoaded', () => {
             else window.location.href = '/pricing';
           }
         });
+      } else if (isCover) {
+        // Covers: use URL-based download (avoids R2 pipeline; direct proxy of stereo_url)
+        items.push({ icon: 'fa-download', label: 'Download Cover',
+          action: () => openCoverDownloadModal(stereoUrl, safeTitle) });
       } else {
         items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
           action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
       }
     }
 
-    // Get Stems — Creator and Pro only
-    if (!isOneshot && stereoUrl) {
+    // Get Stems — Creator and Pro only (beats only, not oneshots or covers)
+    if (!isOneshot && !isCover && stereoUrl) {
       if (isFree) {
         items.push({ icon: 'fa-lock', label: 'Get Stems (Pro Artist only)', action: () => {
           const upgradeModal = document.getElementById('sf-dash-upgrade');
@@ -1932,8 +1937,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // Remix — for full beats (not oneshots), paid plans only, requires stereoUrl
-    if (!isOneshot && !isFree && stereoUrl) {
+    // Remix — for full beats (not oneshots, not covers), paid plans only, requires stereoUrl
+    if (!isOneshot && !isCover && !isFree && stereoUrl) {
       items.push({ icon: 'fa-wand-magic-sparkles', label: 'Remix', tooltip: 'Remix your beat inspired by this track', action: () => {
         window.openRemixCard(jobId, stereoUrl, safeTitle);
       }});
@@ -5479,6 +5484,62 @@ async function doWavDownload(jobId, filename) {
   } catch (e) {
     showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: network error', '#ef4444', 'rgba(239,68,68,.4)');
   }
+}
+
+// ── Cover download modal (WAV / MP3) — uses /api/download-wav-url proxy ──
+// Avoids the R2-backed beats pipeline; works directly with the cover's stereo_url.
+function openCoverDownloadModal(stereoUrl, safeTitle) {
+  if (!stereoUrl) { alert('No audio available for this cover yet.'); return; }
+  const old = document.getElementById('sf-cover-dl-modal');
+  if (old) old.remove();
+  const title = (safeTitle || 'cover').replace(/[^a-zA-Z0-9_\-]/g, '_').toLowerCase();
+  const encUrl = encodeURIComponent(stereoUrl);
+
+  async function triggerDownload(fmt) {
+    const dlUrl = '/api/download-wav-url?url=' + encUrl + '&name=' + encodeURIComponent(title) + '&fmt=' + fmt;
+    try {
+      const res = await fetch(dlUrl, { credentials: 'include' });
+      if (!res.ok) {
+        let errData = {};
+        try { errData = await res.json(); } catch {}
+        showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
+        return;
+      }
+      const blob = await res.blob();
+      const ext  = fmt === 'wav' ? 'wav' : 'mp3';
+      const bUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = bUrl; a.download = title + '.' + ext;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(bUrl), 10000);
+    } catch (e) {
+      showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: network error', '#ef4444', 'rgba(239,68,68,.4)');
+    }
+  }
+
+  const modal = document.createElement('div');
+  modal.id = 'sf-cover-dl-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72);backdrop-filter:blur(6px)';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:32px 28px;max-width:360px;width:90%;text-align:center;position:relative">
+      <button onclick="document.getElementById('sf-cover-dl-modal').remove()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
+      <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#f472b6,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.2rem;color:#fff"><i class="fas fa-microphone-alt"></i></div>
+      <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download Cover Song</h3>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your format:</p>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <button id="sf-cover-dl-mp3" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,#f472b6,#a855f7);color:#fff;border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;border:none;width:100%">
+          <i class="fas fa-file-audio"></i> Download MP3
+        </button>
+        <button id="sf-cover-dl-wav" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;width:100%">
+          <i class="fas fa-file-waveform"></i> Download WAV
+        </button>
+      </div>
+      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV = lossless quality · MP3 = smaller file size</p>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#sf-cover-dl-mp3').onclick = () => { modal.remove(); triggerDownload('mp3'); };
+  modal.querySelector('#sf-cover-dl-wav').onclick = () => { modal.remove(); triggerDownload('wav'); };
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
 
 // Mark downgrade as pending when user confirms it (subscription page modal)
