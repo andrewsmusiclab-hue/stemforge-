@@ -9601,6 +9601,11 @@ window.toggleRefDropdown = function() {
     // Hide Remove button
     var clearBtn = document.getElementById('cover-clear-btn');
     if (clearBtn) clearBtn.style.display = 'none';
+    // Clear auto-filled style description and badge
+    var styleEl = document.getElementById('cover-style-prompt');
+    if (styleEl) { styleEl.value = ''; styleEl.style.height = ''; styleEl.disabled = false; }
+    var badgeEl = document.getElementById('cover-style-ai-badge');
+    if (badgeEl) badgeEl.style.display = 'none';
   };
 
   // ── Instrumental toggle → collapse lyrics ─────────────────────
@@ -9676,6 +9681,32 @@ window.toggleRefDropdown = function() {
       // Show the Remove button
       var clearBtn = document.getElementById('cover-clear-btn');
       if (clearBtn) clearBtn.style.display = 'inline-flex';
+      // ── Auto-fill style textarea with AI-detected description ──────────────
+      // Only auto-fill if the user hasn't already typed something in the field
+      var styleEl = document.getElementById('cover-style-prompt');
+      var badgeEl = document.getElementById('cover-style-ai-badge');
+      if (styleEl && !styleEl.value.trim()) {
+        var cleanTitle = _coverFilename.replace(/\.[^.]+$/, ''); // strip extension
+        styleEl.placeholder = 'Detecting style…';
+        styleEl.disabled = true;
+        fetch('/api/cover-auto-desc?title=' + encodeURIComponent(cleanTitle), { credentials: 'include' })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            styleEl.disabled = false;
+            styleEl.placeholder = 'e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…';
+            if (d.description && d.description.trim()) {
+              styleEl.value = d.description.trim();
+              if (badgeEl) { badgeEl.style.display = 'flex'; }
+              // Auto-resize textarea to fit content
+              styleEl.style.height = 'auto';
+              styleEl.style.height = Math.min(styleEl.scrollHeight, 160) + 'px';
+            }
+          })
+          .catch(function() {
+            styleEl.disabled = false;
+            styleEl.placeholder = 'e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…';
+          });
+      }
     } catch(e) {
       _setUploadState('idle');
       var msg = e.message || 'Upload failed';

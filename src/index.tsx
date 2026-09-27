@@ -8642,6 +8642,15 @@ app.get('/api/cover-audio-proxy/:filename', async (c) => {
   return new Response(obj.body, { headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' } })
 })
 
+// GET /api/cover-auto-desc — generate a Suno-style description from filename/title (called immediately after upload)
+// Returns the description as plain text so the frontend can pre-fill the style textarea for the user to edit.
+app.get('/api/cover-auto-desc', async (c) => {
+  const title = c.req.query('title') || 'Cover Song'
+  if (!c.env.OPENAI_API_KEY) return c.json({ description: '' })
+  const desc = await generateCoverDescription(title, '', c.env.OPENAI_API_KEY)
+  return c.json({ description: desc })
+})
+
 // ── Auto-generate a Suno-style cover description from title + optional style hint ──────────────────
 // Called when the user leaves the style field blank in the Cover panel.
 // Uses gpt-4o-mini to produce a detailed music description (genre, instruments, tempo, energy, mood)
@@ -8909,7 +8918,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-10'
+const ASSET_VER = '20260927-11'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10160,6 +10169,10 @@ function generatorPage() {
             </div>
             <textarea id="cover-style-prompt" class="suno-textarea" rows="3"
               placeholder="e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…"></textarea>
+            <div id="cover-style-ai-badge" style="display:none;margin-top:6px;font-size:.72rem;color:#a855f7;display:none;align-items:center;gap:5px">
+              <i class="fas fa-magic" style="font-size:.68rem"></i>
+              <span>AI detected — edit freely before creating</span>
+            </div>
           </div>
 
           <!-- Instrumental toggle -->
