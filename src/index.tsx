@@ -8749,121 +8749,41 @@ app.post('/api/job/cover-song', async (c) => {
   }
 
   // ── Create job record immediately with status 'pending' ─────────────────────
-  // This lets us return a job_id to the client RIGHT NOW (< 1 second),
-  // before we even touch MusicAPI. Cloudflare's 30s wall-clock limit won't fire.
+  // We store cover_body + credit split on the job so the poll route can submit to MusicAPI.
+  // The poll route gets its own fresh 30s wall-clock budget — no Cloudflare timeout.
   const jobId = crypto.randomUUID()
   const now = Date.now()
   const initialJobData = JSON.stringify({
     id: jobId,
-    status: 'pending',          // will become 'generating' once MusicAPI responds
+    status: 'pending',
     title: title || 'Cover Song',
     created_at: now,
     user_id: user.id,
-    is_cover: 1
+    is_cover: 1,
+    // Stored so poll route can submit to MusicAPI and refund credits if needed
+    cover_body:  JSON.stringify(coverBody),
+    cover_bonus: coverBonus,
+    cover_main:  coverMain,
+    cover_cost:  COVER_COST,
   })
   await ensureTable(c.env.DB)
   await c.env.DB.prepare(
     `INSERT INTO jobs (id, data, created_at, user_id, is_cover) VALUES (?, ?, ?, ?, 1)`
   ).bind(jobId, initialJobData, now, user.id).run()
 
-  console.log(`[cover-song] job ${jobId} created (pending). Scheduling background MusicAPI call...`)
-
-  // ── Capture env bindings before entering waitUntil ──────────────────────────
-  // c.env is not accessible inside waitUntil after the response is sent,
-  // so we capture all needed values in local variables now.
-  const db = c.env.DB
-  const musicApiKey = c.env.MUSICAPI_KEY
-
-  // ── Background work: runs AFTER response is sent to client ──────────────────
-  // waitUntil() keeps the Worker alive after the HTTP response is returned.
-  // The MusicAPI /upload-cover call takes 30-45s — no Cloudflare timeout here.
-  c.executionCtx.waitUntil((async () => {
-    try {
-      console.log(`[cover-song] bg job=${jobId}: calling /upload-cover url=${audio_url.slice(0,80)} mv=sonic-v6`)
-      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${musicApiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(coverBody)
-        // No AbortController here — waitUntil has a 30s CPU but no wall-clock limit for fetch
-      })
-
-      const sonicRawText = await sonicRes.text()
-      console.log(`[cover-song] bg job=${jobId}: /upload-cover HTTP ${sonicRes.status}: ${sonicRawText.slice(0, 500)}`)
-      let sonicData: any
-      try { sonicData = JSON.parse(sonicRawText) } catch { sonicData = {} }
-
-      // Accept task_id from top-level OR from steps.cover.task_id (both valid per docs)
-      const coverTaskId = sonicData.task_id || sonicData.steps?.cover?.task_id || ''
-
-      if (sonicRes.ok && coverTaskId) {
-        // ── Success: update job to 'generating' with the real task_id ──────────
-        const updatedData = JSON.stringify({
-          id: jobId,
-          status: 'generating',
-          task_id: coverTaskId,
-          title: title || 'Cover Song',
-          created_at: now,
-          user_id: user.id,
-          is_cover: 1
-        })
-        await db.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(updatedData, jobId).run()
-        console.log(`[cover-song] bg job=${jobId}: status → generating, task_id=${coverTaskId}`)
-      } else {
-        // ── Failure: update job to 'error' and refund credits ─────────────────
-        const errMsg = sonicData.message || sonicData.error || sonicData.detail || `Stemforge cover error (HTTP ${sonicRes.status})`
-        console.error(`[cover-song] bg job=${jobId}: API error: ${errMsg}`)
-        const errorData = JSON.stringify({
-          id: jobId,
-          status: 'error',
-          error: errMsg,
-          title: title || 'Cover Song',
-          created_at: now,
-          user_id: user.id,
-          is_cover: 1
-        })
-        await db.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errorData, jobId).run()
-        // Refund credits
-        if (coverBonus > 0 && coverMain > 0) {
-          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
-        } else if (coverBonus > 0) {
-          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
-        } else {
-          await db.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
-        }
-      }
-    } catch (bgErr: any) {
-      // ── Unexpected error in background task ───────────────────────────────────
-      console.error(`[cover-song] bg job=${jobId}: unexpected error:`, bgErr?.message)
-      try {
-        const errorData = JSON.stringify({
-          id: jobId,
-          status: 'error',
-          error: 'Cover generation failed unexpectedly. Credits have been refunded.',
-          title: title || 'Cover Song',
-          created_at: now,
-          user_id: user.id,
-          is_cover: 1
-        })
-        await db.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errorData, jobId).run()
-        // Refund credits
-        if (coverBonus > 0 && coverMain > 0) {
-          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(coverBonus, coverMain, user.id).run()
-        } else if (coverBonus > 0) {
-          await db.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(coverBonus, user.id).run()
-        } else {
-          await db.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
-        }
-      } catch (refundErr: any) {
-        console.error(`[cover-song] bg job=${jobId}: refund also failed:`, refundErr?.message)
-      }
-    }
-  })())
+  console.log(`[cover-song] job ${jobId} created (pending) — poll route will call MusicAPI`)
 
   // ── Return immediately — client gets job_id in < 1 second ───────────────────
+  // The first GET /api/poll-cover/:id call will actually submit to MusicAPI.
+  // This avoids Cloudflare's 30s wall-clock limit entirely.
   return c.json({ ok: true, job_id: jobId })
 })
 
 // GET /api/poll-cover/:id — poll cover song job status
+// Strategy: job is created as 'pending' by POST /api/job/cover-song (returns immediately).
+// On the FIRST poll we see 'pending' → we call MusicAPI /upload-cover here, synchronously.
+// This poll request gets its own fresh 30s wall-clock budget — no timeout issues.
+// Subsequent polls see 'generating' and just check the MusicAPI task status.
 app.get('/api/poll-cover/:id', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
@@ -8878,12 +8798,67 @@ app.get('/api/poll-cover/:id', async (c) => {
   if (job.status === 'ready') return c.json({ status: 'ready', audio_url: job.stereo_url, title: job.title })
   if (job.status === 'error') return c.json({ status: 'error', error: job.error })
 
-  // 'pending' means the background waitUntil task hasn't called MusicAPI yet
-  // (or is still in the middle of the upload). Tell the client to keep polling.
-  if (job.status === 'pending' || !job.task_id) return c.json({ status: 'generating' })
+  // ── PENDING: first poll — call MusicAPI /upload-cover NOW from this request ──────────────
+  // The POST route returned immediately without calling MusicAPI (to avoid the 30s timeout).
+  // Now the poll route has its own fresh 30s wall-clock budget to make the slow MusicAPI call.
+  // We mark the job 'submitting' first so concurrent polls don't double-submit.
+  if (job.status === 'pending') {
+    if (!c.env.MUSICAPI_KEY) {
+      const errData = JSON.stringify({ ...job, status: 'error', error: 'Service not configured' })
+      await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errData, jobId).run()
+      return c.json({ status: 'error', error: 'Service not configured' })
+    }
 
-  // Poll MusicAPI
-  if (!c.env.MUSICAPI_KEY) return c.json({ status: 'generating' })
+    // Mark as 'submitting' to prevent double-submission if client polls again quickly
+    const submittingData = JSON.stringify({ ...job, status: 'submitting' })
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(submittingData, jobId).run()
+
+    console.log(`[poll-cover] job=${jobId} status=pending → calling MusicAPI /upload-cover now`)
+    try {
+      const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: job.cover_body  // stored as JSON string on the job
+      })
+      const sonicRawText = await sonicRes.text()
+      console.log(`[poll-cover] job=${jobId}: /upload-cover HTTP ${sonicRes.status}: ${sonicRawText.slice(0, 400)}`)
+      let sonicData: any
+      try { sonicData = JSON.parse(sonicRawText) } catch { sonicData = {} }
+
+      const coverTaskId = sonicData.task_id || sonicData.steps?.cover?.task_id || ''
+      if (sonicRes.ok && coverTaskId) {
+        const updatedData = JSON.stringify({ ...job, status: 'generating', task_id: coverTaskId })
+        await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(updatedData, jobId).run()
+        console.log(`[poll-cover] job=${jobId}: → generating, task_id=${coverTaskId}`)
+        return c.json({ status: 'generating' })
+      } else {
+        const errMsg = sonicData.message || sonicData.error || sonicData.detail || `Cover API error (HTTP ${sonicRes.status})`
+        const errData = JSON.stringify({ ...job, status: 'error', error: errMsg })
+        await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errData, jobId).run()
+        // Refund credits
+        const cb = job.cover_bonus || 0, cm = job.cover_main || 0, cc = job.cover_cost || 20
+        if (cb > 0 && cm > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(cb, cm, user.id).run()
+        else if (cb > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cb, user.id).run()
+        else await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(cc, user.id).run()
+        return c.json({ status: 'error', error: errMsg })
+      }
+    } catch (e: any) {
+      console.error(`[poll-cover] job=${jobId}: /upload-cover threw:`, e?.message)
+      const errData = JSON.stringify({ ...job, status: 'error', error: 'Cover submission failed — please try again.' })
+      await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errData, jobId).run()
+      const cb = job.cover_bonus || 0, cm = job.cover_main || 0, cc = job.cover_cost || 20
+      if (cb > 0 && cm > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(cb, cm, user.id).run()
+      else if (cb > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cb, user.id).run()
+      else await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(cc, user.id).run()
+      return c.json({ status: 'error', error: 'Cover submission failed — please try again.' })
+    }
+  }
+
+  // 'submitting' = MusicAPI call is in flight from a concurrent poll — tell client to keep polling
+  if (job.status === 'submitting') return c.json({ status: 'generating' })
+
+  // ── GENERATING: job has a task_id — poll MusicAPI for completion ──────────────
+  if (!c.env.MUSICAPI_KEY || !job.task_id) return c.json({ status: 'generating' })
   const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${job.task_id}`, {
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
   })
@@ -8898,14 +8873,11 @@ app.get('/api/poll-cover/:id', async (c) => {
   }
   const failed = clips.find((cl: any) => cl.state === 'failed')
   if (failed) {
-    // Preserve the exact error message from the generation service (e.g. "already published" catalog rejection)
     const apiErrMsg: string = failed.error_message || failed.error || failed.message || 'Generation failed'
     const updated = { ...job, status: 'error', error: apiErrMsg }
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
     return c.json({ status: 'error', error: apiErrMsg })
   }
-
-  // Also check top-level error from the task response (some generation service error modes)
   if (pollData.error || pollData.message) {
     const topErrMsg: string = pollData.error || pollData.message || 'Generation failed'
     const updated = { ...job, status: 'error', error: topErrMsg }
