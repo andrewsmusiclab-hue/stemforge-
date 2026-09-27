@@ -9594,6 +9594,54 @@ window.toggleRefDropdown = function() {
            (file.name && file.name.toLowerCase().endsWith('.wav'));
   }
 
+  // ── Clear uploaded track ──────────────────────────────────────
+  window.clearCoverUpload = function() {
+    // Stop and destroy audio player
+    if (_coverAudio) { _coverAudio.pause(); _coverAudio.src = ''; _coverAudio = null; }
+    // Reset state vars
+    _coverAudioUrl = null;
+    _coverFilename = null;
+    // Reset file input so same file can be re-selected
+    var inp = document.getElementById('cover-file-input');
+    if (inp) inp.value = '';
+    // Reset drop zone UI
+    _setUploadState('idle');
+    _hideCoverUploadError();
+    // Hide mini-player
+    var player = document.getElementById('cover-mini-player');
+    if (player) player.style.display = 'none';
+    // Hide Remove button
+    var clearBtn = document.getElementById('cover-clear-btn');
+    if (clearBtn) clearBtn.style.display = 'none';
+  };
+
+  // ── Instrumental toggle → collapse lyrics ─────────────────────
+  window.coverInstrumentalToggled = function(isChecked) {
+    var lyricsSection = document.getElementById('cover-lyrics-section');
+    if (!lyricsSection) return;
+    if (isChecked) {
+      lyricsSection.style.maxHeight = lyricsSection.scrollHeight + 'px';
+      lyricsSection.style.overflow = 'hidden';
+      lyricsSection.style.transition = 'max-height .3s ease, opacity .3s ease';
+      requestAnimationFrame(function() {
+        lyricsSection.style.maxHeight = '0';
+        lyricsSection.style.opacity = '0';
+      });
+      setTimeout(function() { lyricsSection.style.display = 'none'; }, 310);
+    } else {
+      lyricsSection.style.display = '';
+      lyricsSection.style.maxHeight = '0';
+      lyricsSection.style.opacity = '0';
+      lyricsSection.style.overflow = 'hidden';
+      lyricsSection.style.transition = 'max-height .3s ease, opacity .3s ease';
+      requestAnimationFrame(function() {
+        lyricsSection.style.maxHeight = '300px';
+        lyricsSection.style.opacity = '1';
+      });
+      setTimeout(function() { lyricsSection.style.overflow = ''; lyricsSection.style.maxHeight = ''; }, 320);
+    }
+  };
+
   window.handleCoverFileSelect = function(file, inputEl) {
     // Support legacy call pattern where the input element is passed instead of a File
     if (file && file.files) { inputEl = file; file = file.files[0]; }
@@ -9637,6 +9685,9 @@ window.toggleRefDropdown = function() {
       if (fnEl) { fnEl.textContent = _coverFilename; fnEl.style.display = 'block'; }
       _setUploadState('done');
       _coverPlayerShow(data.audio_url, _coverFilename);
+      // Show the Remove button
+      var clearBtn = document.getElementById('cover-clear-btn');
+      if (clearBtn) clearBtn.style.display = 'inline-flex';
     } catch(e) {
       _setUploadState('idle');
       var msg = e.message || 'Upload failed';
@@ -9673,6 +9724,8 @@ window.toggleRefDropdown = function() {
       if (label) { label.textContent = 'Drag & drop or click to choose a file'; label.style.color = 'var(--muted)'; }
       if (zone)  { zone.style.opacity = '1'; zone.style.pointerEvents = ''; zone.style.borderColor = ''; }
       if (fnameEl) { fnameEl.style.display = 'none'; fnameEl.textContent = ''; }
+      var clearBtn = document.getElementById('cover-clear-btn');
+      if (clearBtn) clearBtn.style.display = 'none';
     }
   }
 
@@ -9772,6 +9825,7 @@ window.toggleRefDropdown = function() {
     var statusEl = document.getElementById('cover-status');
     var stylePrompt = (document.getElementById('cover-style-prompt') || {}).value || '';
     var makeInstrumental = !!(document.getElementById('cover-instrumental-toggle') || {}).checked;
+    var coverLyrics = makeInstrumental ? '' : ((document.getElementById('cover-lyrics') || {}).value || '');
 
     if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating…'; }
     if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Submitting to AI…'; }
@@ -9784,6 +9838,7 @@ window.toggleRefDropdown = function() {
           audio_url:         _coverAudioUrl,
           title:             (_coverFilename || '').replace(/\.[^.]+$/, '') + ' (Cover)',
           style_prompt:      stylePrompt,
+          lyrics:            coverLyrics,
           make_instrumental: makeInstrumental
         })
       });

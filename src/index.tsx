@@ -8297,7 +8297,7 @@ app.post('/api/job/cover-song', async (c) => {
   if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Cover Song is a Pro Artist feature.', upgrade_url: '/pricing', locked: true }, 402)
   if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not configured' }, 500)
 
-  const { audio_url, title, style_prompt, make_instrumental } = await c.req.json()
+  const { audio_url, title, style_prompt, make_instrumental, lyrics } = await c.req.json()
   if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
 
   const COVER_COST = 15
@@ -8310,7 +8310,13 @@ app.post('/api/job/cover-song', async (c) => {
   const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: audio_url, mv: 'sonic-v4', make_instrumental: !!make_instrumental, gpt_description_prompt: style_prompt || '' })
+    body: JSON.stringify({
+      url: audio_url,
+      mv: 'sonic-v4',
+      make_instrumental: !!make_instrumental,
+      gpt_description_prompt: style_prompt || '',
+      ...(lyrics && lyrics.trim() ? { lyrics: lyrics.trim() } : {})
+    })
   })
   const sonicData = await sonicRes.json() as any
   if (!sonicRes.ok || !sonicData.task_id) {
@@ -9576,7 +9582,15 @@ function generatorPage() {
 
           <!-- Upload zone -->
           <div>
-            <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:6px;display:block"><i class="fas fa-upload" style="margin-right:4px"></i>Source Audio (MP3 / WAV, max 20 MB)</label>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+              <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin:0"><i class="fas fa-upload" style="margin-right:4px"></i>Source Audio (MP3 / WAV, max 20 MB)</label>
+              <button id="cover-clear-btn" onclick="clearCoverUpload()" title="Remove uploaded file"
+                style="display:none;background:none;border:none;color:var(--muted);cursor:pointer;font-size:.8rem;padding:2px 6px;border-radius:6px;transition:color .15s,background .15s"
+                onmouseover="this.style.color='#f87171';this.style.background='rgba(239,68,68,.1)'"
+                onmouseout="this.style.color='var(--muted)';this.style.background='none'">
+                <i class="fas fa-times"></i> Remove
+              </button>
+            </div>
             <div id="cover-drop-zone"
               onclick="document.getElementById('cover-file-input').click()"
               ondragover="event.preventDefault();this.classList.add('cover-drop-zone--over')"
@@ -9585,7 +9599,7 @@ function generatorPage() {
               style="border:2px dashed rgba(139,92,246,.4);border-radius:10px;padding:22px 16px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s">
               <i id="cover-drop-icon" class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#a855f7;display:block;margin-bottom:8px"></i>
               <span id="cover-drop-label" style="font-size:.85rem;color:var(--muted)">Drag &amp; drop or click to choose a file</span>
-              <span id="cover-upload-filename" style="display:none;font-size:.82rem;color:#a855f7;font-weight:600;margin-top:4px;display:none"></span>
+              <span id="cover-upload-filename" style="display:none;font-size:.82rem;color:#a855f7;font-weight:600;margin-top:4px"></span>
             </div>
             <input type="file" id="cover-file-input" accept="audio/*" style="display:none" onchange="handleCoverFileSelect(this.files[0], this)"/>
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
@@ -9598,12 +9612,19 @@ function generatorPage() {
               placeholder="e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…"></textarea>
           </div>
 
+          <!-- Lyrics (hidden when instrumental) -->
+          <div id="cover-lyrics-section">
+            <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:6px;display:block"><i class="fas fa-align-left" style="margin-right:4px"></i>Custom Lyrics <span style="font-weight:400;opacity:.7">(optional — leave blank to let AI write them)</span></label>
+            <textarea id="cover-lyrics" class="suno-textarea" rows="5"
+              placeholder="[Verse]&#10;Your custom lyrics here…&#10;&#10;[Chorus]&#10;Or leave blank for AI-generated lyrics"></textarea>
+          </div>
+
           <!-- Instrumental toggle -->
           <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:8px">
             <i class="fas fa-drum" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
             <span style="font-size:.85rem;font-weight:600;flex:1">Make Instrumental</span>
             <label class="suno-switch">
-              <input type="checkbox" id="cover-instrumental-toggle"/>
+              <input type="checkbox" id="cover-instrumental-toggle" onchange="coverInstrumentalToggled(this.checked)"/>
               <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
             </label>
           </div>
