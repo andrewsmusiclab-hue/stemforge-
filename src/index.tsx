@@ -4306,6 +4306,13 @@ app.post('/api/stripe/webhook', async (c) => {
 // ═══════════════════════════════════════════════════════════════
 
 app.get('/', async (c) => {
+  // Logged-in users: redirect to /generator so they stay on their working page on refresh.
+  // Guests: serve the marketing home page.
+  if (c.env.DB && c.env.SESSION_SECRET) {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (user) return c.redirect('/generator')
+  }
   return c.html(homePage())
 })
 app.get('/pricing', async (c) => {
@@ -4318,7 +4325,9 @@ app.get('/generator', async (c) => {
     const user = token ? await getSessionUser(c.env.DB, token) : null
     if (!user) return c.redirect('/signup?next=/generator')
   }
-  return c.html(generatorPage())
+  const resp = c.html(generatorPage())
+  resp.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  return resp
 })
 app.get('/dashboard', async (c) => {
   if (c.env.DB && c.env.SESSION_SECRET) {
