@@ -680,8 +680,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
   // Free users: 60 pts (3 beats)
   await db.prepare(`UPDATE users SET gens_limit = 60   WHERE plan = 'free'      AND gens_limit < 60`).run()
-  // Creator users below 800 → 800 pts
-  await db.prepare(`UPDATE users SET gens_limit = 800  WHERE plan = 'creator'   AND gens_limit < 800`).run()
+  // Creator users below 900 → 900 pts
+  await db.prepare(`UPDATE users SET gens_limit = 900  WHERE plan = 'creator'   AND gens_limit < 900`).run()
   // Pro users below 2000 → 2000 pts
   await db.prepare(`UPDATE users SET gens_limit = 2000 WHERE plan = 'pro'       AND gens_limit < 2000`).run()
   // Developer users below 2000 → 2000 pts
@@ -1011,7 +1011,7 @@ async function createUser(db: D1Database, data: {
   signup_source?: string, signup_referrer?: string
 }): Promise<void> {
   await ensureAuthTables(db)
-  const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
   const plan = data.plan || 'free'
   const now = Date.now()
   await db.prepare(
@@ -1025,7 +1025,7 @@ async function createUser(db: D1Database, data: {
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
   // Apply rollover: unused downloads carry over, capped at 500
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
   const newLimit = planLimits[plan] || 60
@@ -1041,7 +1041,7 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
 
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:60, creator:800, pro:2000 }
+  const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
   const newMonthBase = planLimits[plan] || 60
   const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
   if (!currentUser) return
@@ -5049,7 +5049,7 @@ app.post('/api/job/extend-upload', async (c) => {
   await ensureTable(c.env.DB)
 
   // ── credit deduction ──────────────────────────────────────────────────
-  const EXTEND_COST = 15
+  const EXTEND_COST = 20
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
@@ -5276,7 +5276,7 @@ app.post('/api/job/extend', async (c) => {
   if (!sourceJob.stereo_url) return c.json({ error: 'Source track has no audio URL' }, 400)
 
   // ── credit deduction ──────────────────────────────────────────────────
-  const EXTEND_COST = 15
+  const EXTEND_COST = 20
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
@@ -8102,7 +8102,7 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
   if (!prompt.trim()) return c.json({ error: 'prompt is required' }, 400)
 
   // Deduct 10 pts before generation (refunded on hard API error) — bonus first
-  const SFX_COST = 10
+  const SFX_COST = 15
   if (c.env.DB) {
     // Use try/catch in case bonus_credits column doesn't exist on older schema
     let fresh: { gens_used: number; gens_limit: number; bonus_credits: number } | null = null
@@ -8714,7 +8714,7 @@ app.post('/api/job/cover-song', async (c) => {
   const { audio_url, title, style_prompt, make_instrumental, lyrics } = await c.req.json()
   if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
 
-  const COVER_COST = 20
+  const COVER_COST = 25
   // Use the standard gens_used/gens_limit/bonus_credits system
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
@@ -8904,7 +8904,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-11'
+const ASSET_VER = '20260927-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9502,10 +9502,11 @@ function homePage() {
           <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
           <p class="plan-card__desc">For artists, writers, and content creators.</p>
           <ul class="plan-card__features">
-            <li><i class="fas fa-check"></i> 800 points monthly</li>
+            <li><i class="fas fa-check"></i> 900 points monthly</li>
             <li><i class="fas fa-check"></i> Auto Split (up to 5 stems)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
           </ul>
           <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
           <div id="home-creator-plan-status" style="margin:8px 0 0">
@@ -9797,7 +9798,7 @@ window.showSfPlanToast = function(type, plan, msg) {
           if (plan === 'free') {
             msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
           } else if (plan === 'creator') {
-            msg.textContent = 'You will be downgraded to Creator ($10/mo, 800 points/mo) at the end of your current billing cycle. You keep all features until then.';
+            msg.textContent = 'You will be downgraded to Creator ($10/mo, 900 points/mo) at the end of your current billing cycle. You keep all features until then.';
           }
           document.getElementById('home-downgrade-modal').style.display = 'flex';
           return;
@@ -10043,7 +10044,7 @@ window.showSfPlanToast = function(type, plan, msg) {
             if (plan === 'free') {
               if (msg) msg.textContent = 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.';
             } else if (plan === 'creator') {
-              if (msg) msg.textContent = 'You will be downgraded to Creator ($10/mo, 800 points/mo) at the end of your current billing cycle. You keep all features until then.';
+              if (msg) msg.textContent = 'You will be downgraded to Creator ($10/mo, 900 points/mo) at the end of your current billing cycle. You keep all features until then.';
             }
             document.getElementById('home-downgrade-modal').style.display = 'flex';
           });
@@ -10833,7 +10834,7 @@ function pricingPage() {
         <div class="plan-card__tier">Creator</div>
         <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 800 points monthly</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 900 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
           <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (30 pts)</li>
@@ -11287,7 +11288,7 @@ function pricingPage() {
     const msg = plan === 'free'
       ? 'Your subscription will be cancelled. You will move to the Free plan after your billing cycle ends.'
       : plan === 'creator'
-        ? 'You will be downgraded to the Creator plan ($10/mo, 800 points/mo) at the end of your current billing cycle.'
+        ? 'You will be downgraded to the Creator plan ($10/mo, 900 points/mo) at the end of your current billing cycle.'
         : 'You will be switched to Pro Artist ($26/mo, 2,000 points/mo) at end of your billing cycle.';
     document.getElementById('pricing-downgrade-msg').textContent = msg;
     document.getElementById('pricing-downgrade-modal').style.display = 'flex';
@@ -11581,10 +11582,11 @@ function checkoutPage() {
           <div class="checkout-plan-summary__price"><span id="co-plan-price">$10</span><span>/mo</span></div>
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
-          <li><i class="fas fa-check"></i> 800 points monthly</li>
+          <li><i class="fas fa-check"></i> 900 points monthly</li>
           <li><i class="fas fa-check"></i> Auto Split — up to 5 stems</li>
           <li><i class="fas fa-check"></i> WAV download</li>
           <li><i class="fas fa-check"></i> Commercial use rights</li>
+          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
         </ul>
         <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$10.00</strong></div>
       </div>
@@ -12391,10 +12393,11 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <div class="sub-plan-card__price">$10<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 800 points monthly</li>
+            <li><i class="fas fa-check"></i> 900 points monthly</li>
             <li><i class="fas fa-check"></i> Auto Split — up to 5 stems</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
           </ul>
           ${user.plan === 'creator'
             ? `<div class="sub-action-wrap" id="sub-creator-action-wrap">
@@ -12553,14 +12556,15 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <div class="credit-table-wrap" style="overflow-x:auto">
         <div class="credit-table">
           <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Points Cost</span><span>Available On</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">75 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
-          <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track upload</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">10 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-upload"></i> Reference track upload</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone-alt" style="color:#a855f7"></i> AI Cover Song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val" style="color:#10b981">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         </div>
       </div>
@@ -12764,7 +12768,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         const credSection = document.getElementById('umod-credits-section');
         credSection.style.display = 'block';
         document.getElementById('umod-credits-note').textContent =
-          'Your points allowance upgrades immediately to ' + (targetPlan === 'pro' ? '2,000 pts/mo' : '800 pts/mo') + '.';
+          'Your points allowance upgrades immediately to ' + (targetPlan === 'pro' ? '2,000 pts/mo' : '900 pts/mo') + '.';
 
         // ── Confirm button ──
         document.getElementById('upgrade-confirm-label').textContent = 'Confirm & Pay ' + chargeLabel;
@@ -12855,7 +12859,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       if (pendingTarget === 'free') {
         msg.textContent = 'Your subscription will be cancelled at the end of your billing cycle. You will move to the Free plan (50 points monthly) after that.';
       } else if (pendingTarget === 'creator') {
-        msg.textContent = 'You will be downgraded to the Creator plan ($10/mo, 800 points/mo) at the end of your current billing cycle.';
+        msg.textContent = 'You will be downgraded to the Creator plan ($10/mo, 900 points/mo) at the end of your current billing cycle.';
       }
       modal.style.display = 'flex';
     });
@@ -13630,7 +13634,7 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 800 points monthly, Auto Split (30 pts), Vocals &amp; Instrumental (70 pts), WAV download, commercial use rights</li>
+    <li><strong>Creator Plan ($10/month):</strong> 900 points monthly, Auto Split (35 pts), Vocals &amp; Instrumental (75 pts), WAV download, One Shot Creator (15 pts), commercial use rights</li>
     <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix, Extend song</li>
   </ul>
 

@@ -444,6 +444,20 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'sep2026-ai-cover-songs',
+      date: 'September 2026',
+      title: 'AI Cover Songs — Now on StemForge',
+      tag: 'NEW FEATURE',
+      tagColor: '#a855f7',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#c084fc">What is AI Cover Song?</b> — Upload any song (MP3, WAV, etc.) and StemForge will recreate it in a completely new AI-generated voice. The melody, lyrics, and structure stay the same — only the voice changes. It's like having any artist perform your favourite song.</li>
+        <li><b style="color:#e2e8f0">How it works</b> — Head to the <b style="color:#c084fc">Create</b> page and click <b>Cover Song</b>. Upload your audio file, choose a vocal style (or let AI detect it for you), and hit Generate. Your cover appears in your <b>Library → Covers</b> tab.</li>
+        <li><b style="color:#e2e8f0">Auto style detection</b> — StemForge automatically analyses your uploaded track and suggests a Suno-style genre/mood description for the vocal style field. You can edit it freely before generating.</li>
+        <li><b style="color:#e2e8f0">Pro Artist plan</b> — AI Cover Song is available to <b style="color:#c084fc">Pro Artist</b> subscribers. Each cover costs <b>25 pts</b>.</li>
+        <li><b style="color:#e2e8f0">Your covers library</b> — All generated covers are saved to the <b>Covers</b> tab in your library, separate from your beats and remixes.</li>
+      </ul>`
+    },
+    {
       id: 'aug2026-service-restored',
       date: 'August 2026',
       title: 'Service Restored — Song Extend & Creation Back Online',
@@ -874,13 +888,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // openOneShotGated — checks plan before opening the One Shot popup
   window.openOneShotGated = function() {
     const plan = (window._sfUser && window._sfUser.plan) || 'free';
-    if (plan !== 'pro' && plan !== 'developer') {
+    if (plan === 'free') {
       if (typeof showUpgradeModal === 'function') {
         showUpgradeModal('One Shot Creator');
       } else if (typeof showUpgradeToast === 'function') {
-        showUpgradeToast('One Shot Creator is a Pro Artist feature. Upgrade to unlock.');
+        showUpgradeToast('One Shot Creator requires a Creator or Pro Artist plan. Upgrade to unlock.');
       } else {
-        alert('One Shot Creator requires the Pro Artist plan.\n\nUpgrade at stemforge.studio/pricing');
+        alert('One Shot Creator requires a Creator or Pro Artist plan.\n\nUpgrade at stemforge.studio/pricing');
       }
       return;
     }
@@ -5007,13 +5021,13 @@ window.selectOneshotSfxType = function(btn) {
 window.selectOneshotType = window.selectOneshotSfxType;
 
 window.generateOneshotSfx = async function() {
-  // Pro Artist only gate
+  // Creator+ gate (free plan blocked)
   const _plan = (window._sfUser && window._sfUser.plan) || 'free';
-  if (_plan !== 'pro' && _plan !== 'developer') {
+  if (_plan === 'free') {
     if (typeof showUpgradeToast === 'function') {
-      showUpgradeToast('One Shot Creator is a Pro Artist feature. Upgrade to unlock.');
+      showUpgradeToast('One Shot Creator requires a Creator or Pro Artist plan. Upgrade to unlock.');
     } else {
-      alert('One Shot Creator requires the Pro Artist plan. Upgrade to unlock.');
+      alert('One Shot Creator requires a Creator or Pro Artist plan. Upgrade to unlock.');
     }
     return;
   }
@@ -8087,8 +8101,8 @@ window.renderEditInstrumentPills = function (bp) {
         }
         var html = '';
         projects.forEach(function(p, i) {
-          // Reuse renderExtendedCard — same visual style
-          html += renderExtendedCard(p, i);
+          // Use renderCoverCard for proper cover label
+          html += renderCoverCard(p, i);
         });
         gridEl.innerHTML = html;
         // Update badge
