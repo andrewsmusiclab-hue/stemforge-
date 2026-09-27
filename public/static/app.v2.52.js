@@ -914,11 +914,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════
 
   // Track which tabs have been fetched so we only fetch once per session
-  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false };
+  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false, covers: false };
   // Expose on window so external code (generator, extend) can invalidate cache
   window._libLoaded = _libLoaded;
   // Cached project arrays per tab (for client-side search)
-  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [] };
+  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [], covers: [] };
   let   _libActive  = 'beats';
 
   // ── Stable unique hue from any ID string ───────────────────
@@ -1521,14 +1521,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
     });
     // Show/hide panels
-    ['beats','extended','oneshots','uploads','trash','remixes'].forEach(t => {
+    ['beats','extended','oneshots','uploads','trash','remixes','covers'].forEach(t => {
       const panel = document.getElementById('lib-panel-' + t);
       if (panel) panel.style.display = t === tab ? '' : 'none';
     });
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -1546,6 +1546,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         fetchLibTab(tab); // fallback in case IIFE hasn't run yet (calls reloadExtendedTab internally)
       }
+    } else if (tab === 'covers') {
+      if (window.fetchCoversTab) window.fetchCoversTab();
     } else {
       fetchLibTab(tab);
     }
@@ -9523,3 +9525,261 @@ window.toggleRefDropdown = function() {
     if (btn) btn.classList.add('active');
   }
 };
+
+// ── Cover Song feature ───────────────────────────────────────
+(function() {
+  let _coverAudioUrl  = null;   // proxy URL returned from /api/upload-cover-audio
+  let _coverFilename  = null;
+  let _coverPollTimer = null;
+
+  window.openCoverPanel = function() {
+    var panel  = document.getElementById('cover-inline-panel');
+    var btn    = document.getElementById('ctab-cover');
+    // Close ref-inline-panel if open
+    var refPanel = document.getElementById('ref-inline-panel');
+    if (refPanel && refPanel.style.display !== 'none') {
+      refPanel.style.display = 'none';
+      var refBtn = document.getElementById('ctab-reference');
+      if (refBtn) refBtn.classList.remove('active');
+    }
+    if (!panel) return;
+    var isOpen = panel.style.display !== 'none';
+    panel.style.display = isOpen ? 'none' : 'block';
+    if (btn) btn.classList.toggle('active', !isOpen);
+  };
+
+  window.closeCoverPanel = function() {
+    var panel = document.getElementById('cover-inline-panel');
+    var btn   = document.getElementById('ctab-cover');
+    if (panel) panel.style.display = 'none';
+    if (btn)   btn.classList.remove('active');
+  };
+
+  window.handleCoverFileSelect = function(input) {
+    if (!input.files || !input.files[0]) return;
+    var file = input.files[0];
+    if (file.size > 20 * 1024 * 1024) {
+      alert('File too large — please upload a file under 20 MB.');
+      input.value = '';
+      return;
+    }
+    _uploadCoverFile(file);
+  };
+
+  async function _uploadCoverFile(file) {
+    _setUploadState('loading');
+    var formData = new FormData();
+    formData.append('file', file);
+    try {
+      var res = await fetch('/api/upload-cover-audio', { method: 'POST', body: formData });
+      var data = await res.json();
+      if (!res.ok || !data.ok) {
+        if (res.status === 402 || res.status === 403) {
+          _setUploadState('idle');
+          alert('Cover Song is a Pro feature. Please upgrade your plan.');
+          return;
+        }
+        throw new Error(data.error || 'Upload failed');
+      }
+      _coverAudioUrl = data.audio_url;
+      _coverFilename = data.filename || file.name;
+      document.getElementById('cover-upload-filename').textContent = _coverFilename;
+      _setUploadState('done');
+    } catch(e) {
+      _setUploadState('idle');
+      alert('Upload failed: ' + (e.message || 'Unknown error'));
+    }
+  }
+
+  function _setUploadState(state) {
+    var idle    = document.getElementById('cover-upload-idle');
+    var loading = document.getElementById('cover-upload-loading');
+    var done    = document.getElementById('cover-upload-done');
+    if (idle)    idle.style.display    = state === 'idle'    ? 'flex' : 'none';
+    if (loading) loading.style.display = state === 'loading' ? 'flex' : 'none';
+    if (done)    done.style.display    = state === 'done'    ? 'flex' : 'none';
+  }
+
+  window.startCoverSong = async function() {
+    if (!_coverAudioUrl) {
+      alert('Please upload an audio file first.');
+      return;
+    }
+    var btn = document.getElementById('cover-create-btn');
+    var statusEl = document.getElementById('cover-status');
+    var stylePrompt = (document.getElementById('cover-style-prompt') || {}).value || '';
+    var makeInstrumental = !!(document.getElementById('cover-instrumental-toggle') || {}).checked;
+
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating…'; }
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = 'Submitting to AI…'; }
+
+    try {
+      var res = await fetch('/api/job/cover-song', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audio_url:         _coverAudioUrl,
+          title:             (_coverFilename || '').replace(/\.[^.]+$/, '') + ' (Cover)',
+          style_prompt:      stylePrompt,
+          make_instrumental: makeInstrumental
+        })
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        if (res.status === 402 || res.status === 403) {
+          alert('Cover Song is a Pro feature. Please upgrade your plan.');
+        } else {
+          alert(data.error || 'Could not start cover job.');
+        }
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Create Cover'; }
+        if (statusEl) statusEl.style.display = 'none';
+        return;
+      }
+      // Job started — show overlay and poll
+      _showCoverOverlay();
+      _startCoverPoll(data.job_id, data.task_id);
+      window.closeCoverPanel();
+    } catch(e) {
+      alert('Error: ' + (e.message || 'Unknown error'));
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-magic"></i> Create Cover'; }
+      if (statusEl) statusEl.style.display = 'none';
+    }
+  };
+
+  function _showCoverOverlay() {
+    var overlay = document.getElementById('cover-processing-overlay');
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    _animateCoverProgress(0);
+  }
+
+  window.dismissCoverOverlay = function() {
+    var overlay = document.getElementById('cover-processing-overlay');
+    if (overlay) overlay.style.display = 'none';
+  };
+
+  function _animateCoverProgress(pct) {
+    var bar = document.getElementById('cover-progress-bar');
+    if (bar) bar.style.width = Math.min(pct, 95) + '%';
+  }
+
+  function _startCoverPoll(jobId, taskId) {
+    if (_coverPollTimer) clearInterval(_coverPollTimer);
+    var attempts = 0;
+    var maxAttempts = 60; // 5 min at 5s intervals
+    _coverPollTimer = setInterval(async function() {
+      attempts++;
+      _animateCoverProgress(5 + Math.min(attempts * 1.5, 88));
+      if (attempts > maxAttempts) {
+        clearInterval(_coverPollTimer);
+        var msg = document.getElementById('cover-overlay-msg');
+        if (msg) msg.textContent = 'Taking longer than expected — check Library → Covers in a few minutes.';
+        return;
+      }
+      try {
+        var res = await fetch('/api/poll-cover/' + jobId);
+        var data = await res.json();
+        if (data.status === 'ready') {
+          clearInterval(_coverPollTimer);
+          _animateCoverProgress(100);
+          var msg = document.getElementById('cover-overlay-msg');
+          if (msg) msg.textContent = 'Cover ready! Check Library → Covers to listen.';
+          // Invalidate covers cache so next tab switch re-fetches
+          if (typeof window._libLoaded !== 'undefined') window._libLoaded.covers = false;
+          // Auto-redirect to library covers tab after 2s
+          setTimeout(function() {
+            window.dismissCoverOverlay();
+            if (window.location.pathname === '/dashboard') {
+              window.switchLibTab('covers');
+            } else {
+              window.location.href = '/dashboard#covers';
+            }
+          }, 2000);
+        }
+        // else pending — keep polling
+      } catch(e) {
+        // network hiccup — keep polling
+      }
+    }, 5000);
+  }
+
+  // ── Fetch covers tab ────────────────────────────────────────
+  window.fetchCoversTab = async function() {
+    var gridEl = document.getElementById('project-grid-covers');
+    if (!gridEl) return;
+    if (window._libLoaded && window._libLoaded.covers) {
+      renderCoversGrid(gridEl, window._libData && window._libData.covers || []);
+      return;
+    }
+    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>';
+    try {
+      var res = await fetch('/api/projects?tab=covers');
+      if (!res.ok) {
+        if (res.status === 401) {
+          gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)"><i class="fas fa-lock"></i> Sign in to see your covers. <a href="/login">Log in</a></div>';
+          return;
+        }
+        throw new Error('HTTP ' + res.status);
+      }
+      var json = await res.json();
+      var covers = json.projects || [];
+      if (window._libData) window._libData.covers = covers;
+      if (window._libLoaded) window._libLoaded.covers = true;
+      if (window.updateTabCount) window.updateTabCount('covers', covers.length);
+      renderCoversGrid(gridEl, covers);
+    } catch(e) {
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load covers.</div>';
+    }
+  };
+
+  // ── Render covers grid ──────────────────────────────────────
+  function renderCoversGrid(gridEl, covers) {
+    if (!gridEl) return;
+    if (!covers || covers.length === 0) {
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-guitar" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No covers yet. Head to the <a href="/generator">Create page</a> to make one!</p></div>';
+      return;
+    }
+    var html = '';
+    covers.forEach(function(p, i) {
+      html += renderCoverCard(p, i);
+    });
+    gridEl.innerHTML = html;
+  }
+
+  function renderCoverCard(p, i) {
+    var hue = ((i * 83) + 200) % 360;
+    var title = p.title || 'Cover Song';
+    var safeTitle = title.replace(/"/g, '&quot;');
+    var audioUrl = p.stereo_url || p.audio_url || '';
+    var dateStr = p.created_at ? new Date(p.created_at).toLocaleDateString() : '';
+    var safeFilename = title.replace(/[^a-zA-Z0-9\s\-_]/g,'').replace(/\s+/g,'_').toLowerCase() || 'cover';
+    return '<div class="project-card project-card--cover"' +
+      ' data-stereo="' + audioUrl + '"' +
+      ' data-id="' + p.id + '"' +
+      ' data-title="' + safeTitle + '"' +
+      ' data-hue="' + hue + '">' +
+      '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,20%) 0%,hsl(' + ((hue+50)%360) + ',70%,12%) 100%)">' +
+      '<div class="project-card__art-icon"><i class="fas fa-guitar" style="color:hsl(' + hue + ',80%,70%);opacity:.8"></i></div>' +
+      (audioUrl ? '<div class="project-card__play" onclick="playDashProject(this)"><i class="fas fa-play"></i></div>' : '') +
+      '</div>' +
+      '<div class="project-card__body">' +
+      '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+      '<h4 style="margin:0;flex:1">' + safeTitle + '</h4>' +
+      (audioUrl ? '<button class="song-dots-btn" title="More options"' +
+        ' onclick="event.stopPropagation();openCardMenu(this,\'' + p.id + '\',\'' + audioUrl + '\',\'\',\'' + safeFilename + '\',\'covers\')"' +
+        ' style="flex-shrink:0"><i class="fas fa-ellipsis-h"></i></button>' : '') +
+      '</div>' +
+      '<p style="margin-bottom:8px">Cover · ' + dateStr + '</p>' +
+      (audioUrl
+        ? '<audio class="oneshot-card-audio" src="' + audioUrl + '" controls preload="none" style="width:100%;border-radius:6px"></audio>'
+        : '<div style="font-size:.76rem;color:var(--muted);display:flex;align-items:center;gap:6px"><i class="fas fa-spinner fa-spin"></i> Generating…</div>') +
+      '</div></div>';
+  }
+
+  // Handle dashboard hash #covers on load
+  if (window.location.hash === '#covers' && window.location.pathname === '/dashboard') {
+    window.addEventListener('load', function() {
+      if (typeof window.switchLibTab === 'function') window.switchLibTab('covers');
+    });
+  }
+})();

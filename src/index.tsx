@@ -68,6 +68,7 @@ async function ensureTable(db: D1Database): Promise<void> {
     `ALTER TABLE jobs ADD COLUMN user_id TEXT`,
     `ALTER TABLE jobs ADD COLUMN deleted_at INTEGER`,
     `ALTER TABLE jobs ADD COLUMN is_oneshot INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE jobs ADD COLUMN is_cover INTEGER NOT NULL DEFAULT 0`,
   ]
   for (const sql of migrations) {
     try { await db.prepare(sql).run() } catch { /* column already exists — ignore */ }
@@ -4625,12 +4626,20 @@ app.get('/api/projects', async (c) => {
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
+    } else if (tab === 'covers') {
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND is_cover = 1 AND deleted_at IS NULL
+         AND json_extract(data,'$.status') = 'ready'
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
     } else {
-      // beats tab: regular beats (not one-shots, not extended, not remixes), not deleted
+      // beats tab: regular beats (not one-shots, not extended, not remixes, not covers), not deleted
       // Note: song_generate ext_type is a relic of the old two-song feature — those are valid beats
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
-         WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
+         WHERE user_id = ? AND is_oneshot = 0 AND is_cover = 0 AND deleted_at IS NULL
          AND json_extract(data,'$.status') = 'ready'
          AND (json_extract(data,'$.extend_task_type') IS NULL
               OR json_extract(data,'$.extend_task_type') = 'song_generate')
@@ -8174,9 +8183,125 @@ app.get('/api/download-wav-url', async (c) => {
   })
 })
 
+// ─── COVER SONG FEATURE ────────────────────────────────────────────────────────
+const COVER_UPLOADS_PREFIX = 'cover-uploads'
+
+// POST /api/upload-cover-audio — upload source audio for cover song (Pro only, 20MB max)
+app.post('/api/upload-cover-audio', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Pro plan required for Cover Song feature', upgrade_url: '/pricing' }, 402)
+
+  const form = await c.req.formData()
+  const file = form.get('file') as File | null
+  if (!file) return c.json({ error: 'No file uploaded' }, 400)
+  if (file.size > 20 * 1024 * 1024) return c.json({ error: 'File too large (max 20 MB)' }, 400)
+
+  const ext = (file.name.split('.').pop() || 'mp3').toLowerCase().replace(/[^a-z0-9]/g, '')
+  const uuid = crypto.randomUUID()
+  const key = `${COVER_UPLOADS_PREFIX}/${uuid}.${ext}`
+
+  const arrayBuf = await file.arrayBuffer()
+  await c.env.IMAGES.put(key, arrayBuf, { httpMetadata: { contentType: file.type || 'audio/mpeg' } })
+
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+  const audioUrl = `${siteUrl}/api/cover-audio-proxy/${encodeURIComponent(uuid + '.' + ext)}`
+  return c.json({ ok: true, audio_url: audioUrl, filename: file.name })
+})
+
+// GET /api/cover-audio-proxy/:filename — serve cover upload from R2
+app.get('/api/cover-audio-proxy/:filename', async (c) => {
+  const filename = c.req.param('filename')
+  const key = `${COVER_UPLOADS_PREFIX}/${filename}`
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.notFound()
+  const ct = obj.httpMetadata?.contentType || 'audio/mpeg'
+  return new Response(obj.body, { headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' } })
+})
+
+// POST /api/job/cover-song — create a cover song job via MusicAPI Sonic (15 credits, Pro only)
+app.post('/api/job/cover-song', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (user.plan !== 'pro' && user.plan !== 'developer') return c.json({ error: 'Pro plan required', upgrade_url: '/pricing' }, 402)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not configured' }, 500)
+
+  const { audio_url, title, style_prompt, make_instrumental } = await c.req.json()
+  if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
+
+  const COVER_COST = 15
+  if ((user.credits || 0) < COVER_COST) return c.json({ error: `Not enough credits (need ${COVER_COST}, have ${user.credits || 0})` }, 402)
+
+  // Deduct credits
+  await c.env.DB.prepare(`UPDATE users SET credits = credits - ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+
+  // Call MusicAPI Sonic /upload-cover
+  const sonicRes = await fetch(`${MUSICAPI_SONIC}/upload-cover`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: audio_url, mv: 'sonic-v4', make_instrumental: !!make_instrumental, gpt_description_prompt: style_prompt || '' })
+  })
+  const sonicData = await sonicRes.json() as any
+  if (!sonicRes.ok || !sonicData.task_id) {
+    // Refund credits on failure
+    await c.env.DB.prepare(`UPDATE users SET credits = credits + ? WHERE id = ?`).bind(COVER_COST, user.id).run()
+    return c.json({ error: sonicData.message || 'MusicAPI error' }, 502)
+  }
+
+  const jobId = crypto.randomUUID()
+  const now = Date.now()
+  const jobData = JSON.stringify({ id: jobId, status: 'generating', task_id: sonicData.task_id, title: title || 'Cover Song', created_at: now, user_id: user.id, is_cover: 1 })
+  await ensureTable(c.env.DB)
+  await c.env.DB.prepare(`INSERT INTO jobs (id, data, created_at, user_id, is_cover) VALUES (?, ?, ?, ?, 1)`).bind(jobId, jobData, now, user.id).run()
+
+  return c.json({ ok: true, job_id: jobId, task_id: sonicData.task_id })
+})
+
+// GET /api/poll-cover/:id — poll cover song job status
+app.get('/api/poll-cover/:id', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  const jobId = c.req.param('id')
+  const row = await c.env.DB.prepare(`SELECT data FROM jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
+  if (!row) return c.json({ error: 'Job not found' }, 404)
+
+  const job = JSON.parse(row.data) as any
+  if (job.status === 'ready') return c.json({ status: 'ready', audio_url: job.stereo_url, title: job.title })
+  if (job.status === 'error') return c.json({ status: 'error', error: job.error })
+
+  // Poll MusicAPI
+  if (!c.env.MUSICAPI_KEY || !job.task_id) return c.json({ status: 'generating' })
+  const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${job.task_id}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+  })
+  const pollData = await pollRes.json() as any
+  const clips = pollData.data || []
+  const ready = clips.find((cl: any) => cl.state === 'succeeded' && cl.audio_url)
+
+  if (ready) {
+    const updated = { ...job, status: 'ready', stereo_url: ready.audio_url, is_cover: 1 }
+    await c.env.DB.prepare(`UPDATE jobs SET data = ?, is_cover = 1 WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    return c.json({ status: 'ready', audio_url: ready.audio_url, title: job.title })
+  }
+  const failed = clips.find((cl: any) => cl.state === 'failed')
+  if (failed) {
+    const updated = { ...job, status: 'error', error: 'Generation failed' }
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    return c.json({ status: 'error', error: 'Generation failed' })
+  }
+  return c.json({ status: 'generating' })
+})
+
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260909-12'
+const ASSET_VER = '20260927-01'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9366,6 +9491,88 @@ function generatorPage() {
         data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more.">
         <i class="fas fa-bolt"></i> One Shot Creator
       </button>
+      <button class="creator-tab-btn" id="ctab-cover" onclick="openCoverPanel()"
+        data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
+        <i class="fas fa-microphone-alt"></i> Cover Song
+        <span class="ctab-pro-badge">PRO</span>
+      </button>
+    </div>
+
+    <!-- ── Cover Song inline panel ─────────────────────────────── -->
+    <div id="cover-inline-panel" style="display:none;margin-top:16px">
+      <div class="suno-card" style="border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06)">
+        <div class="suno-card__header" style="padding-bottom:10px">
+          <i class="fas fa-microphone-alt" style="color:#a855f7;font-size:1rem"></i>
+          <span class="suno-card__title" style="color:#c084fc">Cover Song</span>
+          <button onclick="closeCoverPanel()" style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
+
+          <!-- Upload zone -->
+          <div>
+            <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:6px;display:block"><i class="fas fa-upload" style="margin-right:4px"></i>Source Audio (MP3 / WAV, max 20 MB)</label>
+            <div id="cover-drop-zone"
+              onclick="document.getElementById('cover-file-input').click()"
+              ondragover="event.preventDefault();this.classList.add('cover-drop-zone--over')"
+              ondragleave="this.classList.remove('cover-drop-zone--over')"
+              ondrop="event.preventDefault();this.classList.remove('cover-drop-zone--over');handleCoverFileSelect(event.dataTransfer.files[0])"
+              style="border:2px dashed rgba(139,92,246,.4);border-radius:10px;padding:22px 16px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s">
+              <i class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#a855f7;display:block;margin-bottom:8px"></i>
+              <span id="cover-drop-label" style="font-size:.85rem;color:var(--muted)">Drag &amp; drop or click to choose a file</span>
+            </div>
+            <input type="file" id="cover-file-input" accept="audio/*" style="display:none" onchange="handleCoverFileSelect(this.files[0])"/>
+          </div>
+
+          <!-- Style prompt -->
+          <div>
+            <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:6px;display:block"><i class="fas fa-paint-brush" style="margin-right:4px"></i>Cover Style (optional)</label>
+            <textarea id="cover-style-prompt" class="suno-textarea" rows="3"
+              placeholder="e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…"></textarea>
+          </div>
+
+          <!-- Instrumental toggle -->
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:8px">
+            <i class="fas fa-drum" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+            <span style="font-size:.85rem;font-weight:600;flex:1">Make Instrumental</span>
+            <label class="suno-switch">
+              <input type="checkbox" id="cover-instrumental-toggle"/>
+              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- Cost note -->
+          <p style="font-size:.78rem;color:var(--muted);margin:0;display:flex;align-items:center;gap:5px">
+            <i class="fas fa-coins" style="color:#f59e0b"></i>
+            Costs <strong style="color:var(--text)">15 credits</strong> per cover generation.
+          </p>
+
+          <!-- Status -->
+          <div id="cover-status" style="display:none;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px"></div>
+
+          <!-- Create button -->
+          <button id="cover-create-btn" onclick="startCoverSong()"
+            style="width:100%;padding:13px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .2s">
+            <i class="fas fa-microphone-alt"></i> Create Cover
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Cover processing overlay ────────────────────────────── -->
+    <div id="cover-processing-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center;padding:24px">
+      <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a855f7);display:flex;align-items:center;justify-content:center;animation:pulse 2s ease-in-out infinite">
+        <i class="fas fa-microphone-alt" style="font-size:1.6rem;color:#fff"></i>
+      </div>
+      <div>
+        <h3 style="margin:0 0 6px;font-size:1.2rem;color:#fff">Creating your cover…</h3>
+        <p id="cover-overlay-status" style="margin:0;font-size:.88rem;color:rgba(255,255,255,.65)">Uploading source audio…</p>
+      </div>
+      <div style="width:280px;height:6px;background:rgba(255,255,255,.15);border-radius:3px;overflow:hidden">
+        <div id="cover-overlay-progress" style="height:100%;width:10%;background:linear-gradient(90deg,#7c3aed,#a855f7);border-radius:3px;transition:width .6s ease"></div>
+      </div>
+      <button onclick="dismissCoverOverlay()" style="margin-top:8px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.7);padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.83rem">
+        <i class="fas fa-times"></i> Dismiss (runs in background)
+      </button>
     </div>
 
 
@@ -10476,6 +10683,9 @@ function dashboardPage() {
     <button class="lib-tab" data-tab="oneshots" id="lib-tab-oneshots" onclick="switchLibTab('oneshots')">
       <i class="fas fa-bolt"></i> One Shots
     </button>
+    <button class="lib-tab" data-tab="covers" onclick="switchLibTab('covers')">
+      <i class="fas fa-microphone-alt" style="color:#a855f7"></i> <span style="color:#c084fc">Covers</span>
+    </button>
     <button class="lib-tab" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
@@ -10514,6 +10724,15 @@ function dashboardPage() {
   </div>
   <div id="lib-panel-oneshots" style="display:none">
     <div class="project-grid" id="project-grid-oneshots">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-covers" style="display:none">
+    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-microphone-alt" style="color:#a855f7"></i>
+      <span style="color:#c084fc">AI Cover Songs you've created using the Cover Song feature.</span>
+    </div>
+    <div class="project-grid" id="project-grid-covers">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
