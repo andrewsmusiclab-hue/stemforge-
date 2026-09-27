@@ -9599,18 +9599,26 @@ function generatorPage() {
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
           </div>
 
-          <!-- Style prompt -->
-          <div>
-            <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:6px;display:block"><i class="fas fa-paint-brush" style="margin-right:4px"></i>Cover Style (optional)</label>
-            <textarea id="cover-style-prompt" class="suno-textarea" rows="3"
-              placeholder="e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…"></textarea>
-          </div>
-
           <!-- Lyrics (hidden when instrumental) -->
-          <div id="cover-lyrics-section">
-            <label style="font-size:.8rem;font-weight:600;color:var(--muted);margin-bottom:6px;display:block"><i class="fas fa-align-left" style="margin-right:4px"></i>Custom Lyrics <span style="font-weight:400;opacity:.7">(optional — leave blank to let AI write them)</span></label>
+          <div id="cover-lyrics-section" style="background:rgba(255,255,255,.03);border:1px solid rgba(139,92,246,.2);border-radius:10px;padding:14px 16px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <i class="fas fa-align-left" style="color:#a855f7;font-size:.9rem"></i>
+              <span style="font-size:.82rem;font-weight:700;color:#e2e8f0;letter-spacing:.02em">CUSTOM LYRICS</span>
+              <span style="font-size:.75rem;color:var(--muted);font-weight:400;margin-left:2px">— optional, leave blank for AI</span>
+            </div>
             <textarea id="cover-lyrics" class="suno-textarea" rows="5"
               placeholder="[Verse]&#10;Your custom lyrics here…&#10;&#10;[Chorus]&#10;Or leave blank for AI-generated lyrics"></textarea>
+          </div>
+
+          <!-- Style prompt -->
+          <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px 16px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <i class="fas fa-paint-brush" style="color:#94a3b8;font-size:.9rem"></i>
+              <span style="font-size:.82rem;font-weight:700;color:#e2e8f0;letter-spacing:.02em">COVER STYLE</span>
+              <span style="font-size:.75rem;color:var(--muted);font-weight:400;margin-left:2px">— optional</span>
+            </div>
+            <textarea id="cover-style-prompt" class="suno-textarea" rows="3"
+              placeholder="e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…"></textarea>
           </div>
 
           <!-- Instrumental toggle -->
