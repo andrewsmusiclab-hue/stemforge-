@@ -9662,7 +9662,7 @@ window.toggleRefDropdown = function() {
     var formData = new FormData();
     formData.append('file', file);
     try {
-      var res = await fetch('/api/upload-cover-audio', { method: 'POST', body: formData });
+      var res = await fetch('/api/upload-cover-audio', { method: 'POST', body: formData, credentials: 'include' });
       var data = await res.json();
       if (!res.ok || !data.ok) {
         throw new Error(data.error || 'Upload failed');
@@ -9828,6 +9828,7 @@ window.toggleRefDropdown = function() {
       var res = await fetch('/api/job/cover-song', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({
           audio_url:         _coverAudioUrl,
           title:             (_coverFilename || '').replace(/\.[^.]+$/, '') + ' (Cover)',
@@ -9836,6 +9837,12 @@ window.toggleRefDropdown = function() {
           make_instrumental: makeInstrumental
         })
       });
+      // Guard: if response isn't JSON (e.g. HTML error page), surface a clean error
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        throw new Error('Server error (HTTP ' + res.status + '): ' + text.slice(0, 120));
+      }
       var data = await res.json();
       if (!res.ok) {
         if ((res.status === 402 || res.status === 403) && data.locked) {
