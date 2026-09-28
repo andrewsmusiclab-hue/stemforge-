@@ -4167,8 +4167,10 @@ window.removeCoverImage = function() {
     _covShowError('');
   }
 
-  // ── Submit ────────────────────────────────────────────────
-  window.startCoverSong = function() {
+  // ── Submit (legacy cover-song-modal flow — kept for openCoverSongModal but
+  //           NOT assigned to window.startCoverSong; the inline cover panel
+  //           version below (line ~10103) is the live handler) ───────────────
+  window._legacyCoverSongModalSubmit = function() {
     if (!_covSourceUrl && !_covJobId) {
       _covShowError('Please select a source track first.');
       return;
@@ -7729,6 +7731,8 @@ window.renderEditInstrumentPills = function (bp) {
       if (input) input.value = '';
       return;
     }
+    // Auto-fill song title from filename
+    window._autoFillTitleFromFile && window._autoFillTitleFromFile(file.name);
     extUploadFile(file);
   };
 
@@ -9349,6 +9353,8 @@ function showProUpgradeModal(featureName) {
       if (input) input.value = '';
       return;
     }
+    // Auto-fill song title from filename
+    window._autoFillTitleFromFile && window._autoFillTitleFromFile(file.name);
     _remixUploadFile(file);
   };
 
@@ -9854,6 +9860,8 @@ window.toggleRefDropdown = function() {
     // Support legacy call pattern where the input element is passed instead of a File
     if (file && file.files) { inputEl = file; file = file.files[0]; }
     if (!file) return;
+    // Auto-fill song title from filename
+    window._autoFillTitleFromFile && window._autoFillTitleFromFile(file.name);
     _hideCoverUploadError();
     var MAX = 20 * 1024 * 1024;
     if (file.size > MAX) {

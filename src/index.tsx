@@ -8913,7 +8913,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260927-15'
+const ASSET_VER = '20260928-1'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10236,7 +10236,7 @@ function generatorPage() {
       </div>
       <div>
         <h3 style="margin:0 0 6px;font-size:1.2rem;color:#fff">Creating your cover…</h3>
-        <p id="cover-overlay-status" style="margin:0;font-size:.88rem;color:rgba(255,255,255,.65)">Uploading source audio…</p>
+        <p id="cover-overlay-msg" style="margin:0;font-size:.88rem;color:rgba(255,255,255,.65)">Uploading source audio…</p>
       </div>
       <div style="width:280px;height:6px;background:rgba(255,255,255,.15);border-radius:3px;overflow:hidden">
         <div id="cover-overlay-progress" style="height:100%;width:10%;background:linear-gradient(90deg,#7c3aed,#a855f7);border-radius:3px;transition:width .6s ease"></div>
