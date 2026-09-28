@@ -6159,6 +6159,67 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
   return c.json({ rescued: results.length, results })
 })
 
+// GET /api/admin/recover-cover-job?job_id=XXX — re-poll a specific cover job from MusicAPI
+// Used to rescue cover jobs that got erroneously marked failed with "task not ready" message.
+app.get('/api/admin/recover-cover-job', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  const token    = getSessionCookie(c.req.raw)
+  const user     = token ? await getSessionUser(c.env.DB, token) : null
+  const isAdmin  = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
+                || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
+  if (!isAdmin) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+
+  const jobId = c.req.query('job_id')
+  if (!jobId) return c.json({ error: 'job_id required' }, 400)
+
+  await ensureTable(c.env.DB)
+  const row = await c.env.DB.prepare(`SELECT id, user_id, data FROM jobs WHERE id = ?`).bind(jobId).first<any>()
+  if (!row) return c.json({ error: 'Job not found' }, 404)
+
+  const job = JSON.parse(row.data) as any
+  const taskId = job.task_id
+  if (!taskId) return c.json({ error: 'Job has no task_id', job_status: job.status }, 400)
+
+  // Re-poll MusicAPI /sonic/task/:id
+  const pollRes = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+  })
+  const pollText = await pollRes.text()
+  let pollData: any = {}
+  try { pollData = JSON.parse(pollText) } catch {}
+
+  const clips = pollData.data || []
+  const ready = clips.find((cl: any) => cl.state === 'succeeded' && cl.audio_url)
+  const failed = clips.find((cl: any) => cl.state === 'failed')
+
+  if (ready) {
+    const updated = { ...job, status: 'ready', stereo_url: ready.audio_url, is_cover: 1 }
+    delete updated.error
+    await c.env.DB.prepare(`UPDATE jobs SET data = ?, is_cover = 1 WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    return c.json({ recovered: true, action: 'marked_ready', audio_url: ready.audio_url, title: job.title, task_id: taskId })
+  }
+
+  if (failed) {
+    const errMsg = failed.error_message || failed.error || failed.message || 'Generation failed'
+    const updated = { ...job, status: 'error', error: errMsg }
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    return c.json({ recovered: false, action: 'confirmed_failed', error: errMsg, task_id: taskId })
+  }
+
+  // Still generating — reset to generating state so it gets polled again
+  const resetData = { ...job, status: 'generating' }
+  delete resetData.error
+  await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(resetData), jobId).run()
+  return c.json({
+    recovered: false,
+    action: 'reset_to_generating',
+    musicapi_status: pollData,
+    task_id: taskId,
+    note: 'Job reset to generating — visit Library → Covers and it will auto-poll to completion'
+  })
+})
+
 // GET /api/admin/backfill-clip-ids — fetch clip_id from MusicAPI for all jobs missing it
 // Polls each job's stereo_task_id against /sonic/task/:id and writes clip_id back to DB.
 app.get('/api/admin/backfill-clip-ids', async (c) => {
