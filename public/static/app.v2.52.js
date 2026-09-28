@@ -1892,9 +1892,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const items = [];
 
-    // Edit / Extend only for full beats (not oneshots, not covers)
-    if (!isOneshot && !isCover) {
+    // Edit available for beats and covers (not oneshots)
+    if (!isOneshot) {
       items.push({ icon: 'fa-pencil-alt', label: 'Edit track info', action: () => openSongEditModal(null, jobId) });
+    }
+    // Extend only for full beats (not oneshots, not covers)
+    if (!isOneshot && !isCover) {
       items.push({ icon: 'fa-expand-arrows-alt', label: 'Extend Song', action: () => {
         window.location.href = '/generator?extend=' + encodeURIComponent(jobId);
       }});
