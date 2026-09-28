@@ -7646,9 +7646,9 @@ app.get('/api/credit-packs', async (c) => {
 })
 
 const defaultCreditPacks = [
-  { id: 'pack_50',   name: '50 Points',   credits: 50,   price_cents: 499,  label: '$4.99',  popular: false },
-  { id: 'pack_150',  name: '150 Points',  credits: 150,  price_cents: 999,  label: '$9.99',  popular: true  },
-  { id: 'pack_400',  name: '400 Points',  credits: 400,  price_cents: 1799, label: '$17.99', popular: false },
+  { id: 'pack_150',  name: '150 Points',  credits: 150,  price_cents: 499,  label: '$4.99',  popular: false },
+  { id: 'pack_600',  name: '600 Points',  credits: 600,  price_cents: 999,  label: '$9.99',  popular: true  },
+  { id: 'pack_1000', name: '1000 Points', credits: 1000, price_cents: 1799, label: '$17.99', popular: false },
   { id: 'pack_1500', name: '1500 Points', credits: 1500, price_cents: 2999, label: '$29.99', popular: false },
 ]
 
@@ -12303,42 +12303,42 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         </div>
       </div>
       <div class="credit-packs-grid" id="credit-packs-grid">
-        <div class="credit-pack-card" data-pack="pack_50">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">50</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$4.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_50">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_150">
-          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
+        <div class="credit-pack-card" data-pack="pack_150">
           <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
             <div class="credit-pack__credits">150</div>
             <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$9.99</span>
-            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_150">
+            <span class="credit-pack__price">$4.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_150">
               <i class="fas fa-cart-plus"></i> Buy
             </button>
           </div>
         </div>
-        <div class="credit-pack-card" data-pack="pack_400">
+        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_600">
+          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
           <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
           <div class="credit-pack__main">
-            <div class="credit-pack__credits">400</div>
+            <div class="credit-pack__credits">600</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$9.99</span>
+            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_600">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_1000">
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">1000</div>
             <div class="credit-pack__label">Points</div>
           </div>
           <div class="credit-pack__price-row">
             <span class="credit-pack__price">$17.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_400">
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1000">
               <i class="fas fa-cart-plus"></i> Buy
             </button>
           </div>
