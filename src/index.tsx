@@ -8531,42 +8531,90 @@ app.get('/api/download-wav/:id', async (c) => {
 
   // ── Self-URL detection: extended/cover tracks whose stereo_url points back at this Worker ──
   // Cloudflare Workers cannot fetch their own zone URL (infinite loop / 522 error).
-  // When stereo_url is a /api/track-audio/ URL, read the R2 key directly instead.
+  // Full fallback chain: r2_audio_key → beats/<id>.* scan → clip_id MusicAPI re-fetch.
   const audioUrlStr: string = job.stereo_url!
   if (audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')) {
-    // Derive R2 key from job ID (persistAudioToR2 always stores as beats/<jobId>.<ext>)
+
+    // Helper: convert raw bytes to WAV (or return as-is with correct ext/mime)
+    const convertToWav = async (rawBuf: ArrayBuffer): Promise<{ buf: ArrayBuffer; mime: string; ext: string }> => {
+      const realFmt = detectAudioFormat(rawBuf)
+      if (realFmt === 'mp3') {
+        try { return { buf: await mp3ToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
+      } else if (realFmt === 'wav') {
+        return { buf: rawBuf, mime: 'audio/wav', ext: 'wav' }
+      } else if (realFmt === 'm4a') {
+        try { return { buf: await m4aToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
+        return { buf: rawBuf, mime: 'audio/mp4', ext: 'm4a' }
+      }
+      return { buf: rawBuf, mime: audioMime(realFmt), ext: realFmt }
+    }
+
+    const serveConverted = (buf: ArrayBuffer, mime: string, ext: string, cacheHdr: string): Response => {
+      if (c.env.IMAGES && ext === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', buf).catch(() => {})
+      return new Response(buf, {
+        headers: {
+          'Content-Type': mime,
+          'Content-Length': String(buf.byteLength),
+          'Content-Disposition': `attachment; filename="${safeTitle}.${ext}"`,
+          'Cache-Control': 'no-store',
+          'X-Cache': cacheHdr
+        }
+      })
+    }
+
+    // Step A: named r2_audio_key stored in job (most reliable)
+    if (c.env.IMAGES && (job as any).r2_audio_key) {
+      const obj = await c.env.IMAGES.get((job as any).r2_audio_key as string)
+      if (obj) {
+        const raw = await obj.arrayBuffer()
+        const { buf, mime, ext } = await convertToWav(raw)
+        return serveConverted(buf, mime, ext, 'R2-KEY')
+      }
+    }
+
+    // Step B: scan beats/<jobId>.* (wav first for efficiency)
     if (c.env.IMAGES) {
       for (const ext of ['wav', 'mp3', 'm4a']) {
         const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
         const r2Obj = await c.env.IMAGES.get(r2Key)
         if (r2Obj) {
-          const rawBuf = await r2Obj.arrayBuffer()
-          const realFmt = detectAudioFormat(rawBuf)
-          let outBuf = rawBuf
-          let outMime = audioMime(realFmt)
-          let outExt: string = realFmt
-          if (realFmt === 'mp3') {
-            try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-          } else if (realFmt === 'wav') {
-            outMime = 'audio/wav'; outExt = 'wav'
-          } else if (realFmt === 'm4a') {
-            try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-          }
-          if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
-          return new Response(outBuf, {
-            headers: {
-              'Content-Type': outMime,
-              'Content-Length': String(outBuf.byteLength),
-              'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
-              'Cache-Control': 'no-store',
-              'X-Cache': 'R2-DIRECT'
-            }
-          })
+          const raw = await r2Obj.arrayBuffer()
+          const { buf, mime, ext: outExt } = await convertToWav(raw)
+          return serveConverted(buf, mime, outExt, 'R2-DIRECT')
         }
       }
     }
-    // R2 key not found — track audio hasn't been persisted yet
-    return c.json({ error: 'Track audio is not yet available for download. Play it once in your Library to cache it, then try downloading again.' }, 404)
+
+    // Step C: clip_id re-fetch from MusicAPI — get a fresh CDN URL and persist it
+    const clipId: string = (job as any).clip_id || ''
+    if (clipId && c.env.MUSICAPI_KEY) {
+      try {
+        const pollRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${clipId}`, {
+          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+        })
+        if (pollRes.ok) {
+          const pollData: any = await pollRes.json()
+          const clips = Array.isArray(pollData) ? pollData : (pollData.data || [pollData])
+          const clip  = clips.find((cl: any) => cl.audio_url) || clips[0]
+          const freshUrl: string = clip?.audio_url || clip?.wav_url || ''
+          if (freshUrl) {
+            const upstream = await fetch(freshUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+            if (upstream.ok) {
+              const raw = await upstream.arrayBuffer()
+              // Persist to R2 in background so future downloads are instant
+              if (c.env.IMAGES && c.env.SITE_URL) {
+                persistAudioToR2(freshUrl, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL).catch(() => {})
+              }
+              const { buf, mime, ext } = await convertToWav(raw)
+              return serveConverted(buf, mime, ext, 'CLIP-REFETCH')
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Nothing worked — audio not yet in R2 and clip_id unavailable
+    return c.json({ error: 'Track audio is not yet available for download. Play it once in your Library to refresh it, then try again.' }, 404)
   }
 
   // ── Cache miss: fetch source, convert, cache result ──
@@ -9091,7 +9139,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-3'
+const ASSET_VER = '20260929-4'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10324,17 +10372,6 @@ function generatorPage() {
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
           </div>
 
-          <!-- Song Title -->
-          <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px 16px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-              <i class="fas fa-tag" style="color:#94a3b8;font-size:.9rem"></i>
-              <span style="font-size:.82rem;font-weight:700;color:#e2e8f0;letter-spacing:.02em">SONG TITLE</span>
-              <span style="font-size:.75rem;color:var(--muted);font-weight:400;margin-left:2px">— optional</span>
-            </div>
-            <input type="text" id="cover-title" class="suno-field-input" placeholder="Auto-filled from filename — or type your own…"
-              style="width:100%;box-sizing:border-box"/>
-          </div>
-
           <!-- Lyrics (hidden when instrumental) -->
           <div id="cover-lyrics-section" style="background:rgba(255,255,255,.03);border:1px solid rgba(139,92,246,.2);border-radius:10px;padding:14px 16px">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
@@ -10369,6 +10406,17 @@ function generatorPage() {
               <input type="checkbox" id="cover-instrumental-toggle" onchange="coverInstrumentalToggled(this.checked)"/>
               <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
             </label>
+          </div>
+
+          <!-- Song Title -->
+          <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px 16px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <i class="fas fa-tag" style="color:#94a3b8;font-size:.9rem"></i>
+              <span style="font-size:.82rem;font-weight:700;color:#e2e8f0;letter-spacing:.02em">SONG TITLE</span>
+              <span style="font-size:.75rem;color:var(--muted);font-weight:400;margin-left:2px">— optional</span>
+            </div>
+            <input type="text" id="cover-title" class="suno-field-input" placeholder="Auto-filled from filename — or type your own…"
+              style="width:100%;box-sizing:border-box"/>
           </div>
 
           <!-- Audio mini-player (shown after upload) -->
@@ -10607,14 +10655,8 @@ function generatorPage() {
 
     </div><!-- /generator-main-sections -->
 
-    <!-- SECTION 6: Song Title -->
-    <div class="suno-card suno-card--slim">
-      <div class="suno-field-row">
-        <i class="fas fa-music suno-field-icon"></i>
-        <input type="text" class="suno-field-input" id="gen-title" placeholder="Song title (optional)"
-          title="Give your track a name (optional) — if left blank, one will be auto-generated"/>
-      </div>
-    </div>
+    <!-- SECTION 6: Song Title (hidden — covered by Cover tab's own field; kept in DOM for JS compatibility) -->
+    <input type="text" id="gen-title" style="display:none" aria-hidden="true" tabindex="-1"/>
 
     <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline" id="generator-create-row">
