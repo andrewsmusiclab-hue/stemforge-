@@ -866,7 +866,8 @@ async function bcSendBroadcast() {
   var subject = document.getElementById('bc-subject')?.value?.trim();
   if (!subject) { alert('Enter a subject line first.'); return; }
   if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
-  var audience = document.getElementById('bc-audience')?.value || 'all';
+  var audience = document.getElementById('bc-audience')?.value || 'none';
+  if (audience === 'none') { alert('Please select an audience (All Users, Free Plan, or Paid Plan) before sending.'); return; }
   var broadcastName = document.getElementById('bc-template-name')?.value?.trim() || subject;
   var label = audience === 'all' ? 'ALL users' : audience === 'free' ? 'free plan users' : 'paid plan users';
   var countEl = document.getElementById('bc-count-' + audience);

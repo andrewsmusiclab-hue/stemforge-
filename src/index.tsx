@@ -9400,7 +9400,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-13'
+const ASSET_VER = '20260929-14'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13833,6 +13833,7 @@ function adminPage(user: User) {
             <div>
               <label style="font-size:.82rem;color:var(--muted);display:block;margin-bottom:6px;font-weight:600">Send To</label>
               <select id="bc-audience" style="width:100%;padding:10px 12px;background:#0f172a;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.88rem">
+                <option value="none" selected disabled style="color:#ef4444">— Do Not Send (select audience first) —</option>
                 <option value="all">All Users</option>
                 <option value="free">Free Plan Only</option>
                 <option value="paid">Paid Plan Only</option>
