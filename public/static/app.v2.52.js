@@ -988,6 +988,8 @@ document.addEventListener('DOMContentLoaded', () => {
     { src: '/static/stemforge-logo-v20.png', hueRotate: false },
     { src: '/static/stemforge-logo-v21.png', hueRotate: false },
   ];
+  // Expose pool globally so renderCoverCard (different IIFE) can access it
+  window._sfLogoPool = _sfLogoPool;
   // Cache of loaded Image objects keyed by src
   var _sfLogoCache = {};
 
@@ -5197,11 +5199,9 @@ function openCoverDownloadModal(jobId, safeTitle) {
         <button id="sf-cover-dl-mp3" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,#f472b6,#a855f7);color:#fff;border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;border:none;width:100%">
           <i class="fas fa-file-audio"></i> Download MP3
         </button>
-        <button id="sf-cover-dl-wav" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;width:100%">
-          <i class="fas fa-file-waveform"></i> Download WAV <span style="font-size:.78rem;opacity:.6;font-weight:400">(or MP3 if WAV not ready)</span>
-        </button>
+        <button id="sf-cover-dl-wav" style="display:none" aria-hidden="true"></button>
       </div>
-      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV is pre-baked in background after generation · Falls back to MP3 if not ready yet</p>
+      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">High-quality MP3 · Cover songs are delivered in MP3 format</p>
     </div>`;
   document.body.appendChild(modal);
   modal.querySelector('#sf-cover-dl-mp3').onclick = () => triggerDownload('mp3');
