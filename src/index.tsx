@@ -9327,7 +9327,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-9'
+const ASSET_VER = '20260929-10'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13745,6 +13745,7 @@ function adminPage(user: User) {
             <button onclick="bcAddBlock('text')" class="btn btn--outline btn--sm"><i class="fas fa-paragraph"></i> Text</button>
             <button onclick="bcAddBlock('image')" class="btn btn--outline btn--sm"><i class="fas fa-image"></i> Image</button>
             <button onclick="bcAddBlock('button')" class="btn btn--outline btn--sm"><i class="fas fa-mouse-pointer"></i> Button</button>
+            <button onclick="bcAddBlock('youtube')" class="btn btn--outline btn--sm"><i class="fab fa-youtube" style="color:#ef4444"></i> YouTube</button>
             <button onclick="bcAddBlock('divider')" class="btn btn--outline btn--sm"><i class="fas fa-minus"></i> Divider</button>
             <button onclick="bcAddBlock('spacer')" class="btn btn--outline btn--sm"><i class="fas fa-arrows-alt-v"></i> Spacer</button>
           </div>

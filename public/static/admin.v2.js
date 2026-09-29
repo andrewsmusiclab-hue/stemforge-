@@ -679,6 +679,7 @@ function bcAddBlock(type) {
   if (type === 'divider') { block.color = '#1e293b'; }
   if (type === 'spacer')  { block.height = '24'; }
   if (type === 'rawhtml') { block.html = '<div style="text-align:center;padding:16px"><!-- paste your HTML here --></div>'; }
+  if (type === 'youtube') { block.url = 'https://youtu.be/'; block.caption = 'Watch it in action — click to play on YouTube'; }
   _bcBlocks.push(block);
   bcRenderBlocks();
   bcUpdatePreview();
@@ -739,6 +740,16 @@ function bcRenderBlocks() {
     if (block.type === 'rawhtml') {
       controls += '<textarea onchange="bcUpdateField(\'' + block.id + '\',\'html\',this.value)" oninput="bcUpdateField(\'' + block.id + '\',\'html\',this.value)" style="width:100%;padding:8px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#a78bfa;font-size:.78rem;min-height:100px;resize:vertical;box-sizing:border-box;font-family:monospace">' + escHtml(block.html||'') + '</textarea>';
       controls += '<p style="font-size:.72rem;color:#64748b;margin:4px 0 0">Raw HTML — injected directly into the email.</p>';
+    }
+    if (block.type === 'youtube') {
+      var vidId = (block.url||'').match(/(?:youtu\.be\/|v=)([\w-]{11})/);
+      var thumbSrc = vidId ? 'https://img.youtube.com/vi/' + vidId[1] + '/hqdefault.jpg' : '';
+      controls += '<div style="display:grid;gap:8px">';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">YouTube URL</label><input type="url" value="' + escHtml(block.url||'') + '" placeholder="https://youtu.be/XXXXXXXXXXX" onchange="bcUpdateField(\'' + block.id + '\',\'url\',this.value);bcRenderBlocks()" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Caption text</label><input type="text" value="' + escHtml(block.caption||'') + '" placeholder="Watch it in action..." onchange="bcUpdateField(\'' + block.id + '\',\'caption\',this.value)" style="width:100%;padding:6px 10px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-size:.82rem;box-sizing:border-box"/></div>';
+      if (thumbSrc) controls += '<div style="margin-top:4px"><img src="' + thumbSrc + '" style="width:100%;max-width:320px;border-radius:8px;border:2px solid #a78bfa;display:block"/><p style="font-size:.72rem;color:#10b981;margin:4px 0 0">✓ Thumbnail preview — auto-fetched from YouTube</p></div>';
+      else controls += '<p style="font-size:.72rem;color:#f59e0b;margin:4px 0 0">Paste a valid YouTube URL above to see the thumbnail</p>';
+      controls += '</div>';
     }
     row.innerHTML = header + controls;
     container.appendChild(row);
@@ -804,6 +815,23 @@ function bcBuildHtml() {
     }
     if (block.type === 'rawhtml') {
       return block.html || '';
+    }
+    if (block.type === 'youtube') {
+      var vidMatch = (block.url||'').match(/(?:youtu\.be\/|v=)([\w-]{11})/);
+      if (!vidMatch) return '<div style="background:#1e293b;border:2px dashed #334155;border-radius:8px;padding:20px;text-align:center;color:#64748b;font-family:'+font+';margin-bottom:16px">[ YouTube: paste URL in builder ]</div>';
+      var vid = vidMatch[1];
+      var ytLink = 'https://youtu.be/' + vid;
+      var ytThumb = 'https://img.youtube.com/vi/' + vid + '/maxresdefault.jpg';
+      var cap = escHtml(block.caption || 'Click to watch on YouTube');
+      return '<div style="margin-bottom:20px">'
+        + (block.caption ? '<p style="font-family:'+font+';font-size:14px;color:#c084fc;text-align:center;margin:0 0 10px;font-weight:600">&#127916; ' + cap + '</p>' : '')
+        + '<a href="' + ytLink + '" target="_blank" style="display:block;position:relative;border-radius:12px;overflow:hidden;border:2px solid rgba(192,132,252,0.5);box-shadow:0 8px 32px rgba(139,92,246,0.4);text-decoration:none">'
+        + '<img src="' + ytThumb + '" alt="YouTube video thumbnail" style="width:100%;display:block;border-radius:10px"/>'
+        + '<div style="position:absolute;inset:0;background:rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center">'
+        + '<div style="width:68px;height:68px;border-radius:50%;background:rgba(220,38,38,0.95);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 24px rgba(0,0,0,0.6);border:3px solid rgba(255,255,255,0.9)">'
+        + '<svg viewBox="0 0 24 24" width="32" height="32" fill="white" style="margin-left:4px"><polygon points="9,5 20,12 9,19"/></svg>'
+        + '</div></div></a>'
+        + '</div>';
     }
     return '';
   }).join('\n');
@@ -1132,6 +1160,7 @@ function bcLoadTemplate(id) {
       if (b.type === 'divider') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'divider' };
       if (b.type === 'spacer') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'spacer', height: (b.height||'16px').replace('px','') };
       if (b.type === 'rawhtml') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'rawhtml', html: b.html || b.content || '' };
+      if (b.type === 'youtube') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'youtube', url: b.url || '', caption: b.caption || '' };
       return b;
     });
   } catch(e) { window._bcBlocks = []; }
