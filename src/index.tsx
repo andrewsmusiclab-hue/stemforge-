@@ -470,6 +470,67 @@ async function persistAudioToR2(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// primeCoverWav — Option A background WAV pre-bake for cover songs
+// Called fire-and-forget via waitUntil() right after a cover is marked ready.
+// Fetches the cover MP3 from its CDN URL (or R2 key), runs mp3ToWav() in the
+// background Worker, and stores the resulting WAV in the R2 dl-cache so that
+// the next /api/download-wav/:id hit returns instantly (X-Cache: HIT).
+// If conversion fails (e.g. CPU limit on very long tracks) it silently swallows
+// the error — the user still gets MP3 on download, which is the graceful fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+async function primeCoverWav(
+  jobId: string,
+  audioUrl: string,
+  r2: R2Bucket,
+  siteUrl: string
+): Promise<void> {
+  try {
+    // 1. Skip if WAV dl-cache already populated
+    const existing = await getDlCache(r2, jobId, 'wav')
+    if (existing) { console.log(`[prime-wav] job=${jobId} WAV already cached, skip`); return }
+
+    // 2. Fetch the cover MP3 (try R2 first, then CDN URL)
+    let rawBuf: ArrayBuffer | null = null
+    // Try beats/<jobId>.mp3 in R2 first (faster, permanent)
+    const r2Obj = await r2.get(`${R2_BEATS_PREFIX}/${jobId}.mp3`)
+    if (r2Obj) {
+      rawBuf = await r2Obj.arrayBuffer()
+      console.log(`[prime-wav] job=${jobId} source=R2 size=${Math.round(rawBuf.byteLength/1024)}KB`)
+    }
+    // Fallback to CDN URL
+    if (!rawBuf && audioUrl) {
+      const resp = await fetch(audioUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+      if (resp.ok) {
+        rawBuf = await resp.arrayBuffer()
+        console.log(`[prime-wav] job=${jobId} source=CDN size=${Math.round(rawBuf.byteLength/1024)}KB`)
+      }
+    }
+    if (!rawBuf || rawBuf.byteLength < 1000) {
+      console.warn(`[prime-wav] job=${jobId} could not fetch source audio`)
+      return
+    }
+
+    // 3. Convert MP3 → WAV (WASM — may hit CPU limit for very long tracks, that's OK)
+    const fmt = detectAudioFormat(rawBuf)
+    if (fmt !== 'mp3') {
+      console.log(`[prime-wav] job=${jobId} source is ${fmt}, not MP3 — storing in dl-cache as-is`)
+      await putDlCache(r2, jobId, fmt as 'wav', rawBuf)
+      return
+    }
+    console.log(`[prime-wav] job=${jobId} starting MP3→WAV WASM conversion…`)
+    const wavBuf = await mp3ToWav(rawBuf)
+    console.log(`[prime-wav] job=${jobId} WAV converted: ${Math.round(wavBuf.byteLength/1024)}KB`)
+
+    // 4. Store WAV in dl-cache — next /api/download-wav/:id returns it instantly
+    await putDlCache(r2, jobId, 'wav', wavBuf)
+    console.log(`[prime-wav] job=${jobId} WAV stored in R2 dl-cache ✓`)
+  } catch (err: any) {
+    // Silent failure — cover download falls back to MP3 gracefully
+    console.warn(`[prime-wav] job=${jobId} failed (CPU limit?):`, err?.message?.slice(0, 120))
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  AUTH — Users, Sessions, Google OAuth, Email/Password
 //  Uses D1 for persistence. Falls back gracefully if secrets
@@ -6197,6 +6258,14 @@ app.get('/api/admin/recover-cover-job', async (c) => {
     const updated = { ...job, status: 'ready', stereo_url: ready.audio_url, is_cover: 1 }
     delete updated.error
     await c.env.DB.prepare(`UPDATE jobs SET data = ?, is_cover = 1 WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    // Prime WAV in background so next WAV download is instant
+    if (c.env.IMAGES && c.env.SITE_URL) {
+      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+      c.executionCtx.waitUntil(
+        primeCoverWav(jobId, ready.audio_url, c.env.IMAGES, siteUrl)
+          .catch((e: any) => console.warn(`[recover-cover] WAV prime failed for job=${jobId}:`, e?.message))
+      )
+    }
     return c.json({ recovered: true, action: 'marked_ready', audio_url: ready.audio_url, title: job.title, task_id: taskId })
   }
 
@@ -6218,6 +6287,29 @@ app.get('/api/admin/recover-cover-job', async (c) => {
     task_id: taskId,
     note: 'Job reset to generating — visit Library → Covers and it will auto-poll to completion'
   })
+})
+
+// GET /api/admin/prime-cover-wav/:id — manually trigger WAV pre-bake for an existing cover job
+// Use this to back-fill WAV cache for covers that became ready before the auto-prime was added.
+app.get('/api/admin/prime-cover-wav/:id', async (c) => {
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  if (!c.env.IMAGES) return c.json({ error: 'R2 not configured' }, 500)
+  const jobId = c.req.param('id')
+  const job   = await getJob(c.env.DB, jobId)
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+  if (!job.stereo_url) return c.json({ error: 'Job has no audio URL yet' }, 400)
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+  // Check if already primed
+  const existing = await getDlCache(c.env.IMAGES, jobId, 'wav')
+  if (existing) return c.json({ ok: true, cached: true, note: 'WAV already in R2 dl-cache', size: existing.byteLength })
+  // Fire prime in background and return immediately
+  c.executionCtx.waitUntil(
+    primeCoverWav(jobId, job.stereo_url, c.env.IMAGES, siteUrl)
+      .catch((e: any) => console.warn(`[admin-prime] failed job=${jobId}:`, e?.message))
+  )
+  return c.json({ ok: true, cached: false, note: 'WAV prime started in background — try download in ~30s', job_id: jobId })
 })
 
 // GET /api/admin/backfill-clip-ids — fetch clip_id from MusicAPI for all jobs missing it
@@ -9193,8 +9285,13 @@ app.get('/api/poll-cover/:id', async (c) => {
     // proxy — so WAV download always works even days later.
     if (c.env.IMAGES && c.env.SITE_URL) {
       const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
-      persistAudioToR2(ready.audio_url, jobId, c.env.IMAGES, c.env.DB, siteUrl)
-        .catch((e: any) => console.warn(`[poll-cover] R2 persist failed for job=${jobId}:`, e?.message))
+      const r2 = c.env.IMAGES
+      // Fire-and-forget: persist MP3 to R2 first, then prime WAV in background
+      c.executionCtx.waitUntil(
+        persistAudioToR2(ready.audio_url, jobId, r2, c.env.DB, siteUrl)
+          .then(() => primeCoverWav(jobId, ready.audio_url, r2, siteUrl))
+          .catch((e: any) => console.warn(`[poll-cover] R2 persist/prime failed for job=${jobId}:`, e?.message))
+      )
     }
     return c.json({ status: 'ready', audio_url: ready.audio_url, title: job.title })
   }
@@ -9230,7 +9327,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-7'
+const ASSET_VER = '20260929-8'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

@@ -678,6 +678,7 @@ function bcAddBlock(type) {
   if (type === 'button')  { block.text = 'Click Here'; block.url = 'https://stemforge.studio'; block.bgColor = '#4e9fff'; block.textColor = '#ffffff'; block.align = 'center'; }
   if (type === 'divider') { block.color = '#1e293b'; }
   if (type === 'spacer')  { block.height = '24'; }
+  if (type === 'rawhtml') { block.html = '<div style="text-align:center;padding:16px"><!-- paste your HTML here --></div>'; }
   _bcBlocks.push(block);
   bcRenderBlocks();
   bcUpdatePreview();
@@ -734,6 +735,10 @@ function bcRenderBlocks() {
     }
     if (block.type === 'spacer') {
       controls += '<div><label style="font-size:.72rem;color:#64748b;display:block;margin-bottom:3px">Height (px)</label><input type="number" value="' + block.height + '" min="4" max="120" onchange="bcUpdateField(\'' + block.id + '\',\'height\',this.value)" style="width:80px;padding:4px 8px;background:#0d1117;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:.82rem"/></div>';
+    }
+    if (block.type === 'rawhtml') {
+      controls += '<textarea onchange="bcUpdateField(\'' + block.id + '\',\'html\',this.value)" oninput="bcUpdateField(\'' + block.id + '\',\'html\',this.value)" style="width:100%;padding:8px;background:#0d1117;border:1px solid #334155;border-radius:6px;color:#a78bfa;font-size:.78rem;min-height:100px;resize:vertical;box-sizing:border-box;font-family:monospace">' + escHtml(block.html||'') + '</textarea>';
+      controls += '<p style="font-size:.72rem;color:#64748b;margin:4px 0 0">Raw HTML — injected directly into the email.</p>';
     }
     row.innerHTML = header + controls;
     container.appendChild(row);
@@ -796,6 +801,9 @@ function bcBuildHtml() {
     }
     if (block.type === 'spacer') {
       return '<div style="height:' + block.height + 'px"></div>';
+    }
+    if (block.type === 'rawhtml') {
+      return block.html || '';
     }
     return '';
   }).join('\n');
@@ -1123,6 +1131,7 @@ function bcLoadTemplate(id) {
       if (b.type === 'button') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'button', text: b.text || 'Click Here', url: b.url || '#', align: b.align || 'center', bgColor: b.bgColor || '#4e9fff', textColor: b.textColor || '#050c1a' };
       if (b.type === 'divider') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'divider' };
       if (b.type === 'spacer') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'spacer', height: (b.height||'16px').replace('px','') };
+      if (b.type === 'rawhtml') return { id: b.id || ('b'+Date.now()+Math.random()), type: 'rawhtml', html: b.html || b.content || '' };
       return b;
     });
   } catch(e) { window._bcBlocks = []; }

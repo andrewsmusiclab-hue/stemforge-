@@ -5198,10 +5198,10 @@ function openCoverDownloadModal(jobId, safeTitle) {
           <i class="fas fa-file-audio"></i> Download MP3
         </button>
         <button id="sf-cover-dl-wav" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border);border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;width:100%">
-          <i class="fas fa-file-waveform"></i> Download WAV
+          <i class="fas fa-file-waveform"></i> Download WAV <span style="font-size:.78rem;opacity:.6;font-weight:400">(or MP3 if WAV not ready)</span>
         </button>
       </div>
-      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">High-quality audio · Cover songs are delivered as MP3</p>
+      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV is pre-baked in background after generation · Falls back to MP3 if not ready yet</p>
     </div>`;
   document.body.appendChild(modal);
   modal.querySelector('#sf-cover-dl-mp3').onclick = () => triggerDownload('mp3');
