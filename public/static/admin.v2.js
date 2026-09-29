@@ -861,24 +861,6 @@ document.addEventListener('DOMContentLoaded', function() {
   });
 });
 
-async function bcSendTest() {
-  var testEmail = document.getElementById('bc-test-email')?.value?.trim();
-  if (!testEmail) { alert('Enter a test email address first.'); return; }
-  var subject = document.getElementById('bc-subject')?.value?.trim();
-  if (!subject) { alert('Enter a subject line first.'); return; }
-  if (_bcBlocks.length === 0) { alert('Add at least one content block first.'); return; }
-  bcSetStatus('Sending test email…', '#f59e0b');
-  try {
-    var res = await fetch('/api/admin/broadcast/send', {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subject: subject, html: bcBuildHtml(), audience: 'all', test_email: testEmail })
-    });
-    var d = await res.json();
-    if (d.ok) bcSetStatus('✓ Test sent to ' + testEmail, '#10b981');
-    else bcSetStatus('Error: ' + (d.error || 'Unknown'), '#ef4444');
-  } catch(e) { bcSetStatus('Network error: ' + e.message, '#ef4444'); }
-}
 
 async function bcSendBroadcast() {
   var subject = document.getElementById('bc-subject')?.value?.trim();

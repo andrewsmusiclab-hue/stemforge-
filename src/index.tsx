@@ -7038,11 +7038,10 @@ app.post('/api/admin/broadcast/send', async (c) => {
     subject: string
     html: string
     audience: 'all' | 'free' | 'paid'
-    test_email?: string
     broadcast_name?: string
   }>()
 
-  const { subject, html, audience, test_email } = body
+  const { subject, html, audience } = body
   if (!subject?.trim() || !html?.trim()) return c.json({ error: 'Subject and HTML content required' }, 400)
 
   const resendKey = (c.env as any).RESEND_API_KEY
@@ -7111,14 +7110,6 @@ app.post('/api/admin/broadcast/send', async (c) => {
       if (ok) sent++; else errors++
     }
     return { sent, errors }
-  }
-
-  // Test send — just send to one email (no tracking record)
-  if (test_email) {
-    const testHtml = html + `<div style="margin-top:32px;padding-top:16px;border-top:1px solid #334155;text-align:center;font-size:11px;color:#64748b">⚠️ TEST EMAIL — not sent to real users</div>`
-    const ok = await sendOne(test_email, `[TEST] ${subject}`, testHtml)
-    if (!ok) return c.json({ error: 'Email send failed — check API key and domain verification' }, 500)
-    return c.json({ ok: true, sent: 1, mode: 'test' })
   }
 
   // Real broadcast — create send record first to get an ID for tracking
@@ -9409,7 +9400,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-12'
+const ASSET_VER = '20260929-13'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13847,13 +13838,8 @@ function adminPage(user: User) {
                 <option value="paid">Paid Plan Only</option>
               </select>
             </div>
-            <div>
-              <label style="font-size:.82rem;color:var(--muted);display:block;margin-bottom:6px;font-weight:600">Test Email</label>
-              <input id="bc-test-email" type="email" placeholder="your@email.com" style="width:100%;padding:10px 12px;background:#0f172a;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.88rem;box-sizing:border-box"/>
-            </div>
           </div>
           <div style="display:flex;gap:10px">
-            <button onclick="bcSendTest()" class="btn btn--outline" style="flex:1"><i class="fas fa-paper-plane"></i> Send Test</button>
             <button onclick="bcSendBroadcast()" class="btn btn--primary" style="flex:1"><i class="fas fa-broadcast-tower"></i> Send to List</button>
           </div>
           <div id="bc-status" style="margin-top:12px;font-size:.85rem;display:none"></div>
