@@ -9327,7 +9327,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-10'
+const ASSET_VER = '20260929-11'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13775,6 +13775,54 @@ function adminPage(user: User) {
             <button onclick="bcSendBroadcast()" class="btn btn--primary" style="flex:1"><i class="fas fa-broadcast-tower"></i> Send to List</button>
           </div>
           <div id="bc-status" style="margin-top:12px;font-size:.85rem;display:none"></div>
+
+          <!-- ── Send to Individual User ─────────────────────────────── -->
+          <div style="margin-top:18px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+            <!-- Collapsible header -->
+            <button onclick="bcToggleIndividual()" style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#0f172a;border:none;cursor:pointer;text-align:left">
+              <span style="display:flex;align-items:center;gap:10px">
+                <i class="fas fa-user" style="color:#a78bfa;font-size:.9rem"></i>
+                <span style="font-size:.88rem;font-weight:600;color:var(--text)">Send to Individual User</span>
+                <span style="font-size:.75rem;color:var(--muted)">— search by name or email</span>
+              </span>
+              <i id="bc-individual-chevron" class="fas fa-chevron-down" style="color:var(--muted);font-size:.8rem;transition:transform .2s"></i>
+            </button>
+
+            <!-- Collapsible body -->
+            <div id="bc-individual-body" style="display:none;padding:14px 16px;background:#080f1c;border-top:1px solid var(--border)">
+
+              <!-- Search input -->
+              <div style="position:relative;margin-bottom:10px">
+                <i class="fas fa-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:.82rem"></i>
+                <input type="text" placeholder="Search by name or email…" oninput="bcSearchUsers(this.value)"
+                  style="width:100%;padding:9px 12px 9px 32px;background:#0f172a;border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;box-sizing:border-box"/>
+              </div>
+
+              <!-- User list -->
+              <div id="bc-user-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:#0a1628">
+                <div style="padding:20px;text-align:center;color:var(--muted);font-size:.85rem">Open to load users</div>
+              </div>
+
+              <!-- Selected user badge -->
+              <div id="bc-selected-user" style="display:none;margin-top:12px;padding:10px 14px;background:rgba(78,159,255,.08);border:1px solid rgba(78,159,255,.25);border-radius:8px">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div>
+                    <div style="font-size:.85rem;font-weight:600;color:#e2e8f0" id="bc-selected-name"></div>
+                    <div style="font-size:.78rem;color:#64748b" id="bc-selected-email"></div>
+                  </div>
+                  <button onclick="bcClearSelectedUser()" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;padding:4px 8px"><i class="fas fa-times"></i> Clear</button>
+                </div>
+              </div>
+
+              <!-- Status + Send button -->
+              <div id="bc-individual-status" style="display:none;margin-top:10px;font-size:.83rem"></div>
+              <button onclick="bcSendToUser()" style="margin-top:12px;width:100%;padding:10px;background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);border-radius:8px;color:#c084fc;font-size:.88rem;font-weight:600;cursor:pointer">
+                <i class="fas fa-paper-plane" style="margin-right:6px"></i>Send to Selected User
+              </button>
+            </div>
+          </div>
+          <!-- ── /Send to Individual ──────────────────────────────────── -->
+
         </div>
 
         <!-- RIGHT: Live Preview -->
