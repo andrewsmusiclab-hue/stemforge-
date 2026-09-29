@@ -9091,7 +9091,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-2'
+const ASSET_VER = '20260929-3'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10322,6 +10322,17 @@ function generatorPage() {
             </div>
             <input type="file" id="cover-file-input" accept="audio/*" style="display:none" onchange="handleCoverFileSelect(this.files[0], this)"/>
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
+          </div>
+
+          <!-- Song Title -->
+          <div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px 16px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <i class="fas fa-tag" style="color:#94a3b8;font-size:.9rem"></i>
+              <span style="font-size:.82rem;font-weight:700;color:#e2e8f0;letter-spacing:.02em">SONG TITLE</span>
+              <span style="font-size:.75rem;color:var(--muted);font-weight:400;margin-left:2px">— optional</span>
+            </div>
+            <input type="text" id="cover-title" class="suno-field-input" placeholder="Auto-filled from filename — or type your own…"
+              style="width:100%;box-sizing:border-box"/>
           </div>
 
           <!-- Lyrics (hidden when instrumental) -->

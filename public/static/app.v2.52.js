@@ -9864,8 +9864,16 @@ window.toggleRefDropdown = function() {
     // Support legacy call pattern where the input element is passed instead of a File
     if (file && file.files) { inputEl = file; file = file.files[0]; }
     if (!file) return;
-    // Auto-fill song title from filename
-    window._autoFillTitleFromFile && window._autoFillTitleFromFile(file.name);
+    // Auto-fill the cover panel's Song Title field from filename (NOT #gen-title)
+    var coverTitleEl = document.getElementById('cover-title');
+    if (coverTitleEl && !coverTitleEl.value.trim()) {
+      var cleanName = file.name
+        .replace(/\.[^.]+$/, '')   // strip extension
+        .replace(/[_\-]+/g, ' ')   // underscores/hyphens → spaces
+        .replace(/\s+/g, ' ')      // collapse spaces
+        .trim();
+      if (cleanName) coverTitleEl.value = cleanName;
+    }
     _hideCoverUploadError();
     var MAX = 20 * 1024 * 1024;
     if (file.size > MAX) {
@@ -10136,7 +10144,11 @@ window.toggleRefDropdown = function() {
         credentials: 'include',
         body: JSON.stringify({
           audio_url:         _coverAudioUrl,
-          title:             (_coverFilename || '').replace(/\.[^.]+$/, '') + ' (Cover)',
+          title:             (function() {
+            var manualTitle = ((document.getElementById('cover-title') || {}).value || '').trim();
+            var fromFile = (_coverFilename || '').replace(/\.[^.]+$/, '').replace(/[_\-]+/g,' ').trim();
+            return (manualTitle || fromFile || 'cover') + ' (Cover)';
+          })(),
           style_prompt:      stylePrompt,
           lyrics:            coverLyrics,
           make_instrumental: makeInstrumental
