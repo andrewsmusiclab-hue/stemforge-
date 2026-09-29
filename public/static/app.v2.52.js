@@ -10009,18 +10009,24 @@ window.toggleRefDropdown = function() {
   }
 
   window.renderCoverCard = function renderCoverCard(p, i) {
-    // Inline hue calculation (same as renderExtendedCard — no cross-IIFE deps)
-    var hue;
-    if (p.thumbnail_seed != null) {
-      hue = p.thumbnail_seed;
-    } else if (i != null) {
-      hue = ((Math.round(i) * 137) % 360 + 360) % 360;
-    } else {
-      var h = 0; var s = String(p.id || '0');
-      for (var k = 0; k < s.length; k++) { h = (Math.imul(31, h) + s.charCodeAt(k)) | 0; }
-      hue = ((Math.abs(h) * 137) % 360);
-    }
+    // ── Derive a stable hue from the job ID (ignores position so it never changes) ──
+    var h = 0; var s = String(p.id || '0');
+    for (var k = 0; k < s.length; k++) { h = (Math.imul(31, h) + s.charCodeAt(k)) | 0; }
+    var hue = ((Math.abs(h) * 137) % 360 + 360) % 360;
     var hue2 = (hue + 60) % 360;
+
+    // ── Pick versioned logo by job-ID hash — guarantees same card always gets same logo ──
+    // Maps into pool indices 1–20 (the coloured variants), never index 0 (plain green original)
+    // We use a different multiplier than hue so logo and background colour are uncorrelated
+    var h2 = 0;
+    for (var k2 = 0; k2 < s.length; k2++) { h2 = (Math.imul(53, h2) + s.charCodeAt(k2)) | 0; }
+    var logoPoolSize = (window._sfLogoPool ? window._sfLogoPool.length : 21);
+    var logoIdx = (Math.abs(h2) % (logoPoolSize - 1)) + 1; // 1–20, skip index 0
+    var logoEntry = window._sfLogoPool && window._sfLogoPool[logoIdx];
+    var logoSrc = logoEntry ? logoEntry.src : '/static/stemforge-logo-v2.png';
+    // Versioned logos have their own colours baked in — no hue-rotate filter needed
+    var logoFilter = (logoEntry && logoEntry.hueRotate) ? 'hue-rotate(' + hue + 'deg) saturate(1.6) brightness(0.9)' : 'none';
+
     var title = p.title || 'Cover Song';
     var displayTitle = title.replace(/_/g, ' ').trim();
     var safeTitle = title.replace(/"/g, '&quot;');
@@ -10036,8 +10042,8 @@ window.toggleRefDropdown = function() {
       ' data-title="' + safeTitle + '"' +
       ' data-hue="' + hue + '">' +
       '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + hue2 + ',70%,10%));position:relative;overflow:hidden">' +
-        '<img src="/static/stemforge-logo.png" alt="StemForge"' +
-          ' style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(' + hue + 'deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>' +
+        '<img src="' + logoSrc + '" alt="StemForge"' +
+          ' style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.82;filter:' + logoFilter + ';pointer-events:none;user-select:none"/>' +
         playBtn +
       '</div>' +
       '<div class="project-card__body">' +
