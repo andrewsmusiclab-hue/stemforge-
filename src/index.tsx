@@ -8477,7 +8477,7 @@ app.get('/api/download-wav/:id', async (c) => {
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
-  // ── R2 cache check: serve WAV directly if already converted ──
+  // ── R2 download cache: serve WAV directly if already converted ──
   if (c.env.IMAGES) {
     const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
     if (cached) {
@@ -8493,9 +8493,60 @@ app.get('/api/download-wav/:id', async (c) => {
     }
   }
 
+  // ── R2 persisted audio check: covers/extends may have audio in beats/jobId.* ──
+  // persistAudioToR2 saves audio as beats/<jobId>.<ext> (set by R2_BEATS_PREFIX).
+  // If the MusicAPI URL has expired, this is our permanent fallback.
+  if (c.env.IMAGES && (job as any).r2_audio_key) {
+    const r2Key = (job as any).r2_audio_key as string
+    const r2Obj = await c.env.IMAGES.get(r2Key)
+    if (r2Obj) {
+      const rawBuf = await r2Obj.arrayBuffer()
+      const fmt = detectAudioFormat(rawBuf)
+      let outBuf = rawBuf
+      let outMime = audioMime(fmt)
+      let outExt: string = fmt
+      if (fmt === 'mp3') {
+        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+      } else if (fmt === 'wav') {
+        outMime = 'audio/wav'; outExt = 'wav'
+      } else if (fmt === 'm4a') {
+        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+      }
+      if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
+      return new Response(outBuf, {
+        headers: {
+          'Content-Type': outMime,
+          'Content-Length': String(outBuf.byteLength),
+          'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
+          'Cache-Control': 'no-store',
+          'X-Cache': 'R2-PERSIST'
+        }
+      })
+    }
+  }
+
   // ── Cache miss: fetch source, convert, cache result ──
-  const upstream = await fetch(job.stereo_url)
-  if (!upstream.ok) return c.json({ error: 'Could not fetch audio' }, 502)
+  // If the primary URL fails (expired MusicAPI URL), try clip_id re-fetch for covers/extends.
+  let audioSrc = job.stereo_url!
+  let upstream = await fetch(audioSrc)
+  if (!upstream.ok && (job as any).clip_id && c.env.MUSICAPI_KEY) {
+    // Try to get a fresh audio URL via clip_id
+    try {
+      const clipRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${(job as any).clip_id}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      if (clipRes.ok) {
+        const clipData: any = await clipRes.json()
+        const clips = Array.isArray(clipData) ? clipData : (clipData.data || [clipData])
+        const clip  = clips.find((cl: any) => cl.audio_url) || clips[0]
+        if (clip?.audio_url) {
+          upstream = await fetch(clip.audio_url)
+          if (upstream.ok) audioSrc = clip.audio_url
+        }
+      }
+    } catch {}
+  }
+  if (!upstream.ok) return c.json({ error: 'Audio file could not be fetched — it may have expired. Try playing the track in the library first to trigger a refresh, then download again.' }, 502)
   const rawBuf = await upstream.arrayBuffer()
   const fmt = detectAudioFormat(rawBuf)
   let outBuf: ArrayBuffer
@@ -8914,15 +8965,28 @@ app.get('/api/poll-cover/:id', async (c) => {
         console.log(`[poll-cover] job=${jobId}: → generating, task_id=${coverTaskId}`)
         return c.json({ status: 'generating' })
       } else {
-        const errMsg = sonicData.message || sonicData.error || sonicData.detail || `Cover API error (HTTP ${sonicRes.status})`
-        const errData = JSON.stringify({ ...job, status: 'error', error: errMsg })
+        const rawErrMsg = sonicData.message || sonicData.error || sonicData.detail || `Cover API error (HTTP ${sonicRes.status})`
+        const rawLower = rawErrMsg.toLowerCase()
+        // Detect commercially-published track rejection (MusicAPI fingerprint/catalog check)
+        const userErrMsg = (
+          rawLower.includes('upload failed') ||
+          rawLower.includes('catalog') ||
+          rawLower.includes('published') ||
+          rawLower.includes('copyright') ||
+          rawLower.includes('fingerprint') ||
+          rawLower.includes('commercial') ||
+          rawLower.includes('licensed')
+        )
+          ? 'This track appears to be a commercially published song — StemForge cannot create a cover of a published track due to copyright restrictions. Please upload an original or royalty-free track.'
+          : `Cover generation error: ${rawErrMsg}`
+        const errData = JSON.stringify({ ...job, status: 'error', error: userErrMsg })
         await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errData, jobId).run()
         // Refund credits
         const cb = job.cover_bonus || 0, cm = job.cover_main || 0, cc = job.cover_cost || 20
         if (cb > 0 && cm > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(cb, cm, user.id).run()
         else if (cb > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cb, user.id).run()
         else await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(cc, user.id).run()
-        return c.json({ status: 'error', error: errMsg })
+        return c.json({ status: 'error', error: userErrMsg })
       }
     } catch (e: any) {
       console.error(`[poll-cover] job=${jobId}: /upload-cover threw:`, e?.message)
@@ -8951,6 +9015,15 @@ app.get('/api/poll-cover/:id', async (c) => {
   if (ready) {
     const updated = { ...job, status: 'ready', stereo_url: ready.audio_url, is_cover: 1 }
     await c.env.DB.prepare(`UPDATE jobs SET data = ?, is_cover = 1 WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
+    // ── Persist cover audio to R2 (fire-and-forget) ─────────────────────────
+    // MusicAPI audio URLs expire after ~24h. persistAudioToR2 downloads the audio,
+    // stores it in R2, and updates stereo_url in D1 to our permanent /api/track-audio/:id
+    // proxy — so WAV download always works even days later.
+    if (c.env.IMAGES && c.env.SITE_URL) {
+      const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+      persistAudioToR2(ready.audio_url, jobId, c.env.IMAGES, c.env.DB, siteUrl)
+        .catch((e: any) => console.warn(`[poll-cover] R2 persist failed for job=${jobId}:`, e?.message))
+    }
     return c.json({ status: 'ready', audio_url: ready.audio_url, title: job.title })
   }
   const failed = clips.find((cl: any) => cl.state === 'failed')
@@ -8974,7 +9047,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260928-1'
+const ASSET_VER = '20260929-1'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9158,7 +9231,7 @@ function globalSidebar() {
 
   <!-- Navigation -->
   <nav class="gs-sidebar__nav">
-    <a href="/" class="gs-sidebar__nav-item gs-auth-nav" data-page="home" style="display:none">
+    <a href="/dashboard" class="gs-sidebar__nav-item gs-auth-nav" data-page="home" style="display:none">
       <i class="fas fa-home"></i>
       <span>Home</span>
     </a>

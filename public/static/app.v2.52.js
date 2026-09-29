@@ -1914,9 +1914,10 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         });
       } else if (isCover) {
-        // Covers: use URL-based download (avoids R2 pipeline; direct proxy of stereo_url)
+        // Covers: route through job-ID download (R2 cache + WAV conversion — same as beats)
+        // openCoverDownloadModal used a raw MusicAPI URL which expires; this is more reliable.
         items.push({ icon: 'fa-download', label: 'Download Cover',
-          action: () => openCoverDownloadModal(stereoUrl, safeTitle) });
+          action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
       } else {
         items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
           action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
@@ -9936,13 +9937,16 @@ window.toggleRefDropdown = function() {
     } catch(e) {
       _setUploadState('idle');
       var msg = e.message || 'Upload failed';
+      var msgLower = msg.toLowerCase();
       // Surface a friendly message if the server returned the size error
-      if (msg.toLowerCase().includes('too large') || msg.toLowerCase().includes('20 mb') || msg.toLowerCase().includes('20mb')) {
+      if (msgLower.includes('too large') || msgLower.includes('20 mb') || msgLower.includes('20mb')) {
         if (_isWavFile(file)) {
           msg = 'WAV file is too large (max 20 MB). Convert to MP3 (128–256 kbps) and try again.';
         } else {
           msg = 'File is too large (max 20 MB). Try compressing to MP3 128 kbps.';
         }
+      } else if (msgLower.includes('upload failed') || msgLower.includes('catalog') || msgLower.includes('published') || msgLower.includes('copyright') || msgLower.includes('fingerprint')) {
+        msg = 'This track appears to be a commercially published song — StemForge cannot process published tracks due to copyright restrictions. Please upload an original or royalty-free track.';
       }
       _showCoverUploadError(msg);
     }
