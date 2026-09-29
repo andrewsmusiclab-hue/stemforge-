@@ -9021,7 +9021,41 @@ app.get('/api/poll-cover/:id', async (c) => {
 
   const job = JSON.parse(row.data) as any
   if (job.status === 'ready') return c.json({ status: 'ready', audio_url: job.stereo_url, title: job.title })
-  if (job.status === 'error') return c.json({ status: 'error', error: job.error })
+
+  // ── AUTO-RESCUE: if job is ERROR but error message is a transient "not ready" message,
+  // reset it to 'pending' so the next poll retries — this fixes jobs permanently stuck as
+  // ERROR because they hit the transient signal before the isTransient guard was deployed.
+  if (job.status === 'error') {
+    const savedErr: string = (job.error || '').toLowerCase()
+    const isSavedTransient = savedErr.includes('not ready') ||
+                             savedErr.includes('please wait') ||
+                             savedErr.includes('try again later') ||
+                             savedErr.includes('in progress') ||
+                             savedErr.includes('task.*queued')
+    if (isSavedTransient) {
+      // Reset to pending so this poll re-submits to MusicAPI
+      const resetData = JSON.stringify({ ...job, status: 'pending', error: undefined })
+      await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(resetData, jobId).run()
+      // Fall through to the 'pending' handler below
+    } else {
+      return c.json({ status: 'error', error: job.error })
+    }
+  }
+
+  // ── AUTO-RESCUE: if job is stuck 'submitting' for too long (Worker timed out before
+  // MusicAPI responded), reset to 'pending' so the next poll retries the upload-cover call.
+  if (job.status === 'submitting') {
+    const submittedAt = job.submitting_at ? new Date(job.submitting_at).getTime() : 0
+    const age = Date.now() - submittedAt
+    if (!submittedAt || age > 60_000) {
+      // Stuck submitting > 60s — reset to pending so we retry
+      const resetData = JSON.stringify({ ...job, status: 'pending', submitting_at: undefined })
+      await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(resetData, jobId).run()
+      // Fall through to 'pending' handler
+    } else {
+      return c.json({ status: 'generating' }) // Still in-flight, keep waiting
+    }
+  }
 
   // ── PENDING: first poll — call MusicAPI /upload-cover NOW from this request ──────────────
   // The POST route returned immediately without calling MusicAPI (to avoid the 30s timeout).
@@ -9035,7 +9069,8 @@ app.get('/api/poll-cover/:id', async (c) => {
     }
 
     // Mark as 'submitting' to prevent double-submission if client polls again quickly
-    const submittingData = JSON.stringify({ ...job, status: 'submitting' })
+    // Record the timestamp so stuck-submitting auto-rescue knows how long it's been waiting
+    const submittingData = JSON.stringify({ ...job, status: 'submitting', submitting_at: new Date().toISOString() })
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(submittingData, jobId).run()
 
     console.log(`[poll-cover] job=${jobId} status=pending → calling MusicAPI /upload-cover now`)
@@ -9059,6 +9094,22 @@ app.get('/api/poll-cover/:id', async (c) => {
       } else {
         const rawErrMsg = sonicData.message || sonicData.error || sonicData.detail || `Cover API error (HTTP ${sonicRes.status})`
         const rawLower = rawErrMsg.toLowerCase()
+
+        // ── TRANSIENT: MusicAPI says "task not ready / please wait" during upload-cover.
+        // This means MusicAPI is still busy — NOT a real failure. Reset to 'pending' so the
+        // next poll retries the upload-cover call rather than permanently marking as error.
+        const isSubmitTransient = rawLower.includes('not ready') ||
+                                  rawLower.includes('please wait') ||
+                                  rawLower.includes('try again') ||
+                                  rawLower.includes('in progress') ||
+                                  rawLower.includes('queued')
+        if (isSubmitTransient) {
+          console.log(`[poll-cover] job=${jobId}: upload-cover got transient "${rawErrMsg}" — resetting to pending for retry`)
+          const resetData = JSON.stringify({ ...job, status: 'pending', submitting_at: undefined })
+          await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(resetData, jobId).run()
+          return c.json({ status: 'generating' }) // Tell client to keep polling
+        }
+
         // Detect commercially-published track rejection (MusicAPI fingerprint/catalog check)
         const userErrMsg = (
           rawLower.includes('upload failed') ||
@@ -9081,14 +9132,12 @@ app.get('/api/poll-cover/:id', async (c) => {
         return c.json({ status: 'error', error: userErrMsg })
       }
     } catch (e: any) {
-      console.error(`[poll-cover] job=${jobId}: /upload-cover threw:`, e?.message)
-      const errData = JSON.stringify({ ...job, status: 'error', error: 'Cover submission failed — please try again.' })
-      await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(errData, jobId).run()
-      const cb = job.cover_bonus || 0, cm = job.cover_main || 0, cc = job.cover_cost || 20
-      if (cb > 0 && cm > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = gens_used - ? WHERE id = ?`).bind(cb, cm, user.id).run()
-      else if (cb > 0) await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cb, user.id).run()
-      else await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used - ? WHERE id = ?`).bind(cc, user.id).run()
-      return c.json({ status: 'error', error: 'Cover submission failed — please try again.' })
+      // Network/timeout error reaching MusicAPI — reset to 'pending' so next poll retries.
+      // Do NOT permanently mark as error for transient network failures.
+      console.error(`[poll-cover] job=${jobId}: /upload-cover threw — resetting to pending for retry:`, e?.message)
+      const resetData = JSON.stringify({ ...job, status: 'pending', submitting_at: undefined })
+      await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(resetData, jobId).run()
+      return c.json({ status: 'generating' }) // Tell client to keep polling
     }
   }
 
@@ -9125,13 +9174,24 @@ app.get('/api/poll-cover/:id', async (c) => {
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
     return c.json({ status: 'error', error: apiErrMsg })
   }
-  // MusicAPI returns { message: "task not ready, please wait few seconds." } as a normal
-  // in-progress response — NOT a fatal error. Only treat it as fatal if there's an error code.
-  if (pollData.error) {
-    const topErrMsg: string = pollData.error || 'Generation failed'
-    const updated = { ...job, status: 'error', error: topErrMsg }
+  // MusicAPI returns { message: "task not ready, please wait few seconds." } as a NORMAL
+  // in-progress signal when the task is still queued — NOT a real error. These transient
+  // messages must never be treated as failures or the job gets permanently stuck as ERROR.
+  //
+  // Only mark as error when:
+  //   a) pollData.error is present AND it is NOT a transient "not ready / wait" message
+  //   b) The HTTP response itself failed (non-2xx)
+  const topErrRaw: string = pollData.error || ''
+  const topErrLower = topErrRaw.toLowerCase()
+  const isTransient = topErrLower.includes('not ready') ||
+                      topErrLower.includes('please wait') ||
+                      topErrLower.includes('try again') ||
+                      topErrLower.includes('in progress') ||
+                      topErrLower.includes('task.*queued')
+  if (topErrRaw && !isTransient) {
+    const updated = { ...job, status: 'error', error: topErrRaw }
     await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(updated), jobId).run()
-    return c.json({ status: 'error', error: topErrMsg })
+    return c.json({ status: 'error', error: topErrRaw })
   }
 
   return c.json({ status: 'generating' })
@@ -9139,7 +9199,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-4'
+const ASSET_VER = '20260929-6'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10372,6 +10432,16 @@ function generatorPage() {
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
           </div>
 
+          <!-- Instrumental toggle — sits ABOVE lyrics so toggling it hides/shows them intuitively -->
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:8px">
+            <i class="fas fa-drum" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
+            <span style="font-size:.85rem;font-weight:600;flex:1">Make Instrumental</span>
+            <label class="suno-switch">
+              <input type="checkbox" id="cover-instrumental-toggle" onchange="coverInstrumentalToggled(this.checked)"/>
+              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
+            </label>
+          </div>
+
           <!-- Lyrics (hidden when instrumental) -->
           <div id="cover-lyrics-section" style="background:rgba(255,255,255,.03);border:1px solid rgba(139,92,246,.2);border-radius:10px;padding:14px 16px">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
@@ -10396,16 +10466,6 @@ function generatorPage() {
               <i class="fas fa-magic" style="font-size:.68rem"></i>
               <span>AI detected — edit freely before creating</span>
             </div>
-          </div>
-
-          <!-- Instrumental toggle -->
-          <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:8px">
-            <i class="fas fa-drum" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
-            <span style="font-size:.85rem;font-weight:600;flex:1">Make Instrumental</span>
-            <label class="suno-switch">
-              <input type="checkbox" id="cover-instrumental-toggle" onchange="coverInstrumentalToggled(this.checked)"/>
-              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
-            </label>
           </div>
 
           <!-- Song Title -->
@@ -10732,8 +10792,8 @@ function generatorPage() {
         <i class="fas fa-times" style="margin-right:5px"></i>Cancel
       </button>
 
-      <!-- Close/dismiss button (shown once ready, hidden during generation) -->
-      <button id="pipeline-close-btn" onclick="closePipelinePlayer()" style="display:none;position:absolute;top:10px;right:12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:50%;width:30px;height:30px;cursor:pointer;color:rgba(255,255,255,.6);font-size:14px;display:none;align-items:center;justify-content:center;transition:all .15s;z-index:10" onmouseover="this.style.background='rgba(255,255,255,.18)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.color='rgba(255,255,255,.6)'">
+      <!-- Close/dismiss button — always visible so user can cancel at any time -->
+      <button id="pipeline-close-btn" onclick="closePipelinePlayer()" title="Cancel / close player" style="position:absolute;top:10px;right:12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);border-radius:50%;width:30px;height:30px;cursor:pointer;color:rgba(255,255,255,.6);font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s;z-index:10" onmouseover="this.style.background='rgba(255,255,255,.18)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,255,255,.08)';this.style.color='rgba(255,255,255,.6)'">
         <i class="fas fa-times"></i>
       </button>
 

@@ -2781,6 +2781,9 @@ document.addEventListener('DOMContentLoaded', () => {
     var curEl    = document.getElementById('pipeline-scrubber-' + n + '-cur');
     var durEl    = document.getElementById('pipeline-scrubber-' + n + '-dur');
     if (!audio || !range) return;
+    // Guard: never wire the same audio element twice (prevents duplicate timeupdate listeners)
+    if (range._wired) return;
+    range._wired = true;
 
     // Show scrubber panel
     if (scrubber) scrubber.style.display = 'block';
@@ -2902,6 +2905,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (genEmpty) genEmpty.style.display = 'none';
     if (genError) genError.style.display = 'none';
     if (genResult) genResult.style.display = 'none';
+    // Kill any other active player (extend mini, dash mini) before showing pipeline
+    if (window._killActivePlayers) window._killActivePlayers();
     // Remove any dual-card layout from previous run
     const oldDual = document.getElementById('gen-result-dual');
     if (oldDual) oldDual.remove();
@@ -2928,9 +2933,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (msgEl)   { msgEl.textContent = 'Generating…'; msgEl.classList.remove('is-done'); }
       if (pillsEl) { pillsEl.innerHTML = ''; pillsEl.style.display = 'none'; }
       if (audio)   { audio.pause(); audio.src = ''; }
-      // Reset scrubber
+      // Reset scrubber (also clear _wired flag so next generation re-wires cleanly)
       if (scrubber) scrubber.style.display = 'none';
-      if (scrubRange) { scrubRange.value = 0; scrubRange.style.background = 'rgba(255,255,255,.15)'; }
+      if (scrubRange) { scrubRange.value = 0; scrubRange.style.background = 'rgba(255,255,255,.15)'; scrubRange._wired = false; }
       if (scrubCur) scrubCur.textContent = '0:00';
       // Remove any old download buttons
       const scrubberEl = document.getElementById('pipeline-scrubber-' + n);
@@ -9499,6 +9504,34 @@ function showProUpgradeModal(featureName) {
     reader.readAsArrayBuffer(file);
   }
 
+  // ── Kill any active create-page players before starting a new one ────────────
+  // Call this at the start of remix, extend, or beat generation to ensure only
+  // one player is ever visible at a time.
+  window._killActivePlayers = function() {
+    // Kill pipeline player (beats / remix)
+    var pipelineEl = document.getElementById('pipeline-status');
+    if (pipelineEl && pipelineEl.style.display !== 'none') {
+      [1, 2].forEach(function(n) {
+        var a = document.getElementById('pipeline-audio-' + n);
+        if (a) { try { a.pause(); a.src = ''; } catch(e){} }
+      });
+      pipelineEl.style.display = 'none';
+    }
+    // Kill extend mini player (inside popup)
+    var extMini = document.getElementById('ext-result-mini-player');
+    if (extMini) {
+      var extAud = document.getElementById('ext-result-audio');
+      if (extAud) { try { extAud.pause(); extAud.src = ''; } catch(e){} }
+      extMini.style.display = 'none';
+    }
+    // Kill library mini player
+    var dashPlayer = document.getElementById('dash-mini-player');
+    if (dashPlayer) {
+      if (window._teardownDashAudio) window._teardownDashAudio();
+      dashPlayer.remove();
+    }
+  };
+
   // ── Close / dismiss the pipeline player after it's done ─────────────────────
   window.closePipelinePlayer = function() {
     var pipelineEl = document.getElementById('pipeline-status');
@@ -9510,9 +9543,7 @@ function showProUpgradeModal(featureName) {
       var playBtn = document.getElementById('pipeline-card-' + n + '-play');
       if (playBtn) { playBtn.classList.remove('is-playing'); playBtn.innerHTML = '<i class="fas fa-play"></i>'; }
     });
-    // Hide the close button itself
-    var closeBtn = document.getElementById('pipeline-close-btn');
-    if (closeBtn) closeBtn.style.display = 'none';
+              // (close button stays visible — always shown)
     // Fade out and hide the player
     pipelineEl.style.transition = 'opacity .3s';
     pipelineEl.style.opacity = '0';
@@ -9544,6 +9575,9 @@ function showProUpgradeModal(featureName) {
     if (!remixUploadAudioUrl) return;
     var audioUrl = remixUploadAudioUrl;
     var title    = remixUploadTitle || 'Uploaded Track';
+
+    // Kill any currently-visible player before showing the new one
+    if (window._killActivePlayers) window._killActivePlayers();
 
     // Close the modal
     window.closeRemixUploadModal();
@@ -10293,13 +10327,31 @@ window.toggleRefDropdown = function() {
           _setCoverMsg('🎉 Your cover is ready!');
           // Invalidate covers cache so next tab switch re-fetches
           if (typeof window._libLoaded !== 'undefined') window._libLoaded.covers = false;
-          // Auto-redirect to library covers tab after 2s
+          // Show toast notification so user knows cover is done regardless of where they are
+          (function() {
+            var toast = document.createElement('div');
+            toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-size:.88rem;font-weight:600;padding:12px 24px;border-radius:24px;z-index:99999;box-shadow:0 8px 32px rgba(168,85,247,.5);display:flex;align-items:center;gap:10px;white-space:nowrap;pointer-events:none;animation:fadeInUp .35s ease';
+            toast.innerHTML = '<i class="fas fa-check-circle"></i> Cover is ready! Going to your library…';
+            // ensure animation keyframe exists
+            if (!document.getElementById('sf-toast-style')) {
+              var sty = document.createElement('style');
+              sty.id = 'sf-toast-style';
+              sty.textContent = '@keyframes fadeInUp{from{opacity:0;transform:translate(-50%,16px)}to{opacity:1;transform:translate(-50%,0)}}';
+              document.head.appendChild(sty);
+            }
+            document.body.appendChild(toast);
+            setTimeout(function() { toast.style.opacity = '0'; toast.style.transition = 'opacity .4s'; setTimeout(function() { toast.remove(); }, 400); }, 3500);
+          })();
+          // Navigate to library covers tab after 2s — works from any page
           setTimeout(function() {
             window.dismissCoverOverlay();
-            if (window.location.pathname === '/dashboard') {
-              window.switchLibTab('covers');
+            var isOnGenerator = window.location.pathname === '/generator' || window.location.pathname === '/dashboard';
+            if (isOnGenerator && window.navigate && window.switchLibTab) {
+              // Already on the page with the library panel — just switch tab
+              window.navigate('library');
+              setTimeout(function() { window.switchLibTab('covers'); }, 300);
             } else {
-              window.location.href = '/dashboard#covers';
+              window.location.href = '/generator#covers';
             }
           }, 2000);
         } else if (data.status === 'error') {
@@ -10412,10 +10464,15 @@ window.toggleRefDropdown = function() {
     '</div>';
   }
 
-  // Handle dashboard hash #covers on load
-  if (window.location.hash === '#covers' && window.location.pathname === '/dashboard') {
+  // Handle #covers hash on load (works on both /dashboard and /generator)
+  if (window.location.hash === '#covers') {
     window.addEventListener('load', function() {
-      if (typeof window.switchLibTab === 'function') window.switchLibTab('covers');
+      setTimeout(function() {
+        if (typeof window.navigate === 'function') window.navigate('library');
+        setTimeout(function() {
+          if (typeof window.switchLibTab === 'function') window.switchLibTab('covers');
+        }, 350);
+      }, 400);
     });
   }
 })();
