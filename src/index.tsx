@@ -4315,6 +4315,10 @@ app.get('/', async (c) => {
   }
   return c.html(homePage())
 })
+
+// GET /home — marketing home page, always served without redirect (used by the sidebar Home nav)
+// Logged-in users can reach the marketing page from their sidebar without being bounced to /generator.
+app.get('/home', (c) => c.html(homePage()))
 app.get('/pricing', async (c) => {
   return c.html(pricingPage())
 })
@@ -8525,9 +8529,49 @@ app.get('/api/download-wav/:id', async (c) => {
     }
   }
 
+  // ── Self-URL detection: extended/cover tracks whose stereo_url points back at this Worker ──
+  // Cloudflare Workers cannot fetch their own zone URL (infinite loop / 522 error).
+  // When stereo_url is a /api/track-audio/ URL, read the R2 key directly instead.
+  const audioUrlStr: string = job.stereo_url!
+  if (audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')) {
+    // Derive R2 key from job ID (persistAudioToR2 always stores as beats/<jobId>.<ext>)
+    if (c.env.IMAGES) {
+      for (const ext of ['wav', 'mp3', 'm4a']) {
+        const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
+        const r2Obj = await c.env.IMAGES.get(r2Key)
+        if (r2Obj) {
+          const rawBuf = await r2Obj.arrayBuffer()
+          const realFmt = detectAudioFormat(rawBuf)
+          let outBuf = rawBuf
+          let outMime = audioMime(realFmt)
+          let outExt: string = realFmt
+          if (realFmt === 'mp3') {
+            try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+          } else if (realFmt === 'wav') {
+            outMime = 'audio/wav'; outExt = 'wav'
+          } else if (realFmt === 'm4a') {
+            try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+          }
+          if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
+          return new Response(outBuf, {
+            headers: {
+              'Content-Type': outMime,
+              'Content-Length': String(outBuf.byteLength),
+              'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
+              'Cache-Control': 'no-store',
+              'X-Cache': 'R2-DIRECT'
+            }
+          })
+        }
+      }
+    }
+    // R2 key not found — track audio hasn't been persisted yet
+    return c.json({ error: 'Track audio is not yet available for download. Play it once in your Library to cache it, then try downloading again.' }, 404)
+  }
+
   // ── Cache miss: fetch source, convert, cache result ──
   // If the primary URL fails (expired MusicAPI URL), try clip_id re-fetch for covers/extends.
-  let audioSrc = job.stereo_url!
+  let audioSrc = audioUrlStr
   let upstream = await fetch(audioSrc)
   if (!upstream.ok && (job as any).clip_id && c.env.MUSICAPI_KEY) {
     // Try to get a fresh audio URL via clip_id
@@ -9047,7 +9091,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-1'
+const ASSET_VER = '20260929-2'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9231,7 +9275,7 @@ function globalSidebar() {
 
   <!-- Navigation -->
   <nav class="gs-sidebar__nav">
-    <a href="/dashboard" class="gs-sidebar__nav-item gs-auth-nav" data-page="home" style="display:none">
+    <a href="/home" class="gs-sidebar__nav-item gs-auth-nav" data-page="home" style="display:none">
       <i class="fas fa-home"></i>
       <span>Home</span>
     </a>
@@ -10364,18 +10408,51 @@ function generatorPage() {
     </div>
 
     <!-- ── Cover processing overlay ────────────────────────────── -->
-    <div id="cover-processing-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:18px;text-align:center;padding:24px">
-      <div style="width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a855f7);display:flex;align-items:center;justify-content:center;animation:pulse 2s ease-in-out infinite">
-        <i class="fas fa-microphone-alt" style="font-size:1.6rem;color:#fff"></i>
+    <style>
+      @keyframes cover-bar-auto {
+        0%   { width: 5% }
+        8%   { width: 20% }
+        20%  { width: 38% }
+        45%  { width: 58% }
+        70%  { width: 74% }
+        90%  { width: 84% }
+        100% { width: 88% }
+      }
+      @keyframes cover-icon-pulse {
+        0%,100% { transform: scale(1); opacity:1 }
+        50%      { transform: scale(1.12); opacity:.8 }
+      }
+      @keyframes cover-shimmer {
+        0%   { background-position: -200% center }
+        100% { background-position: 200% center }
+      }
+      #cover-progress-bar.auto-animate {
+        animation: cover-bar-auto 180s cubic-bezier(.15,.5,.4,1) forwards;
+      }
+      #cover-progress-bar.instant {
+        animation: none !important;
+        transition: width .5s ease !important;
+      }
+    </style>
+    <div id="cover-processing-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:20px;text-align:center;padding:24px;backdrop-filter:blur(4px)">
+      <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;animation:cover-icon-pulse 2s ease-in-out infinite;box-shadow:0 0 32px rgba(168,85,247,.4)">
+        <i class="fas fa-microphone-alt" style="font-size:1.8rem;color:#fff"></i>
       </div>
       <div>
-        <h3 style="margin:0 0 6px;font-size:1.2rem;color:#fff">Creating your cover…</h3>
-        <p id="cover-overlay-msg" style="margin:0;font-size:.88rem;color:rgba(255,255,255,.65)">Uploading source audio…</p>
+        <h3 style="margin:0 0 8px;font-size:1.25rem;font-weight:700;color:#fff">Creating your cover…</h3>
+        <p id="cover-overlay-msg" style="margin:0;font-size:.88rem;color:rgba(255,255,255,.6);min-height:1.2em;transition:opacity .3s">Uploading source audio…</p>
       </div>
-      <div style="width:280px;height:6px;background:rgba(255,255,255,.15);border-radius:3px;overflow:hidden">
-        <div id="cover-overlay-progress" style="height:100%;width:10%;background:linear-gradient(90deg,#7c3aed,#a855f7);border-radius:3px;transition:width .6s ease"></div>
+      <div style="width:300px">
+        <div style="width:100%;height:8px;background:rgba(255,255,255,.12);border-radius:4px;overflow:hidden;position:relative">
+          <div id="cover-progress-bar" style="height:100%;width:5%;background:linear-gradient(90deg,#7c3aed,#a855f7,#ec4899);background-size:200% 100%;border-radius:4px;transition:width .6s ease;animation:cover-shimmer 2s linear infinite,cover-bar-auto 180s cubic-bezier(.15,.5,.4,1) forwards"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px">
+          <span id="cover-stage-label" style="font-size:.72rem;color:rgba(255,255,255,.35)">Uploading</span>
+          <span id="cover-pct-label" style="font-size:.72rem;color:rgba(255,255,255,.35)">0%</span>
+        </div>
       </div>
-      <button onclick="dismissCoverOverlay()" style="margin-top:8px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:rgba(255,255,255,.7);padding:8px 20px;border-radius:8px;cursor:pointer;font-size:.83rem">
+      <p style="font-size:.78rem;color:rgba(255,255,255,.35);margin:0">Cover generation usually takes 1–3 minutes</p>
+      <button onclick="dismissCoverOverlay()" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:rgba(255,255,255,.6);padding:9px 22px;border-radius:9px;cursor:pointer;font-size:.82rem;transition:background .15s" onmouseover="this.style.background='rgba(255,255,255,.14)'" onmouseout="this.style.background='rgba(255,255,255,.08)'">
         <i class="fas fa-times"></i> Dismiss (runs in background)
       </button>
     </div>

@@ -418,7 +418,7 @@ document.addEventListener('DOMContentLoaded', () => {
     link.classList.remove('active');
     const page = link.dataset.page;
     const href  = link.getAttribute('href') || '';
-    if (page === 'home'         && currentPath === '/')                    link.classList.add('active');
+    if (page === 'home'         && (currentPath === '/' || currentPath === '/home')) link.classList.add('active');
     if (page === 'generator'    && currentPath.startsWith('/generator'))   link.classList.add('active');
     if (page === 'dashboard'    && currentPath.startsWith('/dashboard'))   link.classList.add('active');
     if (page === 'feedback'     && currentPath.startsWith('/feedback'))    link.classList.add('active');
@@ -1924,8 +1924,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // Get Stems — Creator and Pro only (beats only, not oneshots or covers)
-    if (!isOneshot && !isCover && stereoUrl) {
+    // Get Stems — Creator and Pro only (beats and covers, not oneshots)
+    if (!isOneshot && stereoUrl) {
       if (isFree) {
         items.push({ icon: 'fa-lock', label: 'Get Stems (Pro Artist only)', action: () => {
           const upgradeModal = document.getElementById('sf-dash-upgrade');
@@ -1941,8 +1941,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
 
-    // Remix — for full beats (not oneshots, not covers), paid plans only, requires stereoUrl
-    if (!isOneshot && !isCover && !isFree && stereoUrl) {
+    // Remix — for beats and covers (not oneshots), paid plans only, requires stereoUrl
+    if (!isOneshot && !isFree && stereoUrl) {
       items.push({ icon: 'fa-wand-magic-sparkles', label: 'Remix', tooltip: 'Remix your beat inspired by this track', action: () => {
         window.openRemixCard(jobId, stereoUrl, safeTitle);
       }});
@@ -10171,21 +10171,78 @@ window.toggleRefDropdown = function() {
     }
   };
 
+  // Cover generation stages — shown as the poll progresses
+  var _coverStages = [
+    { pct:  5, msg: 'Uploading source audio…' },
+    { pct: 18, msg: 'Analyzing track structure…' },
+    { pct: 30, msg: 'Submitting to AI model…' },
+    { pct: 45, msg: 'Generating vocal melody…' },
+    { pct: 60, msg: 'Rendering instrumentation…' },
+    { pct: 74, msg: 'Mixing and mastering…' },
+    { pct: 85, msg: 'Finalizing cover track…' }
+  ];
+  var _coverStageIdx = 0;
+
   function _showCoverOverlay() {
     var overlay = document.getElementById('cover-processing-overlay');
     if (!overlay) return;
     overlay.style.display = 'flex';
-    _animateCoverProgress(0);
+    _coverStageIdx = 0;
+    // Reset bar — remove instant class, let CSS animation run automatically
+    var bar = document.getElementById('cover-progress-bar');
+    if (bar) {
+      bar.classList.remove('instant');
+      bar.style.width = '5%';
+      // Force reflow so animation restarts
+      void bar.offsetWidth;
+      bar.classList.add('auto-animate');
+    }
+    _setCoverMsg('Uploading source audio…');
+    _setCoverStage('Uploading');
+    _setCoverPct(5);
   }
 
   window.dismissCoverOverlay = function() {
     var overlay = document.getElementById('cover-processing-overlay');
     if (overlay) overlay.style.display = 'none';
+    // Stop animation
+    var bar = document.getElementById('cover-progress-bar');
+    if (bar) { bar.classList.remove('auto-animate'); bar.classList.remove('instant'); }
   };
 
+  function _setCoverMsg(msg) {
+    var el = document.getElementById('cover-overlay-msg');
+    if (el) { el.style.opacity = '0'; setTimeout(function() { el.textContent = msg; el.style.opacity = '1'; }, 150); }
+  }
+  function _setCoverStage(label) {
+    var el = document.getElementById('cover-stage-label');
+    if (el) el.textContent = label;
+  }
+  function _setCoverPct(pct) {
+    var el = document.getElementById('cover-pct-label');
+    if (el) el.textContent = Math.round(pct) + '%';
+  }
+
   function _animateCoverProgress(pct) {
+    // Switch bar to instant/manual mode, set exact width
     var bar = document.getElementById('cover-progress-bar');
-    if (bar) bar.style.width = Math.min(pct, 95) + '%';
+    if (bar) {
+      bar.classList.remove('auto-animate');
+      bar.classList.add('instant');
+      bar.style.width = Math.min(pct, 99) + '%';
+    }
+    _setCoverPct(pct);
+    // Update stage label based on pct
+    var stage = _coverStages[0].msg;
+    var stageLabel = 'Uploading';
+    for (var i = 0; i < _coverStages.length; i++) {
+      if (pct >= _coverStages[i].pct) {
+        stage = _coverStages[i].msg;
+        // Derive a short label from the stage message
+        stageLabel = _coverStages[i].msg.replace(/…$/, '').split(' ').slice(0,2).join(' ');
+      }
+    }
+    _setCoverStage(stageLabel);
   }
 
   function _startCoverPoll(jobId, taskId) {
@@ -10194,11 +10251,23 @@ window.toggleRefDropdown = function() {
     var maxAttempts = 60; // 5 min at 5s intervals
     _coverPollTimer = setInterval(async function() {
       attempts++;
-      _animateCoverProgress(5 + Math.min(attempts * 1.5, 88));
+      // Advance through stage messages as attempts increase
+      var stageTotal = _coverStages.length;
+      var stageStep = Math.min(Math.floor(attempts / (maxAttempts / stageTotal)), stageTotal - 1);
+      if (stageStep > _coverStageIdx) {
+        _coverStageIdx = stageStep;
+        _setCoverMsg(_coverStages[stageStep].msg);
+      }
+      // Update percentage label from CSS animation estimate (don't override bar width — CSS does it)
+      var estPct = 5 + Math.min(attempts / maxAttempts * 83, 83);
+      _setCoverPct(Math.round(estPct));
+      var shortLabel = _coverStages[stageStep].msg.replace(/…$/, '').split(' ').slice(0,2).join(' ');
+      _setCoverStage(shortLabel);
       if (attempts > maxAttempts) {
         clearInterval(_coverPollTimer);
-        var msg = document.getElementById('cover-overlay-msg');
-        if (msg) msg.textContent = 'Taking longer than expected — check Library → Covers in a few minutes.';
+        _animateCoverProgress(92);
+        _setCoverMsg('Taking longer than expected — check Library → Covers in a few minutes.');
+        _setCoverStage('Still working…');
         return;
       }
       try {
@@ -10207,8 +10276,9 @@ window.toggleRefDropdown = function() {
         if (data.status === 'ready') {
           clearInterval(_coverPollTimer);
           _animateCoverProgress(100);
-          var msg = document.getElementById('cover-overlay-msg');
-          if (msg) msg.textContent = 'Cover ready! Check Library → Covers to listen.';
+          _setCoverPct(100);
+          _setCoverStage('Complete');
+          _setCoverMsg('🎉 Your cover is ready!');
           // Invalidate covers cache so next tab switch re-fetches
           if (typeof window._libLoaded !== 'undefined') window._libLoaded.covers = false;
           // Auto-redirect to library covers tab after 2s
