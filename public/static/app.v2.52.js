@@ -455,6 +455,8 @@ document.addEventListener('DOMContentLoaded', () => {
         <li><b style="color:#e2e8f0">Auto style detection</b> — StemForge automatically analyses your uploaded track and suggests a Suno-style genre/mood description for the vocal style field. You can edit it freely before generating.</li>
         <li><b style="color:#e2e8f0">Pro Artist plan</b> — AI Cover Song is available to <b style="color:#c084fc">Pro Artist</b> subscribers. Each cover costs <b>25 pts</b>.</li>
         <li><b style="color:#e2e8f0">Your covers library</b> — All generated covers are saved to the <b>Covers</b> tab in your library, separate from your beats and remixes.</li>
+        <li><b style="color:#e2e8f0">Downloading covers</b> — Download your covers directly from the <b>Library → Covers</b> tab via the ⋯ menu. Covers are downloaded as high-quality MP3.</li>
+        <li><b style="color:#f87171">⚠ Commercially published tracks</b> — Uploading a song that is already in the public music catalog (released artists, Spotify, etc.) will be <b style="color:#f87171">automatically rejected</b> by StemForge's fingerprint check. This is to protect copyright. <b style="color:#e2e8f0">Only upload original, royalty-free, or tracks you own full rights to.</b></li>
       </ul>`
     },
     {
@@ -1914,10 +1916,11 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         });
       } else if (isCover) {
-        // Covers: route through job-ID download (R2 cache + WAV conversion — same as beats)
-        // openCoverDownloadModal used a raw MusicAPI URL which expires; this is more reliable.
+        // Covers: route through openCoverDownloadModal (job-ID based, skips WASM WAV decode)
+        // DO NOT use openDownloadModal — it calls doWavDownload which triggers WASM mp3ToWav
+        // and hits Cloudflare's 10ms CPU limit causing Error 1101 / "Download failed"
         items.push({ icon: 'fa-download', label: 'Download Cover',
-          action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
+          action: () => openCoverDownloadModal(jobId, safeTitle) });
       } else {
         items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
           action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
@@ -5140,33 +5143,43 @@ async function doWavDownload(jobId, filename) {
   }
 }
 
-// ── Cover download modal (WAV / MP3) — uses /api/download-wav-url proxy ──
-// Avoids the R2-backed beats pipeline; works directly with the cover's stereo_url.
-function openCoverDownloadModal(stereoUrl, safeTitle) {
-  if (!stereoUrl) { alert('No audio available for this cover yet.'); return; }
+// ── Cover download modal — routes through /api/download-wav/:id (same as beats)
+// Covers are stored as high-quality MP3 from MusicAPI. Both MP3 and WAV buttons
+// work: WAV triggers the id-based route which serves cover audio (MP3 from MusicAPI).
+function openCoverDownloadModal(jobId, safeTitle) {
+  if (!jobId) { alert('No audio available for this cover yet.'); return; }
   const old = document.getElementById('sf-cover-dl-modal');
   if (old) old.remove();
   const title = (safeTitle || 'cover').replace(/[^a-zA-Z0-9_\-]/g, '_').toLowerCase();
-  const encUrl = encodeURIComponent(stereoUrl);
 
   async function triggerDownload(fmt) {
-    const dlUrl = '/api/download-wav-url?url=' + encUrl + '&name=' + encodeURIComponent(title) + '&fmt=' + fmt;
+    // Route through the id-based route (cover-aware, R2-cached, no self-URL loops)
+    const route = fmt === 'wav' ? '/api/download-wav/' : '/api/download-mp3/';
+    const dlUrl = route + jobId;
+    var btn = document.getElementById(fmt === 'wav' ? 'sf-cover-dl-wav' : 'sf-cover-dl-mp3');
+    var origHtml = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
     try {
       const res = await fetch(dlUrl, { credentials: 'include' });
       if (!res.ok) {
         let errData = {};
         try { errData = await res.json(); } catch {}
+        if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
         showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
         return;
       }
+      // Read actual extension from Content-Disposition (cover WAV route serves MP3 for covers)
+      const cd = res.headers.get('content-disposition') || '';
+      const serverExt = (cd.match(/filename="[^"]*\.(\w+)"/) || [])[1] || fmt;
       const blob = await res.blob();
-      const ext  = fmt === 'wav' ? 'wav' : 'mp3';
       const bUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = bUrl; a.download = title + '.' + ext;
+      a.href = bUrl; a.download = title + '.' + serverExt;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(bUrl), 10000);
+      if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
     } catch (e) {
+      if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
       showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: network error', '#ef4444', 'rgba(239,68,68,.4)');
     }
   }
@@ -5188,11 +5201,11 @@ function openCoverDownloadModal(stereoUrl, safeTitle) {
           <i class="fas fa-file-waveform"></i> Download WAV
         </button>
       </div>
-      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">WAV = lossless quality · MP3 = smaller file size</p>
+      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">High-quality audio · Cover songs are delivered as MP3</p>
     </div>`;
   document.body.appendChild(modal);
-  modal.querySelector('#sf-cover-dl-mp3').onclick = () => { modal.remove(); triggerDownload('mp3'); };
-  modal.querySelector('#sf-cover-dl-wav').onclick = () => { modal.remove(); triggerDownload('wav'); };
+  modal.querySelector('#sf-cover-dl-mp3').onclick = () => triggerDownload('mp3');
+  modal.querySelector('#sf-cover-dl-wav').onclick = () => triggerDownload('wav');
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
 
