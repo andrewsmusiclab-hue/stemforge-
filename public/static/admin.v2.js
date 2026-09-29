@@ -1056,11 +1056,10 @@ async function bcSendToUser() {
     var payload = {
       subject: subject,
       html: bcBuildHtml(),
-      audience: 'all',
-      single_user_email: u.email,
-      broadcast_name: broadcastName + ' → ' + (u.name || u.email)
+      user_email: u.email,
+      broadcast_name: broadcastName
     };
-    var res = await fetch('/api/admin/broadcast/send', {
+    var res = await fetch('/api/admin/broadcast/send-one', {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)

@@ -7166,6 +7166,88 @@ app.post('/api/admin/broadcast/send', async (c) => {
   return c.json({ ok: true, sent, errors, total: rows.length, send_id: sendId })
 })
 
+// POST /api/admin/broadcast/send-one — send to a single user only (never touches the full list)
+app.post('/api/admin/broadcast/send-one', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Service unavailable' }, 503)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const body = await c.req.json<{
+    subject: string
+    html: string
+    user_email: string
+    broadcast_name?: string
+  }>()
+
+  const { subject, html, user_email, broadcast_name } = body
+  if (!subject?.trim()) return c.json({ error: 'Subject required' }, 400)
+  if (!html?.trim())    return c.json({ error: 'HTML content required' }, 400)
+  if (!user_email?.trim()) return c.json({ error: 'user_email required' }, 400)
+
+  const resendKey = (c.env as any).RESEND_API_KEY
+  const mailerKey = (c.env as any).MAILERSEND_API_KEY
+  if (!resendKey && !mailerKey) return c.json({ error: 'No email API key configured' }, 500)
+
+  // Look up the specific user — fail hard if not found so we never guess
+  const recipient = await c.env.DB.prepare(
+    `SELECT id, email, name FROM users WHERE email=? LIMIT 1`
+  ).bind(user_email.trim().toLowerCase()).first<{id:string, email:string, name:string}>()
+
+  if (!recipient) return c.json({ error: `User not found: ${user_email}` }, 404)
+
+  const siteUrl   = c.env.SITE_URL || 'https://stemforge.studio'
+  const fromEmail = 'StemForge <noreply@stemforge.studio>'
+  const sendName  = (broadcast_name?.trim() || subject.slice(0, 60)) + ' → ' + (recipient.name || recipient.email)
+
+  // Create a send record so it shows up in Broadcast History
+  const sendRecord = await c.env.DB.prepare(
+    `INSERT INTO broadcast_sends (name, subject, audience, sent_count, opened_count) VALUES (?,?,?,0,0)`
+  ).bind(sendName, subject, 'individual').run()
+  const sendId = sendRecord.meta.last_row_id as number
+
+  // Build personalised HTML with unsubscribe + open-tracking pixel
+  const secret     = (c.env as any).SESSION_SECRET || 'sf'
+  const unsubToken = await sha256Hex(recipient.id + secret)
+  const openToken  = await sha256Hex(`${sendId}:${recipient.id}:${secret}`)
+  const unsubUrl   = `${siteUrl}/api/unsubscribe?id=${recipient.id}&t=${unsubToken}`
+  const pixelUrl   = `${siteUrl}/api/track/open?sid=${sendId}&t=${openToken}`
+  const finalHtml  = html + `
+<div style="margin-top:40px;padding-top:16px;border-top:1px solid #1e293b;text-align:center;font-size:11px;color:#475569;font-family:sans-serif">
+  You're receiving this because you have a StemForge account.<br/>
+  <a href="${unsubUrl}" style="color:#4e9fff">Unsubscribe</a>
+</div>
+<img src="${pixelUrl}" width="1" height="1" style="display:block;width:1px;height:1px;border:0;opacity:0" alt=""/>`
+
+  // Send — Resend primary, MailerSend fallback
+  let ok = false
+  if (resendKey) {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: fromEmail, to: [recipient.email], subject, html: finalHtml })
+    })
+    ok = res.ok
+  } else {
+    const feedbackFrom = (c.env as any).FEEDBACK_FROM_EMAIL || 'noreply@stemforge.studio'
+    const res = await fetch('https://api.mailersend.com/v1/email', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: { email: feedbackFrom, name: 'StemForge' }, to: [{ email: recipient.email }], subject, html: finalHtml })
+    })
+    ok = res.ok || res.status === 202
+  }
+
+  if (!ok) {
+    // Remove orphaned send record
+    await c.env.DB.prepare(`DELETE FROM broadcast_sends WHERE id=?`).bind(sendId).run()
+    return c.json({ error: 'Email delivery failed — check API key and domain verification' }, 500)
+  }
+
+  await c.env.DB.prepare(`UPDATE broadcast_sends SET sent_count=1 WHERE id=?`).bind(sendId).run()
+  return c.json({ ok: true, sent: 1, to: recipient.email, name: recipient.name, send_id: sendId })
+})
+
 // GET /api/unsubscribe — one-click unsubscribe
 app.get('/api/unsubscribe', async (c) => {
   const id = c.req.query('id')
@@ -9327,7 +9409,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-11'
+const ASSET_VER = '20260929-12'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
