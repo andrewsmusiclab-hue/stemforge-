@@ -444,6 +444,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'sep2026-copyright-policy',
+      date: 'September 2026',
+      title: 'Important: Commercially Published Tracks',
+      tag: 'COPYRIGHT NOTICE',
+      tagColor: '#ef4444',
+      body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
+        <li><b style="color:#f87171">⚠ Commercially published tracks</b> — Uploading a song that is already in the public music catalog (released artists, Spotify, etc.) will be <b style="color:#f87171">automatically rejected</b> by StemForge's fingerprint check. This is to protect copyright. <b style="color:#e2e8f0">Only upload original, royalty-free, or tracks you own full rights to.</b></li>
+      </ul>`
+    },
+    {
       id: 'sep2026-ai-cover-songs',
       date: 'September 2026',
       title: 'AI Cover Songs — Now on StemForge',
@@ -456,7 +466,6 @@ document.addEventListener('DOMContentLoaded', () => {
         <li><b style="color:#e2e8f0">Pro Artist plan</b> — AI Cover Song is available to <b style="color:#c084fc">Pro Artist</b> subscribers. Each cover costs <b>25 pts</b>.</li>
         <li><b style="color:#e2e8f0">Your covers library</b> — All generated covers are saved to the <b>Covers</b> tab in your library, separate from your beats and remixes.</li>
         <li><b style="color:#e2e8f0">Downloading covers</b> — Download your covers directly from the <b>Library → Covers</b> tab via the ⋯ menu. Covers are downloaded as high-quality MP3.</li>
-        <li><b style="color:#f87171">⚠ Commercially published tracks</b> — Uploading a song that is already in the public music catalog (released artists, Spotify, etc.) will be <b style="color:#f87171">automatically rejected</b> by StemForge's fingerprint check. This is to protect copyright. <b style="color:#e2e8f0">Only upload original, royalty-free, or tracks you own full rights to.</b></li>
       </ul>`
     },
     {
