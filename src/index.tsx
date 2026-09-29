@@ -9400,7 +9400,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-15'
+const ASSET_VER = '20260929-16'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13729,7 +13729,7 @@ function adminPage(user: User) {
     <div id="admin-tab-broadcasts" style="display:none">
       <!-- Subscriber counts -->
       <div class="sub-stats-bar" style="margin-bottom:24px">
-        <div class="sub-stat"><span class="sub-stat__label">All Subscribers</span><span class="sub-stat__val" id="bc-count-all">…</span></div>
+        <div class="sub-stat"><span class="sub-stat__label">All Email Subscribers</span><span class="sub-stat__val" id="bc-count-all">…</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Free Plan</span><span class="sub-stat__val" id="bc-count-free">…</span></div>
         <div class="sub-stat"><span class="sub-stat__label">Paid Plan</span><span class="sub-stat__val" id="bc-count-paid">…</span></div>
       </div>
