@@ -35,6 +35,15 @@ ADMIN_PASS=""
 SKIP_LOGIN=false
 COOKIE=""
 
+# ── Auto-load from .dev.vars if present ──────────────────────────────────────
+DEVVARS="$(dirname "$0")/../.dev.vars"
+if [ -f "$DEVVARS" ]; then
+  _ev=$(grep '^ADMIN_EMAIL=' "$DEVVARS" | head -1 | cut -d= -f2-)
+  _pv=$(grep '^ADMIN_PASSWORD=' "$DEVVARS" | head -1 | cut -d= -f2-)
+  [ -n "$_ev" ] && ADMIN_EMAIL="$_ev"
+  [ -n "$_pv" ] && [ "$_pv" != "REPLACE_WITH_YOUR_PASSWORD" ] && ADMIN_PASS="$_pv"
+fi
+
 # ── Arg parsing ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in

@@ -660,11 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
         gsPlanBadge.textContent = planMap[user.plan] || 'Free';
         if (classMap[user.plan]) gsPlanBadge.classList.add(classMap[user.plan]);
       }
-      // Show Admin sidebar link only to admin users (email-gated)
-      if (user.is_admin) {
-        const adminLink = document.getElementById('sidebar-admin-link');
-        if (adminLink) adminLink.style.display = 'flex';
-      }
+      // Admin link moved to Account Settings page — no sidebar element needed
       // Show What's New button + Get More Credits (logged-in only)
       const whatsNewBtn = document.getElementById('sidebar-whats-new-btn');
       if (whatsNewBtn) whatsNewBtn.style.display = 'flex';

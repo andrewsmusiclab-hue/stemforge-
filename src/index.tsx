@@ -7382,6 +7382,53 @@ app.get('/api/admin/revenue', async (c) => {
 })
 
 // GET /api/admin/ping — zero-DB health check, confirms Worker is alive and auth cookie works
+// POST /api/admin/security/change-password — admin changes their own login password
+app.post('/api/admin/security/change-password', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const { current_password, new_password } = await c.req.json<{ current_password: string; new_password: string }>()
+  if (!current_password || !new_password) return c.json({ error: 'current_password and new_password required' }, 400)
+  if (new_password.length < 10) return c.json({ error: 'New password must be at least 10 characters' }, 400)
+
+  // Fetch latest user row (need password_hash)
+  const row = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user!.id).first<any>()
+  if (!row) return c.json({ error: 'User not found' }, 404)
+
+  // Verify current password
+  if (!row.password_hash) return c.json({ error: 'No password set on this account — set one via signup or contact support' }, 400)
+  const valid = await verifyPassword(current_password, row.password_hash)
+  if (!valid) return c.json({ error: 'Current password is incorrect' }, 401)
+
+  // Hash and store new password
+  const newHash = await hashPassword(new_password)
+  await c.env.DB.prepare('UPDATE users SET password_hash = ? WHERE id = ?').bind(newHash, user!.id).run()
+
+  return c.json({ ok: true, message: 'Password updated successfully' })
+})
+
+// POST /api/admin/security/change-email — update admin email in user DB
+// Note: this only updates the DB record — the ADMIN_EMAIL env secret still
+// controls route-level admin gating and must be updated separately in CF dashboard.
+app.post('/api/admin/security/change-email', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const { new_email } = await c.req.json<{ new_email: string }>()
+  if (!new_email || !new_email.includes('@')) return c.json({ error: 'Valid email required' }, 400)
+
+  // Check not already taken by another user
+  const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ? AND id != ?').bind(new_email.toLowerCase(), user!.id).first<any>()
+  if (existing) return c.json({ error: 'That email is already in use by another account' }, 409)
+
+  await c.env.DB.prepare('UPDATE users SET email = ? WHERE id = ?').bind(new_email.toLowerCase(), user!.id).run()
+  return c.json({ ok: true, message: 'Email updated in database. Update ADMIN_EMAIL secret in Cloudflare dashboard to match.' })
+})
+
 app.get('/api/admin/ping', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB/secret', admin: false })
   const token = getSessionCookie(c.req.raw)
@@ -9372,7 +9419,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-22'
+const ASSET_VER = '20260929-23'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9585,11 +9632,7 @@ function globalSidebar() {
       <span class="nav-label-full">Get More Credits</span>
       <span class="nav-label-short" style="display:none">Credits</span>
     </a>
-    <!-- Admin link — only shown to developer/admin plan via JS -->
-    <a href="/admin" class="gs-sidebar__nav-item gs-sidebar__nav-item--admin" data-page="admin" id="sidebar-admin-link" style="display:none">
-      <i class="fas fa-shield-alt" style="color:#a78bfa"></i>
-      <span>Admin</span>
-    </a>
+
   </nav>
 
   <!-- Spacer -->
@@ -13559,6 +13602,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="signups" onclick="adminTab('signups')"><i class="fab fa-google"></i> Signups</button>
       <button class="admin-tab" data-tab="stuckjobs" onclick="adminTab('stuckjobs')" id="stuck-jobs-tab-btn"><i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs</button>
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
+      <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -13898,6 +13942,157 @@ function adminPage(user: User) {
       </div>
     </div>
 
+    <!-- ── SECURITY TAB ─────────────────────────────────────────────────────── -->
+    <div id="admin-tab-security" style="display:none">
+      <div style="max-width:540px;display:flex;flex-direction:column;gap:20px">
+
+        <!-- Change admin email/username -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px">
+          <h3 style="margin:0 0 6px;font-size:.97rem;display:flex;align-items:center;gap:8px">
+            <i class="fas fa-user-shield" style="color:#a78bfa"></i> Admin Identity
+          </h3>
+          <p style="color:var(--muted);font-size:.82rem;margin:0 0 18px;line-height:1.5">
+            The email address used to identify the admin account. Changing this updates the <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">ADMIN_EMAIL</code> check — you must also be logged in with this email to access admin routes.
+          </p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div>
+              <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Current admin email</label>
+              <div style="font-size:.9rem;font-weight:600;color:#a78bfa;padding:8px 12px;background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);border-radius:8px" id="sec-current-email">Loading…</div>
+            </div>
+            <div>
+              <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">New admin email</label>
+              <input type="email" id="sec-new-email" placeholder="new@email.com"
+                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+            </div>
+          </div>
+          <div id="sec-email-msg" style="display:none;margin-top:10px;font-size:.82rem;padding:8px 12px;border-radius:8px"></div>
+          <button onclick="secChangeEmail()" style="margin-top:14px;padding:9px 20px;background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.4);border-radius:8px;color:#c084fc;font-size:.88rem;font-weight:600;cursor:pointer">
+            <i class="fas fa-save" style="margin-right:6px"></i>Update Admin Email
+          </button>
+        </div>
+
+        <!-- Change password -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px">
+          <h3 style="margin:0 0 6px;font-size:.97rem;display:flex;align-items:center;gap:8px">
+            <i class="fas fa-key" style="color:#f59e0b"></i> Admin Password
+          </h3>
+          <p style="color:var(--muted);font-size:.82rem;margin:0 0 18px;line-height:1.5">
+            Change the password for your admin account (<strong id="sec-pw-email-label">andrewsmusiclab@gmail.com</strong>). This updates the password stored in the user database.
+          </p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div>
+              <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Current password</label>
+              <input type="password" id="sec-cur-pw" placeholder="Current password"
+                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+            </div>
+            <div>
+              <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">New password</label>
+              <input type="password" id="sec-new-pw" placeholder="New password (min 10 chars)"
+                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+            </div>
+            <div>
+              <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Confirm new password</label>
+              <input type="password" id="sec-confirm-pw" placeholder="Repeat new password"
+                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+            </div>
+          </div>
+          <div id="sec-pw-msg" style="display:none;margin-top:10px;font-size:.82rem;padding:8px 12px;border-radius:8px"></div>
+          <button onclick="secChangePassword()" style="margin-top:14px;padding:9px 20px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4);border-radius:8px;color:#fcd34d;font-size:.88rem;font-weight:600;cursor:pointer">
+            <i class="fas fa-key" style="margin-right:6px"></i>Change Password
+          </button>
+        </div>
+
+        <!-- Info box -->
+        <div style="background:rgba(59,130,246,.06);border:1px solid rgba(59,130,246,.2);border-radius:12px;padding:16px 18px;font-size:.82rem;color:#94a3b8;line-height:1.6">
+          <p style="margin:0 0 6px;font-weight:600;color:#60a5fa"><i class="fas fa-info-circle" style="margin-right:5px"></i>How admin access works</p>
+          <ul style="margin:0;padding:0 0 0 16px">
+            <li>Admin is identified by the <code style="background:rgba(255,255,255,.07);padding:1px 4px;border-radius:3px">ADMIN_EMAIL</code> environment secret</li>
+            <li>Logging in with that email automatically grants admin access — no special plan needed</li>
+            <li>The password is stored securely in the user database (PBKDF2 + SHA-256)</li>
+            <li>Admin routes are server-side protected — changing email here also requires updating the <code style="background:rgba(255,255,255,.07);padding:1px 4px;border-radius:3px">ADMIN_EMAIL</code> secret via Cloudflare dashboard</li>
+          </ul>
+        </div>
+
+      </div>
+
+      <script>
+      // Load current admin email when tab opens
+      async function secLoadInfo() {
+        try {
+          const r = await fetch('/api/me', { credentials: 'include' });
+          const d = await r.json();
+          const el = document.getElementById('sec-current-email');
+          const lbl = document.getElementById('sec-pw-email-label');
+          if (el)  el.textContent  = d.email || '—';
+          if (lbl) lbl.textContent = d.email || '—';
+        } catch {}
+      }
+      secLoadInfo();
+
+      function secMsg(elId, msg, ok) {
+        var el = document.getElementById(elId);
+        if (!el) return;
+        el.textContent = msg;
+        el.style.display = 'block';
+        el.style.background = ok ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)';
+        el.style.border     = ok ? '1px solid rgba(16,185,129,.3)' : '1px solid rgba(239,68,68,.3)';
+        el.style.color      = ok ? '#6ee7b7' : '#fca5a5';
+      }
+
+      async function secChangePassword() {
+        var cur     = document.getElementById('sec-cur-pw').value.trim();
+        var nw      = document.getElementById('sec-new-pw').value;
+        var confirm = document.getElementById('sec-confirm-pw').value;
+        if (!cur || !nw || !confirm) { secMsg('sec-pw-msg','All fields are required.',false); return; }
+        if (nw.length < 10)          { secMsg('sec-pw-msg','New password must be at least 10 characters.',false); return; }
+        if (nw !== confirm)          { secMsg('sec-pw-msg','New passwords do not match.',false); return; }
+        try {
+          var res = await fetch('/api/admin/security/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ current_password: cur, new_password: nw })
+          });
+          var d = await res.json();
+          if (d.ok) {
+            secMsg('sec-pw-msg', '✅ Password updated successfully.', true);
+            document.getElementById('sec-cur-pw').value = '';
+            document.getElementById('sec-new-pw').value = '';
+            document.getElementById('sec-confirm-pw').value = '';
+          } else {
+            secMsg('sec-pw-msg', d.error || 'Password change failed.', false);
+          }
+        } catch(e) {
+          secMsg('sec-pw-msg', 'Network error — please try again.', false);
+        }
+      }
+
+      async function secChangeEmail() {
+        var newEmail = document.getElementById('sec-new-email').value.trim().toLowerCase();
+        if (!newEmail || !newEmail.includes('@')) { secMsg('sec-email-msg','Enter a valid email address.',false); return; }
+        try {
+          var res = await fetch('/api/admin/security/change-email', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ new_email: newEmail })
+          });
+          var d = await res.json();
+          if (d.ok) {
+            secMsg('sec-email-msg', '✅ Admin email updated in DB. Remember to also update ADMIN_EMAIL secret in Cloudflare dashboard.', true);
+            document.getElementById('sec-new-email').value = '';
+            secLoadInfo();
+          } else {
+            secMsg('sec-email-msg', d.error || 'Failed to update email.', false);
+          }
+        } catch(e) {
+          secMsg('sec-email-msg', 'Network error — please try again.', false);
+        }
+      }
+      </script>
+    </div>
+    <!-- ── /SECURITY TAB ────────────────────────────────────────────────────── -->
+
   </div>
 </main>
 <style>
@@ -14110,9 +14305,37 @@ function accountPage(user: User) {
         </div>
         <p style="font-size:12px;color:var(--muted);margin-top:8px">To permanently delete your account, use the <strong>Delete Account</strong> section above.</p>
       </div>
+
+      <!-- Admin panel link — only rendered/shown to admin users via JS -->
+      <div class="account-card" id="account-admin-card" style="display:none;border-color:rgba(167,139,250,.25);background:linear-gradient(135deg,rgba(167,139,250,.06),rgba(139,92,246,.04))">
+        <h3 style="display:flex;align-items:center;gap:10px">
+          <i class="fas fa-shield-alt" style="color:#a78bfa;font-size:1rem"></i>
+          Admin Panel
+        </h3>
+        <p style="font-size:.85rem;color:var(--muted);margin:0 0 14px;line-height:1.5">
+          Access the StemForge admin dashboard — users, analytics, broadcasts, and revenue.
+        </p>
+        <a href="/admin" class="btn btn--sm" style="background:linear-gradient(135deg,#7c3aed,#a78bfa);border:none;color:#fff;font-weight:700;display:inline-flex;align-items:center;gap:8px;text-decoration:none">
+          <i class="fas fa-shield-alt"></i> Open Admin Panel
+        </a>
+      </div>
     </div>
   </div>
-</main>`)
+</main>
+<script>
+// Show admin card only for admin users
+(async function() {
+  try {
+    const r = await fetch('/api/me', { credentials: 'include' });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.is_admin) {
+      const card = document.getElementById('account-admin-card');
+      if (card) card.style.display = 'block';
+    }
+  } catch {}
+})();
+</script>`)
 }
 
 // ─── LEGAL PAGES HELPER ──────────────────────────────────────────────────────
