@@ -4084,8 +4084,8 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null }>()
   const plan = fresh?.plan ?? user.plan
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
@@ -4099,7 +4099,8 @@ app.get('/api/auth/me', async (c) => {
       bonus_credits: fresh?.bonus_credits ?? user.bonus_credits ?? 0,
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null,
-      is_admin: isAdmin(user, c.env)
+      is_admin: isAdmin(user, c.env),
+      has_password: !!(fresh?.password_hash)
     }
   })
 })
@@ -7397,10 +7398,13 @@ app.post('/api/admin/security/change-password', async (c) => {
   const row = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user!.id).first<any>()
   if (!row) return c.json({ error: 'User not found' }, 404)
 
-  // Verify current password
-  if (!row.password_hash) return c.json({ error: 'No password set on this account — set one via signup or contact support' }, 400)
-  const valid = await verifyPassword(current_password, row.password_hash)
-  if (!valid) return c.json({ error: 'Current password is incorrect' }, 401)
+  if (row.password_hash) {
+    // Account already has a password — verify the current one
+    if (!current_password) return c.json({ error: 'Current password is required' }, 400)
+    const valid = await verifyPassword(current_password, row.password_hash)
+    if (!valid) return c.json({ error: 'Current password is incorrect' }, 401)
+  }
+  // If no password_hash exists yet, this is the first password — skip verification
 
   // Hash and store new password
   const newHash = await hashPassword(new_password)
@@ -9419,7 +9423,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-27'
+const ASSET_VER = '20260929-28'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13980,7 +13984,7 @@ function adminPage(user: User) {
             Change the password for your admin account (<strong id="sec-pw-email-label">andrewsmusiclab@gmail.com</strong>). This updates the password stored in the user database.
           </p>
           <div style="display:flex;flex-direction:column;gap:10px">
-            <div>
+            <div id="sec-cur-pw-row" style="display:none">
               <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Current password</label>
               <div style="position:relative">
                 <input type="password" id="sec-cur-pw" placeholder="Current password"
@@ -14016,7 +14020,7 @@ function adminPage(user: User) {
           </div>
           <div id="sec-pw-msg" style="display:none;margin-top:10px;font-size:.82rem;padding:8px 12px;border-radius:8px"></div>
           <button onclick="secChangePassword()" style="margin-top:14px;padding:9px 20px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.4);border-radius:8px;color:#fcd34d;font-size:.88rem;font-weight:600;cursor:pointer">
-            <i class="fas fa-key" style="margin-right:6px"></i>Change Password
+            <i class="fas fa-key" style="margin-right:6px"></i><span id="sec-pw-action-label">Set Password</span>
           </button>
         </div>
 
@@ -14034,7 +14038,10 @@ function adminPage(user: User) {
       </div>
 
       <script>
-      // Load current admin email when tab opens
+      // Track whether this account already has a password set
+      var _secHasPassword = false;
+
+      // Load current admin email + password state when tab opens
       async function secLoadInfo() {
         try {
           const r = await fetch('/api/auth/me', { credentials: 'include' });
@@ -14043,6 +14050,13 @@ function adminPage(user: User) {
           const lbl = document.getElementById('sec-pw-email-label');
           if (el)  el.textContent  = (d.user && d.user.email) || '—';
           if (lbl) lbl.textContent = (d.user && d.user.email) || '—';
+          // Show/hide current-password row based on whether account has a password
+          _secHasPassword = !!(d.user && d.user.has_password);
+          var curRow = document.getElementById('sec-cur-pw-row');
+          if (curRow) curRow.style.display = _secHasPassword ? 'block' : 'none';
+          // Update label to clarify first-time setup
+          var lbl2 = document.getElementById('sec-pw-action-label');
+          if (lbl2) lbl2.textContent = _secHasPassword ? 'Change Password' : 'Set Password';
         } catch {}
       }
       secLoadInfo();
@@ -14067,10 +14081,11 @@ function adminPage(user: User) {
       }
 
       async function secChangePassword() {
-        var cur     = document.getElementById('sec-cur-pw').value.trim();
+        var cur     = _secHasPassword ? document.getElementById('sec-cur-pw').value.trim() : '';
         var nw      = document.getElementById('sec-new-pw').value;
         var confirm = document.getElementById('sec-confirm-pw').value;
-        if (!cur || !nw || !confirm) { secMsg('sec-pw-msg','All fields are required.',false); return; }
+        if (_secHasPassword && !cur) { secMsg('sec-pw-msg','Current password is required.',false); return; }
+        if (!nw || !confirm)         { secMsg('sec-pw-msg','Please fill in the new password fields.',false); return; }
         if (nw.length < 6)           { secMsg('sec-pw-msg','New password must be at least 6 characters.',false); return; }
         if (nw !== confirm)          { secMsg('sec-pw-msg','New passwords do not match.',false); return; }
         try {
@@ -14082,10 +14097,16 @@ function adminPage(user: User) {
           });
           var d = await res.json();
           if (d.ok) {
-            secMsg('sec-pw-msg', '✅ Password updated successfully.', true);
+            secMsg('sec-pw-msg', _secHasPassword ? '✅ Password updated successfully.' : '✅ Password set successfully! You can now log in with this password.', true);
             document.getElementById('sec-cur-pw').value = '';
             document.getElementById('sec-new-pw').value = '';
             document.getElementById('sec-confirm-pw').value = '';
+            // Now account has a password — show current-password field for future changes
+            _secHasPassword = true;
+            var curRow = document.getElementById('sec-cur-pw-row');
+            if (curRow) curRow.style.display = 'block';
+            var lbl2 = document.getElementById('sec-pw-action-label');
+            if (lbl2) lbl2.textContent = 'Change Password';
           } else {
             secMsg('sec-pw-msg', d.error || 'Password change failed.', false);
           }
