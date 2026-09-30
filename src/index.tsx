@@ -6289,6 +6289,8 @@ app.get('/api/admin/recover-cover-job', async (c) => {
   })
 })
 
+
+
 // GET /api/admin/prime-cover-wav/:id — manually trigger WAV pre-bake for an existing cover job
 // Use this to back-fill WAV cache for covers that became ready before the auto-prime was added.
 app.get('/api/admin/prime-cover-wav/:id', async (c) => {
@@ -9400,7 +9402,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-19'
+const ASSET_VER = '20260929-21'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
