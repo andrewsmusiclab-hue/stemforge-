@@ -8637,6 +8637,27 @@ app.get('/api/track-audio/:id', async (c) => {
     'Cache-Control': 'public, max-age=86400',
   }
 
+  // ── One-shots: serve directly from R2 (no redirect loop, instant playback) ─
+  if ((job as any).is_sfx || jobId.startsWith('sfx_') || jobId.startsWith('os_')) {
+    if (c.env.IMAGES) {
+      const obj = await c.env.IMAGES.get(`oneshots/${jobId}.mp3`)
+      if (obj) {
+        return new Response(obj.body, {
+          headers: { ...commonHeaders, 'Content-Type': 'audio/mpeg', 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400' }
+        })
+      }
+    }
+    // Fallback: stored audio_url (CDN link or data URI)
+    const oUrl: string = (job as any).audio_url || ''
+    if (oUrl && !oUrl.startsWith('/api/') && !oUrl.startsWith('data:')) {
+      try {
+        const r = await fetch(oUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+        if (r.ok) return new Response(r.body, { headers: { ...commonHeaders, 'Content-Type': 'audio/mpeg' } })
+      } catch {}
+    }
+    return c.json({ error: 'One shot audio not available' }, 404)
+  }
+
   // ── Step 1: Serve from R2 if already persisted ────────────────────────────
   if (c.env.IMAGES && job.r2_audio_key) {
     const obj = await c.env.IMAGES.get(job.r2_audio_key)
@@ -8771,7 +8792,48 @@ app.get('/api/download-wav/:id', async (c) => {
   }
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
-  if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
+  if (!job) return c.json({ error: 'Track not found' }, 404)
+
+  // ── One-shots: serve directly from R2 — no WASM conversion needed ────────
+  // One-shot audio is stored at oneshots/{id}.mp3 in R2. Serve as-is for both
+  // WAV and MP3 download buttons (ElevenLabs already produces high-quality MP3).
+  if ((job as any).is_sfx || (jobId.startsWith('sfx_') || jobId.startsWith('os_'))) {
+    const r2Key = `oneshots/${jobId}.mp3`
+    if (c.env.IMAGES) {
+      const obj = await c.env.IMAGES.get(r2Key)
+      if (obj) {
+        const safeT = ((job as any).title || (job as any).sound_type || 'oneshot')
+          .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'oneshot'
+        const raw = await obj.arrayBuffer()
+        return new Response(raw, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Content-Length': String(raw.byteLength),
+            'Content-Disposition': `attachment; filename="${safeT}.mp3"`,
+            'Cache-Control': 'no-store'
+          }
+        })
+      }
+    }
+    // R2 not available or file missing — try the stored audio_url as fallback
+    const oneshotUrl: string = (job as any).audio_url || ''
+    if (oneshotUrl && !oneshotUrl.startsWith('/api/')) {
+      try {
+        const r = await fetch(oneshotUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+        if (r.ok) {
+          const buf = await r.arrayBuffer()
+          const safeT = ((job as any).title || 'oneshot').replace(/[^a-zA-Z0-9 \-_]/g, '_').toLowerCase()
+          return new Response(buf, {
+            headers: { 'Content-Type': 'audio/mpeg', 'Content-Length': String(buf.byteLength),
+              'Content-Disposition': `attachment; filename="${safeT}.mp3"`, 'Cache-Control': 'no-store' }
+          })
+        }
+      } catch {}
+    }
+    return c.json({ error: 'One shot audio not found. Please regenerate it.' }, 404)
+  }
+
+  if (!job.stereo_url) return c.json({ error: 'Track not found' }, 404)
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
@@ -9010,7 +9072,29 @@ app.get('/api/download-mp3/:id', async (c) => {
   }
   const jobId = c.req.param('id')
   const job = await getJob(c.env.DB, jobId)
-  if (!job || !job.stereo_url) return c.json({ error: 'Track not found' }, 404)
+  if (!job) return c.json({ error: 'Track not found' }, 404)
+
+  // ── One-shots: serve directly from R2 (ElevenLabs MP3, no transcoding needed) ──
+  if ((job as any).is_sfx || jobId.startsWith('sfx_') || jobId.startsWith('os_')) {
+    const r2Key = `oneshots/${jobId}.mp3`
+    if (c.env.IMAGES) {
+      const obj = await c.env.IMAGES.get(r2Key)
+      if (obj) {
+        const safeT = ((job as any).title || (job as any).sound_type || 'oneshot')
+          .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'oneshot'
+        return new Response(obj.body, {
+          headers: {
+            'Content-Type': 'audio/mpeg',
+            'Content-Disposition': `attachment; filename="${safeT}.mp3"`,
+            'Cache-Control': 'no-store'
+          }
+        })
+      }
+    }
+    return c.json({ error: 'One shot audio not found. Please regenerate it.' }, 404)
+  }
+
+  if (!job.stereo_url) return c.json({ error: 'Track not found' }, 404)
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
@@ -9512,7 +9596,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-41'
+const ASSET_VER = '20260929-42'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

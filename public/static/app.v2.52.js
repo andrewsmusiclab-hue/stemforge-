@@ -1928,8 +1928,18 @@ document.addEventListener('DOMContentLoaded', () => {
         // and hits Cloudflare's 10ms CPU limit causing Error 1101 / "Download failed"
         items.push({ icon: 'fa-download', label: 'Download Cover',
           action: () => openCoverDownloadModal(jobId, safeTitle) });
+      } else if (isOneshot) {
+        // One-shots: direct MP3 download from R2 — no WAV conversion modal needed
+        items.push({ icon: 'fa-download', label: 'Download MP3',
+          action: () => {
+            const a = document.createElement('a');
+            a.href = '/api/download-mp3/' + jobId;
+            a.download = (safeTitle || 'oneshot') + '.mp3';
+            document.body.appendChild(a); a.click(); a.remove();
+          }
+        });
       } else {
-        items.push({ icon: 'fa-download', label: isOneshot ? 'Download' : 'Download Full Track',
+        items.push({ icon: 'fa-download', label: 'Download Full Track',
           action: () => openDownloadModal(jobId, stereoUrl, safeTitle) });
       }
     }
