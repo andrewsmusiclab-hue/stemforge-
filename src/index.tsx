@@ -23,6 +23,7 @@ type Bindings = {
   ADMIN_EMAIL: string               // Developer admin email — grants developer plan access
   STAGING_URL?: string              // Set by wrangler.staging.jsonc — shown in admin Publish tab
   CRON_SECRET?: string              // Secret token for /api/cron/free-reset endpoint
+  CLOUDCONVERT_KEY?: string         // CloudConvert API key for MP3→WAV conversion (large files)
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -8780,6 +8781,71 @@ app.get('/api/track-audio/:id', async (c) => {
 // Beats are typically under 2 MB so conversion works fine.
 const WAV_WASM_SIZE_LIMIT = 3 * 1024 * 1024  // 3 MB
 
+// ── CloudConvert sync helper ─────────────────────────────────────────────────
+// Sends a public audio URL to CloudConvert's sync endpoint.
+// The entire job (import→convert→export) completes before the response returns.
+// Returns a temporary WAV download URL on success, or null on failure.
+async function convertToWavViaCloudConvert(
+  sourceUrl: string,
+  apiKey: string,
+  timeoutMs = 55000
+): Promise<string | null> {
+  const ac = new AbortController()
+  const t = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    const body = {
+      tasks: {
+        'import-audio': {
+          operation: 'import/url',
+          url: sourceUrl,
+          filename: 'input.mp3'
+        },
+        'convert-to-wav': {
+          operation: 'convert',
+          input: 'import-audio',
+          output_format: 'wav',
+          audio_codec: 'pcm_s16le',
+          audio_frequency: 44100
+        },
+        'export-wav': {
+          operation: 'export/url',
+          input: 'convert-to-wav',
+          inline: false
+        }
+      }
+    }
+    const res = await fetch('https://sync.api.cloudconvert.com/v2/jobs', {
+      method: 'POST',
+      signal: ac.signal,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    })
+    clearTimeout(t)
+    if (!res.ok) {
+      console.warn(`[cloudconvert] HTTP ${res.status}`)
+      return null
+    }
+    const data: any = await res.json()
+    // Find the export task result URL
+    const tasks: any[] = data?.data?.tasks || []
+    const exportTask = tasks.find((tk: any) => tk.operation === 'export/url' && tk.status === 'finished')
+    const files: any[] = exportTask?.result?.files || []
+    const wavUrl: string = files[0]?.url || ''
+    if (!wavUrl) {
+      console.warn('[cloudconvert] no WAV URL in response', JSON.stringify(data).slice(0, 400))
+      return null
+    }
+    return wavUrl
+  } catch (e: any) {
+    clearTimeout(t)
+    console.warn('[cloudconvert] error:', e?.message)
+    return null
+  }
+}
+
 app.get('/api/download-wav/:id', async (c) => {
   try {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
@@ -8909,15 +8975,44 @@ app.get('/api/download-wav/:id', async (c) => {
             persistAudioToR2(audioUrlStr, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
               .catch((e: any) => console.warn('[R2 persist/cdn-dl]', e?.message))
           }
-          // Large files: stream as-is (can't WASM decode without OOM)
+          // Large files: WASM can't handle them in-Worker (OOM / Error 1101).
+          // Try CloudConvert sync API first — sends CDN URL, gets WAV URL back.
+          // Falls through to serving MP3 only if CloudConvert fails.
           if (rawBuf.byteLength > WAV_WASM_SIZE_LIMIT) {
+            if (c.env.CLOUDCONVERT_KEY) {
+              console.log(`[download-wav] job=${jobId} size=${Math.round(rawBuf.byteLength/1024)}KB > 3MB → CloudConvert`)
+              const wavUrl = await convertToWavViaCloudConvert(audioUrlStr, c.env.CLOUDCONVERT_KEY)
+              if (wavUrl) {
+                try {
+                  const acW = new AbortController(); const tW = setTimeout(() => acW.abort(), 20000)
+                  const wavRes = await fetch(wavUrl, { signal: acW.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
+                  clearTimeout(tW)
+                  if (wavRes.ok) {
+                    const wavBuf = await wavRes.arrayBuffer()
+                    // Save WAV to R2 dl-cache so next download is instant (free path)
+                    if (c.env.IMAGES) putDlCache(c.env.IMAGES, jobId, 'wav', wavBuf).catch(() => {})
+                    console.log(`[download-wav] job=${jobId} CloudConvert WAV size=${Math.round(wavBuf.byteLength/1024)}KB`)
+                    return new Response(wavBuf, {
+                      headers: {
+                        'Content-Type': 'audio/wav',
+                        'Content-Length': String(wavBuf.byteLength),
+                        'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+                        'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
+                      }
+                    })
+                  }
+                } catch (e: any) { console.warn('[download-wav] CloudConvert fetch error:', e?.message) }
+              }
+            }
+            // CloudConvert unavailable or failed — serve original MP3 as fallback
             const fmt2 = detectAudioFormat(rawBuf)
+            console.log(`[download-wav] job=${jobId} CloudConvert fallback → serving ${fmt2}`)
             return new Response(rawBuf, {
               headers: {
                 'Content-Type': audioMime(fmt2),
                 'Content-Length': String(rawBuf.byteLength),
                 'Content-Disposition': `attachment; filename="${safeTitle}.${fmt2}"`,
-                'Cache-Control': 'no-store', 'X-Cache': 'CDN-LARGE'
+                'Cache-Control': 'no-store', 'X-Cache': 'CDN-LARGE-FALLBACK'
               }
             })
           }
@@ -9596,7 +9691,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-42'
+const ASSET_VER = '20260930-43'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9706,7 +9801,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.52.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.53.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
