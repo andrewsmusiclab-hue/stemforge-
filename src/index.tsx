@@ -8848,12 +8848,10 @@ async function convertToWavViaCloudConvert(
 
 
 app.get('/api/download-wav/:id', async (c) => {
-  try {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login')
-  // Free plan: downloads locked
   if (user.plan === 'free') {
     return c.json({ error: 'Downloading tracks requires a Creator or Pro Artist plan. Your tracks are saved — upgrade anytime to download.', locked: true, upgrade: true }, 403)
   }
@@ -8861,41 +8859,19 @@ app.get('/api/download-wav/:id', async (c) => {
   const job = await getJob(c.env.DB, jobId)
   if (!job) return c.json({ error: 'Track not found' }, 404)
 
-  // ── One-shots: serve directly from R2 — no WASM conversion needed ────────
-  // One-shot audio is stored at oneshots/{id}.mp3 in R2. Serve as-is for both
-  // WAV and MP3 download buttons (ElevenLabs already produces high-quality MP3).
-  if ((job as any).is_sfx || (jobId.startsWith('sfx_') || jobId.startsWith('os_'))) {
-    const r2Key = `oneshots/${jobId}.mp3`
+  // ── One-shots: MP3 as-is, no conversion needed ──────────────────────────
+  if ((job as any).is_sfx || jobId.startsWith('sfx_') || jobId.startsWith('os_')) {
     if (c.env.IMAGES) {
-      const obj = await c.env.IMAGES.get(r2Key)
+      const obj = await c.env.IMAGES.get(`oneshots/${jobId}.mp3`)
       if (obj) {
         const safeT = ((job as any).title || (job as any).sound_type || 'oneshot')
           .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'oneshot'
         const raw = await obj.arrayBuffer()
-        return new Response(raw, {
-          headers: {
-            'Content-Type': 'audio/mpeg',
-            'Content-Length': String(raw.byteLength),
-            'Content-Disposition': `attachment; filename="${safeT}.mp3"`,
-            'Cache-Control': 'no-store'
-          }
-        })
+        return new Response(raw, { headers: {
+          'Content-Type': 'audio/mpeg', 'Content-Length': String(raw.byteLength),
+          'Content-Disposition': `attachment; filename="${safeT}.mp3"`, 'Cache-Control': 'no-store'
+        }})
       }
-    }
-    // R2 not available or file missing — try the stored audio_url as fallback
-    const oneshotUrl: string = (job as any).audio_url || ''
-    if (oneshotUrl && !oneshotUrl.startsWith('/api/')) {
-      try {
-        const r = await fetch(oneshotUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
-        if (r.ok) {
-          const buf = await r.arrayBuffer()
-          const safeT = ((job as any).title || 'oneshot').replace(/[^a-zA-Z0-9 \-_]/g, '_').toLowerCase()
-          return new Response(buf, {
-            headers: { 'Content-Type': 'audio/mpeg', 'Content-Length': String(buf.byteLength),
-              'Content-Disposition': `attachment; filename="${safeT}.mp3"`, 'Cache-Control': 'no-store' }
-          })
-        }
-      } catch {}
     }
     return c.json({ error: 'One shot audio not found. Please regenerate it.' }, 404)
   }
@@ -8904,282 +8880,79 @@ app.get('/api/download-wav/:id', async (c) => {
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
-  // ── cloudConvertAndStream: send a public URL to CloudConvert, stream WAV back ──
-  // Never loads the audio into Worker memory — zero OOM risk.
-  // Returns a WAV Response on success, null on failure.
-  const cloudConvertAndStream = async (srcUrl: string, cacheHdr: string): Promise<Response | null> => {
-    if (!c.env.CLOUDCONVERT_KEY) return null
-    console.log(`[download-wav] job=${jobId} ${cacheHdr} → CloudConvert url=${srcUrl.slice(0,60)}`)
-    const wavUrl = await convertToWavViaCloudConvert(srcUrl, c.env.CLOUDCONVERT_KEY)
-    if (!wavUrl) { console.warn(`[download-wav] job=${jobId} CloudConvert returned no URL`); return null }
-    try {
-      const acW = new AbortController(); const tW = setTimeout(() => acW.abort(), 25000)
-      const wavRes = await fetch(wavUrl, { signal: acW.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
-      clearTimeout(tW)
-      if (!wavRes.ok) return null
-      // Stream directly to client — never buffer into Worker memory
-      // Save to R2 dl-cache in background via tee
-      if (c.env.IMAGES) {
-        const [s1, s2] = wavRes.body!.tee()
-        const r2Save = new Response(s1).arrayBuffer()
-          .then(buf => putDlCache(c.env.IMAGES!, jobId, 'wav', buf))
-          .catch(() => {})
-        const cl = wavRes.headers.get('content-length')
-        console.log(`[download-wav] job=${jobId} CloudConvert WAV streaming cl=${cl}`)
-        return new Response(s2, {
-          headers: {
-            'Content-Type': 'audio/wav',
-            ...(cl ? { 'Content-Length': cl } : {}),
-            'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-            'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
-          }
-        })
-      }
-      const cl = wavRes.headers.get('content-length')
-      return new Response(wavRes.body, {
-        headers: {
-          'Content-Type': 'audio/wav',
-          ...(cl ? { 'Content-Length': cl } : {}),
-          'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-          'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
-        }
-      })
-    } catch (e: any) { console.warn('[download-wav] CloudConvert stream error:', e?.message); return null }
-  }
-
-  // ── serveFromBuf: WASM fallback for small files only (≤3MB) ─────────────
-  // Only called when CloudConvert is unavailable or the file is already WAV.
-  const serveFromBuf = async (rawBuf: ArrayBuffer, cacheHdr: string): Promise<Response> => {
-    const fmt = detectAudioFormat(rawBuf)
-    let outBuf = rawBuf, outMime = audioMime(fmt), outExt: string = fmt
-    if (fmt === 'wav') {
-      outMime = 'audio/wav'; outExt = 'wav'
-    } else if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-      try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-    } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-      try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-    }
-    if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
-    return new Response(outBuf, {
-      headers: {
-        'Content-Type': outMime, 'Content-Length': String(outBuf.byteLength),
-        'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
-        'Cache-Control': 'no-store', 'X-Cache': cacheHdr
-      }
-    })
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // FREE PATHS — no points charged
-  // ══════════════════════════════════════════════════════════════════════
-
-  // 1. R2 WAV dl-cache HIT — already converted, serve instantly
+  // ── Step 1: R2 WAV dl-cache HIT — free, instant ─────────────────────────
   if (c.env.IMAGES) {
     const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
     if (cached) {
-      return new Response(cached, {
-        headers: {
-          'Content-Type': 'audio/wav', 'Content-Length': String(cached.byteLength),
-          'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-          'Cache-Control': 'no-store', 'X-Cache': 'HIT'
-        }
-      })
+      return new Response(cached, { headers: {
+        'Content-Type': 'audio/wav', 'Content-Length': String(cached.byteLength),
+        'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+        'Cache-Control': 'no-store', 'X-Cache': 'HIT'
+      }})
     }
   }
 
-  // Build the public self-URL CloudConvert can fetch (works for all tracks in R2)
-  const selfUrl = c.env.SITE_URL ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : ''
-
-  // 2. R2 r2_audio_key — CloudConvert via self-URL (no buffer load)
-  if (c.env.IMAGES && (job as any).r2_audio_key) {
-    const r2Obj = await c.env.IMAGES.get((job as any).r2_audio_key as string)
-    if (r2Obj) {
-      if (selfUrl) {
-        const res = await cloudConvertAndStream(selfUrl, 'R2-KEY')
-        if (res) return res
-      }
-      // CloudConvert unavailable — only WASM-fallback if small enough to avoid OOM
-      const r2Size = r2Obj.size ?? 0
-      if (r2Size === 0 || r2Size <= WAV_WASM_SIZE_LIMIT) {
-        return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-KEY')
-      }
-      // Large file + no CloudConvert = cannot convert safely; fall through to paid path
-      console.warn(`[download-wav] job=${jobId} R2-KEY file too large (${r2Size}B) for WASM, CloudConvert unavailable`)
-    }
+  // ── Step 2: CloudConvert — the only conversion path ─────────────────────
+  // Send the public /api/track-audio/:id URL (works for everything in R2 and CDN).
+  // CloudConvert fetches the MP3 server-side, converts to WAV, returns a download URL.
+  // We stream straight to the client — zero bytes loaded into Worker memory.
+  if (!c.env.CLOUDCONVERT_KEY) {
+    return c.json({ error: 'WAV conversion is not configured. Please contact support.' }, 503)
+  }
+  if (!c.env.SITE_URL) {
+    return c.json({ error: 'SITE_URL not configured.' }, 503)
   }
 
-  // 3. R2 scan beats/<jobId>.* — CloudConvert via self-URL (no buffer load)
-  if (c.env.IMAGES) {
-    for (const ext of ['wav', 'mp3', 'm4a']) {
-      const r2Obj = await c.env.IMAGES.get(`${R2_BEATS_PREFIX}/${jobId}.${ext}`)
-      if (r2Obj) {
-        if (selfUrl) {
-          const res = await cloudConvertAndStream(selfUrl, 'R2-SCAN')
-          if (res) return res
-        }
-        // Only WASM-fallback for small files; large files need CloudConvert
-        const r2Size = r2Obj.size ?? 0
-        if (r2Size === 0 || r2Size <= WAV_WASM_SIZE_LIMIT) {
-          return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-SCAN')
-        }
-        console.warn(`[download-wav] job=${jobId} R2-SCAN file too large (${r2Size}B) for WASM, CloudConvert unavailable`)
-        break
-      }
-    }
+  const srcUrl = `${c.env.SITE_URL}/api/track-audio/${jobId}`
+  console.log(`[download-wav] job=${jobId} → CloudConvert src=${srcUrl}`)
+
+  const wavUrl = await convertToWavViaCloudConvert(srcUrl, c.env.CLOUDCONVERT_KEY)
+  if (!wavUrl) {
+    console.warn(`[download-wav] job=${jobId} CloudConvert returned no URL`)
+    return c.json({ error: 'WAV conversion failed. Please try again.' }, 502)
   }
 
-  // 4. Direct CDN URL — CloudConvert via CDN URL directly (no buffer load)
-  const audioUrlStr: string = job.stereo_url!
-  const isSelfUrl = audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')
-  if (!isSelfUrl) {
-    // Persist to R2 in background so future downloads never expire
-    if (c.env.IMAGES && c.env.SITE_URL) {
-      persistAudioToR2(audioUrlStr, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
-        .catch((e: any) => console.warn('[R2 persist/cdn-dl]', e?.message))
-    }
-    const res = await cloudConvertAndStream(audioUrlStr, 'CDN')
-    if (res) return res
-    // CloudConvert failed — fetch and WASM fallback
-    try {
-      const ac0 = new AbortController(); const t0 = setTimeout(() => ac0.abort(), 12000)
-      const cdnRes = await fetch(audioUrlStr, { signal: ac0.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
-      clearTimeout(t0)
-      if (cdnRes.ok) {
-        const rawBuf = await cdnRes.arrayBuffer()
-        if (rawBuf.byteLength >= 1000) return serveFromBuf(rawBuf, 'CDN-WASM')
-      }
-    } catch { /* CDN expired — fall through */ }
-  }
-
-  // ══════════════════════════════════════════════════════════════════════
-  // PAID PATH — 2 Stemforge points charged, uses MusicAPI WAV endpoint
-  // Only reached when all free paths above failed (clip not in R2, CDN expired)
-  // ══════════════════════════════════════════════════════════════════════
-
-  const WAV_DL_COST = 2
-  const isRetry = c.req.query('retry') === '1'
-  if (!isRetry) {
-    const fresh = await c.env.DB.prepare(
-      `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
-    ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
-    if (!fresh) return c.json({ error: 'Account not found' }, 404)
-    const totalAvail = (fresh.gens_limit - fresh.gens_used) + fresh.bonus_credits
-    if (totalAvail < WAV_DL_COST) {
-      return c.json({ error: 'Not enough Stemforge points to download WAV (costs 2 points). Top up your points or upgrade your plan.', limit_reached: true }, 403)
-    }
-    if (fresh.bonus_credits >= WAV_DL_COST) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(WAV_DL_COST, user.id).run()
-    } else if (fresh.bonus_credits > 0) {
-      const fromMain = WAV_DL_COST - fresh.bonus_credits
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(fromMain, user.id).run()
-    } else {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(WAV_DL_COST, user.id).run()
-    }
-  }
-  // Auto-refund if download cannot complete (clip expired or still preparing)
-  const refundWavPts = async () => {
-    if (isRetry) return
-    try {
-      await c.env.DB.prepare(
-        `UPDATE users SET gens_used = CASE WHEN gens_used >= ? THEN gens_used - ? ELSE 0 END WHERE id = ?`
-      ).bind(WAV_DL_COST, WAV_DL_COST, user.id).run()
-    } catch {}
-  }
-
-  // ── MusicAPI WAV: server-side conversion, no WASM OOM risk ──────────────
-  const clipId: string = (job as any).clip_id || ''
-  if (clipId && c.env.MUSICAPI_KEY) {
-    const wavResult = await getMusicApiWavUrl(clipId, c.env.MUSICAPI_KEY)
-    if (wavResult === 'NOT_FOUND') {
-      await refundWavPts()
-      console.log(`[download-wav] clip=${clipId} permanently unavailable`)
-      return c.json({ error: 'This track audio is no longer available for WAV download. Please regenerate the track.', expired: true }, 404)
-    }
-    if (wavResult === '202') {
-      await refundWavPts()
-      console.log(`[download-wav] clip=${clipId} WAV preparing, sending 202 to client`)
-      return c.json({ preparing: true, retry_after: 3 }, 202)
-    }
-    if (wavResult) {
-      const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 15000)
-      try {
-        const wavRes = await fetch(wavResult, { signal: ac.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
-        clearTimeout(t)
-        if (wavRes.ok) {
-          const cl = wavRes.headers.get('content-length')
-          // Persist to R2 — future downloads hit free path, never expire
-          if (c.env.IMAGES && c.env.SITE_URL) {
-            persistAudioToR2(wavResult, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
-              .catch((e: any) => console.warn('[R2 persist/wav-dl]', e?.message))
-          }
-          return new Response(wavRes.body, {
-            headers: {
-              'Content-Type': 'audio/wav',
-              ...(cl ? { 'Content-Length': cl } : {}),
-              'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-              'Cache-Control': 'no-store', 'X-Cache': 'MUSICAPI-WAV'
-            }
-          })
-        }
-      } catch { clearTimeout(t) }
-    }
-    console.log(`[download-wav] clip=${clipId} MusicAPI error, trying self-url fallbacks`)
-  }
-
-  // ── Self-URL last-resort: MusicAPI task poll for a fresh MP3/M4A stream ────
-  // Reached only if: stereo_url is a self-URL AND R2/CDN paths above all missed AND
-  // the primary MusicAPI WAV call returned null (network error).
-  // R2 key/scan already done globally above — skip A/B, go straight to task-poll.
-  if (isSelfUrl) {
-    const selfClipId: string = (job as any).clip_id || ''
-    if (selfClipId && c.env.MUSICAPI_KEY) {
-      // refundWavPts is defined — we're in the paid zone now
-
-      // MusicAPI returned null (network error) — last resort: task poll for MP3/M4A URL, stream directly
-      try {
-        const acT = new AbortController()
-        const tT = setTimeout(() => acT.abort(), 8000)
-        let taskRes: Response | null = null
-        try { taskRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${selfClipId}`, { signal: acT.signal, headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } }) }
-        finally { clearTimeout(tT) }
-        if (taskRes?.ok) {
-          const pollData: any = await taskRes.json()
-          const clips = Array.isArray(pollData) ? pollData : (pollData.data || [pollData])
-          const clip  = clips.find((cl: any) => cl.audio_url) || clips[0]
-          const freshUrl: string = clip?.audio_url || clip?.wav_url || ''
-          if (freshUrl) {
-            if (c.env.IMAGES && c.env.SITE_URL) persistAudioToR2(freshUrl, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL).catch(() => {})
-            const acF = new AbortController(); const tF = setTimeout(() => acF.abort(), 12000)
-            let up: Response | null = null
-            try { up = await fetch(freshUrl, { signal: acF.signal, headers: { 'User-Agent': 'StemForge/1.0' } }) } finally { clearTimeout(tF) }
-            if (up?.ok) {
-              const ct = up.headers.get('content-type') || 'audio/mpeg'
-              const upCL = up.headers.get('content-length') || ''
-              const ext2 = ct.includes('mp4') || ct.includes('m4a') ? 'm4a' : 'mp3'
-              console.log(`[download-wav] Step C task-fallback streaming ${ext2} size=${upCL}`)
-              return new Response(up.body, {
-                headers: {
-                  'Content-Type': ct, ...(upCL ? { 'Content-Length': upCL } : {}),
-                  'Content-Disposition': `attachment; filename="${safeTitle}.${ext2}"`,
-                  'Cache-Control': 'no-store', 'X-Cache': 'STEP-C-TASK'
-                }
-              })
-            }
-          }
-        }
-      } catch (e: any) { console.log(`[download-wav] Step C task-fallback error: ${e?.message}`) }
+  // Fetch the converted WAV from CloudConvert's CDN and stream to client.
+  // Use tee() to simultaneously save to R2 dl-cache (background) so the next
+  // download of this track is an instant free HIT — no CloudConvert credit used.
+  try {
+    const wavRes = await fetch(wavUrl, {
+      signal: AbortSignal.timeout(25000),
+      headers: { 'User-Agent': 'StemForge/1.0' }
+    })
+    if (!wavRes.ok) {
+      console.warn(`[download-wav] job=${jobId} WAV fetch HTTP ${wavRes.status}`)
+      return c.json({ error: 'WAV download failed. Please try again.' }, 502)
     }
 
-    // Nothing worked — audio genuinely unavailable
-    return c.json({ error: 'Track audio is not yet available for download. Play it once in your Library to refresh it, then try again.' }, 404)
-  }
+    const cl = wavRes.headers.get('content-length')
+    console.log(`[download-wav] job=${jobId} streaming WAV cl=${cl}`)
 
-  // All paths exhausted for non-self-URL tracks
-  return c.json({ error: 'Track audio could not be retrieved. Please try again.' }, 502)
-  } catch (err: any) {
-    // Top-level catch — prevents Error 1101 Worker crash; returns a readable error instead
-    console.error('[download-wav] unhandled error:', err?.message || err)
-    return c.json({ error: 'Download failed — please try again or contact support.' }, 500)
+    // tee the stream: s1 → R2 cache (background), s2 → client response
+    if (c.env.IMAGES && wavRes.body) {
+      const [s1, s2] = wavRes.body.tee()
+      // save to R2 in background — do NOT await, don't block the response
+      new Response(s1).arrayBuffer()
+        .then(buf => putDlCache(c.env.IMAGES!, jobId, 'wav', buf))
+        .catch(() => {})
+      return new Response(s2, { headers: {
+        'Content-Type': 'audio/wav',
+        ...(cl ? { 'Content-Length': cl } : {}),
+        'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+        'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
+      }})
+    }
+
+    // No R2 — stream directly without caching
+    return new Response(wavRes.body, { headers: {
+      'Content-Type': 'audio/wav',
+      ...(cl ? { 'Content-Length': cl } : {}),
+      'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+      'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
+    }})
+  } catch (e: any) {
+    console.warn(`[download-wav] job=${jobId} stream error: ${e?.message}`)
+    return c.json({ error: 'WAV streaming failed. Please try again.' }, 502)
   }
 })
 
@@ -9720,7 +9493,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-48'
+const ASSET_VER = '20260930-49'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
