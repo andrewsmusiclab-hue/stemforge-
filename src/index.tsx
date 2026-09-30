@@ -8787,11 +8787,8 @@ const WAV_WASM_SIZE_LIMIT = 3 * 1024 * 1024  // 3 MB
 // Returns a temporary WAV download URL on success, or null on failure.
 async function convertToWavViaCloudConvert(
   sourceUrl: string,
-  apiKey: string,
-  timeoutMs = 55000
+  apiKey: string
 ): Promise<string | null> {
-  const ac = new AbortController()
-  const t = setTimeout(() => ac.abort(), timeoutMs)
   try {
     const body = {
       tasks: {
@@ -8816,31 +8813,29 @@ async function convertToWavViaCloudConvert(
     }
     const res = await fetch('https://sync.api.cloudconvert.com/v2/jobs', {
       method: 'POST',
-      signal: ac.signal,
+      signal: AbortSignal.timeout(55000),
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(body)
     })
-    clearTimeout(t)
     if (!res.ok) {
-      console.warn(`[cloudconvert] HTTP ${res.status}`)
+      const errText = await res.text().catch(() => '')
+      console.warn(`[cloudconvert] HTTP ${res.status}: ${errText.slice(0, 200)}`)
       return null
     }
     const data: any = await res.json()
-    // Find the export task result URL
     const tasks: any[] = data?.data?.tasks || []
     const exportTask = tasks.find((tk: any) => tk.operation === 'export/url' && tk.status === 'finished')
     const files: any[] = exportTask?.result?.files || []
     const wavUrl: string = files[0]?.url || ''
     if (!wavUrl) {
-      console.warn('[cloudconvert] no WAV URL in response', JSON.stringify(data).slice(0, 400))
+      console.warn('[cloudconvert] no WAV URL in response, export status=', exportTask?.status, exportTask?.message)
       return null
     }
     return wavUrl
   } catch (e: any) {
-    clearTimeout(t)
     console.warn('[cloudconvert] error:', e?.message)
     return null
   }
@@ -8917,7 +8912,6 @@ app.get('/api/download-wav/:id', async (c) => {
   // download of this track is an instant free HIT — no CloudConvert credit used.
   try {
     const wavRes = await fetch(wavUrl, {
-      signal: AbortSignal.timeout(25000),
       headers: { 'User-Agent': 'StemForge/1.0' }
     })
     if (!wavRes.ok) {
@@ -9493,7 +9487,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-49'
+const ASSET_VER = '20260930-50'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
