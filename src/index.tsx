@@ -8692,7 +8692,15 @@ app.get('/api/track-audio/:id', async (c) => {
 // Detects actual format from magic bytes; converts MP3→WAV and M4A→WAV (via FAAD2 WASM).
 // Workers Paid plan (30ms CPU): WASM conversion works for all job types including covers.
 // R2 download cache: converts once, stores result in R2, serves from cache on every repeat download.
+// Max MP3/M4A size we'll attempt to WASM-decode in-Worker.
+// Above this threshold the Worker runs out of memory (Error 1101).
+// Full songs (covers, remixes, extends) are typically 3–8 MB as MP3
+// which expands to 30–80 MB uncompressed — too large for CF Workers.
+// Beats are typically under 2 MB so conversion works fine.
+const WAV_WASM_SIZE_LIMIT = 3 * 1024 * 1024  // 3 MB
+
 app.get('/api/download-wav/:id', async (c) => {
+  try {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
@@ -8735,13 +8743,17 @@ app.get('/api/download-wav/:id', async (c) => {
       let outBuf = rawBuf
       let outMime = audioMime(fmt)
       let outExt: string = fmt
-      // Workers Paid: no CPU-limit skip needed — convert all formats to WAV
+      // Size guard: skip WASM for large files to prevent Worker OOM crash (Error 1101)
       if (fmt === 'mp3') {
-        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+          try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+        }
       } else if (fmt === 'wav') {
         outMime = 'audio/wav'; outExt = 'wav'
       } else if (fmt === 'm4a') {
-        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+          try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+        }
       }
       if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
       return new Response(outBuf, {
@@ -8763,14 +8775,21 @@ app.get('/api/download-wav/:id', async (c) => {
   if (audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')) {
 
     // Helper: convert raw bytes to WAV (or return as-is with correct ext/mime)
+    // Size guard: files > WAV_WASM_SIZE_LIMIT are too large for in-Worker WASM decode
+    // (full songs expand to 30–80 MB uncompressed → OOM / Error 1101). Serve as MP3 instead.
     const convertToWav = async (rawBuf: ArrayBuffer): Promise<{ buf: ArrayBuffer; mime: string; ext: string }> => {
       const realFmt = detectAudioFormat(rawBuf)
       if (realFmt === 'mp3') {
-        try { return { buf: await mp3ToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
+        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+          try { return { buf: await mp3ToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
+        }
+        return { buf: rawBuf, mime: 'audio/mpeg', ext: 'mp3' }
       } else if (realFmt === 'wav') {
         return { buf: rawBuf, mime: 'audio/wav', ext: 'wav' }
       } else if (realFmt === 'm4a') {
-        try { return { buf: await m4aToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
+        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+          try { return { buf: await m4aToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
+        }
         return { buf: rawBuf, mime: 'audio/mp4', ext: 'm4a' }
       }
       return { buf: rawBuf, mime: audioMime(realFmt), ext: realFmt }
@@ -8828,11 +8847,28 @@ app.get('/api/download-wav/:id', async (c) => {
           if (freshUrl) {
             const upstream = await fetch(freshUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
             if (upstream.ok) {
-              const raw = await upstream.arrayBuffer()
               // Persist to R2 in background so future downloads are instant
               if (c.env.IMAGES && c.env.SITE_URL) {
                 persistAudioToR2(freshUrl, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL).catch(() => {})
               }
+              // Size guard: stream directly if large or unknown size (self-URL jobs are full songs)
+              // Streaming avoids Worker OOM — browser downloads the MP3 directly.
+              const upCL = parseInt(upstream.headers.get('content-length') || '0', 10)
+              const tooLarge = upCL === 0 || upCL > WAV_WASM_SIZE_LIMIT
+              if (tooLarge) {
+                const ct = upstream.headers.get('content-type') || 'audio/mpeg'
+                const ext2 = ct.includes('mp4') || ct.includes('m4a') ? 'm4a' : 'mp3'
+                return new Response(upstream.body, {
+                  headers: {
+                    'Content-Type': ct,
+                    ...(upCL ? { 'Content-Length': String(upCL) } : {}),
+                    'Content-Disposition': `attachment; filename="${safeTitle}.${ext2}"`,
+                    'Cache-Control': 'no-store',
+                    'X-Cache': 'CLIP-STREAM'
+                  }
+                })
+              }
+              const raw = await upstream.arrayBuffer()
               const { buf, mime, ext } = await convertToWav(raw)
               return serveConverted(buf, mime, ext, 'CLIP-REFETCH')
             }
@@ -8867,6 +8903,28 @@ app.get('/api/download-wav/:id', async (c) => {
     } catch {}
   }
   if (!upstream.ok) return c.json({ error: 'Audio file could not be fetched — it may have expired. Try playing the track in the library first to trigger a refresh, then download again.' }, 502)
+
+  // ── Size guard: large files (full songs) cannot be buffered + WASM-decoded in-Worker ──
+  // A 5 MB MP3 → ~50 MB uncompressed WAV → Worker OOM (Error 1101).
+  // For large files, redirect the browser directly to the CDN URL so it downloads MP3 natively.
+  // The browser will still save the file; it just won't be converted to WAV.
+  const contentLength = parseInt(upstream.headers.get('content-length') || '0', 10)
+  if (contentLength > WAV_WASM_SIZE_LIMIT) {
+    // Serve as streaming proxy (don't buffer) to avoid Worker memory limits.
+    // File is too large to convert; stream the source MP3/M4A directly.
+    const contentType = upstream.headers.get('content-type') || 'audio/mpeg'
+    const ext = contentType.includes('mp4') || contentType.includes('m4a') ? 'm4a' : 'mp3'
+    return new Response(upstream.body, {
+      headers: {
+        'Content-Type': contentType,
+        ...(contentLength ? { 'Content-Length': String(contentLength) } : {}),
+        'Content-Disposition': `attachment; filename="${safeTitle}.${ext}"`,
+        'Cache-Control': 'no-store',
+        'X-Cache': 'STREAM-LARGE'
+      }
+    })
+  }
+
   const rawBuf = await upstream.arrayBuffer()
   const fmt = detectAudioFormat(rawBuf)
   let outBuf: ArrayBuffer
@@ -8919,6 +8977,11 @@ app.get('/api/download-wav/:id', async (c) => {
       'X-Cache': 'MISS'
     }
   })
+  } catch (err: any) {
+    // Top-level catch — prevents Error 1101 Worker crash; returns a readable error instead
+    console.error('[download-wav] unhandled error:', err?.message || err)
+    return c.json({ error: 'Download failed — please try again or contact support.' }, 500)
+  }
 })
 
 // GET /api/download-mp3/:id — download stereo audio as a TRUE MP3 file
@@ -9436,7 +9499,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-29'
+const ASSET_VER = '20260929-32'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
