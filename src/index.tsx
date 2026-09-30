@@ -8903,55 +8903,60 @@ app.get('/api/download-wav/:id', async (c) => {
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
-  // ── Helper: convert a raw audio buffer to WAV and serve it ─────────────
-  // For files <= WAV_WASM_SIZE_LIMIT: use in-Worker WASM (fast, free, no API).
-  // For files >  WAV_WASM_SIZE_LIMIT: call CloudConvert with sourceUrl if provided.
-  //   sourceUrl = the public URL CloudConvert can fetch (CDN or R2 presigned).
-  //   If sourceUrl is absent or CloudConvert fails → fall back to serving the
-  //   original MP3/M4A so the user always gets something.
-  const serveFromBuf = async (rawBuf: ArrayBuffer, cacheHdr: string, sourceUrl?: string): Promise<Response> => {
+  // ── cloudConvertAndStream: send a public URL to CloudConvert, stream WAV back ──
+  // Never loads the audio into Worker memory — zero OOM risk.
+  // Returns a WAV Response on success, null on failure.
+  const cloudConvertAndStream = async (srcUrl: string, cacheHdr: string): Promise<Response | null> => {
+    if (!c.env.CLOUDCONVERT_KEY) return null
+    console.log(`[download-wav] job=${jobId} ${cacheHdr} → CloudConvert url=${srcUrl.slice(0,60)}`)
+    const wavUrl = await convertToWavViaCloudConvert(srcUrl, c.env.CLOUDCONVERT_KEY)
+    if (!wavUrl) { console.warn(`[download-wav] job=${jobId} CloudConvert returned no URL`); return null }
+    try {
+      const acW = new AbortController(); const tW = setTimeout(() => acW.abort(), 25000)
+      const wavRes = await fetch(wavUrl, { signal: acW.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
+      clearTimeout(tW)
+      if (!wavRes.ok) return null
+      // Stream directly to client — never buffer into Worker memory
+      // Save to R2 dl-cache in background via tee
+      if (c.env.IMAGES) {
+        const [s1, s2] = wavRes.body!.tee()
+        const r2Save = new Response(s1).arrayBuffer()
+          .then(buf => putDlCache(c.env.IMAGES!, jobId, 'wav', buf))
+          .catch(() => {})
+        const cl = wavRes.headers.get('content-length')
+        console.log(`[download-wav] job=${jobId} CloudConvert WAV streaming cl=${cl}`)
+        return new Response(s2, {
+          headers: {
+            'Content-Type': 'audio/wav',
+            ...(cl ? { 'Content-Length': cl } : {}),
+            'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+            'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
+          }
+        })
+      }
+      const cl = wavRes.headers.get('content-length')
+      return new Response(wavRes.body, {
+        headers: {
+          'Content-Type': 'audio/wav',
+          ...(cl ? { 'Content-Length': cl } : {}),
+          'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+          'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
+        }
+      })
+    } catch (e: any) { console.warn('[download-wav] CloudConvert stream error:', e?.message); return null }
+  }
+
+  // ── serveFromBuf: WASM fallback for small files only (≤3MB) ─────────────
+  // Only called when CloudConvert is unavailable or the file is already WAV.
+  const serveFromBuf = async (rawBuf: ArrayBuffer, cacheHdr: string): Promise<Response> => {
     const fmt = detectAudioFormat(rawBuf)
     let outBuf = rawBuf, outMime = audioMime(fmt), outExt: string = fmt
-
     if (fmt === 'wav') {
       outMime = 'audio/wav'; outExt = 'wav'
-    } else if (sourceUrl && c.env.CLOUDCONVERT_KEY) {
-      // CloudConvert handles ALL sizes — no size limit, every track gets a real WAV
-      console.log(`[download-wav] job=${jobId} ${cacheHdr} size=${Math.round(rawBuf.byteLength/1024)}KB → CloudConvert`)
-      const wavUrl = await convertToWavViaCloudConvert(sourceUrl, c.env.CLOUDCONVERT_KEY)
-      if (wavUrl) {
-        try {
-          const acW = new AbortController(); const tW = setTimeout(() => acW.abort(), 20000)
-          const wavRes = await fetch(wavUrl, { signal: acW.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
-          clearTimeout(tW)
-          if (wavRes.ok) {
-            const wavBuf = await wavRes.arrayBuffer()
-            if (c.env.IMAGES) putDlCache(c.env.IMAGES, jobId, 'wav', wavBuf).catch(() => {})
-            console.log(`[download-wav] job=${jobId} CloudConvert WAV ok size=${Math.round(wavBuf.byteLength/1024)}KB`)
-            return new Response(wavBuf, {
-              headers: {
-                'Content-Type': 'audio/wav', 'Content-Length': String(wavBuf.byteLength),
-                'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-                'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
-              }
-            })
-          }
-        } catch (e: any) { console.warn('[download-wav] CloudConvert fetch error:', e?.message) }
-      }
-      // CloudConvert failed — try WASM as last resort before serving MP3
-      console.log(`[download-wav] job=${jobId} CloudConvert failed → WASM fallback`)
-      if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-      } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-      }
-    } else {
-      // No CloudConvert key — WASM only (small files)
-      if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-      } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-      }
+    } else if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+      try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+    } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+      try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
     }
     if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
     return new Response(outBuf, {
@@ -8964,10 +8969,10 @@ app.get('/api/download-wav/:id', async (c) => {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // FREE PATHS — no points charged, serve from R2 cache or local WASM
+  // FREE PATHS — no points charged
   // ══════════════════════════════════════════════════════════════════════
 
-  // 1. R2 WAV download cache (fastest — already converted on a prior download)
+  // 1. R2 WAV dl-cache HIT — already converted, serve instantly
   if (c.env.IMAGES) {
     const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
     if (cached) {
@@ -8981,53 +8986,57 @@ app.get('/api/download-wav/:id', async (c) => {
     }
   }
 
-  // 2. R2 beats/ key (named r2_audio_key stored in job record)
-  //    Always pass sourceUrl — CloudConvert handles ALL sizes
+  // Build the public self-URL CloudConvert can fetch (works for all tracks in R2)
+  const selfUrl = c.env.SITE_URL ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : ''
+
+  // 2. R2 r2_audio_key — CloudConvert via self-URL (no buffer load)
   if (c.env.IMAGES && (job as any).r2_audio_key) {
     const r2Obj = await c.env.IMAGES.get((job as any).r2_audio_key as string)
     if (r2Obj) {
-      const r2Buf = await r2Obj.arrayBuffer()
-      const r2SrcUrl = c.env.SITE_URL ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : undefined
-      return serveFromBuf(r2Buf, 'R2-KEY', r2SrcUrl)
+      if (selfUrl) {
+        const res = await cloudConvertAndStream(selfUrl, 'R2-KEY')
+        if (res) return res
+      }
+      // CloudConvert unavailable — WASM fallback (may serve MP3 if too large)
+      return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-KEY')
     }
   }
 
-  // 3. Scan beats/<jobId>.* in R2 (wav → mp3 → m4a priority)
-  //    Always pass sourceUrl — CloudConvert handles ALL sizes
+  // 3. R2 scan beats/<jobId>.* — CloudConvert via self-URL (no buffer load)
   if (c.env.IMAGES) {
     for (const ext of ['wav', 'mp3', 'm4a']) {
       const r2Obj = await c.env.IMAGES.get(`${R2_BEATS_PREFIX}/${jobId}.${ext}`)
       if (r2Obj) {
-        const r2Buf = await r2Obj.arrayBuffer()
-        const r2SrcUrl = c.env.SITE_URL ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : undefined
-        return serveFromBuf(r2Buf, 'R2-SCAN', r2SrcUrl)
+        if (selfUrl) {
+          const res = await cloudConvertAndStream(selfUrl, 'R2-SCAN')
+          if (res) return res
+        }
+        return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-SCAN')
       }
     }
   }
 
-  // 4. Direct CDN URL (any track whose stereo_url is a live CDN URL, not a self-URL)
-  //    Fetch → small files: WASM convert; large files: CloudConvert → save to R2 → serve.
+  // 4. Direct CDN URL — CloudConvert via CDN URL directly (no buffer load)
   const audioUrlStr: string = job.stereo_url!
   const isSelfUrl = audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')
   if (!isSelfUrl) {
+    // Persist to R2 in background so future downloads never expire
+    if (c.env.IMAGES && c.env.SITE_URL) {
+      persistAudioToR2(audioUrlStr, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
+        .catch((e: any) => console.warn('[R2 persist/cdn-dl]', e?.message))
+    }
+    const res = await cloudConvertAndStream(audioUrlStr, 'CDN')
+    if (res) return res
+    // CloudConvert failed — fetch and WASM fallback
     try {
       const ac0 = new AbortController(); const t0 = setTimeout(() => ac0.abort(), 12000)
       const cdnRes = await fetch(audioUrlStr, { signal: ac0.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
       clearTimeout(t0)
       if (cdnRes.ok) {
         const rawBuf = await cdnRes.arrayBuffer()
-        if (rawBuf.byteLength >= 1000) {
-          // Save to R2 in background so future downloads never expire
-          if (c.env.IMAGES && c.env.SITE_URL) {
-            persistAudioToR2(audioUrlStr, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
-              .catch((e: any) => console.warn('[R2 persist/cdn-dl]', e?.message))
-          }
-          // serveFromBuf handles both WASM (small) and CloudConvert (large) paths.
-          // Pass the CDN URL as sourceUrl so CloudConvert can fetch it directly.
-          return serveFromBuf(rawBuf, 'CDN-WAV', audioUrlStr)
-        }
+        if (rawBuf.byteLength >= 1000) return serveFromBuf(rawBuf, 'CDN-WASM')
       }
-    } catch { /* CDN expired — fall through to MusicAPI path */ }
+    } catch { /* CDN expired — fall through */ }
   }
 
   // ══════════════════════════════════════════════════════════════════════
