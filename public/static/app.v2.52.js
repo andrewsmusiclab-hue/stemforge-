@@ -5203,14 +5203,16 @@ function openCoverDownloadModal(jobId, safeTitle) {
       <button onclick="document.getElementById('sf-cover-dl-modal').remove()" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>
       <div style="width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#f472b6,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:1.2rem;color:#fff"><i class="fas fa-microphone-alt"></i></div>
       <h3 style="font-size:1.1rem;font-weight:700;margin-bottom:6px">Download Cover Song</h3>
-      <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your format:</p>
+      <p style="color:var(--muted);font-size:.85rem;margin-bottom:22px">Choose your download format:</p>
       <div style="display:flex;flex-direction:column;gap:10px">
         <button id="sf-cover-dl-mp3" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:linear-gradient(135deg,#f472b6,#a855f7);color:#fff;border-radius:12px;font-weight:700;cursor:pointer;font-size:.95rem;border:none;width:100%">
           <i class="fas fa-file-audio"></i> Download MP3
         </button>
-        <button id="sf-cover-dl-wav" style="display:none" aria-hidden="true"></button>
+        <button id="sf-cover-dl-wav" style="display:flex;align-items:center;justify-content:center;gap:10px;padding:13px 20px;background:rgba(255,255,255,.06);color:#e2e8f0;border:1px solid rgba(255,255,255,.12);border-radius:12px;font-weight:600;cursor:pointer;font-size:.95rem;width:100%">
+          <i class="fas fa-file-waveform"></i> Download WAV
+        </button>
       </div>
-      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">High-quality MP3 · Cover songs are delivered in MP3 format</p>
+      <p style="color:var(--muted);font-size:.75rem;margin-top:14px;opacity:.7">MP3 · smaller file &nbsp;·&nbsp; WAV · lossless quality</p>
     </div>`;
   document.body.appendChild(modal);
   modal.querySelector('#sf-cover-dl-mp3').onclick = () => triggerDownload('mp3');

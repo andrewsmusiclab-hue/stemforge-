@@ -422,12 +422,10 @@ async function persistAudioToR2(
     let realFmt = detectAudioFormat(buf)
     let finalBuf: ArrayBuffer = buf
 
-    // If it's MP3, store as MP3 in R2 (skip in-Worker WAV conversion — full-song MP3→WAV
-    // WASM decode exceeds the 10ms Worker CPU limit and kills the request with Error 1101).
-    // The R2 beats/<jobId>.mp3 entry serves as the permanent audio cache; the /api/download-wav
-    // route serves covers as MP3 directly (lossless vs. lossy is moot for MusicAPI output).
+    // Store MP3 as-is in R2 — on-demand WAV conversion happens at download time
+    // via mp3ToWav (Workers Paid: 30ms CPU, safe for full songs).
     if (realFmt === 'mp3') {
-      console.log(`[R2 persist] job=${jobId} storing MP3 as-is (${Math.round(buf.byteLength/1024)}KB — skip WAV convert to avoid CPU limit)`)
+      console.log(`[R2 persist] job=${jobId} storing MP3 as-is (${Math.round(buf.byteLength/1024)}KB)`)
       finalBuf = buf
       // realFmt stays 'mp3'
     }
@@ -8628,6 +8626,7 @@ app.get('/api/track-audio/:id', async (c) => {
 
 // GET /api/download-wav/:id — download stereo audio as a REAL PCM WAV file
 // Detects actual format from magic bytes; converts MP3→WAV and M4A→WAV (via FAAD2 WASM).
+// Workers Paid plan (30ms CPU): WASM conversion works for all job types including covers.
 // R2 download cache: converts once, stores result in R2, serves from cache on every repeat download.
 app.get('/api/download-wav/:id', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
@@ -8672,13 +8671,12 @@ app.get('/api/download-wav/:id', async (c) => {
       let outBuf = rawBuf
       let outMime = audioMime(fmt)
       let outExt: string = fmt
-      // Covers: skip MP3→WAV WASM decode (CPU limit risk). Serve MP3 directly.
-      const isCvrJob = !!(job as any).is_cover || !!(job as any).cover_body
-      if (fmt === 'mp3' && !isCvrJob) {
+      // Workers Paid: no CPU-limit skip needed — convert all formats to WAV
+      if (fmt === 'mp3') {
         try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
       } else if (fmt === 'wav') {
         outMime = 'audio/wav'; outExt = 'wav'
-      } else if (fmt === 'm4a' && !isCvrJob) {
+      } else if (fmt === 'm4a') {
         try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
       }
       if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
@@ -8738,19 +8736,13 @@ app.get('/api/download-wav/:id', async (c) => {
     }
 
     // Step B: scan beats/<jobId>.* (wav first for efficiency)
-    // For covers (is_cover flag), serve MP3 directly — skip WASM mp3→WAV (CPU limit risk)
-    const isCoverSelfUrl = !!(job as any).is_cover || !!(job as any).cover_body
+    // Workers Paid: convert all formats to WAV, no cover-specific MP3 bypass needed
     if (c.env.IMAGES) {
-      const extsToCheck = isCoverSelfUrl ? ['mp3', 'wav', 'm4a'] : ['wav', 'mp3', 'm4a']
-      for (const ext of extsToCheck) {
+      for (const ext of ['wav', 'mp3', 'm4a']) {
         const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
         const r2Obj = await c.env.IMAGES.get(r2Key)
         if (r2Obj) {
           const raw = await r2Obj.arrayBuffer()
-          // Covers stored as MP3: serve directly without WAV conversion
-          if (isCoverSelfUrl && detectAudioFormat(raw) === 'mp3') {
-            return serveConverted(raw, 'audio/mpeg', 'mp3', 'R2-DIRECT-COVER')
-          }
           const { buf, mime, ext: outExt } = await convertToWav(raw)
           return serveConverted(buf, mime, outExt, 'R2-DIRECT')
         }
@@ -8817,30 +8809,8 @@ app.get('/api/download-wav/:id', async (c) => {
   let outMime: string
   let outExt: string
 
-  // ── Cover tracks: skip in-Worker MP3→WAV WASM decode ─────────────────────
-  // MP3→WAV WASM decoding of a full song (5–8 MB) easily exceeds the 10ms Worker
-  // CPU limit, killing the request with Error 1101. For covers (which are always
-  // delivered as MP3 by MusicAPI), we store the MP3 in R2 dl-cache and serve it
-  // directly. The frontend download modal labels the button "Download (MP3)" when
-  // the cover WAV is not yet pre-baked in R2 — a future background prime job can
-  // convert it offline once the WAV cache exists.
-  const isCoverJob = !!(job as any).is_cover || !!(job as any).cover_body || !!(job as any).task_id && !(job as any).stereo_task_id
-  if (isCoverJob && fmt === 'mp3') {
-    outBuf  = rawBuf
-    outMime = 'audio/mpeg'
-    outExt  = 'mp3'
-    // Cache the raw MP3 so future downloads skip the fetch
-    if (c.env.IMAGES) putDlCache(c.env.IMAGES, jobId, 'mp3', outBuf).catch(() => {})
-    return new Response(outBuf, {
-      headers: {
-        'Content-Type': outMime,
-        'Content-Length': String(outBuf.byteLength),
-        'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
-        'Cache-Control': 'no-store',
-        'X-Cache': 'COVER-MP3'
-      }
-    })
-  }
+  // Workers Paid (30ms CPU): MP3→WAV WASM conversion is safe for all job types.
+  // No cover-specific bypass needed — fall through to full WAV conversion below.
 
   if (fmt === 'mp3') {
     try {
@@ -9402,7 +9372,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-21'
+const ASSET_VER = '20260929-22'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
