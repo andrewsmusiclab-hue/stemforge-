@@ -5124,23 +5124,44 @@ function showCreditsExhaustedAlert() {
   modal.addEventListener('click', e => { if (e.target === modal) modal.style.display = 'none'; });
 }
 
-// ── Shared WAV download helper (with download-cap error handling) ──
-async function doWavDownload(jobId, filename) {
+// ── Shared WAV download helper (with 202 retry + error handling) ──
+// Suno converts WAV server-side; the backend returns 202 while it's preparing.
+// We retry automatically (up to 8 times, 3 s apart = 24 s max) showing a spinner.
+async function doWavDownload(jobId, filename, _attempt) {
+  const attempt = _attempt || 0;
+  const MAX_ATTEMPTS = 8;
   try {
     const res = await fetch('/api/download-wav/' + jobId);
+
+    // 202 = Suno is still preparing the WAV server-side (free, no credits charged).
+    // Retry after 3 seconds automatically.
+    if (res.status === 202) {
+      if (attempt >= MAX_ATTEMPTS) {
+        showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking too long to prepare. Please try again in a moment.', '#f59e0b', 'rgba(245,158,11,.4)');
+        return;
+      }
+      const secs = Math.max(3, attempt + 3); // 3s, 4s, 5s … backoff
+      showSubToast('<i class="fas fa-spinner fa-spin"></i> Preparing WAV… retrying in ' + secs + 's (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')', '#4e9fff', 'rgba(78,159,255,.3)');
+      setTimeout(() => doWavDownload(jobId, filename, attempt + 1), secs * 1000);
+      return;
+    }
+
     if (!res.ok) {
       let errData = {};
       try { errData = await res.json(); } catch {}
-      // Generic error toast
-      showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
+      const msg = errData.error || 'Please try again';
+      showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + msg, '#ef4444', 'rgba(239,68,68,.4)');
       return;
     }
-    // Stream the blob and trigger browser download
+
+    // Success — read actual extension from Content-Disposition (may be .wav, .mp3 or .m4a)
+    const cd = res.headers.get('content-disposition') || '';
+    const serverExt = (cd.match(/filename="[^"]*\.(\w+)"/) || [])[1] || 'wav';
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = (filename || 'stemforge_beat') + '.wav';
+    a.download = (filename || 'stemforge_beat') + '.' + serverExt;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -5159,15 +5180,29 @@ function openCoverDownloadModal(jobId, safeTitle) {
   if (old) old.remove();
   const title = (safeTitle || 'cover').replace(/[^a-zA-Z0-9_\-]/g, '_').toLowerCase();
 
-  async function triggerDownload(fmt) {
+  async function triggerDownload(fmt, _attempt) {
+    const attempt = _attempt || 0;
+    const MAX_ATTEMPTS = 8;
     // Route through the id-based route (cover-aware, R2-cached, no self-URL loops)
     const route = fmt === 'wav' ? '/api/download-wav/' : '/api/download-mp3/';
     const dlUrl = route + jobId;
     var btn = document.getElementById(fmt === 'wav' ? 'sf-cover-dl-wav' : 'sf-cover-dl-mp3');
     var origHtml = btn ? btn.innerHTML : '';
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
+    if (btn && attempt === 0) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
     try {
       const res = await fetch(dlUrl, { credentials: 'include' });
+      // 202 = WAV still being prepared server-side by Suno — retry automatically
+      if (res.status === 202) {
+        if (attempt >= MAX_ATTEMPTS) {
+          if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
+          showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking too long to prepare. Please try again.', '#f59e0b', 'rgba(245,158,11,.4)');
+          return;
+        }
+        const secs = Math.max(3, attempt + 3);
+        if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing… (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')';
+        setTimeout(() => triggerDownload(fmt, attempt + 1), secs * 1000);
+        return;
+      }
       if (!res.ok) {
         let errData = {};
         try { errData = await res.json(); } catch {}
@@ -5175,7 +5210,7 @@ function openCoverDownloadModal(jobId, safeTitle) {
         showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
         return;
       }
-      // Read actual extension from Content-Disposition (cover WAV route serves MP3 for covers)
+      // Read actual extension from Content-Disposition (cover WAV route serves MP3 or WAV)
       const cd = res.headers.get('content-disposition') || '';
       const serverExt = (cd.match(/filename="[^"]*\.(\w+)"/) || [])[1] || fmt;
       const blob = await res.blob();
