@@ -8982,26 +8982,24 @@ app.get('/api/download-wav/:id', async (c) => {
   }
 
   // 2. R2 beats/ key (named r2_audio_key stored in job record)
-  //    Pass the R2 public proxy URL as sourceUrl for CloudConvert (large files)
+  //    Always pass sourceUrl — CloudConvert handles ALL sizes
   if (c.env.IMAGES && (job as any).r2_audio_key) {
     const r2Obj = await c.env.IMAGES.get((job as any).r2_audio_key as string)
     if (r2Obj) {
       const r2Buf = await r2Obj.arrayBuffer()
-      const r2SrcUrl = r2Buf.byteLength > WAV_WASM_SIZE_LIMIT && c.env.SITE_URL
-        ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : undefined
+      const r2SrcUrl = c.env.SITE_URL ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : undefined
       return serveFromBuf(r2Buf, 'R2-KEY', r2SrcUrl)
     }
   }
 
   // 3. Scan beats/<jobId>.* in R2 (wav → mp3 → m4a priority)
-  //    Pass the self-URL as sourceUrl so CloudConvert can fetch large files
+  //    Always pass sourceUrl — CloudConvert handles ALL sizes
   if (c.env.IMAGES) {
     for (const ext of ['wav', 'mp3', 'm4a']) {
       const r2Obj = await c.env.IMAGES.get(`${R2_BEATS_PREFIX}/${jobId}.${ext}`)
       if (r2Obj) {
         const r2Buf = await r2Obj.arrayBuffer()
-        const r2SrcUrl = r2Buf.byteLength > WAV_WASM_SIZE_LIMIT && c.env.SITE_URL
-          ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : undefined
+        const r2SrcUrl = c.env.SITE_URL ? `${c.env.SITE_URL}/api/track-audio/${jobId}` : undefined
         return serveFromBuf(r2Buf, 'R2-SCAN', r2SrcUrl)
       }
     }
@@ -9701,7 +9699,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-45'
+const ASSET_VER = '20260930-46'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
