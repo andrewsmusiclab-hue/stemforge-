@@ -5094,6 +5094,34 @@ function showSubToast(html, bg, shadow) {
   setTimeout(() => toast.remove(), 4500);
 }
 
+// ── Centered WAV preparing overlay — stays until dismissed or auto-removed ──
+let _wavOverlay = null;
+function showWavPreparingOverlay() {
+  if (_wavOverlay) return; // already showing
+  const el = document.createElement('div');
+  el.id = 'wav-preparing-overlay';
+  el.style.cssText = [
+    'position:fixed;top:0;left:0;width:100%;height:100%;',
+    'display:flex;align-items:center;justify-content:center;',
+    'z-index:99998;pointer-events:none;'
+  ].join('');
+  el.innerHTML = [
+    '<div style="background:rgba(20,20,35,.92);border:1px solid rgba(78,159,255,.4);',
+    'border-radius:16px;padding:32px 48px;text-align:center;',
+    'box-shadow:0 8px 40px rgba(78,159,255,.25);max-width:320px;">',
+    '<div style="font-size:2rem;margin-bottom:12px;animation:spin 1.2s linear infinite;display:inline-block;">',
+    '<i class="fas fa-compact-disc" style="color:#4e9fff;"></i></div>',
+    '<div style="color:#fff;font-size:1.1rem;font-weight:700;margin-bottom:6px;">Preparing your WAV…</div>',
+    '<div style="color:#9ca3af;font-size:.85rem;">This may take a few seconds.</div>',
+    '</div>'
+  ].join('');
+  document.body.appendChild(el);
+  _wavOverlay = el;
+}
+function hideWavPreparingOverlay() {
+  if (_wavOverlay) { _wavOverlay.remove(); _wavOverlay = null; }
+}
+
 // ── Credits exhausted alert ───────────────────────────────────
 function showCreditsExhaustedAlert() {
   const existing = document.getElementById('sf-credits-exhausted-modal');
@@ -5135,17 +5163,20 @@ async function doWavDownload(jobId, filename, _attempt) {
   try {
     const res = await fetch(fetchUrl);
 
-    // 202 = WAV still being prepared — retry silently, show spinner toast once
+    // 202 = WAV still being prepared — show centered overlay, retry silently
     if (res.status === 202) {
       if (attempt >= MAX_ATTEMPTS) {
+        hideWavPreparingOverlay();
         showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking a while — please try again in a moment.', '#f59e0b', 'rgba(245,158,11,.4)');
         return;
       }
       const secs = attempt < 3 ? 3 : 5;
-      if (attempt === 0) showSubToast('<i class="fas fa-spinner fa-spin"></i> Preparing your WAV…', '#4e9fff', 'rgba(78,159,255,.3)');
+      showWavPreparingOverlay(); // shows centered overlay (no-op if already shown)
       setTimeout(() => doWavDownload(jobId, filename, attempt + 1), secs * 1000);
       return;
     }
+
+    hideWavPreparingOverlay(); // dismiss overlay on any non-202 response
 
     if (!res.ok) {
       let errData = {};
@@ -5169,6 +5200,7 @@ async function doWavDownload(jobId, filename, _attempt) {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(dlUrl), 10000);
   } catch (e) {
+    hideWavPreparingOverlay();
     showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: network error', '#ef4444', 'rgba(239,68,68,.4)');
   }
 }

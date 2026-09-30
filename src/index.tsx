@@ -8775,8 +8775,101 @@ app.get('/api/download-wav/:id', async (c) => {
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
-  // ── 2 Stemforge points charged per WAV download ─────────────────────────
-  // ?retry=1 param → browser is retrying a 202 (WAV being prepared) — skip re-charging.
+  // ── Helper: convert a raw audio buffer to WAV (WASM) and serve it ───────
+  // Only used for WASM-convertible sizes (beats / small files).
+  // Large full songs go through the MusicAPI WAV path instead.
+  const serveFromBuf = async (rawBuf: ArrayBuffer, cacheHdr: string): Promise<Response> => {
+    const fmt = detectAudioFormat(rawBuf)
+    let outBuf = rawBuf, outMime = audioMime(fmt), outExt: string = fmt
+    if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+      try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+    } else if (fmt === 'wav') {
+      outMime = 'audio/wav'; outExt = 'wav'
+    } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+      try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+    }
+    if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
+    return new Response(outBuf, {
+      headers: {
+        'Content-Type': outMime, 'Content-Length': String(outBuf.byteLength),
+        'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
+        'Cache-Control': 'no-store', 'X-Cache': cacheHdr
+      }
+    })
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // FREE PATHS — no points charged, serve from R2 cache or local WASM
+  // ══════════════════════════════════════════════════════════════════════
+
+  // 1. R2 WAV download cache (fastest — already converted on a prior download)
+  if (c.env.IMAGES) {
+    const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
+    if (cached) {
+      return new Response(cached, {
+        headers: {
+          'Content-Type': 'audio/wav', 'Content-Length': String(cached.byteLength),
+          'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+          'Cache-Control': 'no-store', 'X-Cache': 'HIT'
+        }
+      })
+    }
+  }
+
+  // 2. R2 beats/ key (named r2_audio_key stored in job record)
+  if (c.env.IMAGES && (job as any).r2_audio_key) {
+    const r2Obj = await c.env.IMAGES.get((job as any).r2_audio_key as string)
+    if (r2Obj) return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-KEY')
+  }
+
+  // 3. Scan beats/<jobId>.* in R2 (wav → mp3 → m4a priority)
+  if (c.env.IMAGES) {
+    for (const ext of ['wav', 'mp3', 'm4a']) {
+      const r2Obj = await c.env.IMAGES.get(`${R2_BEATS_PREFIX}/${jobId}.${ext}`)
+      if (r2Obj) return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-SCAN')
+    }
+  }
+
+  // 4. Direct CDN URL (beats & any track whose stereo_url is NOT a self-URL)
+  //    Fetch → WASM convert → save to R2 → serve. Free — no MusicAPI involved.
+  const audioUrlStr: string = job.stereo_url!
+  const isSelfUrl = audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')
+  if (!isSelfUrl) {
+    try {
+      const ac0 = new AbortController(); const t0 = setTimeout(() => ac0.abort(), 12000)
+      const cdnRes = await fetch(audioUrlStr, { signal: ac0.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
+      clearTimeout(t0)
+      if (cdnRes.ok) {
+        const rawBuf = await cdnRes.arrayBuffer()
+        if (rawBuf.byteLength >= 1000) {
+          // Save to R2 in background so future downloads never expire
+          if (c.env.IMAGES && c.env.SITE_URL) {
+            persistAudioToR2(audioUrlStr, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
+              .catch((e: any) => console.warn('[R2 persist/cdn-dl]', e?.message))
+          }
+          // Large files: stream as-is (can't WASM decode without OOM)
+          if (rawBuf.byteLength > WAV_WASM_SIZE_LIMIT) {
+            const fmt2 = detectAudioFormat(rawBuf)
+            return new Response(rawBuf, {
+              headers: {
+                'Content-Type': audioMime(fmt2),
+                'Content-Length': String(rawBuf.byteLength),
+                'Content-Disposition': `attachment; filename="${safeTitle}.${fmt2}"`,
+                'Cache-Control': 'no-store', 'X-Cache': 'CDN-LARGE'
+              }
+            })
+          }
+          return serveFromBuf(rawBuf, 'CDN-WASM')
+        }
+      }
+    } catch { /* CDN expired — fall through to MusicAPI path */ }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // PAID PATH — 2 Stemforge points charged, uses MusicAPI WAV endpoint
+  // Only reached when all free paths above failed (clip not in R2, CDN expired)
+  // ══════════════════════════════════════════════════════════════════════
+
   const WAV_DL_COST = 2
   const isRetry = c.req.query('retry') === '1'
   if (!isRetry) {
@@ -8797,9 +8890,9 @@ app.get('/api/download-wav/:id', async (c) => {
       await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(WAV_DL_COST, user.id).run()
     }
   }
-  // Refund 2 pts if the download can't complete (expired clip or preparing → browser retries)
+  // Auto-refund if download cannot complete (clip expired or still preparing)
   const refundWavPts = async () => {
-    if (isRetry) return  // retries were never charged
+    if (isRetry) return
     try {
       await c.env.DB.prepare(
         `UPDATE users SET gens_used = CASE WHEN gens_used >= ? THEN gens_used - ? ELSE 0 END WHERE id = ?`
@@ -8807,54 +8900,28 @@ app.get('/api/download-wav/:id', async (c) => {
     } catch {}
   }
 
-  // ── R2 download cache: serve WAV directly if already converted ──
-  if (c.env.IMAGES) {
-    const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
-    if (cached) {
-      return new Response(cached, {
-        headers: {
-          'Content-Type': 'audio/wav',
-          'Content-Length': String(cached.byteLength),
-          'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-          'Cache-Control': 'no-store',
-          'X-Cache': 'HIT'
-        }
-      })
-    }
-  }
-
-  // ── Stemforge native WAV: fetch real WAV via clip_id (server-side conversion) ──
-  // No WASM in Worker, no OOM risk, works for all job types (remix/extend/cover/beat).
-  // Cost: 2 Stemforge points per successful download (202 retries are free).
-  // Single-shot: if service returns 202 (preparing), tell the BROWSER to retry in 3 s
-  // rather than sleeping inside the Worker (sleeping stalls wall-clock / 522 timeout).
+  // ── MusicAPI WAV: server-side conversion, no WASM OOM risk ──────────────
   const clipId: string = (job as any).clip_id || ''
   if (clipId && c.env.MUSICAPI_KEY) {
     const wavResult = await getMusicApiWavUrl(clipId, c.env.MUSICAPI_KEY)
     if (wavResult === 'NOT_FOUND') {
-      // Clip no longer available — refund points and give clean error
       await refundWavPts()
-      console.log(`[download-wav] clip=${clipId} permanently unavailable (404/403)`)
+      console.log(`[download-wav] clip=${clipId} permanently unavailable`)
       return c.json({ error: 'This track audio is no longer available for WAV download. Please regenerate the track.', expired: true }, 404)
     }
     if (wavResult === '202') {
-      // WAV still being prepared server-side — refund 2 pts now; browser retries with
-      // ?retry=1 which skips re-charging. The frontend polls until 200.
       await refundWavPts()
       console.log(`[download-wav] clip=${clipId} WAV preparing, sending 202 to client`)
       return c.json({ preparing: true, retry_after: 3 }, 202)
     }
     if (wavResult) {
-      // Got a stable WAV URL — stream directly, pure passthrough, no buffering, no OOM.
-      // Also persist to R2 in background so future downloads never expire.
-      const ac = new AbortController()
-      const t = setTimeout(() => ac.abort(), 15000)
+      const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 15000)
       try {
         const wavRes = await fetch(wavResult, { signal: ac.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
         clearTimeout(t)
         if (wavRes.ok) {
           const cl = wavRes.headers.get('content-length')
-          // Persist WAV to R2 — future downloads served from R2, never expire
+          // Persist to R2 — future downloads hit free path, never expire
           if (c.env.IMAGES && c.env.SITE_URL) {
             persistAudioToR2(wavResult, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
               .catch((e: any) => console.warn('[R2 persist/wav-dl]', e?.message))
@@ -8864,162 +8931,23 @@ app.get('/api/download-wav/:id', async (c) => {
               'Content-Type': 'audio/wav',
               ...(cl ? { 'Content-Length': cl } : {}),
               'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-              'Cache-Control': 'no-store',
-              'X-Cache': 'MUSICAPI-WAV'
+              'Cache-Control': 'no-store', 'X-Cache': 'MUSICAPI-WAV'
             }
           })
         }
       } catch { clearTimeout(t) }
     }
-    // null → network error — fall through to R2/task fallbacks (no points refunded;
-    // we already deducted but will try to serve from R2 below)
-    console.log(`[download-wav] clip=${clipId} WAV fetch error, trying R2/task fallbacks`)
+    console.log(`[download-wav] clip=${clipId} MusicAPI error, trying self-url fallbacks`)
   }
 
-  // ── R2 persisted audio check: covers/extends may have audio in beats/jobId.* ──
-  // persistAudioToR2 saves audio as beats/<jobId>.<ext> (set by R2_BEATS_PREFIX).
-  // If the MusicAPI URL has expired, this is our permanent fallback.
-  if (c.env.IMAGES && (job as any).r2_audio_key) {
-    const r2Key = (job as any).r2_audio_key as string
-    const r2Obj = await c.env.IMAGES.get(r2Key)
-    if (r2Obj) {
-      const rawBuf = await r2Obj.arrayBuffer()
-      const fmt = detectAudioFormat(rawBuf)
-      let outBuf = rawBuf
-      let outMime = audioMime(fmt)
-      let outExt: string = fmt
-      // Size guard: skip WASM for large files to prevent Worker OOM crash (Error 1101)
-      if (fmt === 'mp3') {
-        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-          try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-        }
-      } else if (fmt === 'wav') {
-        outMime = 'audio/wav'; outExt = 'wav'
-      } else if (fmt === 'm4a') {
-        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-          try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-        }
-      }
-      if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
-      return new Response(outBuf, {
-        headers: {
-          'Content-Type': outMime,
-          'Content-Length': String(outBuf.byteLength),
-          'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
-          'Cache-Control': 'no-store',
-          'X-Cache': 'R2-PERSIST'
-        }
-      })
-    }
-  }
-
-  // ── Self-URL detection: extended/cover tracks whose stereo_url points back at this Worker ──
-  // Cloudflare Workers cannot fetch their own zone URL (infinite loop / 522 error).
-  // Full fallback chain: r2_audio_key → beats/<id>.* scan → clip_id MusicAPI re-fetch.
-  const audioUrlStr: string = job.stereo_url!
-  if (audioUrlStr.includes('/api/track-audio/') || audioUrlStr.includes('stemforge.studio/api/')) {
-
-    // Helper: convert raw bytes to WAV (or return as-is with correct ext/mime)
-    // Size guard: files > WAV_WASM_SIZE_LIMIT are too large for in-Worker WASM decode
-    // (full songs expand to 30–80 MB uncompressed → OOM / Error 1101). Serve as MP3 instead.
-    const convertToWav = async (rawBuf: ArrayBuffer): Promise<{ buf: ArrayBuffer; mime: string; ext: string }> => {
-      const realFmt = detectAudioFormat(rawBuf)
-      if (realFmt === 'mp3') {
-        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-          try { return { buf: await mp3ToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
-        }
-        return { buf: rawBuf, mime: 'audio/mpeg', ext: 'mp3' }
-      } else if (realFmt === 'wav') {
-        return { buf: rawBuf, mime: 'audio/wav', ext: 'wav' }
-      } else if (realFmt === 'm4a') {
-        if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-          try { return { buf: await m4aToWav(rawBuf), mime: 'audio/wav', ext: 'wav' } } catch {}
-        }
-        return { buf: rawBuf, mime: 'audio/mp4', ext: 'm4a' }
-      }
-      return { buf: rawBuf, mime: audioMime(realFmt), ext: realFmt }
-    }
-
-    const serveConverted = (buf: ArrayBuffer, mime: string, ext: string, cacheHdr: string): Response => {
-      if (c.env.IMAGES && ext === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', buf).catch(() => {})
-      return new Response(buf, {
-        headers: {
-          'Content-Type': mime,
-          'Content-Length': String(buf.byteLength),
-          'Content-Disposition': `attachment; filename="${safeTitle}.${ext}"`,
-          'Cache-Control': 'no-store',
-          'X-Cache': cacheHdr
-        }
-      })
-    }
-
-    // Step A: named r2_audio_key stored in job (most reliable)
-    if (c.env.IMAGES && (job as any).r2_audio_key) {
-      const obj = await c.env.IMAGES.get((job as any).r2_audio_key as string)
-      if (obj) {
-        const raw = await obj.arrayBuffer()
-        const { buf, mime, ext } = await convertToWav(raw)
-        return serveConverted(buf, mime, ext, 'R2-KEY')
-      }
-    }
-
-    // Step B: scan beats/<jobId>.* (wav first for efficiency)
-    // Workers Paid: convert all formats to WAV, no cover-specific MP3 bypass needed
-    if (c.env.IMAGES) {
-      for (const ext of ['wav', 'mp3', 'm4a']) {
-        const r2Key = `${R2_BEATS_PREFIX}/${jobId}.${ext}`
-        const r2Obj = await c.env.IMAGES.get(r2Key)
-        if (r2Obj) {
-          const raw = await r2Obj.arrayBuffer()
-          const { buf, mime, ext: outExt } = await convertToWav(raw)
-          return serveConverted(buf, mime, outExt, 'R2-DIRECT')
-        }
-      }
-    }
-
-    // Step C: MusicAPI WAV endpoint — single-shot, no sleeping in Worker
-    // The primary path above already tried this; we're here because:
-    //   a) There was no clip_id when the primary path ran (shouldn't happen), OR
-    //   b) The primary MusicAPI call returned null (network error) and R2 also missed
-    // If it returns '202' here we bubble it up to the browser (retry in 3 s).
+  // ── Self-URL last-resort: MusicAPI task poll for a fresh MP3/M4A stream ────
+  // Reached only if: stereo_url is a self-URL AND R2/CDN paths above all missed AND
+  // the primary MusicAPI WAV call returned null (network error).
+  // R2 key/scan already done globally above — skip A/B, go straight to task-poll.
+  if (isSelfUrl) {
     const selfClipId: string = (job as any).clip_id || ''
     if (selfClipId && c.env.MUSICAPI_KEY) {
-      const selfWavResult = await getMusicApiWavUrl(selfClipId, c.env.MUSICAPI_KEY)
-      if (selfWavResult === 'NOT_FOUND') {
-        await refundWavPts()
-        return c.json({ error: 'This track audio is no longer available for WAV download. Please regenerate the track.', expired: true }, 404)
-      }
-      if (selfWavResult === '202') {
-        await refundWavPts()
-        console.log(`[download-wav] self-url Step C: 202, sending retry signal to client`)
-        return c.json({ preparing: true, retry_after: 3 }, 202)
-      }
-      if (selfWavResult) {
-        const acW = new AbortController()
-        const tW = setTimeout(() => acW.abort(), 15000)
-        try {
-          const wavRes = await fetch(selfWavResult, { signal: acW.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
-          clearTimeout(tW)
-          if (wavRes.ok) {
-            const cl = wavRes.headers.get('content-length')
-            console.log(`[download-wav] self-url Step C WAV stream, size=${cl}`)
-            // Persist to R2 — future downloads will hit R2 cache, never expire
-            if (c.env.IMAGES && c.env.SITE_URL) {
-              persistAudioToR2(selfWavResult, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
-                .catch((e: any) => console.warn('[R2 persist/step-c]', e?.message))
-            }
-            return new Response(wavRes.body, {
-              headers: {
-                'Content-Type': 'audio/wav',
-                ...(cl ? { 'Content-Length': cl } : {}),
-                'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-                'Cache-Control': 'no-store',
-                'X-Cache': 'STEP-C-WAV'
-              }
-            })
-          }
-        } catch { clearTimeout(tW) }
-      }
+      // refundWavPts is defined — we're in the paid zone now
 
       // MusicAPI returned null (network error) — last resort: task poll for MP3/M4A URL, stream directly
       try {
@@ -9056,106 +8984,12 @@ app.get('/api/download-wav/:id', async (c) => {
       } catch (e: any) { console.log(`[download-wav] Step C task-fallback error: ${e?.message}`) }
     }
 
-    // Nothing worked — audio not yet in R2 and clip_id unavailable
+    // Nothing worked — audio genuinely unavailable
     return c.json({ error: 'Track audio is not yet available for download. Play it once in your Library to refresh it, then try again.' }, 404)
   }
 
-  // ── Cache miss: fetch source, convert, cache result ──
-  // If the primary URL fails (expired MusicAPI URL), try clip_id re-fetch for covers/extends.
-  let audioSrc = audioUrlStr
-  let upstream = await fetch(audioSrc)
-  if (!upstream.ok && (job as any).clip_id && c.env.MUSICAPI_KEY) {
-    // Try to get a fresh audio URL via clip_id
-    try {
-      const clipRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${(job as any).clip_id}`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-      })
-      if (clipRes.ok) {
-        const clipData: any = await clipRes.json()
-        const clips = Array.isArray(clipData) ? clipData : (clipData.data || [clipData])
-        const clip  = clips.find((cl: any) => cl.audio_url) || clips[0]
-        if (clip?.audio_url) {
-          upstream = await fetch(clip.audio_url)
-          if (upstream.ok) audioSrc = clip.audio_url
-        }
-      }
-    } catch {}
-  }
-  if (!upstream.ok) return c.json({ error: 'Audio file could not be fetched — it may have expired. Try playing the track in the library first to trigger a refresh, then download again.' }, 502)
-
-  // ── Size guard: large files (full songs) cannot be buffered + WASM-decoded in-Worker ──
-  // A 5 MB MP3 → ~50 MB uncompressed WAV → Worker OOM (Error 1101).
-  // For large files, redirect the browser directly to the CDN URL so it downloads MP3 natively.
-  // The browser will still save the file; it just won't be converted to WAV.
-  const contentLength = parseInt(upstream.headers.get('content-length') || '0', 10)
-  if (contentLength > WAV_WASM_SIZE_LIMIT) {
-    // Serve as streaming proxy (don't buffer) to avoid Worker memory limits.
-    // File is too large to convert; stream the source MP3/M4A directly.
-    const contentType = upstream.headers.get('content-type') || 'audio/mpeg'
-    const ext = contentType.includes('mp4') || contentType.includes('m4a') ? 'm4a' : 'mp3'
-    return new Response(upstream.body, {
-      headers: {
-        'Content-Type': contentType,
-        ...(contentLength ? { 'Content-Length': String(contentLength) } : {}),
-        'Content-Disposition': `attachment; filename="${safeTitle}.${ext}"`,
-        'Cache-Control': 'no-store',
-        'X-Cache': 'STREAM-LARGE'
-      }
-    })
-  }
-
-  const rawBuf = await upstream.arrayBuffer()
-  const fmt = detectAudioFormat(rawBuf)
-  let outBuf: ArrayBuffer
-  let outMime: string
-  let outExt: string
-
-  // Workers Paid (30ms CPU): MP3→WAV WASM conversion is safe for all job types.
-  // No cover-specific bypass needed — fall through to full WAV conversion below.
-
-  if (fmt === 'mp3') {
-    try {
-      outBuf  = await mp3ToWav(rawBuf)
-      outMime = 'audio/wav'
-      outExt  = 'wav'
-    } catch {
-      // conversion failed — fall back to raw MP3
-      outBuf  = rawBuf
-      outMime = 'audio/mpeg'
-      outExt  = 'mp3'
-    }
-  } else if (fmt === 'wav') {
-    // Already real WAV — serve as-is
-    outBuf  = rawBuf
-    outMime = 'audio/wav'
-    outExt  = 'wav'
-  } else {
-    // M4A → decode AAC (FAAD2) → true PCM WAV
-    try {
-      outBuf  = await m4aToWav(rawBuf)
-      outMime = 'audio/wav'
-      outExt  = 'wav'
-    } catch {
-      outBuf  = rawBuf
-      outMime = audioMime(fmt)
-      outExt  = 'm4a'
-    }
-  }
-
-  // ── Store in R2 cache (fire-and-forget, only if we produced a WAV) ──
-  if (c.env.IMAGES && outExt === 'wav') {
-    putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
-  }
-
-  return new Response(outBuf, {
-    headers: {
-      'Content-Type': outMime,
-      'Content-Length': String(outBuf.byteLength),
-      'Content-Disposition': `attachment; filename="${safeTitle}.${outExt}"`,
-      'Cache-Control': 'no-store',
-      'X-Cache': 'MISS'
-    }
-  })
+  // All paths exhausted for non-self-URL tracks
+  return c.json({ error: 'Track audio could not be retrieved. Please try again.' }, 502)
   } catch (err: any) {
     // Top-level catch — prevents Error 1101 Worker crash; returns a readable error instead
     console.error('[download-wav] unhandled error:', err?.message || err)
@@ -9678,7 +9512,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-40'
+const ASSET_VER = '20260929-41'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
