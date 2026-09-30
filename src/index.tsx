@@ -9419,7 +9419,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-24'
+const ASSET_VER = '20260929-25'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14019,7 +14019,7 @@ function adminPage(user: User) {
       // Load current admin email when tab opens
       async function secLoadInfo() {
         try {
-          const r = await fetch('/api/me', { credentials: 'include' });
+          const r = await fetch('/api/auth/me', { credentials: 'include' });
           const d = await r.json();
           const el = document.getElementById('sec-current-email');
           const lbl = document.getElementById('sec-pw-email-label');
@@ -14326,7 +14326,7 @@ function accountPage(user: User) {
 // Show admin card only for admin users
 (async function() {
   try {
-    const r = await fetch('/api/me', { credentials: 'include' });
+    const r = await fetch('/api/auth/me', { credentials: 'include' });
     if (!r.ok) return;
     const d = await r.json();
     if (d.user && d.user.is_admin) {
