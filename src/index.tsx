@@ -8771,15 +8771,9 @@ app.get('/api/track-audio/:id', async (c) => {
 })
 
 // GET /api/download-wav/:id — download stereo audio as a REAL PCM WAV file
-// Detects actual format from magic bytes; converts MP3→WAV and M4A→WAV (via FAAD2 WASM).
-// Workers Paid plan (30ms CPU): WASM conversion works for all job types including covers.
-// R2 download cache: converts once, stores result in R2, serves from cache on every repeat download.
-// Max MP3/M4A size we'll attempt to WASM-decode in-Worker.
-// Above this threshold the Worker runs out of memory (Error 1101).
-// Full songs (covers, remixes, extends) are typically 3–8 MB as MP3
-// which expands to 30–80 MB uncompressed — too large for CF Workers.
-// Beats are typically under 2 MB so conversion works fine.
-const WAV_WASM_SIZE_LIMIT = 3 * 1024 * 1024  // 3 MB
+// Single path: R2 dl-cache HIT (free, instant) → CloudConvert (URL-only, zero Worker memory).
+// CloudConvert fetches the MP3, converts server-side, returns a WAV download URL.
+// After first conversion the WAV is saved to R2 via waitUntil — repeat downloads are free HITs.
 
 // ── CloudConvert sync helper ─────────────────────────────────────────────────
 // Sends a public audio URL to CloudConvert's sync endpoint.
@@ -9490,7 +9484,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-52'
+const ASSET_VER = '20260930-53'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
