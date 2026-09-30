@@ -117,6 +117,94 @@ import decodeAac from '@audio/decode-aac'
  * Convert an MP3 ArrayBuffer to a true 16-bit PCM WAV ArrayBuffer.
  * Throws if decoding fails — caller should catch and fall back to serving MP3.
  */
+// ── MusicAPI WAV URL fetcher ─────────────────────────────────────────────────
+// Uses POST /api/v1/sonic/download (2 credits) to get a stable CDN WAV URL.
+// Suno converts the track server-side — no WASM decode needed in our Worker.
+//
+// MusicAPI /sonic/download behaviour (from official docs):
+//   200  → ready; data.files[] contains {format:'wav', url:'...'} entries
+//   202  → still being prepared server-side; retry same request (0 credits for 202)
+//   404  → clip too old / never existed; cannot be downloaded
+//   403  → insufficient credits
+//
+// Returns:
+//   string  → stable CDN WAV URL ready to stream
+//   null    → temporary unavailability (network/timeout) — caller may try fallback
+//   'NOT_FOUND' → 404/403 from MusicAPI; clip is permanently unavailable via this path
+//
+// We poll up to MAX_POLLS times with POLL_WAIT_MS between attempts.
+// CF Workers wall-clock limit is 30 s — our budget here is ≤ 20 s total.
+async function getMusicApiWavUrl(clipId: string, apiKey: string): Promise<string | null | 'NOT_FOUND'> {
+  const MAX_POLLS = 5
+  const POLL_WAIT_MS = 3000   // 3 s between retries → max 5×3 = 15 s (within CF 30 s limit)
+  const FETCH_TIMEOUT_MS = 7000  // 7 s per individual HTTP call
+
+  const singleFetch = async (): Promise<Response | null> => {
+    const ac = new AbortController()
+    const t = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS)
+    try {
+      return await fetch(`${MUSICAPI_BASE}/sonic/download`, {
+        method: 'POST',
+        signal: ac.signal,
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clip_id: clipId, formats: ['wav'] })
+      })
+    } catch {
+      return null
+    } finally {
+      clearTimeout(t)
+    }
+  }
+
+  for (let attempt = 0; attempt < MAX_POLLS; attempt++) {
+    // Wait before retry (but not on the first attempt)
+    if (attempt > 0) {
+      // scheduler.wait() is the CF Workers-approved way to sleep without blocking CPU.
+      // Falls back to a tight Promise loop if scheduler is unavailable.
+      try {
+        await (globalThis as any).scheduler?.wait(POLL_WAIT_MS)
+          ?? new Promise<void>(r => { const t = setTimeout(r, POLL_WAIT_MS); if (typeof t === 'object' && (t as any).unref) (t as any).unref() })
+      } catch {}
+    }
+
+    const res = await singleFetch()
+    if (!res) continue  // network/timeout — try again
+
+    if (res.status === 202) {
+      // Suno is still preparing the WAV server-side — retry (free of charge)
+      console.log(`[getMusicApiWavUrl] clip=${clipId} attempt=${attempt+1} → 202 (preparing, will retry)`)
+      continue
+    }
+    if (res.status === 404 || res.status === 403) {
+      // Clip permanently unavailable (too old) or no credits — don't fall through to crash
+      console.log(`[getMusicApiWavUrl] clip=${clipId} → ${res.status} (permanently unavailable)`)
+      return 'NOT_FOUND'
+    }
+    if (!res.ok) {
+      console.log(`[getMusicApiWavUrl] clip=${clipId} → HTTP ${res.status} (error, will retry)`)
+      continue
+    }
+
+    // 200 — parse the files array
+    try {
+      const data: any = await res.json()
+      const files: any[] = data?.data?.files || []
+      const wavFile = files.find((f: any) => f.format === 'wav')
+      if (wavFile?.url) {
+        console.log(`[getMusicApiWavUrl] clip=${clipId} → WAV URL ready (attempt ${attempt+1})`)
+        return wavFile.url as string
+      }
+      // Older /wav endpoint compat field
+      if (data?.data?.wav_url) return data.data.wav_url as string
+    } catch {}
+    // 200 but no WAV URL in body — treat as transient and retry
+    continue
+  }
+
+  console.log(`[getMusicApiWavUrl] clip=${clipId} → exhausted ${MAX_POLLS} polls, returning null`)
+  return null  // exhausted retries — caller may try the MP3 fallback path
+}
+
 async function mp3ToWav(mp3Buf: ArrayBuffer): Promise<ArrayBuffer> {
   const decoder = new (MPEGDecoder as any)({})
   await decoder.ready
@@ -8731,6 +8819,43 @@ app.get('/api/download-wav/:id', async (c) => {
     }
   }
 
+  // ── MusicAPI native WAV: ask Suno's CDN for a real WAV via clip_id ──────────
+  // This is the correct approach: Suno converts server-side, returns a stable CDN URL.
+  // No WASM in our Worker, no memory limits, works for ALL job types:
+  // beats, remixes, extends, covers — anything with a clip_id.
+  // Cost: 2 MusicAPI credits per download (same as the old /sonic/wav endpoint).
+  // Polls up to 5× with 3 s gaps (per MusicAPI docs: 202 = still preparing, retry free).
+  const clipId: string = (job as any).clip_id || ''
+  if (clipId && c.env.MUSICAPI_KEY) {
+    const wavResult = await getMusicApiWavUrl(clipId, c.env.MUSICAPI_KEY)
+    if (wavResult === 'NOT_FOUND') {
+      // Clip is too old / permanently unavailable on Suno's CDN.
+      // Don't fall through to crash — return a clean error now.
+      console.log(`[download-wav] clip=${clipId} permanently unavailable, returning 404`)
+      return c.json({ error: 'This track\'s audio is no longer available on Suno\'s servers (clip expired). Please regenerate the track.' }, 404)
+    }
+    if (wavResult) {
+      // Got a stable CDN URL — stream the WAV directly, pure passthrough, no buffering
+      const wavRes = await fetch(wavResult, { headers: { 'User-Agent': 'StemForge/1.0' } })
+      if (wavRes.ok) {
+        const cl = wavRes.headers.get('content-length')
+        // NOTE: do NOT clone+buffer here — that causes OOM on large WAVs.
+        // The WAV URL is stable per Suno CDN; repeat downloads call MusicAPI again (2 credits).
+        return new Response(wavRes.body, {
+          headers: {
+            'Content-Type': 'audio/wav',
+            ...(cl ? { 'Content-Length': cl } : {}),
+            'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+            'Cache-Control': 'no-store',
+            'X-Cache': 'MUSICAPI-WAV'
+          }
+        })
+      }
+    }
+    // wavResult === null → polling exhausted without a URL (transient) — fall through to R2/task fallbacks
+    console.log(`[download-wav] clip=${clipId} MusicAPI polling exhausted, trying R2/task fallbacks`)
+  }
+
   // ── R2 persisted audio check: covers/extends may have audio in beats/jobId.* ──
   // persistAudioToR2 saves audio as beats/<jobId>.<ext> (set by R2_BEATS_PREFIX).
   // If the MusicAPI URL has expired, this is our permanent fallback.
@@ -8832,49 +8957,86 @@ app.get('/api/download-wav/:id', async (c) => {
       }
     }
 
-    // Step C: clip_id re-fetch from MusicAPI — get a fresh CDN URL and persist it
-    const clipId: string = (job as any).clip_id || ''
-    if (clipId && c.env.MUSICAPI_KEY) {
+    // Step C: use getMusicApiWavUrl (with 202-retry logic) to get a native WAV CDN URL.
+    // This is the SAME call as the primary path above but re-run here because:
+    //   - The primary path above already ran getMusicApiWavUrl; if we reach here it returned null
+    //     (polling exhausted without a URL) OR there was no clip_id initially.
+    //   - For self-URL jobs the clip_id lookup happened above and returned null; Steps A+B also
+    //     found nothing in R2 — so we try the WAV endpoint one more time as a last resort.
+    // Note: if the primary path returned 'NOT_FOUND' we already returned 404 and never reach here.
+    const selfClipId: string = (job as any).clip_id || ''
+    if (selfClipId && c.env.MUSICAPI_KEY) {
+      const selfWavResult = await getMusicApiWavUrl(selfClipId, c.env.MUSICAPI_KEY)
+      if (selfWavResult === 'NOT_FOUND') {
+        return c.json({ error: 'This track\'s audio is no longer available on Suno\'s servers (clip expired). Please regenerate the track.' }, 404)
+      }
+      if (selfWavResult) {
+        // Got a WAV URL — stream it directly (no buffering, no WASM, no OOM)
+        const wavRes = await fetch(selfWavResult, { headers: { 'User-Agent': 'StemForge/1.0' } })
+        if (wavRes.ok) {
+          const cl = wavRes.headers.get('content-length')
+          console.log(`[download-wav] self-url Step C: streaming WAV from MusicAPI CDN, size=${cl}`)
+          return new Response(wavRes.body, {
+            headers: {
+              'Content-Type': 'audio/wav',
+              ...(cl ? { 'Content-Length': cl } : {}),
+              'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
+              'Cache-Control': 'no-store',
+              'X-Cache': 'STEP-C-WAV'
+            }
+          })
+        }
+      }
+
+      // getMusicApiWavUrl exhausted (null) — try the task endpoint as last resort
+      // to get an MP3/M4A audio_url we can stream directly to the browser.
       try {
-        const pollRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${clipId}`, {
-          headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-        })
-        if (pollRes.ok) {
-          const pollData: any = await pollRes.json()
+        const ac2 = new AbortController()
+        const t2 = setTimeout(() => ac2.abort(), 8000)
+        let taskRes: Response | null = null
+        try {
+          taskRes = await fetch(`${MUSICAPI_BASE}/sonic/task/${selfClipId}`, {
+            signal: ac2.signal,
+            headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+          })
+        } finally { clearTimeout(t2) }
+        if (taskRes && taskRes.ok) {
+          const pollData: any = await taskRes.json()
           const clips = Array.isArray(pollData) ? pollData : (pollData.data || [pollData])
           const clip  = clips.find((cl: any) => cl.audio_url) || clips[0]
           const freshUrl: string = clip?.audio_url || clip?.wav_url || ''
           if (freshUrl) {
-            const upstream = await fetch(freshUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
-            if (upstream.ok) {
-              // Persist to R2 in background so future downloads are instant
-              if (c.env.IMAGES && c.env.SITE_URL) {
-                persistAudioToR2(freshUrl, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL).catch(() => {})
-              }
-              // Size guard: stream directly if large or unknown size (self-URL jobs are full songs)
-              // Streaming avoids Worker OOM — browser downloads the MP3 directly.
-              const upCL = parseInt(upstream.headers.get('content-length') || '0', 10)
-              const tooLarge = upCL === 0 || upCL > WAV_WASM_SIZE_LIMIT
-              if (tooLarge) {
-                const ct = upstream.headers.get('content-type') || 'audio/mpeg'
-                const ext2 = ct.includes('mp4') || ct.includes('m4a') ? 'm4a' : 'mp3'
-                return new Response(upstream.body, {
-                  headers: {
-                    'Content-Type': ct,
-                    ...(upCL ? { 'Content-Length': String(upCL) } : {}),
-                    'Content-Disposition': `attachment; filename="${safeTitle}.${ext2}"`,
-                    'Cache-Control': 'no-store',
-                    'X-Cache': 'CLIP-STREAM'
-                  }
-                })
-              }
-              const raw = await upstream.arrayBuffer()
-              const { buf, mime, ext } = await convertToWav(raw)
-              return serveConverted(buf, mime, ext, 'CLIP-REFETCH')
+            // Persist to R2 in background so future downloads skip all this
+            if (c.env.IMAGES && c.env.SITE_URL) {
+              persistAudioToR2(freshUrl, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL).catch(() => {})
+            }
+            // Stream directly as MP3/M4A — never buffer a full song in Worker memory
+            const ac3 = new AbortController()
+            const t3 = setTimeout(() => ac3.abort(), 10000)
+            let upstream: Response | null = null
+            try {
+              upstream = await fetch(freshUrl, { signal: ac3.signal, headers: { 'User-Agent': 'StemForge/1.0' } })
+            } finally { clearTimeout(t3) }
+            if (upstream && upstream.ok) {
+              const ct = upstream.headers.get('content-type') || 'audio/mpeg'
+              const upCL = upstream.headers.get('content-length') || ''
+              const ext2 = ct.includes('mp4') || ct.includes('m4a') ? 'm4a' : 'mp3'
+              console.log(`[download-wav] self-url Step C task-fallback: streaming ${ext2} size=${upCL}`)
+              return new Response(upstream.body, {
+                headers: {
+                  'Content-Type': ct,
+                  ...(upCL ? { 'Content-Length': upCL } : {}),
+                  'Content-Disposition': `attachment; filename="${safeTitle}.${ext2}"`,
+                  'Cache-Control': 'no-store',
+                  'X-Cache': 'STEP-C-TASK'
+                }
+              })
             }
           }
         }
-      } catch {}
+      } catch (e: any) {
+        console.log(`[download-wav] self-url Step C task-fallback error: ${e?.message}`)
+      }
     }
 
     // Nothing worked — audio not yet in R2 and clip_id unavailable
@@ -9499,7 +9661,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-32'
+const ASSET_VER = '20260929-37'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
