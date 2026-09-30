@@ -8915,16 +8915,9 @@ app.get('/api/download-wav/:id', async (c) => {
 
     if (fmt === 'wav') {
       outMime = 'audio/wav'; outExt = 'wav'
-    } else if (rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
-      // Small enough for in-Worker WASM conversion
-      if (fmt === 'mp3') {
-        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-      } else if (fmt === 'm4a') {
-        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
-      }
     } else if (sourceUrl && c.env.CLOUDCONVERT_KEY) {
-      // Too large for WASM — send source URL to CloudConvert, get WAV back
-      console.log(`[download-wav] job=${jobId} ${cacheHdr} size=${Math.round(rawBuf.byteLength/1024)}KB > 3MB → CloudConvert`)
+      // CloudConvert handles ALL sizes — no size limit, every track gets a real WAV
+      console.log(`[download-wav] job=${jobId} ${cacheHdr} size=${Math.round(rawBuf.byteLength/1024)}KB → CloudConvert`)
       const wavUrl = await convertToWavViaCloudConvert(sourceUrl, c.env.CLOUDCONVERT_KEY)
       if (wavUrl) {
         try {
@@ -8945,10 +8938,21 @@ app.get('/api/download-wav/:id', async (c) => {
           }
         } catch (e: any) { console.warn('[download-wav] CloudConvert fetch error:', e?.message) }
       }
-      // CloudConvert failed — fall through to serve original format
-      console.log(`[download-wav] job=${jobId} CloudConvert failed → serving ${fmt}`)
+      // CloudConvert failed — try WASM as last resort before serving MP3
+      console.log(`[download-wav] job=${jobId} CloudConvert failed → WASM fallback`)
+      if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+      } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+      }
+    } else {
+      // No CloudConvert key — WASM only (small files)
+      if (fmt === 'mp3' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+        try { outBuf = await mp3ToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+      } else if (fmt === 'm4a' && rawBuf.byteLength <= WAV_WASM_SIZE_LIMIT) {
+        try { outBuf = await m4aToWav(rawBuf); outMime = 'audio/wav'; outExt = 'wav' } catch {}
+      }
     }
-    // If still MP3/M4A (WASM skipped or failed) — serve as-is
     if (c.env.IMAGES && outExt === 'wav') putDlCache(c.env.IMAGES, jobId, 'wav', outBuf).catch(() => {})
     return new Response(outBuf, {
       headers: {
@@ -9697,7 +9701,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-44'
+const ASSET_VER = '20260930-45'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
