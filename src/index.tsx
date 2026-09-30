@@ -9400,7 +9400,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-16'
+const ASSET_VER = '20260929-17'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14277,6 +14277,20 @@ function termsPage() {
   </ul>
   <p>StemForge employs automated content recognition systems to identify audio that may be subject to third-party copyright claims. Uploads that trigger these protections will be declined by the platform. StemForge reserves the right to refuse remix processing for any audio submission that cannot be verified as rights-cleared, without obligation to disclose the specific basis for that determination.</p>
   <p>Repeated submission of infringing material may result in suspension or permanent termination of your account.</p>
+</section>
+
+<section>
+  <h2 id="section-6b">6b. AI Cover Song Upload Policy</h2>
+  <p>The AI Cover Song feature allows you to upload an audio recording so that StemForge can generate a new AI-voiced rendition of it. A <strong>published song</strong> is any recording that has been commercially released to the public — this includes tracks available on streaming platforms such as Spotify, Apple Music, YouTube Music, Tidal, or Amazon Music, as well as any recording distributed through a record label, music distributor, or rights holder, regardless of how widely known it is.</p>
+  <p>By uploading audio to the Cover Song feature, you represent and warrant that:</p>
+  <ul>
+    <li>The uploaded recording is an <strong>original work</strong> that you created, or you hold all necessary rights and licenses to use it for AI voice transformation</li>
+    <li>The uploaded audio is <strong>not a commercially published or distributed recording</strong> — including songs by signed or independent artists that appear on any streaming service, digital storefront, or public music catalog</li>
+    <li>The audio does not contain samples, interpolations, or elements protected by third-party copyright in which you do not hold full ownership or a valid licence</li>
+    <li>Your use of the Cover Song feature complies with all applicable intellectual property laws and does not infringe upon the rights of any artist, record label, publisher, or rights holder</li>
+  </ul>
+  <p>StemForge employs automated audio fingerprinting and content recognition systems to identify recordings that match commercially published tracks. Any upload that triggers these protections will be automatically declined and the associated credits will be refunded. StemForge reserves the right to refuse Cover Song processing for any audio submission that cannot be verified as rights-cleared, without obligation to disclose the specific basis for that determination.</p>
+  <p>Repeated submission of commercially published or infringing material may result in the suspension or permanent termination of your account without refund.</p>
 </section>
 
 <section>
