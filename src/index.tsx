@@ -8911,9 +8911,10 @@ app.get('/api/download-wav/:id', async (c) => {
     return c.json({ error: 'WAV conversion failed. Please try again.' }, 502)
   }
 
-  // Fetch the converted WAV from CloudConvert's CDN and stream to client.
-  // Use tee() to simultaneously save to R2 dl-cache (background) so the next
-  // download of this track is an instant free HIT — no CloudConvert credit used.
+  // Stream the WAV to the client directly from CloudConvert's CDN URL.
+  // CloudConvert export URLs are valid for 24h.
+  // In background (waitUntil), fetch the same URL again and save to R2 dl-cache
+  // so repeat downloads are free instant HITs — no CloudConvert credit needed.
   try {
     const wavRes = await fetch(wavUrl, {
       headers: { 'User-Agent': 'StemForge/1.0' }
@@ -8926,22 +8927,20 @@ app.get('/api/download-wav/:id', async (c) => {
     const cl = wavRes.headers.get('content-length')
     console.log(`[download-wav] job=${jobId} streaming WAV cl=${cl}`)
 
-    // tee the stream: s1 → R2 cache (background), s2 → client response
-    if (c.env.IMAGES && wavRes.body) {
-      const [s1, s2] = wavRes.body.tee()
-      // save to R2 in background — do NOT await, don't block the response
-      new Response(s1).arrayBuffer()
-        .then(buf => putDlCache(c.env.IMAGES!, jobId, 'wav', buf))
-        .catch(() => {})
-      return new Response(s2, { headers: {
-        'Content-Type': 'audio/wav',
-        ...(cl ? { 'Content-Length': cl } : {}),
-        'Content-Disposition': `attachment; filename="${safeTitle}.wav"`,
-        'Cache-Control': 'no-store', 'X-Cache': 'CC-WAV'
-      }})
+    // Background: fetch wavUrl again and save to R2 dl-cache (waitUntil keeps Worker alive)
+    if (c.env.IMAGES) {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          const r2Res = await fetch(wavUrl, { headers: { 'User-Agent': 'StemForge/1.0' } })
+          if (r2Res.ok) {
+            const buf = await r2Res.arrayBuffer()
+            await putDlCache(c.env.IMAGES!, jobId, 'wav', buf)
+            console.log(`[download-wav] job=${jobId} saved ${buf.byteLength}B to R2 dl-cache`)
+          }
+        } catch (e: any) { console.warn(`[download-wav] R2 cache save failed: ${e?.message}`) }
+      })())
     }
 
-    // No R2 — stream directly without caching
     return new Response(wavRes.body, { headers: {
       'Content-Type': 'audio/wav',
       ...(cl ? { 'Content-Length': cl } : {}),
@@ -9491,7 +9490,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-51'
+const ASSET_VER = '20260930-52'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
