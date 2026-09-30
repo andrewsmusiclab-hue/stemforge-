@@ -8846,42 +8846,6 @@ async function convertToWavViaCloudConvert(
   }
 }
 
-// Temporary debug: test CloudConvert key + sync API end-to-end
-app.get('/api/debug-cc', async (c) => {
-  const srcUrl = c.req.query('url') || 'https://cdn.pixabay.com/audio/2024/11/12/audio_ccdcf6b1b4.mp3'
-  const key = c.env.CLOUDCONVERT_KEY
-  if (!key) return c.json({ error: 'CLOUDCONVERT_KEY not set' })
-  try {
-    const body = {
-      tasks: {
-        'import-audio': { operation: 'import/url', url: srcUrl, filename: 'input.mp3' },
-        'convert-to-wav': { operation: 'convert', input: 'import-audio', output_format: 'wav', audio_codec: 'pcm_s16le', audio_frequency: 44100 },
-        'export-wav': { operation: 'export/url', input: 'convert-to-wav', inline: false }
-      }
-    }
-    const res = await fetch('https://sync.api.cloudconvert.com/v2/jobs', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(58000)
-    })
-    const raw = await res.text()
-    let parsed: any = null
-    try { parsed = JSON.parse(raw) } catch {}
-    const tasks: any[] = parsed?.data?.tasks || []
-    const exportTask = tasks.find((t: any) => t.operation === 'export/url')
-    return c.json({
-      http_status: res.status,
-      key_prefix: key.slice(0, 8) + '...',
-      export_task_status: exportTask?.status,
-      export_task_message: exportTask?.message,
-      wav_url: exportTask?.result?.files?.[0]?.url || null,
-      raw_truncated: raw.slice(0, 800)
-    })
-  } catch (e: any) {
-    return c.json({ error: e?.message })
-  }
-})
 
 app.get('/api/download-wav/:id', async (c) => {
   try {
@@ -9034,8 +8998,13 @@ app.get('/api/download-wav/:id', async (c) => {
         const res = await cloudConvertAndStream(selfUrl, 'R2-KEY')
         if (res) return res
       }
-      // CloudConvert unavailable — WASM fallback (may serve MP3 if too large)
-      return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-KEY')
+      // CloudConvert unavailable — only WASM-fallback if small enough to avoid OOM
+      const r2Size = r2Obj.size ?? 0
+      if (r2Size === 0 || r2Size <= WAV_WASM_SIZE_LIMIT) {
+        return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-KEY')
+      }
+      // Large file + no CloudConvert = cannot convert safely; fall through to paid path
+      console.warn(`[download-wav] job=${jobId} R2-KEY file too large (${r2Size}B) for WASM, CloudConvert unavailable`)
     }
   }
 
@@ -9048,7 +9017,13 @@ app.get('/api/download-wav/:id', async (c) => {
           const res = await cloudConvertAndStream(selfUrl, 'R2-SCAN')
           if (res) return res
         }
-        return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-SCAN')
+        // Only WASM-fallback for small files; large files need CloudConvert
+        const r2Size = r2Obj.size ?? 0
+        if (r2Size === 0 || r2Size <= WAV_WASM_SIZE_LIMIT) {
+          return serveFromBuf(await r2Obj.arrayBuffer(), 'R2-SCAN')
+        }
+        console.warn(`[download-wav] job=${jobId} R2-SCAN file too large (${r2Size}B) for WASM, CloudConvert unavailable`)
+        break
       }
     }
   }
@@ -9745,7 +9720,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-47'
+const ASSET_VER = '20260930-48'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
