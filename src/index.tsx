@@ -7391,7 +7391,7 @@ app.post('/api/admin/security/change-password', async (c) => {
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
 
   const { current_password, new_password } = await c.req.json<{ current_password: string; new_password: string }>()
-  if (!current_password || !new_password) return c.json({ error: 'current_password and new_password required' }, 400)
+  if (!new_password) return c.json({ error: 'new_password required' }, 400)
   if (new_password.length < 6) return c.json({ error: 'New password must be at least 6 characters' }, 400)
 
   // Fetch latest user row (need password_hash)
@@ -9423,7 +9423,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-28'
+const ASSET_VER = '20260929-29'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
