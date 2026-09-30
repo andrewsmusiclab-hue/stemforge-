@@ -1055,6 +1055,19 @@ function clearSessionCookie(): string {
   return `sf_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`
 }
 
+// ── Admin panel secondary verification cookie (4-hour gate) ──
+function getAdminVerifiedCookie(req: Request): boolean {
+  const cookie = req.headers.get('Cookie') || ''
+  return /sf_admin_v=1/.test(cookie)
+}
+function setAdminVerifiedCookie(siteUrl: string): string {
+  const secure = siteUrl.startsWith('https') ? '; Secure' : ''
+  return `sf_admin_v=1; HttpOnly; SameSite=Lax; Path=/admin; Max-Age=${4*3600}${secure}`
+}
+function clearAdminVerifiedCookie(): string {
+  return `sf_admin_v=; HttpOnly; SameSite=Lax; Path=/admin; Max-Age=0`
+}
+
 // ── User DB helpers ───────────────────────────────────────────
 async function getUserByEmail(db: D1Database, email: string): Promise<any | null> {
   return db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first<any>()
