@@ -7912,8 +7912,8 @@ fbq('track','PageView');
   <div class="notice-box">
     <i class="fas fa-coins notice-icon"></i>
     <div class="notice-text">
-      <strong>MusicAPI Credit Balance: <span id="credit-balance" style="color:#4e9fff">loading…</span></strong><br/>
-      Credits are fetched live from the MusicAPI. Sonic (Suno v5.5) + Producer (Lyria 3 Pro) share the same account balance.<br/>
+      <strong>API Credit Balance: <span id="credit-balance" style="color:#4e9fff">loading…</span></strong><br/>
+      Credits are fetched live from the generation API. Sonic + Producer models share the same account balance.<br/>
       <br/>
       <a href="https://musicapi.ai/dashboard" target="_blank" rel="noopener" class="btn-primary" style="margin-top:4px">
         <i class="fas fa-external-link-alt"></i> MusicAPI Dashboard
@@ -8775,6 +8775,38 @@ app.get('/api/download-wav/:id', async (c) => {
   const safeTitle = ((job as any).title || job.blueprint?.genre || 'beat')
     .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'stemforge_beat'
 
+  // ── 2 Stemforge points charged per WAV download ─────────────────────────
+  // ?retry=1 param → browser is retrying a 202 (WAV being prepared) — skip re-charging.
+  const WAV_DL_COST = 2
+  const isRetry = c.req.query('retry') === '1'
+  if (!isRetry) {
+    const fresh = await c.env.DB.prepare(
+      `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
+    ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
+    if (!fresh) return c.json({ error: 'Account not found' }, 404)
+    const totalAvail = (fresh.gens_limit - fresh.gens_used) + fresh.bonus_credits
+    if (totalAvail < WAV_DL_COST) {
+      return c.json({ error: 'Not enough Stemforge points to download WAV (costs 2 points). Top up your points or upgrade your plan.', limit_reached: true }, 403)
+    }
+    if (fresh.bonus_credits >= WAV_DL_COST) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(WAV_DL_COST, user.id).run()
+    } else if (fresh.bonus_credits > 0) {
+      const fromMain = WAV_DL_COST - fresh.bonus_credits
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(fromMain, user.id).run()
+    } else {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(WAV_DL_COST, user.id).run()
+    }
+  }
+  // Refund 2 pts if the download can't complete (expired clip or preparing → browser retries)
+  const refundWavPts = async () => {
+    if (isRetry) return  // retries were never charged
+    try {
+      await c.env.DB.prepare(
+        `UPDATE users SET gens_used = CASE WHEN gens_used >= ? THEN gens_used - ? ELSE 0 END WHERE id = ?`
+      ).bind(WAV_DL_COST, WAV_DL_COST, user.id).run()
+    } catch {}
+  }
+
   // ── R2 download cache: serve WAV directly if already converted ──
   if (c.env.IMAGES) {
     const cached = await getDlCache(c.env.IMAGES, jobId, 'wav')
@@ -8791,27 +8823,30 @@ app.get('/api/download-wav/:id', async (c) => {
     }
   }
 
-  // ── MusicAPI native WAV: ask Suno's CDN for a real WAV via clip_id ──────────
-  // Suno converts server-side — no WASM in our Worker, no OOM, works for all job types.
-  // Cost: 2 MusicAPI credits per successful download (202 retries are free).
-  // Single-shot: if Suno returns 202, we tell the BROWSER to retry in 3 s rather than
-  // sleeping inside the Worker (sleeping blocks wall-clock, looks like a stall to the user).
+  // ── Stemforge native WAV: fetch real WAV via clip_id (server-side conversion) ──
+  // No WASM in Worker, no OOM risk, works for all job types (remix/extend/cover/beat).
+  // Cost: 2 Stemforge points per successful download (202 retries are free).
+  // Single-shot: if service returns 202 (preparing), tell the BROWSER to retry in 3 s
+  // rather than sleeping inside the Worker (sleeping stalls wall-clock / 522 timeout).
   const clipId: string = (job as any).clip_id || ''
   if (clipId && c.env.MUSICAPI_KEY) {
     const wavResult = await getMusicApiWavUrl(clipId, c.env.MUSICAPI_KEY)
     if (wavResult === 'NOT_FOUND') {
-      // Clip expired on Suno's CDN — give a clean error, don't crash into fallbacks
+      // Clip no longer available — refund points and give clean error
+      await refundWavPts()
       console.log(`[download-wav] clip=${clipId} permanently unavailable (404/403)`)
       return c.json({ error: 'This track audio is no longer available for WAV download. Please regenerate the track.', expired: true }, 404)
     }
     if (wavResult === '202') {
-      // Suno is still preparing this WAV server-side — tell the browser to retry in 3 s.
-      // The retry is free (no credits charged for 202). The frontend polls until 200.
+      // WAV still being prepared server-side — refund 2 pts now; browser retries with
+      // ?retry=1 which skips re-charging. The frontend polls until 200.
+      await refundWavPts()
       console.log(`[download-wav] clip=${clipId} WAV preparing, sending 202 to client`)
       return c.json({ preparing: true, retry_after: 3 }, 202)
     }
     if (wavResult) {
-      // Got a stable CDN WAV URL — stream directly, pure passthrough, no buffering, no OOM
+      // Got a stable WAV URL — stream directly, pure passthrough, no buffering, no OOM.
+      // Also persist to R2 in background so future downloads never expire.
       const ac = new AbortController()
       const t = setTimeout(() => ac.abort(), 15000)
       try {
@@ -8819,6 +8854,11 @@ app.get('/api/download-wav/:id', async (c) => {
         clearTimeout(t)
         if (wavRes.ok) {
           const cl = wavRes.headers.get('content-length')
+          // Persist WAV to R2 — future downloads served from R2, never expire
+          if (c.env.IMAGES && c.env.SITE_URL) {
+            persistAudioToR2(wavResult, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
+              .catch((e: any) => console.warn('[R2 persist/wav-dl]', e?.message))
+          }
           return new Response(wavRes.body, {
             headers: {
               'Content-Type': 'audio/wav',
@@ -8831,8 +8871,9 @@ app.get('/api/download-wav/:id', async (c) => {
         }
       } catch { clearTimeout(t) }
     }
-    // null → MusicAPI network error — fall through to R2/task fallbacks
-    console.log(`[download-wav] clip=${clipId} MusicAPI error, trying R2/task fallbacks`)
+    // null → network error — fall through to R2/task fallbacks (no points refunded;
+    // we already deducted but will try to serve from R2 below)
+    console.log(`[download-wav] clip=${clipId} WAV fetch error, trying R2/task fallbacks`)
   }
 
   // ── R2 persisted audio check: covers/extends may have audio in beats/jobId.* ──
@@ -8962,6 +9003,11 @@ app.get('/api/download-wav/:id', async (c) => {
           if (wavRes.ok) {
             const cl = wavRes.headers.get('content-length')
             console.log(`[download-wav] self-url Step C WAV stream, size=${cl}`)
+            // Persist to R2 — future downloads will hit R2 cache, never expire
+            if (c.env.IMAGES && c.env.SITE_URL) {
+              persistAudioToR2(selfWavResult, jobId, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
+                .catch((e: any) => console.warn('[R2 persist/step-c]', e?.message))
+            }
             return new Response(wavRes.body, {
               headers: {
                 'Content-Type': 'audio/wav',
@@ -9632,7 +9678,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-39'
+const ASSET_VER = '20260929-40'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
