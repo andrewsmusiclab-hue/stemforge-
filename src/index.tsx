@@ -9419,7 +9419,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-23'
+const ASSET_VER = '20260929-24'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14023,8 +14023,8 @@ function adminPage(user: User) {
           const d = await r.json();
           const el = document.getElementById('sec-current-email');
           const lbl = document.getElementById('sec-pw-email-label');
-          if (el)  el.textContent  = d.email || '—';
-          if (lbl) lbl.textContent = d.email || '—';
+          if (el)  el.textContent  = (d.user && d.user.email) || '—';
+          if (lbl) lbl.textContent = (d.user && d.user.email) || '—';
         } catch {}
       }
       secLoadInfo();
@@ -14329,7 +14329,7 @@ function accountPage(user: User) {
     const r = await fetch('/api/me', { credentials: 'include' });
     if (!r.ok) return;
     const d = await r.json();
-    if (d.is_admin) {
+    if (d.user && d.user.is_admin) {
       const card = document.getElementById('account-admin-card');
       if (card) card.style.display = 'block';
     }
