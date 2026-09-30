@@ -462,7 +462,7 @@ document.addEventListener('DOMContentLoaded', () => {
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
         <li><b style="color:#c084fc">What is AI Cover Song?</b> — Upload any song (MP3, WAV, etc.) and StemForge will recreate it in a completely new AI-generated voice. The melody, lyrics, and structure stay the same — only the voice changes. It's like having any artist perform your favourite song.</li>
         <li><b style="color:#e2e8f0">How it works</b> — Head to the <b style="color:#c084fc">Create</b> page and click <b>Cover Song</b>. Upload your audio file, choose a vocal style (or let AI detect it for you), and hit Generate. Your cover appears in your <b>Library → Covers</b> tab.</li>
-        <li><b style="color:#e2e8f0">Auto style detection</b> — StemForge automatically analyses your uploaded track and suggests a Suno-style genre/mood description for the vocal style field. You can edit it freely before generating.</li>
+        <li><b style="color:#e2e8f0">Auto style detection</b> — StemForge automatically analyses your uploaded track and suggests a genre/mood description for the vocal style field. You can edit it freely before generating.</li>
         <li><b style="color:#e2e8f0">Pro Artist plan</b> — AI Cover Song is available to <b style="color:#c084fc">Pro Artist</b> subscribers. Each cover costs <b>25 pts</b>.</li>
         <li><b style="color:#e2e8f0">Your covers library</b> — All generated covers are saved to the <b>Covers</b> tab in your library, separate from your beats and remixes.</li>
         <li><b style="color:#e2e8f0">Downloading covers</b> — Download your covers directly from the <b>Library → Covers</b> tab via the ⋯ menu. Covers are downloaded as high-quality MP3.</li>
@@ -5125,23 +5125,24 @@ function showCreditsExhaustedAlert() {
 }
 
 // ── Shared WAV download helper (with 202 retry + error handling) ──
-// Suno converts WAV server-side; the backend returns 202 while it's preparing.
-// We retry automatically (up to 8 times, 3 s apart = 24 s max) showing a spinner.
+// WAV conversion happens on Stemforge servers; backend returns 202 while preparing.
+// Retries automatically up to 8 times with a clean spinner — no counters shown to user.
 async function doWavDownload(jobId, filename, _attempt) {
   const attempt = _attempt || 0;
   const MAX_ATTEMPTS = 8;
+  // Retries use ?retry=1 so backend skips re-charging the 2 pt WAV cost
+  const fetchUrl = '/api/download-wav/' + jobId + (attempt > 0 ? '?retry=1' : '');
   try {
-    const res = await fetch('/api/download-wav/' + jobId);
+    const res = await fetch(fetchUrl);
 
-    // 202 = Suno is still preparing the WAV server-side (free, no credits charged).
-    // Retry after 3 seconds automatically.
+    // 202 = WAV still being prepared — retry silently, show spinner toast once
     if (res.status === 202) {
       if (attempt >= MAX_ATTEMPTS) {
-        showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking too long to prepare. Please try again in a moment.', '#f59e0b', 'rgba(245,158,11,.4)');
+        showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking a while — please try again in a moment.', '#f59e0b', 'rgba(245,158,11,.4)');
         return;
       }
-      const secs = Math.max(3, attempt + 3); // 3s, 4s, 5s … backoff
-      showSubToast('<i class="fas fa-spinner fa-spin"></i> Preparing WAV… retrying in ' + secs + 's (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')', '#4e9fff', 'rgba(78,159,255,.3)');
+      const secs = attempt < 3 ? 3 : 5;
+      if (attempt === 0) showSubToast('<i class="fas fa-spinner fa-spin"></i> Preparing your WAV…', '#4e9fff', 'rgba(78,159,255,.3)');
       setTimeout(() => doWavDownload(jobId, filename, attempt + 1), secs * 1000);
       return;
     }
@@ -5149,7 +5150,8 @@ async function doWavDownload(jobId, filename, _attempt) {
     if (!res.ok) {
       let errData = {};
       try { errData = await res.json(); } catch {}
-      const msg = errData.error || 'Please try again';
+      // Strip any third-party service names from error messages shown to user
+      const msg = (errData.error || 'Please try again').replace(/\b(suno|musicapi)\b/gi, 'Stemforge');
       showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + msg, '#ef4444', 'rgba(239,68,68,.4)');
       return;
     }
@@ -5158,22 +5160,22 @@ async function doWavDownload(jobId, filename, _attempt) {
     const cd = res.headers.get('content-disposition') || '';
     const serverExt = (cd.match(/filename="[^"]*\.(\w+)"/) || [])[1] || 'wav';
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const dlUrl = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
+    a.href = dlUrl;
     a.download = (filename || 'stemforge_beat') + '.' + serverExt;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setTimeout(() => URL.revokeObjectURL(dlUrl), 10000);
   } catch (e) {
     showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: network error', '#ef4444', 'rgba(239,68,68,.4)');
   }
 }
 
 // ── Cover download modal — routes through /api/download-wav/:id (same as beats)
-// Covers are stored as high-quality MP3 from MusicAPI. Both MP3 and WAV buttons
-// work: WAV triggers the id-based route which serves cover audio (MP3 from MusicAPI).
+// Covers are stored as high-quality audio from Stemforge servers.
+// Both MP3 and WAV buttons work — WAV routes through the id-based endpoint.
 function openCoverDownloadModal(jobId, safeTitle) {
   if (!jobId) { alert('No audio available for this cover yet.'); return; }
   const old = document.getElementById('sf-cover-dl-modal');
@@ -5184,22 +5186,23 @@ function openCoverDownloadModal(jobId, safeTitle) {
     const attempt = _attempt || 0;
     const MAX_ATTEMPTS = 8;
     // Route through the id-based route (cover-aware, R2-cached, no self-URL loops)
-    const route = fmt === 'wav' ? '/api/download-wav/' : '/api/download-mp3/';
-    const dlUrl = route + jobId;
+    const baseRoute = fmt === 'wav' ? '/api/download-wav/' : '/api/download-mp3/';
+    // Retries use ?retry=1 so backend skips re-charging points for WAV
+    const dlUrl = baseRoute + jobId + (fmt === 'wav' && attempt > 0 ? '?retry=1' : '');
     var btn = document.getElementById(fmt === 'wav' ? 'sf-cover-dl-wav' : 'sf-cover-dl-mp3');
     var origHtml = btn ? btn.innerHTML : '';
     if (btn && attempt === 0) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing…'; }
     try {
       const res = await fetch(dlUrl, { credentials: 'include' });
-      // 202 = WAV still being prepared server-side by Suno — retry automatically
+      // 202 = WAV still being prepared — retry silently, button stays in spinner state
       if (res.status === 202) {
         if (attempt >= MAX_ATTEMPTS) {
           if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
-          showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking too long to prepare. Please try again.', '#f59e0b', 'rgba(245,158,11,.4)');
+          showSubToast('<i class="fas fa-exclamation-triangle"></i> WAV is taking a while — please try again in a moment.', '#f59e0b', 'rgba(245,158,11,.4)');
           return;
         }
-        const secs = Math.max(3, attempt + 3);
-        if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Preparing… (' + (attempt + 1) + '/' + MAX_ATTEMPTS + ')';
+        const secs = attempt < 3 ? 3 : 5;
+        // Keep spinner, no counter text
         setTimeout(() => triggerDownload(fmt, attempt + 1), secs * 1000);
         return;
       }
@@ -5207,10 +5210,11 @@ function openCoverDownloadModal(jobId, safeTitle) {
         let errData = {};
         try { errData = await res.json(); } catch {}
         if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
-        showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + (errData.error || 'Please try again'), '#ef4444', 'rgba(239,68,68,.4)');
+        const msg = (errData.error || 'Please try again').replace(/\b(suno|musicapi)\b/gi, 'Stemforge');
+        showSubToast('<i class="fas fa-exclamation-triangle"></i> Download failed: ' + msg, '#ef4444', 'rgba(239,68,68,.4)');
         return;
       }
-      // Read actual extension from Content-Disposition (cover WAV route serves MP3 or WAV)
+      // Read actual extension from Content-Disposition (may be .wav, .mp3 or .m4a)
       const cd = res.headers.get('content-disposition') || '';
       const serverExt = (cd.match(/filename="[^"]*\.(\w+)"/) || [])[1] || fmt;
       const blob = await res.blob();

@@ -8743,7 +8743,7 @@ app.get('/api/track-audio/:id', async (c) => {
   // ── Step 5: Nothing worked ────────────────────────────────────────────────
   console.error(`[track-audio] All fallbacks exhausted for job=${jobId}`)
   return c.json({
-    error: 'Audio unavailable — the source URL has expired and could not be refreshed. Please regenerate this track.',
+    error: 'Audio unavailable — this track could not be refreshed. Please regenerate this track.',
     jobId
   }, 502)
 })
@@ -8802,7 +8802,7 @@ app.get('/api/download-wav/:id', async (c) => {
     if (wavResult === 'NOT_FOUND') {
       // Clip expired on Suno's CDN — give a clean error, don't crash into fallbacks
       console.log(`[download-wav] clip=${clipId} permanently unavailable (404/403)`)
-      return c.json({ error: 'This track\'s audio is no longer available on Suno\'s servers (clip expired). Please regenerate the track.', expired: true }, 404)
+      return c.json({ error: 'This track audio is no longer available for WAV download. Please regenerate the track.', expired: true }, 404)
     }
     if (wavResult === '202') {
       // Suno is still preparing this WAV server-side — tell the browser to retry in 3 s.
@@ -8945,9 +8945,11 @@ app.get('/api/download-wav/:id', async (c) => {
     if (selfClipId && c.env.MUSICAPI_KEY) {
       const selfWavResult = await getMusicApiWavUrl(selfClipId, c.env.MUSICAPI_KEY)
       if (selfWavResult === 'NOT_FOUND') {
-        return c.json({ error: 'This track\'s audio is no longer available on Suno\'s servers (clip expired). Please regenerate the track.', expired: true }, 404)
+        await refundWavPts()
+        return c.json({ error: 'This track audio is no longer available for WAV download. Please regenerate the track.', expired: true }, 404)
       }
       if (selfWavResult === '202') {
+        await refundWavPts()
         console.log(`[download-wav] self-url Step C: 202, sending retry signal to client`)
         return c.json({ preparing: true, retry_after: 3 }, 202)
       }
@@ -9630,7 +9632,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-38'
+const ASSET_VER = '20260929-39'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
