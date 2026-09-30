@@ -119,14 +119,14 @@ import decodeAac from '@audio/decode-aac'
  * Throws if decoding fails — caller should catch and fall back to serving MP3.
  */
 // ── MusicAPI WAV URL fetcher ─────────────────────────────────────────────────
-// Uses POST /api/v1/sonic/download (2 credits) to get a stable CDN WAV URL.
+// Uses POST /api/v1/sonic/download to get a stable CDN WAV URL.
 // Suno converts the track server-side — no WASM decode needed in our Worker.
 //
 // MusicAPI /sonic/download response codes (official docs):
 //   200  → ready; data.files[] has {format:'wav', url:'...'}
-//   202  → WAV still being prepared by Suno (free, caller should retry in ~3s)
+//   202  → WAV still being prepared by Suno (caller should retry in ~3s)
 //   404  → clip too old / never existed — permanently unavailable
-//   403  → insufficient credits
+//   403  → insufficient MusicAPI credits (server-side API key issue, not user charge)
 //
 // IMPORTANT: This is a SINGLE-SHOT call. Do NOT sleep/poll inside a CF Worker —
 // sleeping burns wall-clock time and makes the browser think the download stalled.
@@ -134,8 +134,8 @@ import decodeAac from '@audio/decode-aac'
 //
 // Returns:
 //   string      → stable CDN WAV URL, ready to proxy to the browser
-//   '202'       → WAV still preparing — caller should tell browser to retry in 3 s (free)
-//   'NOT_FOUND' → 404/403 — clip expired or no credits; return a clean error to user
+//   '202'       → WAV still preparing — caller should tell browser to retry in 3 s
+//   'NOT_FOUND' → 404/403 — clip expired or API key issue; return a clean error to user
 //   null        → network/timeout error; caller may try fallback paths
 async function getMusicApiWavUrl(clipId: string, apiKey: string): Promise<string | null | '202' | 'NOT_FOUND'> {
   const ac = new AbortController()
@@ -9484,7 +9484,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-54'
+const ASSET_VER = '20260930-55'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9594,7 +9594,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.54.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.55.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
