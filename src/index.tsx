@@ -7391,7 +7391,7 @@ app.post('/api/admin/security/change-password', async (c) => {
 
   const { current_password, new_password } = await c.req.json<{ current_password: string; new_password: string }>()
   if (!current_password || !new_password) return c.json({ error: 'current_password and new_password required' }, 400)
-  if (new_password.length < 10) return c.json({ error: 'New password must be at least 10 characters' }, 400)
+  if (new_password.length < 6) return c.json({ error: 'New password must be at least 6 characters' }, 400)
 
   // Fetch latest user row (need password_hash)
   const row = await c.env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user!.id).first<any>()
@@ -9419,7 +9419,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260929-26'
+const ASSET_VER = '20260929-27'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13982,18 +13982,36 @@ function adminPage(user: User) {
           <div style="display:flex;flex-direction:column;gap:10px">
             <div>
               <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Current password</label>
-              <input type="password" id="sec-cur-pw" placeholder="Current password"
-                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+              <div style="position:relative">
+                <input type="password" id="sec-cur-pw" placeholder="Current password"
+                  style="width:100%;padding:9px 40px 9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+                <button type="button" onclick="secTogglePw('sec-cur-pw','sec-eye-cur')" tabindex="-1"
+                  style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 4px;font-size:.9rem">
+                  <i id="sec-eye-cur" class="fas fa-eye"></i>
+                </button>
+              </div>
             </div>
             <div>
               <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">New password</label>
-              <input type="password" id="sec-new-pw" placeholder="New password (min 10 chars)"
-                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+              <div style="position:relative">
+                <input type="password" id="sec-new-pw" placeholder="New password (min 6 chars)"
+                  style="width:100%;padding:9px 40px 9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+                <button type="button" onclick="secTogglePw('sec-new-pw','sec-eye-new')" tabindex="-1"
+                  style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 4px;font-size:.9rem">
+                  <i id="sec-eye-new" class="fas fa-eye"></i>
+                </button>
+              </div>
             </div>
             <div>
               <label style="font-size:.8rem;color:var(--muted);display:block;margin-bottom:4px">Confirm new password</label>
-              <input type="password" id="sec-confirm-pw" placeholder="Repeat new password"
-                style="width:100%;padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+              <div style="position:relative">
+                <input type="password" id="sec-confirm-pw" placeholder="Repeat new password"
+                  style="width:100%;padding:9px 40px 9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem;box-sizing:border-box"/>
+                <button type="button" onclick="secTogglePw('sec-confirm-pw','sec-eye-confirm')" tabindex="-1"
+                  style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--muted);cursor:pointer;padding:2px 4px;font-size:.9rem">
+                  <i id="sec-eye-confirm" class="fas fa-eye"></i>
+                </button>
+              </div>
             </div>
           </div>
           <div id="sec-pw-msg" style="display:none;margin-top:10px;font-size:.82rem;padding:8px 12px;border-radius:8px"></div>
@@ -14029,6 +14047,15 @@ function adminPage(user: User) {
       }
       secLoadInfo();
 
+      function secTogglePw(inputId, iconId) {
+        var inp = document.getElementById(inputId);
+        var ico = document.getElementById(iconId);
+        if (!inp) return;
+        var show = inp.type === 'password';
+        inp.type = show ? 'text' : 'password';
+        if (ico) { ico.className = show ? 'fas fa-eye-slash' : 'fas fa-eye'; }
+      }
+
       function secMsg(elId, msg, ok) {
         var el = document.getElementById(elId);
         if (!el) return;
@@ -14044,7 +14071,7 @@ function adminPage(user: User) {
         var nw      = document.getElementById('sec-new-pw').value;
         var confirm = document.getElementById('sec-confirm-pw').value;
         if (!cur || !nw || !confirm) { secMsg('sec-pw-msg','All fields are required.',false); return; }
-        if (nw.length < 10)          { secMsg('sec-pw-msg','New password must be at least 10 characters.',false); return; }
+        if (nw.length < 6)           { secMsg('sec-pw-msg','New password must be at least 6 characters.',false); return; }
         if (nw !== confirm)          { secMsg('sec-pw-msg','New passwords do not match.',false); return; }
         try {
           var res = await fetch('/api/admin/security/change-password', {
