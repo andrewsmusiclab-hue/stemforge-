@@ -8898,7 +8898,11 @@ app.get('/api/download-wav/:id', async (c) => {
     return c.json({ error: 'SITE_URL not configured.' }, 503)
   }
 
-  const srcUrl = `${c.env.SITE_URL}/api/track-audio/${jobId}`
+  // Use the worker's own request origin so CloudConvert can always reach it.
+  // SITE_URL may point to a custom domain that isn't wired to this worker yet;
+  // the request host is guaranteed to be this worker.
+  const workerOrigin = new URL(c.req.url).origin
+  const srcUrl = `${workerOrigin}/api/track-audio/${jobId}`
   console.log(`[download-wav] job=${jobId} → CloudConvert src=${srcUrl}`)
 
   const wavUrl = await convertToWavViaCloudConvert(srcUrl, c.env.CLOUDCONVERT_KEY)
@@ -9487,7 +9491,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-50'
+const ASSET_VER = '20260930-51'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
