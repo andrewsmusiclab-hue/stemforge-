@@ -8063,6 +8063,42 @@ app.post('/api/generate-lyrics', async (c) => {
   return c.json({ lyrics })
 })
 
+// GET /api/upload-presign — return a short-lived R2 presigned PUT URL so the browser
+// can upload large files (WAV, MP3) directly to R2, bypassing the 100 MB Worker body cap.
+// Query params:
+//   prefix  — "extend-uploads" | "remix-uploads"  (default: extend-uploads)
+//   ext     — file extension hint: "wav" | "mp3" | "webm" etc.  (default: wav)
+// Returns: { ok, upload_url, r2_key, expires_in }
+//   upload_url — presigned R2 PUT URL (valid 1 hour)
+//   r2_key     — bare key (without prefix) to pass back to /api/upload-extend-audio or
+//                /api/upload-remix-audio as JSON { r2_key, content_type }
+app.get('/api/upload-presign', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user  = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not logged in' }, 401)
+  if (!c.env.IMAGES) return c.json({ error: 'Storage not configured' }, 500)
+
+  const prefix = (c.req.query('prefix') === 'remix-uploads') ? 'remix-uploads' : 'extend-uploads'
+  const ext    = (c.req.query('ext') || 'wav').replace(/[^a-z0-9]/g, '').slice(0, 8) || 'wav'
+  const contentType = ext === 'wav' ? 'audio/wav'
+                    : ext === 'mp3' ? 'audio/mpeg'
+                    : ext === 'webm' ? 'audio/webm'
+                    : 'audio/mpeg'
+
+  // Unique bare key (no prefix) — matches the pattern used by the existing proxy endpoint
+  const bareKey  = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`
+  const fullKey  = `${prefix}/${bareKey}`
+
+  // R2 createPresignedUrl — 1-hour PUT window
+  const uploadUrl = await (c.env.IMAGES as any).createPresignedUrl('PUT', fullKey, {
+    expiresIn: 3600,
+    httpMetadata: { contentType }
+  })
+
+  console.log(`[upload-presign] user=${user.id} prefix=${prefix} bareKey=${bareKey}`)
+  return c.json({ ok: true, upload_url: uploadUrl, r2_key: bareKey, prefix, expires_in: 3600 })
+})
+
 // GET /api/extend-audio-proxy/:key — serve R2-stored audio files (extend + remix uploads)
 // Used by upload-extend-audio and upload-remix-audio routes to give MusicAPI a public URL.
 // IMPORTANT: Must send Content-Length — Sonic's /upload endpoint rejects responses without it.
@@ -8129,12 +8165,17 @@ function stripMp3Id3(buf: ArrayBuffer): ArrayBuffer {
 
 
 // POST /api/upload-extend-audio — upload audio for Song Extend
-// Accepts: multipart { file } or JSON { audio_url }
-// Flow:
+// Accepts:
+//   JSON { audio_url }          — caller provides URL directly (existing path)
+//   JSON { r2_key, content_type, prefix? } — presigned-upload path: file already in R2
+//   multipart { file }          — legacy direct-upload path (kept for backwards compat)
+//   multipart { url }           — legacy URL field
+// Flow (presigned path):
+//   Browser PUT → R2 directly → POST here with r2_key → build proxy URL → call Sonic
+// Flow (legacy multipart path):
 //   1. Store file in R2 → get public proxy URL
-//   2. POST /sonic/upload { url } → { task_id }  (kicks off Sonic processing)
+//   2. POST /sonic/upload { url } → { task_id }
 //   3. Return { task_id } so frontend can poll /api/poll-upload-task/:taskId
-//   4. When clip_id is ready, extend-upload uses continue_clip_id (reliable path)
 app.post('/api/upload-extend-audio', async (c) => {
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
@@ -8169,11 +8210,31 @@ app.post('/api/upload-extend-audio', async (c) => {
     }
   }
 
-  // JSON body: { audio_url } — caller provides URL directly
+  // JSON body: { r2_key } — presigned-upload path (file already in R2, no bytes in request)
+  // OR:        { audio_url } — caller provides URL directly
   if (contentType.includes('application/json')) {
-    const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
+    const body = await c.req.json<{ r2_key?: string; content_type?: string; prefix?: string; audio_url?: string; url?: string }>().catch(() => ({}))
+
+    // ── Presigned path: r2_key supplied, file is already in R2 ──────────────
+    if (body.r2_key) {
+      if (!c.env.IMAGES) return c.json({ error: 'Storage not configured' }, 500)
+      const prefix   = (body.prefix === 'remix-uploads') ? 'remix-uploads' : 'extend-uploads'
+      const bareKey  = body.r2_key.replace(/^(extend-uploads|remix-uploads)\//, '')
+      const fullKey  = `${prefix}/${bareKey}`
+      // Verify the object actually exists before trusting the key
+      const head = await c.env.IMAGES.head(fullKey)
+      if (!head) return c.json({ error: 'Uploaded file not found in storage — try again' }, 404)
+      const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(bareKey)}`
+      console.log(`[upload-extend-audio] presign path r2Key=${fullKey} proxy=${audioUrl}`)
+      const sonic = await sonicUploadUrl(audioUrl)
+      if (sonic.clip_id) return c.json({ ok: true, audio_url: audioUrl, clip_id: sonic.clip_id })
+      if (sonic.task_id) return c.json({ ok: true, audio_url: audioUrl, task_id: sonic.task_id })
+      return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
+    }
+
+    // ── URL path: audio_url supplied directly ────────────────────────────────
     const directUrl = body.audio_url || body.url || null
-    if (!directUrl) return c.json({ error: 'audio_url required' }, 400)
+    if (!directUrl) return c.json({ error: 'audio_url or r2_key required' }, 400)
     console.log(`[upload-extend-audio] JSON url: ${directUrl.slice(0, 80)}`)
     const sonic = await sonicUploadUrl(directUrl)
     if (sonic.clip_id) return c.json({ ok: true, audio_url: directUrl, clip_id: sonic.clip_id })
@@ -8275,7 +8336,10 @@ app.post('/api/upload-extend-audio', async (c) => {
 })
 
 // POST /api/upload-remix-audio — upload audio for AI Remix (parallel to upload-extend-audio)
-// Accepts: multipart { file } — stores in R2 under remix-uploads/ prefix
+// Accepts:
+//   JSON { r2_key }    — presigned-upload path: file already in R2 under remix-uploads/
+//   JSON { audio_url } — caller providing URL directly
+//   multipart { file } — legacy direct-upload path (kept for backwards compat)
 // Returns: { ok: true, audio_url: "<proxy_url>", status: "ready" }
 // The audio_url is then passed to /api/job/remix as the directAudioUrl.
 app.post('/api/upload-remix-audio', async (c) => {
@@ -8286,16 +8350,29 @@ app.post('/api/upload-remix-audio', async (c) => {
   const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
   const contentType = c.req.header('content-type') || ''
 
-  // JSON body: { audio_url } — caller providing URL directly
   if (contentType.includes('application/json')) {
-    const body = await c.req.json<{ audio_url?: string; url?: string }>().catch(() => ({}))
+    const body = await c.req.json<{ r2_key?: string; audio_url?: string; url?: string }>().catch(() => ({}))
+
+    // ── Presigned path: r2_key supplied, file is already in R2 ──────────────
+    if (body.r2_key) {
+      if (!c.env.IMAGES) return c.json({ error: 'Storage not configured' }, 500)
+      const bareKey = body.r2_key.replace(/^(extend-uploads|remix-uploads)\//, '')
+      const fullKey = `remix-uploads/${bareKey}`
+      const head = await c.env.IMAGES.head(fullKey)
+      if (!head) return c.json({ error: 'Uploaded file not found in storage — try again' }, 404)
+      const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(bareKey)}`
+      console.log(`[upload-remix-audio] presign path r2Key=${fullKey} proxy=${audioUrl}`)
+      return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
+    }
+
+    // ── URL path: audio_url supplied directly ────────────────────────────────
     const directUrl = body.audio_url || body.url || null
-    if (!directUrl) return c.json({ error: 'audio_url required' }, 400)
+    if (!directUrl) return c.json({ error: 'audio_url or r2_key required' }, 400)
     console.log(`[upload-remix-audio] Using direct URL: ${directUrl.slice(0, 80)}`)
     return c.json({ ok: true, audio_url: directUrl, status: 'ready' })
   }
 
-  // Multipart: file blob
+  // Multipart: file blob (legacy path — kept for backwards compat)
   const formData = await c.req.formData()
   const file = formData.get('file') as File | null
   if (!file) return c.json({ error: 'No file provided' }, 400)
@@ -8306,9 +8383,8 @@ app.post('/api/upload-remix-audio', async (c) => {
   await c.env.IMAGES.put(`remix-uploads/${r2Key}`, await file.arrayBuffer(), {
     httpMetadata: { contentType: file.type || 'audio/mpeg' }
   })
-  // Serve via the same extend-audio-proxy since it just reads from R2 by key
   const audioUrl = `${siteUrl}/api/extend-audio-proxy/${encodeURIComponent(r2Key)}`
-  console.log(`[upload-remix-audio] Stored in R2, proxy URL: ${audioUrl}`)
+  console.log(`[upload-remix-audio] Stored in R2 (legacy), proxy URL: ${audioUrl}`)
   return c.json({ ok: true, audio_url: audioUrl, status: 'ready' })
 })
 
@@ -9487,7 +9563,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-60'
+const ASSET_VER = '20261003-61'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9597,7 +9673,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.60.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.61.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
