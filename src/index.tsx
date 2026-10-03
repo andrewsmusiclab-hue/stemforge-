@@ -505,13 +505,16 @@ async function persistAudioToR2(
     // Build permanent proxy URL
     const proxyUrl = `${siteUrl}/api/track-audio/${jobId}`
 
-    // Update the job record so stereo_url is now permanent
+    // Update the job record so audio URL is now permanent.
+    // Updates whichever field was set: stereo_url (beats/remix/cover) or audio_url (one-shots).
     if (db) {
       try {
         const row = await db.prepare('SELECT data FROM jobs WHERE id = ?').bind(jobId).first<{ data: string }>()
         if (row) {
           const job = JSON.parse(row.data) as any
-          job.stereo_url = proxyUrl
+          // Update whichever URL field this track uses
+          if (job.stereo_url && !job.stereo_url.includes('/api/track-audio/')) job.stereo_url = proxyUrl
+          if (job.audio_url && !job.audio_url.includes('/api/track-audio/'))   job.audio_url  = proxyUrl
           ;(job as any).r2_audio_key = r2Key   // store key for direct R2 access
           await db.prepare('UPDATE jobs SET data = ? WHERE id = ?').bind(JSON.stringify(job), jobId).run()
         }
@@ -9484,7 +9487,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-57'
+const ASSET_VER = '20261003-58'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15225,8 +15228,9 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
 })
 
 // GET /api/cron/persist-r2 — called every 5 min by external cron (cron-job.org / GitHub Actions)
-// Finds ready jobs whose stereo_url is still on an expiring external CDN (musicapi.ai, suno.ai, etc.)
-// and persists them to R2 so they never disappear. Processes up to 5 per run to stay within CPU limits.
+// Finds ready jobs (ALL types: beats, remix, cover, one-shots, any future tab) whose audio URL
+// is still on an expiring external CDN and persists it to R2 permanently.
+// Covers both stereo_url (beats/remix/cover) and audio_url (one-shots).
 // Auto-marks permanently dead CDN URLs (403/404) as CDN_DEAD so they never block the queue again.
 app.get('/api/cron/persist-r2', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not available' }, 500)
@@ -15238,24 +15242,28 @@ app.get('/api/cron/persist-r2', async (c) => {
 
   await ensureTable(c.env.DB)
 
-  // Find ready jobs with external CDN stereo_url (no r2_audio_key yet)
-  // r2_audio_key IS NULL excludes: already-persisted tracks (have R2 key) AND CDN_DEAD entries
+  // Find ALL ready jobs (beats, remix, cover, one-shots) with external CDN audio URLs not yet in R2.
+  // Uses COALESCE to check both stereo_url (beats/remix/cover) and audio_url (one-shots).
+  // r2_audio_key IS NULL excludes already-persisted tracks AND CDN_DEAD entries.
   const rows = await c.env.DB.prepare(`
-    SELECT id, data FROM jobs
+    SELECT id, data, is_oneshot FROM jobs
     WHERE deleted_at IS NULL
-      AND is_oneshot = 0
       AND json_extract(data,'$.status') = 'ready'
       AND json_extract(data,'$.r2_audio_key') IS NULL
-      AND json_extract(data,'$.stereo_url') IS NOT NULL
-      AND json_extract(data,'$.stereo_url') NOT LIKE '%/api/track-audio/%'
+      AND (
+        (json_extract(data,'$.stereo_url') IS NOT NULL AND json_extract(data,'$.stereo_url') NOT LIKE '%/api/track-audio/%')
+        OR
+        (json_extract(data,'$.audio_url') IS NOT NULL AND json_extract(data,'$.audio_url') NOT LIKE '%/api/track-audio/%')
+      )
     ORDER BY created_at ASC
     LIMIT 5
-  `).all<{ id: string; data: string }>()
+  `).all<{ id: string; data: string; is_oneshot: number }>()
 
   const results: any[] = []
   for (const row of (rows.results || [])) {
     const job = JSON.parse(row.data) as any
-    const url = job.stereo_url
+    // Pick the right URL field depending on track type
+    const url = row.is_oneshot ? (job.audio_url || job.stereo_url) : (job.stereo_url || job.audio_url)
     if (!url) { results.push({ id: row.id, action: 'skip_no_url' }); continue }
 
     // Pre-flight HEAD check: detect permanently dead CDN URLs (403/404) before attempting
