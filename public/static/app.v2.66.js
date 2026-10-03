@@ -4883,7 +4883,7 @@ window.generateOneshotSfx = async function() {
   const durVal = durSlider ? parseInt(durSlider.value, 10) : 6;
   const durationSeconds = durVal > 0 ? durVal * 0.5 : 3.0;
 
-  const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot <span style="opacity:.7;font-size:.8rem;font-weight:400">(10 pts)</span>'; } };
+  const resetBtn = () => { if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-bolt"></i> Generate One Shot'; } };
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating…'; }
   if (statusEl) statusEl.style.display = 'block';
