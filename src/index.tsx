@@ -6451,6 +6451,72 @@ app.get('/api/admin/prime-cover-wav/:id', async (c) => {
   return c.json({ ok: true, cached: false, note: 'WAV prime started in background — try download in ~30s', job_id: jobId })
 })
 
+// GET /api/admin/backfill-lyrics — write user_lyrics from cover_body lyrics field into job data
+// Covers store AI-generated lyrics in cover_body.lyrics — copy them to user_lyrics so the edit tab shows them.
+// Also extracts lyrics from prompt field when lyrics were passed inline (pre-v62 behaviour).
+app.get('/api/admin/backfill-lyrics', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  const token    = getSessionCookie(c.req.raw)
+  const user     = token ? await getSessionUser(c.env.DB, token) : null
+  const isAdminUser = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
+                   || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
+  if (!isAdminUser) return c.json({ error: 'Unauthorized' }, 401)
+
+  await ensureTable(c.env.DB)
+
+  // Fetch all jobs that don't yet have user_lyrics set
+  const rows = await c.env.DB.prepare(
+    `SELECT id, user_id, data FROM jobs
+     WHERE (json_extract(data,'$.user_lyrics') IS NULL OR json_extract(data,'$.user_lyrics') = '')
+       AND deleted_at IS NULL`
+  ).all<{ id: string; user_id: string; data: string }>()
+
+  let updated = 0
+  let skipped = 0
+  const details: string[] = []
+
+  for (const row of (rows.results || [])) {
+    try {
+      const job = JSON.parse(row.data) as any
+      let lyrics: string | null = null
+
+      // 1. Cover jobs — check cover_body.lyrics (MusicAPI sometimes returns generated lyrics)
+      if (job.is_cover && job.cover_body) {
+        try {
+          const cb = typeof job.cover_body === 'string' ? JSON.parse(job.cover_body) : job.cover_body
+          if (cb.lyrics && cb.lyrics.trim()) lyrics = cb.lyrics.trim()
+        } catch { /* ignore */ }
+      }
+
+      // 2. Remix jobs — check cover_body.lyrics similarly
+      if (!lyrics && job.is_remix && job.cover_body) {
+        try {
+          const cb = typeof job.cover_body === 'string' ? JSON.parse(job.cover_body) : job.cover_body
+          if (cb.lyrics && cb.lyrics.trim()) lyrics = cb.lyrics.trim()
+        } catch { /* ignore */ }
+      }
+
+      // 3. Beat jobs in vocal mode — lyrics may be embedded in prompt after a "Lyrics:" marker
+      if (!lyrics && job.prompt) {
+        const lm = job.prompt.match(/lyrics[:\s]+([^\n].{20,})/si)
+        if (lm) lyrics = lm[1].trim()
+      }
+
+      if (!lyrics) { skipped++; continue }
+
+      // Write user_lyrics back into the job blob
+      job.user_lyrics = lyrics
+      await c.env.DB.prepare(
+        `UPDATE jobs SET data = ? WHERE id = ?`
+      ).bind(JSON.stringify(job), row.id).run()
+      updated++
+      details.push(`${row.id}: "${lyrics.slice(0,40)}..."`)
+    } catch { skipped++ }
+  }
+
+  return c.json({ ok: true, updated, skipped, details })
+})
+
 // GET /api/admin/backfill-clip-ids — fetch clip_id from MusicAPI for all jobs missing it
 // Polls each job's stereo_task_id against /sonic/task/:id and writes clip_id back to DB.
 app.get('/api/admin/backfill-clip-ids', async (c) => {
