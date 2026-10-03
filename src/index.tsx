@@ -2304,13 +2304,121 @@ app.post('/api/generate', async (c) => {
   return c.json({ job_id: jobId, status: 'pending' })
 })
 
+// ---------------------------------------------------------------------------
+// lazyRescueStuckJobs — non-blocking background scan fired from POST /api/poll/:id
+// Rescues jobs that got stuck because the original poller tab was closed.
+// Mirrors the logic of GET /api/cron/recover-stuck-jobs but requires no external cron.
+// Only runs when at least one user is actively polling (browser tab open), so it
+// fires as frequently as users generate tracks — typically every 5s.
+// ---------------------------------------------------------------------------
+async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<void> {
+  if (!env.DB || !env.MUSICAPI_KEY) return
+
+  const FIVE_MIN   = 5  * 60 * 1000
+  const FIFTEEN_MIN = 15 * 60 * 1000
+
+  let rows: { results: { id: string; user_id: string; data: string }[] }
+  try {
+    rows = await env.DB.prepare(
+      `SELECT id, user_id, data FROM jobs
+       WHERE json_extract(data,'$.status') = 'generating'
+         AND json_extract(data,'$.stereo_task_id') IS NOT NULL`
+    ).all<{ id: string; user_id: string; data: string }>()
+  } catch { return }
+
+  for (const row of (rows.results || [])) {
+    if (row.id === skipJobId) continue   // already being advanced by the caller
+    const job = JSON.parse(row.data) as any
+    const ageMs = Date.now() - (job.created_at || 0)
+    if (ageMs < FIVE_MIN) continue      // still generating normally
+
+    try {
+      const taskType = job.extend_task_type
+      const useSonic = taskType === 'song_extend' || taskType === 'song_generate'
+      const endpoint = useSonic
+        ? `${MUSICAPI_SONIC}/task/${job.stereo_task_id}`
+        : `${MUSICAPI_PRODUCER}/task/${job.stereo_task_id}`
+
+      const pollRes = await fetch(endpoint, { headers: { 'Authorization': `Bearer ${env.MUSICAPI_KEY}` } })
+      let pollData: any = {}
+      try { pollData = JSON.parse(await pollRes.text()) } catch { continue }
+
+      const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
+      const clip  = clips[0]
+
+      if (pollData.type === 'failed') {
+        job.status = 'error'
+        job.error  = 'Generation failed on music server — 20 points refunded.'
+        await setJob(env.DB, job)
+        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+        console.log(`[lazy-rescue] marked_error_refunded job=${row.id}`)
+        continue
+      }
+
+      if (!clip) {
+        if (ageMs > FIFTEEN_MIN) {
+          job.status = 'error'
+          job.error  = 'Stemforge generation timed out after 15 minutes'
+          await setJob(env.DB, job)
+          if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+          console.log(`[lazy-rescue] timed_out job=${row.id} age_min=${Math.round(ageMs/60000)}`)
+        }
+        continue
+      }
+
+      if (clip.state === 'succeeded') {
+        const url    = clip.audio_url || clip.wav_url || null
+        const clipId = clip.clip_id || clip.id || null
+        if (url) {
+          job.stereo_url = url
+          if (clipId) job.clip_id = clipId
+          job.status = 'ready'
+          delete job.error
+          await setJob(env.DB, job)
+          if (env.IMAGES && env.SITE_URL) {
+            persistAudioToR2(url, row.id, env.IMAGES, env.DB, env.SITE_URL)
+              .catch((e: any) => console.warn('[lazy-rescue] R2 persist error:', e?.message))
+          }
+          console.log(`[lazy-rescue] rescued job=${row.id} title="${job.title}"`)
+        } else {
+          job.status = 'error'
+          job.error  = 'Task succeeded but no audio_url returned'
+          await setJob(env.DB, job)
+        }
+      } else if (clip.state === 'failed') {
+        job.status = 'error'
+        job.error  = 'Generation failed on music server — 20 points refunded.'
+        await setJob(env.DB, job)
+        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+        console.log(`[lazy-rescue] failed+refunded job=${row.id}`)
+      } else if (ageMs > FIFTEEN_MIN) {
+        job.status = 'error'
+        job.error  = 'Stemforge generation timed out after 15 minutes'
+        await setJob(env.DB, job)
+        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+        console.log(`[lazy-rescue] timed_out state=${clip.state} job=${row.id}`)
+      }
+    } catch (err: any) {
+      console.warn(`[lazy-rescue] poll_error job=${row.id}:`, err?.message?.slice(0, 100))
+    }
+  }
+}
+
 // POST /api/poll/:id — called by frontend every ~5s while status=generating
 // Does one MusicAPI status check; sets job to ready with stereo only (stems on-demand).
+// Also fires a non-blocking lazy rescue scan for any OTHER stuck jobs (no external cron needed).
 // Returns the same shape as GET /api/job/:id.
 app.post('/api/poll/:id', async (c) => {
   const id = c.req.param('id')
   const job = await advancePipeline(id, c.env) // always skipStems=true
   if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  // Non-blocking: scan for other stuck jobs in background — fires whenever any user
+  // is actively polling, so no external cron service is needed.
+  // waitUntil keeps the Worker alive for the background work after response is sent.
+  if (job.status === 'generating' && c.executionCtx?.waitUntil) {
+    c.executionCtx.waitUntil(lazyRescueStuckJobs(c.env, id))
+  }
 
   const chainStep: number = (job as any).chain_step || 0
   const chainTargetMs: number = (job as any).chain_target_ms || 0
@@ -9700,7 +9808,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-64'
+const ASSET_VER = '20261003-65'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9810,7 +9918,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.64.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.65.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
