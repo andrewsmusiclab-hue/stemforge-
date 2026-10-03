@@ -1,0 +1,27 @@
+name: StemForge Cron — Recover Stuck Jobs + Persist R2
+
+on:
+  schedule:
+    # GitHub Actions minimum is 5 minutes — runs every 5 min
+    # recover-stuck catches tab-closed users; persist-r2 backs up CDN audio to R2
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # manual trigger available anytime
+
+jobs:
+  recover-stuck-jobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Recover stuck generating jobs (tab closed mid-gen)
+        run: |
+          RESULT=$(curl -f -s "https://stemforge.studio/api/cron/recover-stuck-jobs?secret=${{ secrets.CRON_SECRET }}")
+          echo "$RESULT" | jq '{ok,checked,rescued,refunded,ts}'
+
+  persist-r2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Persist expiring CDN audio to permanent R2 storage
+        run: |
+          RESULT=$(curl -f -s "https://stemforge.studio/api/cron/persist-r2?secret=${{ secrets.CRON_SECRET }}")
+          echo "$RESULT" | jq '{ok,checked,persisted,failed,ts}'

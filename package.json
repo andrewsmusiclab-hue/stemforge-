@@ -1,0 +1,25 @@
+{
+  "name": "webapp",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev",
+    "deploy": "npm run build && wrangler pages deploy",
+    "deploy:staging": "npm run build && gsk hosted deploy",
+    "deploy:prod": "npm run build && bash scripts/publish-prod.sh",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
+  },
+  "dependencies": {
+    "@audio/decode-aac": "^1.5.0",
+    "@breezystack/lamejs": "^1.2.7",
+    "hono": "^4.12.23",
+    "mpg123-decoder": "^1.0.3"
+  },
+  "devDependencies": {
+    "@hono/vite-build": "^1.2.0",
+    "@hono/vite-dev-server": "^0.25.2",
+    "vite": "^6.3.5",
+    "wrangler": "^4.4.0"
+  }
+}

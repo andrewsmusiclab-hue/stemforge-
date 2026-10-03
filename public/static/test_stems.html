@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Stem Player Test</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+<style>
+body { background: #0d0d1a; color: #e2e8f0; font-family: sans-serif; padding: 20px; }
+#results { margin-top: 20px; }
+.pass { color: #10b981; } .fail { color: #ef4444; }
+button.test-btn { margin: 4px; padding: 6px 12px; background: #1a1a2e; color: #fff; border: 1px solid #333; border-radius: 6px; cursor: pointer; }
+</style>
+</head>
+<body>
+<h2>Stem Player — Solo/Mute Test</h2>
+<button class="test-btn" onclick="runTests()">▶ Run All Tests</button>
+<button class="test-btn" onclick="openPanel()">Open Panel (visual)</button>
+<div id="results"></div>
+
+<script src="/static/app.js"></script>
+<script>
+// Mock stems data - simulates what the server would return
+var MOCK_STEMS = [
+  { name: 'vocals', url: 'https://example.com/vocals.wav' },
+  { name: 'drums',  url: 'https://example.com/drums.wav'  },
+  { name: 'bass',   url: 'https://example.com/bass.wav'   }
+];
+
+function openPanel() {
+  // openStemsPanel exists in app.js IIFE
+  window.openStemsPanel('test-job-123', 'https://example.com/stereo.wav', 'Test Song', 'pro');
+  // After panel opens, inject mock stems directly
+  setTimeout(function() {
+    // Simulate the stems being loaded by calling _renderStemTracks directly
+    // We need to reach into the IIFE - but _spExtract is global, so we inject stems via a mock
+    // Actually let's just test the button logic directly after rendering
+    log('Panel opened - click Extract on any tab to load stems, then test S/M buttons');
+  }, 300);
+}
+
+function log(msg, pass) {
+  var div = document.getElementById('results');
+  var p = document.createElement('p');
+  p.innerHTML = msg;
+  if (pass === true)  p.className = 'pass';
+  if (pass === false) p.className = 'fail';
+  div.appendChild(p);
+}
+
+function runTests() {
+  document.getElementById('results').innerHTML = '';
+
+  // Test 1: Check Solo function exists
+  log('Test 1: window._spSolo exists = ' + (typeof window._spSolo === 'function'), typeof window._spSolo === 'function');
+
+  // Test 2: Check Mute function exists  
+  log('Test 2: window._spMute exists = ' + (typeof window._spMute === 'function'), typeof window._spMute === 'function');
+
+  // Test 3: Check openStemsPanel exists
+  log('Test 3: window.openStemsPanel exists = ' + (typeof window.openStemsPanel === 'function'), typeof window.openStemsPanel === 'function');
+
+  // Test 4: Check _spToggleDlMenu takes event param
+  var src = window._spToggleDlMenu.toString();
+  var hasEventParam = src.indexOf('function (e)') !== -1 || src.indexOf('function(e)') !== -1;
+  log('Test 4: _spToggleDlMenu accepts event param = ' + hasEventParam, hasEventParam);
+
+  // Test 5: Check dropdown uses position:fixed
+  var hasFixed = src.indexOf('position:fixed') !== -1 || src.indexOf("position:'fixed'") !== -1;
+  log('Test 5: Dropdown uses position:fixed = ' + hasFixed, hasFixed);
+
+  // Test 6: Check crossOrigin removed from Audio init
+  var appSrc = document.querySelector('script[src="/static/app.js"]');
+  // Can't read script src directly, so we check if audio objects would have crossOrigin
+  // The best we can do is check the stem player source contains the fix comment
+  log('Test 6: crossOrigin removed from Audio (check source)', null);
+
+  // Test 7: Open panel and simulate stem loading, then test S/M logic
+  window.openStemsPanel('test-job-123', null, 'Test Song', 'pro');
+  setTimeout(function() {
+    var panel = document.getElementById('sf-stems-panel');
+    log('Test 7: Panel created in DOM = ' + !!panel, !!panel);
+
+    // Inject stems directly into the player's internal state by calling _renderStemTracks
+    // We expose it via a global for testing
+    if (window.__testInjectStems) {
+      window.__testInjectStems(MOCK_STEMS);
+      setTimeout(checkSoloMuteLogic, 200);
+    } else {
+      log('Test 8-12: Cannot inject stems (no test hook) - open panel manually and test', null);
+    }
+  }, 400);
+}
+
+function checkSoloMuteLogic() {
+  // At this point stems should be rendered
+  var s0 = document.getElementById('sp-solo-0');
+  var m0 = document.getElementById('sp-mute-0');
+  var s1 = document.getElementById('sp-solo-1');
+  var m1 = document.getElementById('sp-mute-1');
+
+  log('Test 8: Solo btn 0 exists = ' + !!s0, !!s0);
+  log('Test 9: Mute btn 0 exists = ' + !!m0, !!m0);
+
+  if (!s0 || !m0) return;
+
+  // Click Solo on track 0
+  s0.click();
+  setTimeout(function() {
+    var s0Yellow = s0.style.color === 'rgb(250, 204, 21)' || s0.style.color === '#facc15';
+    log('Test 10: After S0 click → S0 is yellow = ' + s0Yellow, s0Yellow);
+
+    var m0NotRed = m0.style.color !== 'rgb(239, 68, 68)' && m0.style.color !== '#ef4444';
+    log('Test 11: After S0 click → M0 is NOT red (cleared) = ' + m0NotRed, m0NotRed);
+
+    var m1Orange = m1 && (m1.style.color.indexOf('251') !== -1 || m1.style.borderColor.indexOf('251') !== -1);
+    log('Test 12: After S0 click → M1 shows orange (silenced-by-solo) = ' + m1Orange, m1Orange);
+
+    // Now click S1 - should clear S0 and set S1
+    if (s1) {
+      s1.click();
+      setTimeout(function() {
+        var s0Clear = s0.style.color !== 'rgb(250, 204, 21)' && s0.style.color !== '#facc15';
+        var s1Yellow = s1.style.color === 'rgb(250, 204, 21)' || s1.style.color === '#facc15';
+        log('Test 13: After S1 click → S0 cleared = ' + s0Clear, s0Clear);
+        log('Test 14: After S1 click → S1 is yellow = ' + s1Yellow, s1Yellow);
+
+        var m1Clear = m1.style.color !== 'rgb(239, 68, 68)' && m1.style.color !== '#ef4444';
+        log('Test 15: After S1 click → M1 is NOT red = ' + m1Clear, m1Clear);
+
+        log('<strong>All tests done!</strong>', null);
+      }, 100);
+    }
+  }, 100);
+}
+</script>
+</body>
+</html>

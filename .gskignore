@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.yarn/
+logs/
+*.log
+.env
+.env.production
+.dev.vars
+.DS_Store
+core
+core.*

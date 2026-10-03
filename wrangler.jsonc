@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "stemforge",
+  "compatibility_date": "2026-05-01",
+  "pages_build_output_dir": "./dist",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "SITE_URL": "https://stemforge.studio",
+    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "andrew-pryce-db",
+      "database_id": "ffd0c782-4ccc-42c2-9f35-4c577105516b"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "andrew-pryce-media"
+    }
+  ]
+}
