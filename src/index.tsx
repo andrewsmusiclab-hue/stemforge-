@@ -9484,7 +9484,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20260930-55'
+const ASSET_VER = '20261003-56'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15087,6 +15087,193 @@ app.get('/api/cron/free-reset', async (c) => {
     return c.json({ ok: false, error: err?.message }, 500)
   }
 })
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/cron/recover-stuck-jobs — called every 2 min by external cron (cron-job.org)
+// Finds any generating job older than 5 min with a stereo_task_id, polls MusicAPI,
+// writes result back. Fixes the "user closed tab mid-generation" data loss problem.
+app.get('/api/cron/recover-stuck-jobs', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not available' }, 500)
+  const cronSecret = (c.env as any).CRON_SECRET
+  const provided = c.req.query('secret') || c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!cronSecret || provided !== cronSecret) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+
+  await ensureTable(c.env.DB)
+
+  // Find all generating jobs with a task ID regardless of age — cron will skip ones <5 min
+  const rows = await c.env.DB.prepare(
+    `SELECT id, user_id, data FROM jobs
+     WHERE json_extract(data,'$.status') = 'generating'
+       AND json_extract(data,'$.stereo_task_id') IS NOT NULL`
+  ).all<{ id: string; user_id: string; data: string }>()
+
+  const results: any[] = []
+  const FIVE_MIN = 5 * 60 * 1000
+  const FIFTEEN_MIN = 15 * 60 * 1000
+
+  for (const row of (rows.results || [])) {
+    const job = JSON.parse(row.data) as any
+    const ageMs = Date.now() - (job.created_at || 0)
+
+    // Skip jobs younger than 5 min — still generating normally
+    if (ageMs < FIVE_MIN) {
+      results.push({ id: row.id, title: job.title, action: 'skip_too_new', age_min: Math.round(ageMs / 60000) })
+      continue
+    }
+
+    try {
+      const taskType = job.extend_task_type
+      const useSonic = taskType === 'song_extend' || taskType === 'song_generate'
+      const endpoint = useSonic
+        ? `${MUSICAPI_SONIC}/task/${job.stereo_task_id}`
+        : `${MUSICAPI_PRODUCER}/task/${job.stereo_task_id}`
+
+      const pollRes = await fetch(endpoint, { headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` } })
+      const pollText = await pollRes.text()
+      let pollData: any = {}
+      try { pollData = JSON.parse(pollText) } catch {}
+
+      const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
+      const clip = clips[0]
+
+      // MusicAPI failed shape: { type: 'failed', error: '...', already_refunded: true }
+      if (pollData.type === 'failed') {
+        job.status = 'error'
+        job.error = `Generation failed on music server — 20 points refunded.`
+        await setJob(c.env.DB, job)
+        // Refund 20 points to the user
+        if (row.user_id) {
+          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+            .bind(row.user_id).run()
+        }
+        results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: pollData.error })
+        continue
+      }
+
+      if (!clip) {
+        // No clip data at all — if old enough, time it out
+        if (ageMs > FIFTEEN_MIN) {
+          job.status = 'error'
+          job.error = 'Stemforge generation timed out after 15 minutes'
+          await setJob(c.env.DB, job)
+          if (row.user_id) {
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+              .bind(row.user_id).run()
+          }
+          results.push({ id: row.id, title: job.title, action: 'timed_out_refunded' })
+        } else {
+          results.push({ id: row.id, title: job.title, action: 'still_pending', age_min: Math.round(ageMs / 60000) })
+        }
+        continue
+      }
+
+      if (clip.state === 'succeeded') {
+        const url = clip.audio_url || clip.wav_url || null
+        const clipId = clip.clip_id || clip.id || null
+        if (url) {
+          job.stereo_url = url
+          if (clipId) job.clip_id = clipId
+          job.status = 'ready'
+          delete job.error
+          await setJob(c.env.DB, job)
+          // Persist to R2 immediately so it never expires
+          if (c.env.IMAGES && c.env.SITE_URL) {
+            persistAudioToR2(url, row.id, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
+              .catch((e: any) => console.warn('[cron-recover] R2 persist error:', e?.message))
+          }
+          results.push({ id: row.id, title: job.title, action: 'rescued', url_prefix: url.slice(0, 60) })
+        } else {
+          job.status = 'error'
+          job.error = 'Task succeeded but no audio_url returned'
+          await setJob(c.env.DB, job)
+          results.push({ id: row.id, title: job.title, action: 'marked_error', reason: 'succeeded_no_url' })
+        }
+      } else if (clip.state === 'failed') {
+        job.status = 'error'
+        job.error = 'Generation failed on music server — 20 points refunded.'
+        await setJob(c.env.DB, job)
+        if (row.user_id) {
+          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+            .bind(row.user_id).run()
+        }
+        results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: clip.error })
+      } else {
+        // Still running — time out if old enough
+        if (ageMs > FIFTEEN_MIN) {
+          job.status = 'error'
+          job.error = 'Stemforge generation timed out after 15 minutes'
+          await setJob(c.env.DB, job)
+          if (row.user_id) {
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+              .bind(row.user_id).run()
+          }
+          results.push({ id: row.id, title: job.title, action: 'timed_out_refunded', state: clip.state })
+        } else {
+          results.push({ id: row.id, title: job.title, action: 'still_running', state: clip.state, age_min: Math.round(ageMs / 60000) })
+        }
+      }
+    } catch (err: any) {
+      results.push({ id: row.id, title: job.title, action: 'poll_error', error: err?.message?.slice(0, 200) })
+    }
+  }
+
+  const rescued  = results.filter(r => r.action === 'rescued').length
+  const refunded = results.filter(r => r.action?.includes('refunded')).length
+  console.log(`[cron-recover] checked=${results.length} rescued=${rescued} refunded=${refunded}`)
+  return c.json({ ok: true, checked: results.length, rescued, refunded, results, ts: new Date().toISOString() })
+})
+
+// GET /api/cron/persist-r2 — called every 3 min by external cron (cron-job.org)
+// Finds ready jobs whose stereo_url is still on an expiring external CDN (musicapi.ai, suno.ai, etc.)
+// and persists them to R2 so they never disappear. Processes up to 5 per run to stay within CPU limits.
+app.get('/api/cron/persist-r2', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'DB not available' }, 500)
+  const cronSecret = (c.env as any).CRON_SECRET
+  const provided = c.req.query('secret') || c.req.header('Authorization')?.replace('Bearer ', '')
+  if (!cronSecret || provided !== cronSecret) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.env.IMAGES) return c.json({ error: 'R2 not available' }, 500)
+  if (!c.env.SITE_URL) return c.json({ error: 'SITE_URL not configured' }, 500)
+
+  await ensureTable(c.env.DB)
+
+  // Find ready jobs with external CDN stereo_url (no r2_audio_key yet)
+  // We look for jobs where stereo_url does NOT contain /api/track-audio/ (our permanent proxy)
+  const rows = await c.env.DB.prepare(`
+    SELECT id, data FROM jobs
+    WHERE deleted_at IS NULL
+      AND is_oneshot = 0
+      AND json_extract(data,'$.status') = 'ready'
+      AND json_extract(data,'$.r2_audio_key') IS NULL
+      AND json_extract(data,'$.stereo_url') IS NOT NULL
+      AND json_extract(data,'$.stereo_url') NOT LIKE '%/api/track-audio/%'
+    ORDER BY created_at ASC
+    LIMIT 5
+  `).all<{ id: string; data: string }>()
+
+  const results: any[] = []
+  for (const row of (rows.results || [])) {
+    const job = JSON.parse(row.data) as any
+    const url = job.stereo_url
+    if (!url) { results.push({ id: row.id, action: 'skip_no_url' }); continue }
+    try {
+      const newUrl = await persistAudioToR2(url, row.id, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
+      if (newUrl) {
+        results.push({ id: row.id, title: job.title, action: 'persisted', new_url: newUrl })
+      } else {
+        results.push({ id: row.id, title: job.title, action: 'persist_failed', src_url: url.slice(0, 80) })
+      }
+    } catch (err: any) {
+      results.push({ id: row.id, title: job.title, action: 'error', error: err?.message?.slice(0, 200) })
+    }
+  }
+
+  const persisted = results.filter(r => r.action === 'persisted').length
+  const failed    = results.filter(r => r.action === 'persist_failed' || r.action === 'error').length
+  console.log(`[cron-persist-r2] checked=${results.length} persisted=${persisted} failed=${failed}`)
+  return c.json({ ok: true, checked: results.length, persisted, failed, results, ts: new Date().toISOString() })
+})
+
 // ═══════════════════════════════════════════════════════════════
 
 async function runFreeUserReset(db: D1Database): Promise<{ reset: number; errors: string[] }> {
