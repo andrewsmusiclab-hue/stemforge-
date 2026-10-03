@@ -9808,7 +9808,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-65'
+const ASSET_VER = '20261003-66'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9918,7 +9918,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.65.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.66.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -11710,11 +11710,9 @@ function generatorPage() {
         <span id="oneshot-sfx-result-title" style="font-weight:700;font-size:.9rem">One Shot Ready</span>
       </div>
       <audio id="oneshot-sfx-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
-      <div style="display:flex;gap:8px">
-        <a id="oneshot-sfx-dl-mp3" href="#" class="btn btn--outline btn--sm" style="flex:1;text-align:center" download>
-          <i class="fas fa-download"></i> Download WAV
-        </a>
-      </div>
+      <p style="font-size:.78rem;color:var(--muted);text-align:center;margin:0"><i class="fas fa-bolt" style="color:#f59e0b;margin-right:4px"></i>Saved to your library — download MP3 from the <strong>One Shots</strong> tab.</p>
+      <!-- oneshot-sfx-dl-mp3 anchor kept (hidden) so JS can set its href without errors -->
+      <a id="oneshot-sfx-dl-mp3" href="#" download style="display:none"></a>
     </div>
 
   </div>
