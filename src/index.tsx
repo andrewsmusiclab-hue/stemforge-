@@ -9700,7 +9700,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-63'
+const ASSET_VER = '20261003-64'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9810,7 +9810,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.63.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.64.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking

@@ -2087,15 +2087,17 @@ document.addEventListener('DOMContentLoaded', () => {
   var _dashSourceNode= null;
   var _dashWaveRAF   = null;
 
-  function _teardownDashAudio() {
+  function _teardownDashAudio(clearIcon) {
     if (_dashWaveRAF) { cancelAnimationFrame(_dashWaveRAF); _dashWaveRAF = null; }
     if (_dashSourceNode) { try { _dashSourceNode.disconnect(); } catch(e){} _dashSourceNode = null; }
     // Don't close AudioContext — reuse it
     if (window._cardWaveGlobal) { window._cardWaveGlobal.analyser = null; }
+    // Reset the playing card's icon only when teardown is triggered externally (not during new-player setup)
+    if (clearIcon !== false) _clearCurrentCardIcon();
   }
 
   function _setupDashVisualizer(audio, hue, canvasEl) {
-    _teardownDashAudio();
+    _teardownDashAudio(false);  // false = don't clear card icon (we're setting up, not closing)
     try {
       if (!_dashAudioCtx) _dashAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (_dashAudioCtx.state === 'suspended') _dashAudioCtx.resume();
@@ -2191,6 +2193,23 @@ document.addEventListener('DOMContentLoaded', () => {
     drawWave();
   }
 
+  // Track which card is currently playing so we can toggle its icon
+  var _dashPlayingCardBtn = null;
+
+  function _setCardPlayIcon(btnEl, isPlaying) {
+    if (!btnEl) return;
+    var icon = btnEl.querySelector('i');
+    if (icon) icon.className = isPlaying ? 'fas fa-pause' : 'fas fa-play';
+  }
+
+  function _clearCurrentCardIcon() {
+    if (_dashPlayingCardBtn) {
+      _setCardPlayIcon(_dashPlayingCardBtn, false);
+      _dashPlayingCardBtn = null;
+    }
+  }
+  window._clearCurrentCardIcon = _clearCurrentCardIcon;
+
   window.playDashProject = function(btn) {
     const card       = btn.closest('.project-card');
     const stereoUrl  = card ? card.dataset.stereo : '';
@@ -2217,9 +2236,16 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Tear down previous player
+    // If this same card is already playing → toggle play/pause on the existing player
     const existing = document.getElementById('dash-mini-player');
-    if (existing) { _teardownDashAudio(); existing.remove(); }
+    if (existing && _dashPlayingCardBtn === btn) {
+      window.dashTogglePlay();
+      return;
+    }
+
+    // Different card clicked (or no player open) — reset previous card icon, tear down player
+    _clearCurrentCardIcon();
+    if (existing) { _teardownDashAudio(false); existing.remove(); }
 
     // ── Build the taller mini player ──
     const player = document.createElement('div');
@@ -2290,7 +2316,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
 
         <!-- Close -->
-        <button onclick="(function(){var p=document.getElementById('dash-mini-player');if(p){window._teardownDashAudio&&window._teardownDashAudio();p.remove();}})()"
+        <button onclick="(function(){var p=document.getElementById('dash-mini-player');if(p){window._teardownDashAudio&&window._teardownDashAudio();p.remove();window._clearCurrentCardIcon&&window._clearCurrentCardIcon();}})()"
           style="background:none;border:none;cursor:pointer;color:rgba(255,255,255,.35);font-size:17px;flex-shrink:0;line-height:1;padding:4px;transition:color .15s"
           onmouseenter="this.style.color='rgba(255,255,255,.8)'" onmouseleave="this.style.color='rgba(255,255,255,.35)'">
           <i class="fas fa-times"></i>
@@ -2299,6 +2325,10 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
 
     document.body.appendChild(player);
+
+    // Track this card as the currently-playing card and flip its icon to pause
+    _dashPlayingCardBtn = btn;
+    _setCardPlayIcon(btn, true);
 
     // ── Drag to move ──────────────────────────────────────────────────────────
     (function() {
@@ -2412,6 +2442,8 @@ document.addEventListener('DOMContentLoaded', () => {
       seekBar.value = 0;
       if (seekFill) seekFill.style.width = '0%';
       if (timeCur) timeCur.textContent = '0:00';
+      // Reset the card icon back to play when track finishes
+      _setCardPlayIcon(_dashPlayingCardBtn, false);
     });
   };
 
@@ -2423,9 +2455,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (_dashAudioCtx && _dashAudioCtx.state === 'suspended') _dashAudioCtx.resume();
       audio.play().catch(() => {});
       if (btn) btn.innerHTML = '<i class="fas fa-pause"></i>';
+      _setCardPlayIcon(_dashPlayingCardBtn, true);
     } else {
       audio.pause();
       if (btn) btn.innerHTML = '<i class="fas fa-play"></i>';
+      _setCardPlayIcon(_dashPlayingCardBtn, false);
     }
   };
 
@@ -9364,9 +9398,9 @@ function showProUpgradeModal(featureName) {
     var nCh = audioBuffer.numberOfChannels;
     var sr  = audioBuffer.sampleRate;
     // Cap at 60 seconds — MusicAPI only needs a reference snippet and has a file size limit
-    var maxSamples = sr * 30;
+    var maxSamples = sr * 60;
     var totalSamples = Math.min(audioBuffer.length, maxSamples);
-    // 96kbps × 30s = ~353KB — proven working window for MusicAPI /upload-cover
+    // 96kbps × 60s = ~706KB — proven working window for MusicAPI /upload-cover
     var lame = new lamejs.Mp3Encoder(Math.min(nCh, 2), sr, 96);
     var blockSize = 1152;
     var mp3Chunks = [];
