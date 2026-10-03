@@ -9487,7 +9487,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-58'
+const ASSET_VER = '20261003-59'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10934,7 +10934,7 @@ function generatorPage() {
           </div>
           <p class="suno-instrumental-note" id="instrumental-note" style="display:none">
             <i class="fas fa-check-circle" style="color:var(--accent-2)"></i>
-            Instrumental mode is <strong>ON</strong> — no vocal space will be generated.
+            Instrumental mode is <strong>ON</strong>.
           </p>
         </div>
       </div>
