@@ -5220,7 +5220,7 @@ function showCompletionBanner(label, tab) {
   banner.className = 'sf-completion-banner';
   banner.id = 'sf-completion-banner';
   var libHref = '/dashboard';
-  if (tab) libHref = '/generator#' + tab;
+  if (tab) libHref = '/dashboard#' + tab;
   banner.innerHTML =
     '<i class="fas fa-check-circle" style="font-size:1.1rem;flex-shrink:0;color:#a7f3d0"></i>' +
     '<span style="flex:1">' + label + ' — <strong>Track saved to library!</strong></span>' +
@@ -10466,15 +10466,26 @@ window.toggleRefDropdown = function() {
     '</div>';
   }
 
-  // Handle #covers hash on load (works on both /dashboard and /generator)
-  if (window.location.hash === '#covers') {
-    window.addEventListener('load', function() {
-      setTimeout(function() {
-        if (typeof window.navigate === 'function') window.navigate('library');
-        setTimeout(function() {
-          if (typeof window.switchLibTab === 'function') window.switchLibTab('covers');
-        }, 350);
-      }, 400);
-    });
+  // Handle any library tab hash on load (/dashboard#beats, /dashboard#covers, etc.)
+  // This makes the "Go to Library" banner link land on the correct tab automatically.
+  var _hashTab = (window.location.hash || '').replace('#', '');
+  var _validTabs = ['beats','covers','remixes','extended','oneshots','uploads','trash'];
+  if (_hashTab && _validTabs.indexOf(_hashTab) !== -1) {
+    // Use DOMContentLoaded so the lib-tabs are already in the DOM
+    var _switchOnLoad = function() {
+      if (typeof window.switchLibTab === 'function') {
+        window.switchLibTab(_hashTab);
+        // Clear the hash quietly so back button works naturally
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      }
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', _switchOnLoad);
+    } else {
+      // DOM already ready (script ran after parse)
+      setTimeout(_switchOnLoad, 0);
+    }
   }
 })();
