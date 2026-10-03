@@ -9484,7 +9484,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-56'
+const ASSET_VER = '20261003-57'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15224,9 +15224,10 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
   return c.json({ ok: true, checked: results.length, rescued, refunded, results, ts: new Date().toISOString() })
 })
 
-// GET /api/cron/persist-r2 — called every 3 min by external cron (cron-job.org)
+// GET /api/cron/persist-r2 — called every 5 min by external cron (cron-job.org / GitHub Actions)
 // Finds ready jobs whose stereo_url is still on an expiring external CDN (musicapi.ai, suno.ai, etc.)
 // and persists them to R2 so they never disappear. Processes up to 5 per run to stay within CPU limits.
+// Auto-marks permanently dead CDN URLs (403/404) as CDN_DEAD so they never block the queue again.
 app.get('/api/cron/persist-r2', async (c) => {
   if (!c.env.DB) return c.json({ error: 'DB not available' }, 500)
   const cronSecret = (c.env as any).CRON_SECRET
@@ -15238,7 +15239,7 @@ app.get('/api/cron/persist-r2', async (c) => {
   await ensureTable(c.env.DB)
 
   // Find ready jobs with external CDN stereo_url (no r2_audio_key yet)
-  // We look for jobs where stereo_url does NOT contain /api/track-audio/ (our permanent proxy)
+  // r2_audio_key IS NULL excludes: already-persisted tracks (have R2 key) AND CDN_DEAD entries
   const rows = await c.env.DB.prepare(`
     SELECT id, data FROM jobs
     WHERE deleted_at IS NULL
@@ -15256,6 +15257,23 @@ app.get('/api/cron/persist-r2', async (c) => {
     const job = JSON.parse(row.data) as any
     const url = job.stereo_url
     if (!url) { results.push({ id: row.id, action: 'skip_no_url' }); continue }
+
+    // Pre-flight HEAD check: detect permanently dead CDN URLs (403/404) before attempting
+    // full download. If dead, mark CDN_DEAD immediately so it never blocks the queue again.
+    try {
+      const head = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'StemForge/1.0' } })
+      if (head.status === 403 || head.status === 404 || head.status === 410) {
+        // Permanently gone — mark CDN_DEAD so cron skips it forever
+        const deadJob = { ...job, r2_audio_key: 'CDN_DEAD', cdn_dead_reason: `http_${head.status}`, cdn_dead_at: new Date().toISOString() }
+        await c.env.DB.prepare('UPDATE jobs SET data = ? WHERE id = ?').bind(JSON.stringify(deadJob), row.id).run()
+        console.warn(`[cron-persist-r2] CDN_DEAD job=${row.id} title="${job.title}" status=${head.status}`)
+        results.push({ id: row.id, title: job.title, action: 'cdn_dead', http_status: head.status, src_url: url.slice(0, 80) })
+        continue
+      }
+    } catch (_headErr) {
+      // HEAD failed (network error) — fall through to full attempt which will also fail and retry next run
+    }
+
     try {
       const newUrl = await persistAudioToR2(url, row.id, c.env.IMAGES, c.env.DB, c.env.SITE_URL)
       if (newUrl) {
@@ -15268,10 +15286,11 @@ app.get('/api/cron/persist-r2', async (c) => {
     }
   }
 
-  const persisted = results.filter(r => r.action === 'persisted').length
-  const failed    = results.filter(r => r.action === 'persist_failed' || r.action === 'error').length
-  console.log(`[cron-persist-r2] checked=${results.length} persisted=${persisted} failed=${failed}`)
-  return c.json({ ok: true, checked: results.length, persisted, failed, results, ts: new Date().toISOString() })
+  const persisted  = results.filter(r => r.action === 'persisted').length
+  const cdn_dead   = results.filter(r => r.action === 'cdn_dead').length
+  const failed     = results.filter(r => r.action === 'persist_failed' || r.action === 'error').length
+  console.log(`[cron-persist-r2] checked=${results.length} persisted=${persisted} cdn_dead=${cdn_dead} failed=${failed}`)
+  return c.json({ ok: true, checked: results.length, persisted, cdn_dead, failed, results, ts: new Date().toISOString() })
 })
 
 // ═══════════════════════════════════════════════════════════════
