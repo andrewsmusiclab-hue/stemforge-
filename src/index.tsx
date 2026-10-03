@@ -1772,7 +1772,7 @@ async function pollInstrumentalStatus(taskId: string, apiKey: string): Promise<{
 
 // Poll MusicAPI Sonic task/:taskId — used for song extend results
 // Returns { url, durationMs, clipId } or null if still running
-async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ url: string; urlAlt?: string; durationMs: number; clipId: string } | null> {
+async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ url: string; urlAlt?: string; durationMs: number; clipId: string; aiLyrics?: string } | null> {
   const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
@@ -1790,7 +1790,12 @@ async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ u
     // Sonic often returns 2 clip variations — capture alt if present and succeeded
     const clip2 = clips[1]
     const urlAlt: string | undefined = (clip2 && clip2.state === 'succeeded' && clip2.audio_url) ? clip2.audio_url : undefined
-    return { url, urlAlt, durationMs, clipId }
+    // Capture AI-generated lyrics from the clip response (present even when user left field blank)
+    // MusicAPI Sonic returns `lyrics` field with full [Verse]/[Chorus] structured text
+    const aiLyrics: string | undefined = clip.lyrics && typeof clip.lyrics === 'string' && clip.lyrics.trim().length > 0
+      ? clip.lyrics.trim()
+      : undefined
+    return { url, urlAlt, durationMs, clipId, aiLyrics }
   }
   if (clip.state === 'failed') throw new Error(clip.error || 'Stemforge extend failed')
   return null // still processing
@@ -2000,7 +2005,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
       return job
     }
 
-    const { url: stereoUrl, urlAlt: stereoUrlAlt, durationMs: resultDurationMs, clipId: resultClipId } = result
+    const { url: stereoUrl, urlAlt: stereoUrlAlt, durationMs: resultDurationMs, clipId: resultClipId, aiLyrics: resultAiLyrics } = result
 
     // ── Chain extend logic ─────────────────────────────────────────────────────
     // chain_target_ms: target total output duration in ms (set at job creation)
@@ -2066,6 +2071,13 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     if (resultClipId) (job as any).clip_id = resultClipId
     if (resultDurationMs > 0) {
       (job as any).chain_final_duration_ms = resultDurationMs
+    }
+    // Store AI-generated lyrics in job blob — only when user didn't provide custom lyrics
+    // (if user_lyrics already set from user input, AI lyrics are not needed)
+    if (resultAiLyrics && !(job as any).user_lyrics) {
+      (job as any).ai_lyrics = resultAiLyrics
+      // Also promote to user_lyrics so Edit tab auto-populates identically for both paths
+      ;(job as any).user_lyrics = resultAiLyrics
     }
     job.status = 'ready'
     await setJob(db, { ...job })
@@ -2337,6 +2349,10 @@ app.post('/api/poll/:id', async (c) => {
     clip_id_alt: (job as any).clip_id_alt || null,
     error: job.error || null,
     server_busy: (job as any).server_busy || false,
+    // Return stored lyrics so frontend Edit tab can auto-populate on job completion
+    // Covers both user-typed lyrics (user_lyrics set at job start) and AI-generated
+    // lyrics captured from MusicAPI Sonic clip.lyrics when user left field blank
+    user_lyrics: (job as any).user_lyrics || null,
     // Chain extend progress fields (only present for song_extend jobs with chaining)
     chain_step: chainStep > 0 ? chainStep : undefined,
     chain_target_ms: chainTargetMs > 0 ? chainTargetMs : undefined,
@@ -9684,7 +9700,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-62'
+const ASSET_VER = '20261003-63'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9794,7 +9810,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.62.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.63.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking

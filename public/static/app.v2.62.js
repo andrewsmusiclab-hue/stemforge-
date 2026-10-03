@@ -3451,13 +3451,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof fetchLibTab === 'function' && document.getElementById('lib-tab-beats')) {
               fetchLibTab('beats');
             }
-            // Issue 3: Persist lyrics into cached job data so the Edit tab shows them
-            if (_capturedLyrics && job.id) {
+            // Issue 3: Persist lyrics into cached job data so the Edit tab shows them.
+            // Priority: user-typed lyrics (_capturedLyrics) > AI-generated lyrics from poll response.
+            // When user left field blank, backend captures clip.lyrics from MusicAPI Sonic and
+            // returns it as user_lyrics in the poll response — we use that as the fallback.
+            var _finalLyrics = _capturedLyrics || job.user_lyrics || '';
+            if (_finalLyrics && job.id) {
               if (!window._sfProjects) window._sfProjects = {};
               if (!window._sfProjects[job.id]) window._sfProjects[job.id] = job;
-              window._sfProjects[job.id].user_lyrics = _capturedLyrics;
+              window._sfProjects[job.id].user_lyrics = _finalLyrics;
               // Also patch the live job object so openEditTab sees it immediately
-              job.user_lyrics = job.user_lyrics || _capturedLyrics;
+              job.user_lyrics = _finalLyrics;
             }
             // Show persistent completion banner — stays until user dismisses or navigates
             showCompletionBanner('<i class="fas fa-music" style="margin-right:4px"></i>Beat ready', 'beats');
