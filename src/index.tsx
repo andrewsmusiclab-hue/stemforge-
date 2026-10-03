@@ -4133,6 +4133,28 @@ app.post('/api/account/delete', async (c) => {
         await stripeRequest('DELETE', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
       } catch {}
     }
+    // Delete all R2 audio/cover objects for this user's jobs before removing DB rows
+    if (c.env.IMAGES) {
+      try {
+        const jobRows = await c.env.DB.prepare(
+          `SELECT id, data FROM jobs WHERE user_id = ?`
+        ).bind(user.id).all<{ id: string; data: string }>()
+        const r2Keys: string[] = []
+        for (const row of (jobRows.results || [])) {
+          try {
+            const job = JSON.parse(row.data) as any
+            if (job.r2_audio_key && job.r2_audio_key !== 'CDN_DEAD') r2Keys.push(job.r2_audio_key)
+            r2Keys.push(`covers/${row.id}.jpg`, `covers/${row.id}.png`,
+                        `covers/${row.id}-custom.jpg`, `covers/${row.id}-custom.png`)
+          } catch {}
+        }
+        // R2 delete objects in batches of 100
+        for (let i = 0; i < r2Keys.length; i += 100) {
+          const batch = r2Keys.slice(i, i + 100)
+          await Promise.allSettled(batch.map(k => c.env.IMAGES!.delete(k)))
+        }
+      } catch { /* non-fatal */ }
+    }
     // Delete all user data from DB
     await c.env.DB.prepare('DELETE FROM jobs WHERE user_id = ?').bind(user.id).run()
     await c.env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id).run()
@@ -4982,8 +5004,27 @@ app.get('/api/projects', async (c) => {
   try {
     await ensureTable(c.env.DB)
 
-    // Auto-purge trash older than 60 days
+    // Auto-purge trash older than 60 days — also delete R2 objects
     const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000
+    if (c.env.IMAGES) {
+      try {
+        const expiredRows = await c.env.DB.prepare(
+          `SELECT id, data FROM jobs WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?`
+        ).bind(user.id, cutoff).all<{ id: string; data: string }>()
+        for (const row of (expiredRows.results || [])) {
+          try {
+            const job = JSON.parse(row.data) as any
+            if (job.r2_audio_key && job.r2_audio_key !== 'CDN_DEAD') {
+              await c.env.IMAGES.delete(job.r2_audio_key).catch(() => {})
+            }
+            await c.env.IMAGES.delete(`covers/${row.id}.jpg`).catch(() => {})
+            await c.env.IMAGES.delete(`covers/${row.id}.png`).catch(() => {})
+            await c.env.IMAGES.delete(`covers/${row.id}-custom.jpg`).catch(() => {})
+            await c.env.IMAGES.delete(`covers/${row.id}-custom.png`).catch(() => {})
+          } catch {}
+        }
+      } catch {}
+    }
     await c.env.DB.prepare(
       `DELETE FROM jobs WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?`
     ).bind(user.id, cutoff).run()
@@ -5165,6 +5206,26 @@ app.post('/api/job/purge', async (c) => {
   const { job_id } = await c.req.json<{ job_id: string }>()
   if (!job_id) return c.json({ error: 'job_id required' }, 400)
   await ensureTable(c.env.DB)
+  // Fetch job data before deleting so we can remove R2 objects
+  const row = await c.env.DB.prepare(
+    `SELECT data FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL`
+  ).bind(job_id, user.id).first<{ data: string }>()
+  if (row && c.env.IMAGES) {
+    try {
+      const job = JSON.parse(row.data) as any
+      const r2Key = job.r2_audio_key
+      // Delete main audio from R2 (beats/{id}.mp3 or beats/{id}.wav)
+      if (r2Key && r2Key !== 'CDN_DEAD') {
+        await c.env.IMAGES.delete(r2Key).catch(() => {})
+      }
+      // Delete any cover/thumbnail image from R2
+      const coverId = job_id
+      await c.env.IMAGES.delete(`covers/${coverId}.jpg`).catch(() => {})
+      await c.env.IMAGES.delete(`covers/${coverId}.png`).catch(() => {})
+      await c.env.IMAGES.delete(`covers/${coverId}-custom.jpg`).catch(() => {})
+      await c.env.IMAGES.delete(`covers/${coverId}-custom.png`).catch(() => {})
+    } catch { /* non-fatal — R2 object may not exist */ }
+  }
   // Only allow purging deleted items
   await c.env.DB.prepare(
     `DELETE FROM jobs WHERE id = ? AND user_id = ? AND deleted_at IS NOT NULL`
@@ -5763,7 +5824,7 @@ app.post('/api/job/extend', async (c) => {
 // POST /api/debug/sonic-extend — raw MusicAPI /sonic/upload-extend test (developer only)
 // Body: any JSON — forwarded directly to MusicAPI and raw response returned
 app.post('/api/debug/sonic-extend', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user || (user.plan !== 'developer' && user.plan !== 'pro')) return c.json({ error: 'Unauthorized' }, 401)
@@ -5780,7 +5841,7 @@ app.post('/api/debug/sonic-extend', async (c) => {
 // GET /api/debug/test-extend?admin_key=EMAIL&job_id=JOB — full live test of /api/job/extend flow
 // Tests: fetch job → get clip_id → call /sonic/create (dry run, no deduction)
 app.get('/api/debug/test-extend', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const adminKey = c.req.query('admin_key')
   const isAdminKey = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
   if (!isAdminKey) return c.json({ error: 'admin_key required' }, 401)
@@ -5851,7 +5912,7 @@ app.get('/api/debug/test-extend', async (c) => {
 // GET /api/debug/sonic-task/:task_id — poll a MusicAPI Sonic task (developer only)
 // Also accepts ?admin_key=<ADMIN_EMAIL> for CLI testing
 app.get('/api/debug/sonic-task/:task_id', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const adminKey = c.req.query('admin_key')
   const isAdminKey = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
   if (!isAdminKey) {
@@ -5871,7 +5932,7 @@ app.get('/api/debug/sonic-task/:task_id', async (c) => {
 // Fires the EXACT same MusicAPI call that /api/job/extend would fire, no credit deduction.
 // Returns full raw response so we can see the actual 500 error body.
 app.get('/api/debug/extend-probe', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const adminKey = c.req.query('admin_key')
   const isAdmin = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
   if (!isAdmin) return c.json({ error: 'admin_key required' }, 401)
@@ -5929,7 +5990,7 @@ app.get('/api/debug/extend-probe', async (c) => {
 // GET /api/debug/producer-task/:task_id — poll a MusicAPI Producer task (developer only)
 // Also accepts ?admin_key=<ADMIN_EMAIL> as an alternative to session auth for CLI testing
 app.get('/api/debug/producer-task/:task_id', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const adminKey = c.req.query('admin_key')
   const isAdminKey = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
   if (!isAdminKey) {
@@ -5949,7 +6010,7 @@ app.get('/api/debug/producer-task/:task_id', async (c) => {
 // POST /api/debug/test-sonic-create — test /sonic/create with continue_clip_id (admin only)
 // Body: { clip_id: string, continue_at?: number }
 app.post('/api/debug/test-sonic-create', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const adminKey = c.req.query('admin_key')
   const token    = getSessionCookie(c.req.raw)
   const user     = token ? await getSessionUser(c.env.DB, token) : null
@@ -5975,7 +6036,7 @@ app.post('/api/debug/test-sonic-create', async (c) => {
 // POST /api/debug/test-cover-url — test /sonic/upload-cover with a direct audio URL (admin only)
 // Body: { url: string, tags?: string, admin_key?: string }
 app.post('/api/debug/test-cover-url', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const body0 = await c.req.json<{ url: string; tags?: string; admin_key?: string; custom_mode?: boolean; prompt?: string; gpt_description_prompt?: string }>()
   const adminKeyParam = body0.admin_key || c.req.query('admin_key')
   const adminKeyOk = adminKeyParam && c.env.ADMIN_EMAIL && adminKeyParam === c.env.ADMIN_EMAIL
@@ -6014,7 +6075,7 @@ app.post('/api/debug/test-cover-url', async (c) => {
 // POST /api/debug/test-cover — test cover_music variants (admin_key or developer session)
 // Body: { clip_id: string }
 app.post('/api/debug/test-cover', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const adminKey = c.req.query('admin_key')
   const isAdminKey = adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL
   if (!isAdminKey) {
@@ -6064,7 +6125,7 @@ app.post('/api/debug/test-cover', async (c) => {
 // POST /api/debug/test-upload — test producer upload with a URL (developer only)
 // Body: { audio_url: string }
 app.post('/api/debug/test-upload', async (c) => {
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user || (user.plan !== 'developer' && user.plan !== 'pro')) return c.json({ error: 'Unauthorized' }, 401)
@@ -6210,7 +6271,7 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
   const isAdmin  = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
                 || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
   if (!isAdmin) return c.json({ error: 'Unauthorized' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
 
   await ensureTable(c.env.DB)
 
@@ -6305,7 +6366,7 @@ app.get('/api/admin/recover-cover-job', async (c) => {
   const isAdmin  = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
                 || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
   if (!isAdmin) return c.json({ error: 'Unauthorized' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
 
   const jobId = c.req.query('job_id')
   if (!jobId) return c.json({ error: 'job_id required' }, 400)
@@ -6399,7 +6460,7 @@ app.get('/api/admin/backfill-clip-ids', async (c) => {
   const isAdmin  = (adminKey && c.env.ADMIN_EMAIL && adminKey === c.env.ADMIN_EMAIL)
                 || (user && (user.plan === 'developer' || (c.env.ADMIN_EMAIL && user.email === c.env.ADMIN_EMAIL)))
   if (!isAdmin) return c.json({ error: 'Unauthorized' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
 
   await ensureTable(c.env.DB)
   // Find all ready jobs that have a stereo_task_id but no clip_id
@@ -7739,7 +7800,7 @@ app.get('/api/admin/elevenlabs-credits', async (c) => {
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
 
   if (!c.env.ELEVENLABS_API_KEY) {
-    return c.json({ error: 'ELEVENLABS_API_KEY not configured', character_limit: 10000, character_count: 0, remaining: 10000 }, 200)
+    return c.json({ error: 'One Shot service not configured', character_limit: 10000, character_count: 0, remaining: 10000 }, 200)
   }
 
   try {
@@ -8063,40 +8124,34 @@ app.post('/api/generate-lyrics', async (c) => {
   return c.json({ lyrics })
 })
 
-// GET /api/upload-presign — return a short-lived R2 presigned PUT URL so the browser
-// can upload large files (WAV, MP3) directly to R2, bypassing the 100 MB Worker body cap.
-// Query params:
-//   prefix  — "extend-uploads" | "remix-uploads"  (default: extend-uploads)
-//   ext     — file extension hint: "wav" | "mp3" | "webm" etc.  (default: wav)
-// Returns: { ok, upload_url, r2_key, expires_in }
-//   upload_url — presigned R2 PUT URL (valid 1 hour)
-//   r2_key     — bare key (without prefix) to pass back to /api/upload-extend-audio or
-//                /api/upload-remix-audio as JSON { r2_key, content_type }
-app.get('/api/upload-presign', async (c) => {
+// POST /api/upload-presign — streaming pass-through upload to R2.
+// The browser POSTs the raw file body here; this Worker streams it directly into R2
+// without buffering the whole file in memory (no arrayBuffer() call).
+// Body: raw file bytes (Content-Type and X-File-Ext headers required)
+// Returns: { ok, r2_key, prefix }
+app.post('/api/upload-presign', async (c) => {
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user  = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
   if (!c.env.IMAGES) return c.json({ error: 'Storage not configured' }, 500)
 
-  const prefix = (c.req.query('prefix') === 'remix-uploads') ? 'remix-uploads' : 'extend-uploads'
-  const ext    = (c.req.query('ext') || 'wav').replace(/[^a-z0-9]/g, '').slice(0, 8) || 'wav'
-  const contentType = ext === 'wav' ? 'audio/wav'
-                    : ext === 'mp3' ? 'audio/mpeg'
-                    : ext === 'webm' ? 'audio/webm'
-                    : 'audio/mpeg'
+  const prefix      = (c.req.header('X-Upload-Prefix') === 'remix-uploads') ? 'remix-uploads' : 'extend-uploads'
+  const ext         = (c.req.header('X-File-Ext') || 'wav').replace(/[^a-z0-9]/g, '').slice(0, 8) || 'wav'
+  const contentType = c.req.header('content-type') || (ext === 'wav' ? 'audio/wav' : 'audio/mpeg')
 
-  // Unique bare key (no prefix) — matches the pattern used by the existing proxy endpoint
-  const bareKey  = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`
-  const fullKey  = `${prefix}/${bareKey}`
+  const bareKey = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`
+  const fullKey = `${prefix}/${bareKey}`
 
-  // R2 createPresignedUrl — 1-hour PUT window
-  const uploadUrl = await (c.env.IMAGES as any).createPresignedUrl('PUT', fullKey, {
-    expiresIn: 3600,
+  // Stream body directly into R2 — avoids loading entire file into Worker memory
+  const body = c.req.raw.body
+  if (!body) return c.json({ error: 'No file body received' }, 400)
+
+  await c.env.IMAGES.put(fullKey, body, {
     httpMetadata: { contentType }
   })
 
-  console.log(`[upload-presign] user=${user.id} prefix=${prefix} bareKey=${bareKey}`)
-  return c.json({ ok: true, upload_url: uploadUrl, r2_key: bareKey, prefix, expires_in: 3600 })
+  console.log(`[upload-presign] user=${user.id} stored=${fullKey}`)
+  return c.json({ ok: true, r2_key: bareKey, prefix })
 })
 
 // GET /api/extend-audio-proxy/:key — serve R2-stored audio files (extend + remix uploads)
@@ -8519,7 +8574,7 @@ app.post('/api/poll-oneshot/:task_id', async (c) => {
 // ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/generate-oneshot-sfx', async (c) => {
   try {
-  if (!c.env.ELEVENLABS_API_KEY) return c.json({ error: 'ElevenLabs not configured' }, 500)
+  if (!c.env.ELEVENLABS_API_KEY) return c.json({ error: 'One Shot Creator is not configured. Please contact support.' }, 500)
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not logged in' }, 401)
@@ -8592,7 +8647,7 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
     if (c.env.DB) {
       await c.env.DB.prepare('UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id=?').bind(SFX_COST, user.id).run()
     }
-    return c.json({ error: `ElevenLabs error ${res.status}: ${errText}` }, 502)
+    return c.json({ error: `One Shot generation failed (${res.status}). Please try again.` }, 502)
   }
 
   // ElevenLabs returns raw audio bytes (MP3)
@@ -9563,7 +9618,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-61'
+const ASSET_VER = '20261003-62'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9673,7 +9728,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.61.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.62.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -10931,9 +10986,7 @@ function generatorPage() {
         </div>
       </div>
       <p style="font-size:.78rem;color:rgba(255,255,255,.35);margin:0">Cover generation usually takes 1–3 minutes</p>
-      <button onclick="dismissCoverOverlay()" style="background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:rgba(255,255,255,.6);padding:9px 22px;border-radius:9px;cursor:pointer;font-size:.82rem;transition:background .15s" onmouseover="this.style.background='rgba(255,255,255,.14)'" onmouseout="this.style.background='rgba(255,255,255,.08)'">
-        <i class="fas fa-times"></i> Dismiss (runs in background)
-      </button>
+
     </div>
 
 
@@ -15176,7 +15229,7 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
   const cronSecret = (c.env as any).CRON_SECRET
   const provided = c.req.query('secret') || c.req.header('Authorization')?.replace('Bearer ', '')
   if (!cronSecret || provided !== cronSecret) return c.json({ error: 'Unauthorized' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'No MUSICAPI_KEY' }, 500)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'Stemforge AI service not configured' }, 500)
 
   await ensureTable(c.env.DB)
 

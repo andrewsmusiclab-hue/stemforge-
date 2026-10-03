@@ -3036,6 +3036,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const { job_id } = await safeJson(res);
       currentJobId = job_id;
+      // Cache the user's lyrics so we can populate the edit tab when job completes
+      var _capturedLyrics = inputs.lyrics || document.getElementById('gen-lyrics')?.value?.trim() || '';
 
       genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...';
 
@@ -3449,14 +3451,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof fetchLibTab === 'function' && document.getElementById('lib-tab-beats')) {
               fetchLibTab('beats');
             }
-            // Show toast confirming library save
-            (function() {
-              var t = document.createElement('div');
-              t.style.cssText = 'position:fixed;bottom:24px;right:24px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:12px 18px;border-radius:12px;font-size:.85rem;font-weight:600;z-index:99999;box-shadow:0 4px 20px rgba(16,185,129,.4);display:flex;align-items:center;gap:8px;max-width:280px';
-              t.innerHTML = '<i class="fas fa-check-circle" style="font-size:1.1rem;flex-shrink:0"></i><span>Beats saved to your library!</span>';
-              document.body.appendChild(t);
-              setTimeout(function() { t.style.transition='opacity .4s'; t.style.opacity='0'; setTimeout(function(){ t.remove(); }, 400); }, 4000);
-            })();
+            // Issue 3: Persist lyrics into cached job data so the Edit tab shows them
+            if (_capturedLyrics && job.id) {
+              if (!window._sfProjects) window._sfProjects = {};
+              if (!window._sfProjects[job.id]) window._sfProjects[job.id] = job;
+              window._sfProjects[job.id].user_lyrics = _capturedLyrics;
+              // Also patch the live job object so openEditTab sees it immediately
+              job.user_lyrics = job.user_lyrics || _capturedLyrics;
+            }
+            // Show persistent completion banner — stays until user dismisses or navigates
+            showCompletionBanner('<i class="fas fa-music" style="margin-right:4px"></i>Beat ready', 'beats');
             // Refresh sidebar points counter to reflect the new usage
             fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
               if (!user) return;
@@ -4635,6 +4639,8 @@ window.selectBarPreset = function(btn, bars) {
                     aud.src = job.stereo_url;
                     mini.style.display = 'block';
                   }
+                  // Show persistent completion banner
+                  showCompletionBanner('<i class="fas fa-expand-arrows-alt" style="margin-right:4px"></i>Extended track ready', 'extended');
                 } else if (job.status === 'error') {
                   reloadExtendedTab();
                 } else {
@@ -4892,6 +4898,9 @@ window.generateOneshotSfx = async function() {
 
     // Invalidate oneshots library tab cache so new shot appears
     if (window._libLoaded) window._libLoaded.oneshots = false;
+
+    // Show persistent completion banner
+    showCompletionBanner('<i class="fas fa-bolt" style="margin-right:4px"></i>One Shot ready', 'oneshots');
 
     // Refresh sidebar points
     fetch('/api/auth/me', { cache: 'no-store' }).then(r => r.json()).then(({ user }) => {
@@ -5180,6 +5189,61 @@ function showSubToast(html, bg, shadow) {
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 4500);
 }
+
+// ── Persistent "Go to Library" completion banner ─────────────────────
+// Stays on screen until user clicks X or navigates away.
+// label: icon + label text. tab: library tab to open ('beats','remixes','extended','covers','oneshots')
+window._sfCompletionBanner = null;
+function showCompletionBanner(label, tab) {
+  // Remove any existing banner first
+  if (window._sfCompletionBanner && window._sfCompletionBanner.parentNode) {
+    window._sfCompletionBanner.remove();
+  }
+  // Ensure animation keyframe
+  if (!document.getElementById('sf-banner-style')) {
+    var sty = document.createElement('style');
+    sty.id = 'sf-banner-style';
+    sty.textContent =
+      '@keyframes sfBannerIn{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}' +
+      '.sf-completion-banner{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);' +
+      'background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border-radius:16px;' +
+      'padding:14px 20px;display:flex;align-items:center;gap:12px;z-index:99999;' +
+      'box-shadow:0 8px 32px rgba(168,85,247,.55);animation:sfBannerIn .35s ease;' +
+      'font-weight:600;font-size:.88rem;white-space:nowrap;min-width:260px}';
+    document.head.appendChild(sty);
+  }
+  var banner = document.createElement('div');
+  banner.className = 'sf-completion-banner';
+  banner.id = 'sf-completion-banner';
+  var libHref = '/dashboard';
+  if (tab) libHref = '/generator#' + tab;
+  banner.innerHTML =
+    '<i class="fas fa-check-circle" style="font-size:1.1rem;flex-shrink:0;color:#a7f3d0"></i>' +
+    '<span style="flex:1">' + label + ' — <strong>Track saved to library!</strong></span>' +
+    '<a href="' + libHref + '" style="background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:10px;' +
+    'padding:6px 14px;font-size:.82rem;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:5px;margin-left:4px">' +
+    '<i class="fas fa-music"></i> Go to Library</a>' +
+    '<button onclick="window._sfDismissCompletionBanner()" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:8px;' +
+    'width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:.9rem;flex-shrink:0;margin-left:2px" ' +
+    'title="Dismiss">&#10005;</button>';
+  document.body.appendChild(banner);
+  window._sfCompletionBanner = banner;
+  // Auto-hide on navigation (hash change or page unload)
+  var _sfBannerNavHandler = function() { window._sfDismissCompletionBanner(); };
+  window.addEventListener('hashchange', _sfBannerNavHandler, { once: true });
+  window.addEventListener('popstate',   _sfBannerNavHandler, { once: true });
+  window.addEventListener('beforeunload', _sfBannerNavHandler, { once: true });
+  banner._sfNavHandler = _sfBannerNavHandler;
+}
+window._sfDismissCompletionBanner = function() {
+  var b = window._sfCompletionBanner || document.getElementById('sf-completion-banner');
+  if (b && b.parentNode) {
+    b.style.transition = 'opacity .3s';
+    b.style.opacity = '0';
+    setTimeout(function() { if (b.parentNode) b.remove(); }, 300);
+  }
+  window._sfCompletionBanner = null;
+};
 
 // ══════════════════════════════════════════════════════════════════════
 // UNIVERSAL DOWNLOAD PROGRESS BAR
@@ -7686,27 +7750,28 @@ window.renderEditInstrumentPills = function (bp) {
     var ext = (name.split('.').pop() || 'wav').toLowerCase().replace(/[^a-z0-9]/g, '') || 'wav';
     var contentType = file.type || (ext === 'wav' ? 'audio/wav' : 'audio/mpeg');
 
-    // Step 1: get presigned PUT URL from our Worker
-    fetch('/api/upload-presign?prefix=extend-uploads&ext=' + encodeURIComponent(ext), { credentials: 'include' })
+    // Step 1: stream file directly to R2 via Worker (no arrayBuffer — avoids memory cap)
+    // Step 2: Worker returns r2_key, then we notify upload-extend-audio to kick off Sonic
+    fetch('/api/upload-presign', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': contentType,
+        'X-File-Ext': ext,
+        'X-Upload-Prefix': 'extend-uploads'
+      },
+      body: file,
+      duplex: 'half'  // required for streaming request body in modern browsers
+    })
       .then(function(r) { return r.json(); })
       .then(function(presign) {
-        if (!presign.ok || !presign.upload_url) throw new Error(presign.error || 'Could not get upload URL');
-        var r2Key = presign.r2_key;
-
-        // Step 2: PUT file directly to R2 — no Worker body limit
-        return fetch(presign.upload_url, {
-          method: 'PUT',
-          headers: { 'Content-Type': contentType },
-          body: file
-        }).then(function(putRes) {
-          if (!putRes.ok) throw new Error('Direct upload to storage failed (' + putRes.status + ')');
-          // Step 3: tell Worker the file is in R2, kick off Sonic processing
-          return fetch('/api/upload-extend-audio', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ r2_key: r2Key, content_type: contentType, prefix: 'extend-uploads' })
-          });
+        if (!presign.ok || !presign.r2_key) throw new Error(presign.error || 'Upload failed');
+        // Step 2: tell Worker the file is in R2, kick off Sonic processing
+        return fetch('/api/upload-extend-audio', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ r2_key: presign.r2_key, content_type: contentType, prefix: 'extend-uploads' })
         });
       })
       .then(function(r) { return r.json(); })
@@ -8479,6 +8544,9 @@ window.renderEditInstrumentPills = function (bp) {
 
             // Hard-reload the extended library tab so the new card appears
             reloadExtendedTab();
+
+            // Show persistent completion banner
+            showCompletionBanner('<i class="fas fa-expand-arrows-alt" style="margin-right:4px"></i>Extended track ready', 'extended');
 
           } else if (job.status === 'error') {
             if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
@@ -9330,23 +9398,22 @@ function showProUpgradeModal(featureName) {
     var mp3File = new File([mp3Data], mp3BaseName + '.mp3', { type: 'audio/mpeg' });
 
     if (statusEl) statusEl.textContent = 'Uploading\u2026';
-    // Presign path: PUT directly to R2, then notify Worker with r2_key
-    fetch('/api/upload-presign?prefix=remix-uploads&ext=mp3', { credentials: 'include' })
+    // Stream converted MP3 directly to R2 via Worker, then notify remix endpoint
+    fetch('/api/upload-presign', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'audio/mpeg', 'X-File-Ext': 'mp3', 'X-Upload-Prefix': 'remix-uploads' },
+      body: mp3File,
+      duplex: 'half'
+    })
       .then(function(r) { return r.json(); })
       .then(function(presign) {
-        if (!presign.ok || !presign.upload_url) throw new Error(presign.error || 'Could not get upload URL');
-        return fetch(presign.upload_url, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'audio/mpeg' },
-          body: mp3File
-        }).then(function(putRes) {
-          if (!putRes.ok) throw new Error('Direct upload to storage failed (' + putRes.status + ')');
-          return fetch('/api/upload-remix-audio', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ r2_key: presign.r2_key, prefix: 'remix-uploads' })
-          });
+        if (!presign.ok || !presign.r2_key) throw new Error(presign.error || 'Upload failed');
+        return fetch('/api/upload-remix-audio', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ r2_key: presign.r2_key, prefix: 'remix-uploads' })
         });
       })
       .then(function(r) { return r.json(); })
@@ -9383,23 +9450,22 @@ function showProUpgradeModal(featureName) {
     var isSmallMp3 = !isWav && file.size <= REMIX_MAX_BYTES;
 
     if (isSmallMp3) {
-      // Small MP3 (<=400KB) — presign + PUT directly to R2
-      fetch('/api/upload-presign?prefix=remix-uploads&ext=mp3', { credentials: 'include' })
+      // Small MP3 (<=400KB) — stream body directly to /api/upload-presign → R2
+      fetch('/api/upload-presign', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': file.type || 'audio/mpeg', 'X-File-Ext': 'mp3', 'X-Upload-Prefix': 'remix-uploads' },
+        body: file,
+        duplex: 'half'
+      })
         .then(function(r) { return r.json(); })
         .then(function(presign) {
-          if (!presign.ok || !presign.upload_url) throw new Error(presign.error || 'Could not get upload URL');
-          return fetch(presign.upload_url, {
-            method: 'PUT',
-            headers: { 'Content-Type': file.type || 'audio/mpeg' },
-            body: file
-          }).then(function(putRes) {
-            if (!putRes.ok) throw new Error('Direct upload to storage failed (' + putRes.status + ')');
-            return fetch('/api/upload-remix-audio', {
-              method: 'POST',
-              credentials: 'include',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ r2_key: presign.r2_key, prefix: 'remix-uploads' })
-            });
+          if (!presign.ok || !presign.r2_key) throw new Error(presign.error || 'Upload failed');
+          return fetch('/api/upload-remix-audio', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ r2_key: presign.r2_key, prefix: 'remix-uploads' })
           });
         })
         .then(function(r) { return r.json(); })
@@ -9636,6 +9702,9 @@ function showProUpgradeModal(featureName) {
 
                 // Mark remixes tab cache stale so it reloads next time user opens it
                 if (window._libLoaded) window._libLoaded.remixes = false;
+
+                // Show persistent completion banner
+                showCompletionBanner('<i class="fas fa-magic" style="margin-right:4px"></i>Remix ready', 'remixes');
 
               } else if (pd.status === 'error') {
                 clearInterval(pollInterval);
@@ -10274,33 +10343,9 @@ window.toggleRefDropdown = function() {
           _setCoverMsg('🎉 Your cover is ready!');
           // Invalidate covers cache so next tab switch re-fetches
           if (typeof window._libLoaded !== 'undefined') window._libLoaded.covers = false;
-          // Show toast notification so user knows cover is done regardless of where they are
-          (function() {
-            var toast = document.createElement('div');
-            toast.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-size:.88rem;font-weight:600;padding:12px 24px;border-radius:24px;z-index:99999;box-shadow:0 8px 32px rgba(168,85,247,.5);display:flex;align-items:center;gap:10px;white-space:nowrap;pointer-events:none;animation:fadeInUp .35s ease';
-            toast.innerHTML = '<i class="fas fa-check-circle"></i> Cover is ready! Going to your library…';
-            // ensure animation keyframe exists
-            if (!document.getElementById('sf-toast-style')) {
-              var sty = document.createElement('style');
-              sty.id = 'sf-toast-style';
-              sty.textContent = '@keyframes fadeInUp{from{opacity:0;transform:translate(-50%,16px)}to{opacity:1;transform:translate(-50%,0)}}';
-              document.head.appendChild(sty);
-            }
-            document.body.appendChild(toast);
-            setTimeout(function() { toast.style.opacity = '0'; toast.style.transition = 'opacity .4s'; setTimeout(function() { toast.remove(); }, 400); }, 3500);
-          })();
-          // Navigate to library covers tab after 2s — works from any page
-          setTimeout(function() {
-            window.dismissCoverOverlay();
-            var isOnGenerator = window.location.pathname === '/generator' || window.location.pathname === '/dashboard';
-            if (isOnGenerator && window.navigate && window.switchLibTab) {
-              // Already on the page with the library panel — just switch tab
-              window.navigate('library');
-              setTimeout(function() { window.switchLibTab('covers'); }, 300);
-            } else {
-              window.location.href = '/generator#covers';
-            }
-          }, 2000);
+          // Dismiss overlay, show persistent banner — user must dismiss or navigate away
+          window.dismissCoverOverlay();
+          showCompletionBanner('<i class="fas fa-record-vinyl" style="margin-right:4px"></i>Cover ready', 'covers');
         } else if (data.status === 'error') {
           // Generation failed — show the exact error message from Suno/MusicAPI
           clearInterval(_coverPollTimer);
