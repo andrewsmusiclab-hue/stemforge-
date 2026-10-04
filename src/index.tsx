@@ -2356,12 +2356,18 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
       }
 
       if (!clip) {
-        if (ageMs > FIFTEEN_MIN) {
+        // No clip returned — either task expired at MusicAPI or never started
+        // Extend jobs get a longer window (30 min) since chaining takes longer
+        const isExtend = job.extend_task_type === 'song_extend'
+        const timeoutMs = isExtend ? 30 * 60 * 1000 : FIFTEEN_MIN
+        if (ageMs > timeoutMs) {
           job.status = 'error'
-          job.error  = 'Stemforge generation timed out after 15 minutes'
+          job.error  = isExtend
+            ? 'Song Extend expired on music server — 20 points refunded.'
+            : 'Stemforge generation timed out — 20 points refunded.'
           await setJob(env.DB, job)
           if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
-          console.log(`[lazy-rescue] timed_out job=${row.id} age_min=${Math.round(ageMs/60000)}`)
+          console.log(`[lazy-rescue] expired_refunded job=${row.id} isExtend=${isExtend} age_min=${Math.round(ageMs/60000)}`)
         }
         continue
       }
@@ -6428,12 +6434,25 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
       const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
       const clip = clips[0]
 
+      // Helper: refund 20 pts to the job owner
+      const refundUser = async () => {
+        if (row.user_id) {
+          try {
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+          } catch (e: any) { console.warn(`[rescue] refund failed user=${row.user_id}:`, e?.message) }
+        }
+      }
+
       if (!clip) {
-        // No clip data — likely expired task; mark as error
+        // No clip data — task expired at MusicAPI; refund and mark error
+        const isExtend = job.extend_task_type === 'song_extend'
         job.status = 'error'
-        job.error = 'Stemforge task expired or not found'
+        job.error = isExtend
+          ? 'Song Extend expired on music server — 20 points refunded.'
+          : 'Stemforge task expired — 20 points refunded.'
         await setJob(c.env.DB, job)
-        results.push({ id: row.id, title: job.title, action: 'marked_error', reason: 'no_clip_data', task_id: job.stereo_task_id })
+        await refundUser()
+        results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: 'no_clip_data', task_id: job.stereo_task_id })
         continue
       }
 
@@ -6453,22 +6472,27 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
           results.push({ id: row.id, title: job.title, action: 'marked_ready', url_prefix: url.slice(0, 60), task_id: job.stereo_task_id })
         } else {
           job.status = 'error'
-          job.error = 'Task succeeded but no audio_url'
+          job.error = 'Task succeeded but no audio_url — 20 points refunded.'
           await setJob(c.env.DB, job)
-          results.push({ id: row.id, title: job.title, action: 'marked_error', reason: 'succeeded_no_url', task_id: job.stereo_task_id })
+          await refundUser()
+          results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: 'succeeded_no_url', task_id: job.stereo_task_id })
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error = clip.error || 'Stemforge generation failed'
+        job.error = 'Generation failed on music server — 20 points refunded.'
         await setJob(c.env.DB, job)
-        results.push({ id: row.id, title: job.title, action: 'marked_error', reason: clip.error || 'task_failed', task_id: job.stereo_task_id })
+        await refundUser()
+        results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: clip.error || 'task_failed', task_id: job.stereo_task_id })
       } else {
-        // Still running or in unknown state — age it out if > 30 min
-        if (ageMs > 30 * 60 * 1000) {
+        // Still running — age out after 30 min for regular jobs, 60 min for extend (chaining takes longer)
+        const isExtend = job.extend_task_type === 'song_extend'
+        const timeoutMs = isExtend ? 60 * 60 * 1000 : 30 * 60 * 1000
+        if (ageMs > timeoutMs) {
           job.status = 'error'
-          job.error = `Timed out after ${Math.round(ageMs / 60000)} minutes (state: ${clip.state || 'unknown'})`
+          job.error = `Timed out after ${Math.round(ageMs / 60000)} minutes — 20 points refunded.`
           await setJob(c.env.DB, job)
-          results.push({ id: row.id, title: job.title, action: 'timed_out', state: clip.state, task_id: job.stereo_task_id })
+          await refundUser()
+          results.push({ id: row.id, title: job.title, action: 'timed_out_refunded', state: clip.state, task_id: job.stereo_task_id })
         } else {
           results.push({ id: row.id, title: job.title, action: 'still_running', state: clip.state, age_min: Math.round(ageMs / 60000), task_id: job.stereo_task_id })
         }
@@ -9808,7 +9832,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261003-67'
+const ASSET_VER = '20261004-68'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9918,7 +9942,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.67.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.68.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
