@@ -7648,6 +7648,162 @@ app.post('/api/admin/publish', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  DEPLOY SYSTEM
+//  POST /api/admin/deploy/staging  — trigger GitHub Action: push current code to staging
+//  POST /api/admin/deploy/live     — trigger GitHub Action: publish staging → main → live
+//  GET  /api/admin/deploy/status   — latest deployment status for staging + production
+// ═══════════════════════════════════════════════════════════════
+
+const GH_REPO = 'andrewsmusiclab-hue/stemforge-'
+
+// Helper: trigger a GitHub Actions workflow via repository_dispatch
+async function triggerGitHubWorkflow(env: Bindings, eventType: string, payload: Record<string,string> = {}): Promise<{ok:boolean, error?:string}> {
+  const token = (env as any).GITHUB_TOKEN
+  if (!token) return { ok: false, error: 'GITHUB_TOKEN secret not configured' }
+  const res = await fetch(`https://api.github.com/repos/${GH_REPO}/dispatches`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      'User-Agent': 'StemForge-Admin/1.0',
+    },
+    body: JSON.stringify({ event_type: eventType, client_payload: payload })
+  })
+  if (res.status === 204) return { ok: true }
+  const body = await res.text().catch(() => '')
+  return { ok: false, error: `GitHub API ${res.status}: ${body.slice(0,200)}` }
+}
+
+// GET /api/admin/deploy/status — staging + production deploy status
+app.get('/api/admin/deploy/status', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const ghToken = (c.env as any).GITHUB_TOKEN
+  if (!ghToken) return c.json({ staging: null, production: null, error: 'GITHUB_TOKEN not set' })
+
+  // Fetch latest runs for both workflows
+  async function latestRun(workflow: string) {
+    try {
+      const res = await fetch(`https://api.github.com/repos/${GH_REPO}/actions/workflows/${workflow}/runs?per_page=1`, {
+        headers: {
+          'Authorization': `Bearer ${ghToken}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'StemForge-Admin/1.0',
+        }
+      })
+      const d = await res.json() as any
+      const run = d?.workflow_runs?.[0]
+      if (!run) return null
+      return {
+        id: run.id,
+        status: run.status,        // queued | in_progress | completed
+        conclusion: run.conclusion, // success | failure | cancelled | null
+        started_at: run.created_at,
+        updated_at: run.updated_at,
+        url: run.html_url,
+      }
+    } catch { return null }
+  }
+
+  const [staging, production] = await Promise.all([
+    latestRun('deploy-staging.yml'),
+    latestRun('deploy-production.yml'),
+  ])
+  return c.json({ staging, production })
+})
+
+// POST /api/admin/deploy/staging — push current code to staging branch
+app.post('/api/admin/deploy/staging', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  // Trigger the staging workflow
+  const result = await triggerGitHubWorkflow(c.env as any, 'deploy-to-staging', {
+    triggered_by: user?.email || 'admin',
+    timestamp: new Date().toISOString(),
+  })
+  return c.json(result, result.ok ? 200 : 500)
+})
+
+// POST /api/admin/deploy/live — promote staging → main → live (the Publish button)
+app.post('/api/admin/deploy/live', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const { reason } = await c.req.json<{ reason?: string }>().catch(() => ({ reason: '' }))
+
+  // 1. Fast-forward main to match staging via GitHub Merge API
+  const ghToken = (c.env as any).GITHUB_TOKEN
+  if (!ghToken) return c.json({ ok: false, error: 'GITHUB_TOKEN secret not configured — add it in Cloudflare Pages secrets' }, 500)
+
+  // Get staging branch SHA
+  const branchRes = await fetch(`https://api.github.com/repos/${GH_REPO}/branches/staging`, {
+    headers: {
+      'Authorization': `Bearer ${ghToken}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'StemForge-Admin/1.0',
+    }
+  })
+  if (!branchRes.ok) {
+    const t = await branchRes.text()
+    return c.json({ ok: false, error: `Could not read staging branch: ${branchRes.status} ${t.slice(0,200)}` }, 500)
+  }
+  const branchData = await branchRes.json() as any
+  const stagingSha = branchData?.commit?.sha
+  if (!stagingSha) return c.json({ ok: false, error: 'Could not read staging branch SHA' }, 500)
+
+  // Fast-forward main to staging SHA
+  const mergeRes = await fetch(`https://api.github.com/repos/${GH_REPO}/git/refs/heads/main`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${ghToken}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+      'User-Agent': 'StemForge-Admin/1.0',
+    },
+    body: JSON.stringify({ sha: stagingSha, force: false })
+  })
+  if (!mergeRes.ok) {
+    const t = await mergeRes.text()
+    return c.json({ ok: false, error: `Could not update main branch: ${mergeRes.status} ${t.slice(0,200)}` }, 500)
+  }
+
+  // 2. Trigger the production deploy workflow
+  const deployResult = await triggerGitHubWorkflow(c.env as any, 'publish-to-live', {
+    triggered_by: user?.email || 'admin',
+    reason: reason || 'Published from admin panel',
+    staging_sha: stagingSha,
+    timestamp: new Date().toISOString(),
+  })
+
+  if (!deployResult.ok) {
+    return c.json({ ok: false, error: `main updated (SHA ${stagingSha}) but workflow trigger failed: ${deployResult.error}` }, 500)
+  }
+
+  // Log the publish in site_version for audit trail
+  await c.env.DB.prepare(
+    `INSERT OR REPLACE INTO site_version (key, value, updated_at) VALUES ('last_publish_sha', ?, ?)`
+  ).bind(stagingSha, Date.now()).run()
+  await c.env.DB.prepare(
+    `INSERT OR REPLACE INTO site_version (key, value, updated_at) VALUES ('last_publish_by', ?, ?)`
+  ).bind(user?.email || 'admin', Date.now()).run()
+
+  return c.json({ ok: true, sha: stagingSha, message: 'main updated and production deploy triggered' })
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  SITE DRAFT / PUBLISH SYSTEM
 //  Admin edits draft config → previews at /preview → publishes to live
 // ═══════════════════════════════════════════════════════════════
@@ -9966,7 +10122,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261012-71'
+const ASSET_VER = '20261012-72'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14188,7 +14344,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="stuckjobs" onclick="adminTab('stuckjobs')" id="stuck-jobs-tab-btn"><i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs</button>
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
-      <button class="admin-tab" data-tab="publish" onclick="adminTab('publish');ppLoad()" id="pp-tab-btn"><i class="fas fa-rocket" style="color:#10b981"></i> Preview &amp; Publish <span id="pp-badge" style="display:none;background:#f59e0b;color:#000;border-radius:99px;padding:1px 7px;font-size:.72rem;font-weight:800;margin-left:4px">!</span></button>
+      <button class="admin-tab" data-tab="publish" onclick="adminTab('publish')" id="pp-tab-btn"><i class="fas fa-rocket" style="color:#10b981"></i> Preview &amp; Publish <span id="pp-badge" style="display:none;background:#f59e0b;color:#000;border-radius:99px;padding:1px 7px;font-size:.72rem;font-weight:800;margin-left:4px">!</span></button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -14726,210 +14882,143 @@ function adminPage(user: User) {
     <!-- ── PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
     <div id="admin-tab-publish" style="display:none">
 
-      <!-- Status bar -->
-      <div id="pp-status-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:22px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px">
-        <div style="flex:1;min-width:180px">
-          <div style="font-size:.75rem;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:1px">Status</div>
-          <div id="pp-status-pill" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.3)">
-            <span style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block"></span>
-            <span id="pp-status-text">Live — up to date</span>
-          </div>
-        </div>
-        <div style="font-size:.78rem;color:var(--muted)">
-          Last published: <strong id="pp-last-pub" style="color:var(--text)">—</strong>
-        </div>
-        <div style="display:flex;gap:8px;margin-left:auto">
-          <button onclick="ppOpenPreview()" id="pp-preview-btn"
-            style="padding:8px 16px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.35);border-radius:8px;color:#4e9fff;font-size:.85rem;font-weight:600;cursor:pointer">
-            <i class="fas fa-eye" style="margin-right:6px"></i>Preview Live Site
-          </button>
-          <button onclick="ppPublish()" id="pp-publish-btn"
-            style="padding:8px 20px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:8px;color:#fff;font-size:.85rem;font-weight:700;cursor:pointer;opacity:.4;pointer-events:none">
-            <i class="fas fa-rocket" style="margin-right:6px"></i>Publish to Live
-          </button>
+      <!-- How it works explainer -->
+      <div style="background:rgba(78,159,255,.06);border:1px solid rgba(78,159,255,.18);border-radius:12px;padding:14px 18px;margin-bottom:20px;display:flex;gap:14px;align-items:flex-start">
+        <i class="fas fa-info-circle" style="color:#4e9fff;margin-top:2px;flex-shrink:0"></i>
+        <div style="font-size:.82rem;color:#94a3b8;line-height:1.7">
+          <strong style="color:#e2e8f0">How this works:</strong>
+          All your code changes go to <strong style="color:#4e9fff">Staging</strong> first — users never see them.
+          Review staging, then click <strong style="color:#10b981">Publish to Live</strong> to make changes visible to everyone.
+          <br><strong style="color:#f59e0b">⚠️ One-time setup required:</strong> Add a <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">GITHUB_TOKEN</code> secret to Cloudflare Pages (both projects) to enable the Publish button.
         </div>
       </div>
 
-      <!-- Two-column layout: editor left, preview right -->
-      <div style="display:grid;grid-template-columns:400px 1fr;gap:20px;align-items:start">
+      <!-- Deploy pipeline: Staging → Live -->
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:start;margin-bottom:24px">
 
-        <!-- LEFT: editor panels -->
-        <div style="display:flex;flex-direction:column;gap:16px">
-
-          <!-- Announcement Banner -->
-          <div class="pp-card">
-            <div class="pp-card-header">
-              <i class="fas fa-bullhorn" style="color:#f59e0b"></i>
-              <span>Announcement Banner</span>
-              <label class="pp-toggle" style="margin-left:auto">
-                <input type="checkbox" id="pp-ann-enabled" onchange="ppMarkDirty()">
-                <span class="pp-toggle-slider"></span>
-              </label>
+        <!-- STAGING card -->
+        <div class="pp-card" style="border-color:rgba(78,159,255,.3)">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-flask" style="color:#4e9fff"></i>
             </div>
-            <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
-              <div>
-                <label class="pp-label">Banner text</label>
-                <input type="text" id="pp-ann-text" oninput="ppMarkDirty();ppUpdatePreview()" placeholder="e.g. 🎉 AI Cover Songs are now live!"
-                  class="pp-input"/>
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                <div>
-                  <label class="pp-label">Background color</label>
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <input type="color" id="pp-ann-color" oninput="ppMarkDirty();ppUpdatePreview()" value="#1d4ed8"
-                      style="width:36px;height:36px;border:none;border-radius:6px;cursor:pointer;background:none;padding:0"/>
-                    <input type="text" id="pp-ann-color-hex" oninput="ppSyncColor(this)" placeholder="#1d4ed8"
-                      class="pp-input" style="flex:1;font-family:monospace"/>
-                  </div>
-                </div>
-              </div>
-              <div>
-                <label class="pp-label">Link URL <span style="color:var(--muted);font-weight:400">(optional)</span></label>
-                <input type="text" id="pp-ann-link" oninput="ppMarkDirty();ppUpdatePreview()" placeholder="https://stemforge.studio/feature"
-                  class="pp-input"/>
-              </div>
-              <div>
-                <label class="pp-label">Link text</label>
-                <input type="text" id="pp-ann-link-text" oninput="ppMarkDirty();ppUpdatePreview()" placeholder="Learn more →"
-                  class="pp-input"/>
-              </div>
-            </div>
-          </div>
-
-          <!-- Hero Overrides -->
-          <div class="pp-card">
-            <div class="pp-card-header">
-              <i class="fas fa-heading" style="color:#a78bfa"></i>
-              <span>Hero Text Overrides</span>
-            </div>
-            <p style="font-size:.78rem;color:var(--muted);margin:4px 0 14px;line-height:1.5">Leave blank to use the built-in default text.</p>
-            <div style="display:flex;flex-direction:column;gap:10px">
-              <div>
-                <label class="pp-label">Headline</label>
-                <input type="text" id="pp-hero-headline" oninput="ppMarkDirty()" placeholder="Beat with AI — Release with Confidence"
-                  class="pp-input"/>
-              </div>
-              <div>
-                <label class="pp-label">Subline</label>
-                <input type="text" id="pp-hero-subline" oninput="ppMarkDirty()" placeholder="Stems, remixes, AI covers…"
-                  class="pp-input"/>
-              </div>
-              <div>
-                <label class="pp-label">CTA button text</label>
-                <input type="text" id="pp-hero-cta" oninput="ppMarkDirty()" placeholder="Start Free"
-                  class="pp-input"/>
-              </div>
-            </div>
-          </div>
-
-          <!-- Feature Flags -->
-          <div class="pp-card">
-            <div class="pp-card-header">
-              <i class="fas fa-toggle-on" style="color:#10b981"></i>
-              <span>Feature Flags</span>
-            </div>
-            <p style="font-size:.78rem;color:var(--muted);margin:4px 0 14px;line-height:1.5">Toggle features on/off sitewide. Off = hidden from users immediately on publish.</p>
-            <div style="display:flex;flex-direction:column;gap:12px">
-              <div style="display:flex;align-items:center;justify-content:space-between">
-                <div>
-                  <div style="font-size:.88rem;font-weight:600">AI Cover Songs</div>
-                  <div style="font-size:.75rem;color:var(--muted)">Show Cover Song feature on Create page</div>
-                </div>
-                <label class="pp-toggle"><input type="checkbox" id="pp-feat-covers" onchange="ppMarkDirty()" checked><span class="pp-toggle-slider"></span></label>
-              </div>
-              <div style="display:flex;align-items:center;justify-content:space-between">
-                <div>
-                  <div style="font-size:.88rem;font-weight:600">Remix / Beat Stem</div>
-                  <div style="font-size:.75rem;color:var(--muted)">Show Remix feature on Create page</div>
-                </div>
-                <label class="pp-toggle"><input type="checkbox" id="pp-feat-remix" onchange="ppMarkDirty()" checked><span class="pp-toggle-slider"></span></label>
-              </div>
-              <div style="display:flex;align-items:center;justify-content:space-between">
-                <div>
-                  <div style="font-size:.88rem;font-weight:600">Song Extend</div>
-                  <div style="font-size:.75rem;color:var(--muted)">Show Extend feature on Create page</div>
-                </div>
-                <label class="pp-toggle"><input type="checkbox" id="pp-feat-extend" onchange="ppMarkDirty()" checked><span class="pp-toggle-slider"></span></label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Maintenance Mode -->
-          <div class="pp-card" style="border-color:rgba(239,68,68,.25)">
-            <div class="pp-card-header">
-              <i class="fas fa-hard-hat" style="color:#ef4444"></i>
-              <span>Maintenance Mode</span>
-              <label class="pp-toggle" style="margin-left:auto">
-                <input type="checkbox" id="pp-maint-enabled" onchange="ppMarkDirty()">
-                <span class="pp-toggle-slider pp-toggle-slider--red"></span>
-              </label>
-            </div>
-            <p style="font-size:.78rem;color:var(--muted);margin:8px 0 12px;line-height:1.5">
-              When on, a banner warning is shown to all users. The site still works — this is just a heads-up message.
-            </p>
             <div>
-              <label class="pp-label">Maintenance message</label>
-              <textarea id="pp-maint-msg" oninput="ppMarkDirty()" rows="2" placeholder="We're doing some maintenance. Back shortly!"
-                class="pp-input" style="resize:vertical"></textarea>
+              <div style="font-size:.95rem;font-weight:700">Staging</div>
+              <div style="font-size:.73rem;color:var(--muted)">Your private preview — only you see this</div>
             </div>
+            <div id="pp-staging-status-dot" style="margin-left:auto;width:10px;height:10px;border-radius:50%;background:#334155"></div>
           </div>
-
-          <!-- Custom Banner HTML -->
-          <div class="pp-card">
-            <div class="pp-card-header">
-              <i class="fas fa-code" style="color:#4e9fff"></i>
-              <span>Custom Banner HTML</span>
-            </div>
-            <p style="font-size:.78rem;color:var(--muted);margin:4px 0 12px;line-height:1.5">
-              Inject a custom HTML block above the main nav. Leave blank to disable. Use for promos, holiday banners, etc.
-            </p>
-            <textarea id="pp-custom-html" oninput="ppMarkDirty()" rows="4"
-              placeholder='&lt;div style="background:#7c3aed;color:#fff;text-align:center;padding:10px"&gt;🎉 Holiday Sale!&lt;/div&gt;'
-              class="pp-input" style="font-family:monospace;font-size:.78rem;resize:vertical"></textarea>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Latest deploy:</div>
+          <div id="pp-staging-run" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.78rem;min-height:48px">
+            <span style="color:var(--muted)">Loading…</span>
           </div>
-
-          <!-- Action row -->
-          <div style="display:flex;gap:10px;flex-wrap:wrap">
-            <button onclick="ppSaveDraft()" id="pp-save-btn"
-              style="flex:1;padding:10px 20px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.35);border-radius:8px;color:#4e9fff;font-size:.88rem;font-weight:700;cursor:pointer">
-              <i class="fas fa-save" style="margin-right:6px"></i>Save Draft
-            </button>
-            <button onclick="ppPublish()" id="pp-publish-btn2"
-              style="flex:1;padding:10px 20px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:8px;color:#fff;font-size:.88rem;font-weight:700;cursor:pointer;opacity:.4;pointer-events:none">
-              <i class="fas fa-rocket" style="margin-right:6px"></i>Publish to Live
-            </button>
-            <button onclick="ppResetDraft()" title="Discard draft changes and revert to current live config"
-              style="padding:10px 14px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;color:#f87171;font-size:.88rem;cursor:pointer">
-              <i class="fas fa-undo"></i>
-            </button>
+          <div style="margin-top:14px;display:flex;gap:8px">
+            <a href="https://stemforge-staging-4q9.pages.dev" target="_blank" rel="noopener"
+              style="flex:1;display:block;text-align:center;padding:9px 14px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.3);border-radius:8px;color:#4e9fff;font-size:.83rem;font-weight:600;text-decoration:none">
+              <i class="fas fa-external-link-alt" style="margin-right:5px"></i>Open Staging
+            </a>
           </div>
-          <div id="pp-msg" style="display:none;padding:10px 14px;border-radius:8px;font-size:.83rem;font-weight:600"></div>
         </div>
 
-        <!-- RIGHT: live preview iframe -->
-        <div style="position:sticky;top:20px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <div style="font-size:.82rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1px"><i class="fas fa-desktop" style="margin-right:5px"></i>Preview — Draft View</div>
-            <div style="display:flex;gap:6px">
-              <button onclick="ppSetViewport('desktop')" id="pp-vp-desktop"
-                style="padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600">
-                <i class="fas fa-desktop"></i> Desktop
-              </button>
-              <button onclick="ppSetViewport('mobile')" id="pp-vp-mobile"
-                style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
-                <i class="fas fa-mobile-alt"></i> Mobile
-              </button>
+        <!-- Arrow -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding-top:60px">
+          <div style="font-size:.72rem;color:var(--muted);text-align:center">Publish<br>pushes</div>
+          <i class="fas fa-arrow-right" style="color:#334155;font-size:1.3rem"></i>
+        </div>
+
+        <!-- LIVE card -->
+        <div class="pp-card" style="border-color:rgba(16,185,129,.3)">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-globe" style="color:#10b981"></i>
             </div>
+            <div>
+              <div style="font-size:.95rem;font-weight:700">Live — stemforge.studio</div>
+              <div style="font-size:.73rem;color:var(--muted)">What your users see right now</div>
+            </div>
+            <div id="pp-live-status-dot" style="margin-left:auto;width:10px;height:10px;border-radius:50%;background:#334155"></div>
           </div>
-          <div id="pp-iframe-wrap" style="border:2px solid var(--border);border-radius:14px;overflow:hidden;background:#0b0e17;transition:all .3s;height:700px">
-            <iframe id="pp-iframe" src="/?pp_draft=1" style="width:100%;height:100%;border:none;display:block"
-              title="Draft preview"></iframe>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Latest deploy:</div>
+          <div id="pp-live-run" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.78rem;min-height:48px">
+            <span style="color:var(--muted)">Loading…</span>
           </div>
-          <div style="margin-top:8px;font-size:.73rem;color:var(--muted);text-align:center">
-            <i class="fas fa-info-circle" style="margin-right:4px"></i>This iframe shows the site with your current <strong>draft</strong> settings applied. Users see the <strong>live</strong> config until you publish.
+          <div style="margin-top:14px">
+            <a href="https://stemforge.studio" target="_blank" rel="noopener"
+              style="display:block;text-align:center;padding:9px 14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;color:#10b981;font-size:.83rem;font-weight:600;text-decoration:none">
+              <i class="fas fa-external-link-alt" style="margin-right:5px"></i>Open Live Site
+            </a>
           </div>
         </div>
       </div>
+
+      <!-- THE PUBLISH BUTTON — centrepiece -->
+      <div style="text-align:center;margin-bottom:24px">
+        <button id="pp-publish-btn" onclick="ppPublish()"
+          style="display:inline-flex;align-items:center;gap:10px;padding:14px 40px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:50px;color:#fff;font-size:1rem;font-weight:800;cursor:pointer;box-shadow:0 8px 32px rgba(16,185,129,.35);letter-spacing:.2px;transition:transform .15s,box-shadow .15s"
+          onmouseover="this.style.transform='scale(1.03)';this.style.boxShadow='0 12px 40px rgba(16,185,129,.45)'"
+          onmouseout="this.style.transform='';this.style.boxShadow='0 8px 32px rgba(16,185,129,.35)'">
+          <i class="fas fa-rocket"></i>
+          Publish Staging → Live
+        </button>
+        <div style="margin-top:10px;font-size:.76rem;color:var(--muted)">
+          Fast-forwards <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">main</code> to match
+          <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">staging</code> and triggers a production deploy (~2 min).
+          Users see the change when the deploy completes.
+        </div>
+      </div>
+
+      <div id="pp-msg" style="display:none;margin-bottom:20px;padding:12px 16px;border-radius:10px;font-size:.85rem;font-weight:600;text-align:center"></div>
+
+      <!-- Staging preview iframe -->
+      <div class="pp-card" style="padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-size:.82rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
+            <i class="fas fa-desktop" style="margin-right:6px;color:#4e9fff"></i>Staging Preview
+          </div>
+          <div style="display:flex;gap:6px">
+            <button onclick="ppSetViewport('desktop')" id="pp-vp-desktop"
+              style="padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600">
+              <i class="fas fa-desktop"></i> Desktop
+            </button>
+            <button onclick="ppSetViewport('mobile')" id="pp-vp-mobile"
+              style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
+              <i class="fas fa-mobile-alt"></i> Mobile
+            </button>
+            <button onclick="ppReloadPreview()" title="Reload preview"
+              style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
+              <i class="fas fa-sync-alt"></i>
+            </button>
+          </div>
+        </div>
+        <div id="pp-iframe-wrap" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0b0e17;height:700px;transition:all .3s">
+          <iframe id="pp-iframe" src="https://stemforge-staging-4q9.pages.dev"
+            style="width:100%;height:100%;border:none;display:block" title="Staging preview"></iframe>
+        </div>
+        <div style="margin-top:8px;font-size:.73rem;color:var(--muted);text-align:center">
+          Showing <strong style="color:#4e9fff">stemforge-staging-4q9.pages.dev</strong> — 
+          this is your private staging environment. Users only see <strong style="color:#10b981">stemforge.studio</strong>.
+        </div>
+      </div>
+
+      <!-- Setup guide: GitHub Token -->
+      <div class="pp-card" style="margin-top:20px;border-color:rgba(245,158,11,.2)">
+        <div class="pp-card-header">
+          <i class="fab fa-github" style="color:#f59e0b"></i>
+          <span>One-Time Setup: GitHub Token</span>
+          <span id="pp-gh-status" style="margin-left:auto;font-size:.75rem;font-weight:700;color:#64748b">Checking…</span>
+        </div>
+        <div style="margin-top:12px;font-size:.82rem;color:#94a3b8;line-height:1.8">
+          The Publish button needs a GitHub token to fast-forward <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">main</code> and trigger the production deploy.<br>
+          <strong style="color:#e2e8f0">Steps:</strong>
+          <ol style="margin:8px 0 0 18px;padding:0;color:#94a3b8">
+            <li>Go to <a href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=StemForge+Admin+Deploy" target="_blank" style="color:#4e9fff">GitHub → Settings → Personal Access Tokens</a> — create a token with <code>repo</code> + <code>workflow</code> scopes</li>
+            <li>In <a href="https://dash.cloudflare.com" target="_blank" style="color:#4e9fff">Cloudflare Pages → stemforge → Settings → Environment Variables</a> — add secret <code>GITHUB_TOKEN</code> = your token</li>
+            <li>Repeat for the <strong>stemforge-staging</strong> project too</li>
+            <li>Done — the Publish button will work immediately after the next deploy</li>
+          </ol>
+        </div>
+      </div>
+
     </div>
     <!-- ── /PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
 
@@ -14958,6 +15047,7 @@ function adminPage(user: User) {
 .pp-toggle input:checked+.pp-toggle-slider{background:#10b981}
 .pp-toggle input:checked+.pp-toggle-slider--red{background:#ef4444}
 .pp-toggle input:checked+.pp-toggle-slider:before{transform:translateX(16px)}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 <script src="/static/admin.v2.js?v=${ASSET_VER}"></script>
 

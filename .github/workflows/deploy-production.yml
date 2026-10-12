@@ -1,0 +1,42 @@
+name: Deploy to Production (Live)
+
+# Only runs when explicitly triggered — either by the admin panel Publish button
+# (via repository_dispatch) or manually via GitHub Actions UI.
+# NEVER runs automatically on push — only you can trigger this.
+on:
+  repository_dispatch:
+    types: [publish-to-live]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for publishing to live'
+        required: false
+        default: 'Manual publish'
+
+jobs:
+  deploy-production:
+    runs-on: ubuntu-latest
+    name: Build & Deploy → stemforge (LIVE)
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages (production / live)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: pages deploy dist --project-name stemforge --branch main

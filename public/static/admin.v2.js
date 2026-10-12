@@ -87,6 +87,7 @@ function adminTab(tab){
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
+  if(tab==='publish'){ ppStartPolling(); } else { ppStopPolling(); }
   // Persist active tab in URL hash so hard refresh restores it
   try { history.replaceState(null, '', '#tab-' + tab); } catch(e) {}
 }
@@ -1637,280 +1638,220 @@ async function adminDeleteSmartLink(id, title) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  PREVIEW & PUBLISH TAB
+//  PREVIEW & PUBLISH TAB  —  Staging → Live code-level deploy
 // ═══════════════════════════════════════════════════════════════
 
-var _ppDirty     = false;   // draft has unsaved changes
-var _ppHasChanges = false;  // draft differs from live
-var _ppViewport  = 'desktop';
+var _ppViewport   = 'desktop';
+var _ppPollTimer  = null;   // setInterval handle for status polling
+var _ppPublishing = false;  // prevent double-clicks while deploy is in-flight
 
-// ── Load draft state from API and populate form fields ──────────
+// ── Status colours ──────────────────────────────────────────────
+var PP_COLORS = {
+  success:     { dot: '#10b981', text: 'success',     bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)',  fg: '#6ee7b7' },
+  in_progress: { dot: '#f59e0b', text: 'in progress', bg: 'rgba(245,158,11,.1)',  border: 'rgba(245,158,11,.3)',  fg: '#fcd34d' },
+  queued:      { dot: '#4e9fff', text: 'queued',      bg: 'rgba(78,159,255,.08)', border: 'rgba(78,159,255,.25)', fg: '#93c5fd' },
+  failure:     { dot: '#ef4444', text: 'failed',      bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)',   fg: '#fca5a5' },
+  cancelled:   { dot: '#64748b', text: 'cancelled',   bg: 'rgba(100,116,139,.1)', border: 'rgba(100,116,139,.3)', fg: '#94a3b8' },
+  unknown:     { dot: '#334155', text: 'unknown',     bg: 'rgba(51,65,85,.1)',    border: 'rgba(51,65,85,.3)',    fg: '#64748b' },
+};
+
+function ppRunColor(run) {
+  if (!run) return PP_COLORS.unknown;
+  if (run.status === 'in_progress') return PP_COLORS.in_progress;
+  if (run.status === 'queued')      return PP_COLORS.queued;
+  if (run.conclusion === 'success') return PP_COLORS.success;
+  if (run.conclusion === 'failure') return PP_COLORS.failure;
+  if (run.conclusion === 'cancelled') return PP_COLORS.cancelled;
+  return PP_COLORS.unknown;
+}
+
+// ── Relative time helper ────────────────────────────────────────
+function ppRelTime(iso) {
+  if (!iso) return '—';
+  var diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff <  60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+// ── Render one deploy run card ──────────────────────────────────
+function ppRenderRun(cardId, dotId, run) {
+  var card = document.getElementById(cardId);
+  var dot  = document.getElementById(dotId);
+  if (!card) return;
+
+  var c = ppRunColor(run);
+  if (dot) dot.style.background = c.dot;
+
+  if (!run) {
+    card.innerHTML = '<span style="color:#64748b;font-size:.78rem">No deploys found — push to the staging branch to trigger one.</span>';
+    return;
+  }
+
+  var statusLabel = run.status === 'completed' ? (run.conclusion || 'completed') : run.status;
+  var timeStr     = ppRelTime(run.updated_at || run.started_at);
+  var link        = run.url ? '<a href="' + run.url + '" target="_blank" rel="noopener" style="color:#4e9fff;font-size:.75rem;text-decoration:none;margin-left:auto;white-space:nowrap"><i class="fas fa-external-link-alt"></i> View run</a>' : '';
+
+  var spinner = (run.status === 'in_progress' || run.status === 'queued')
+    ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid ' + c.dot + ';border-top-color:transparent;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px"></span>'
+    : '';
+
+  card.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      spinner +
+      '<span style="font-size:.82rem;font-weight:700;color:' + c.fg + '">' + statusLabel + '</span>' +
+      '<span style="color:#64748b;font-size:.75rem">' + timeStr + '</span>' +
+      link +
+    '</div>';
+}
+
+// ── Check if GITHUB_TOKEN is configured ────────────────────────
+function ppCheckGhToken(data) {
+  var el = document.getElementById('pp-gh-status');
+  if (!el) return;
+  if (data && data.error && data.error.includes('GITHUB_TOKEN')) {
+    el.textContent = '⚠️ Token missing';
+    el.style.color = '#f59e0b';
+  } else {
+    el.textContent = '✅ Token configured';
+    el.style.color = '#10b981';
+  }
+}
+
+// ── Load / refresh deploy status from API ──────────────────────
 async function ppLoad() {
   try {
-    var res = await fetch('/api/admin/draft', { credentials: 'include' });
+    var res = await fetch('/api/admin/deploy/status', { credentials: 'include' });
     var d   = await res.json();
-    if (!res.ok) { console.error('ppLoad failed', d); return; }
 
-    var draft = d.draft;
-    _ppHasChanges = d.has_unpublished_changes;
+    ppRenderRun('pp-staging-run', 'pp-staging-status-dot', d.staging);
+    ppRenderRun('pp-live-run',    'pp-live-status-dot',    d.production);
+    ppCheckGhToken(d);
 
-    // Announcement
-    ppSetCheck('pp-ann-enabled', draft.announcement_enabled === '1');
-    ppSetVal('pp-ann-text',      draft.announcement_text      || '');
-    ppSetVal('pp-ann-color',     draft.announcement_color     || '#1d4ed8');
-    ppSetVal('pp-ann-color-hex', draft.announcement_color     || '#1d4ed8');
-    ppSetVal('pp-ann-link',      draft.announcement_link      || '');
-    ppSetVal('pp-ann-link-text', draft.announcement_link_text || '');
+    // Badge: show ! if a live deploy is actively in-flight (so admin knows)
+    var badge = document.getElementById('pp-badge');
+    var liveInFlight = d.production && (d.production.status === 'in_progress' || d.production.status === 'queued');
+    if (badge) badge.style.display = liveInFlight ? 'inline-block' : 'none';
 
-    // Hero
-    ppSetVal('pp-hero-headline', draft.hero_headline || '');
-    ppSetVal('pp-hero-subline',  draft.hero_subline  || '');
-    ppSetVal('pp-hero-cta',      draft.hero_cta_text || '');
-
-    // Features
-    ppSetCheck('pp-feat-covers', draft.feature_covers_enabled !== '0');
-    ppSetCheck('pp-feat-remix',  draft.feature_remix_enabled  !== '0');
-    ppSetCheck('pp-feat-extend', draft.feature_extend_enabled !== '0');
-
-    // Maintenance
-    ppSetCheck('pp-maint-enabled', draft.maintenance_mode === '1');
-    ppSetVal('pp-maint-msg',       draft.maintenance_message || '');
-
-    // Custom HTML
-    ppSetVal('pp-custom-html', draft.custom_banner_html || '');
-
-    // Status bar
-    var pubAt = d.live_updated_at ? new Date(d.live_updated_at).toLocaleString() : 'Never';
-    ppSetTxt('pp-last-pub', pubAt);
-
-    _ppDirty = false;
-    ppUpdateStatusBar();
-    ppUpdatePreview();
   } catch(e) {
     console.error('ppLoad error', e);
+    var card = document.getElementById('pp-staging-run');
+    if (card) card.innerHTML = '<span style="color:#ef4444;font-size:.78rem">Could not reach /api/admin/deploy/status</span>';
   }
 }
 
-function ppSetVal(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
-function ppSetTxt(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
-function ppSetCheck(id, checked) { var el = document.getElementById(id); if (el) el.checked = checked; }
-
-// ── Mark draft dirty (unsaved changes) ─────────────────────────
-function ppMarkDirty() {
-  _ppDirty = true;
-  ppUpdateStatusBar();
+// ── Start / stop polling (every 12 s while tab is open) ────────
+function ppStartPolling() {
+  ppLoad(); // immediate first fetch
+  if (_ppPollTimer) clearInterval(_ppPollTimer);
+  _ppPollTimer = setInterval(ppLoad, 12000);
 }
 
-// ── Sync color picker ↔ hex input ──────────────────────────────
-function ppSyncColor(hexInput) {
-  ppMarkDirty();
-  var val = hexInput.value.trim();
-  if (/^#[0-9a-fA-F]{6}$/.test(val)) {
-    ppSetVal('pp-ann-color', val);
-  }
-  ppUpdatePreview();
+function ppStopPolling() {
+  if (_ppPollTimer) { clearInterval(_ppPollTimer); _ppPollTimer = null; }
 }
 
-// ── Update status bar based on current state ───────────────────
-function ppUpdateStatusBar() {
-  var pill = document.getElementById('pp-status-pill');
-  var txt  = document.getElementById('pp-status-text');
-  var badge = document.getElementById('pp-badge');
-
-  var canPublish = _ppDirty || _ppHasChanges;
-
-  // Enable/disable publish buttons
-  ['pp-publish-btn','pp-publish-btn2'].forEach(function(id) {
-    var btn = document.getElementById(id);
-    if (!btn) return;
-    btn.style.opacity        = canPublish ? '1'    : '.4';
-    btn.style.pointerEvents  = canPublish ? 'auto' : 'none';
-  });
-
-  // Badge on tab
-  if (badge) badge.style.display = canPublish ? 'inline-block' : 'none';
-
-  if (_ppDirty) {
-    if (pill) pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.3)';
-    if (txt)  txt.textContent = 'Draft unsaved — save first';
-    var dot = pill ? pill.querySelector('span') : null;
-    if (dot) dot.style.background = '#f59e0b';
-  } else if (_ppHasChanges) {
-    if (pill) pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(78,159,255,.12);color:#4e9fff;border:1px solid rgba(78,159,255,.3)';
-    if (txt)  txt.textContent = 'Draft ready to publish';
-    var dot = pill ? pill.querySelector('span') : null;
-    if (dot) dot.style.background = '#4e9fff';
-  } else {
-    if (pill) pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.3)';
-    if (txt)  txt.textContent = 'Live — up to date';
-    var dot = pill ? pill.querySelector('span') : null;
-    if (dot) dot.style.background = '#10b981';
-  }
-}
-
-// ── Collect form data → draft payload object ───────────────────
-function ppCollect() {
-  return {
-    announcement_enabled:  ppGetCheck('pp-ann-enabled')   ? '1' : '0',
-    announcement_text:     ppGetVal('pp-ann-text'),
-    announcement_color:    ppGetVal('pp-ann-color'),
-    announcement_link:     ppGetVal('pp-ann-link'),
-    announcement_link_text:ppGetVal('pp-ann-link-text'),
-    hero_headline:         ppGetVal('pp-hero-headline'),
-    hero_subline:          ppGetVal('pp-hero-subline'),
-    hero_cta_text:         ppGetVal('pp-hero-cta'),
-    feature_covers_enabled:ppGetCheck('pp-feat-covers')   ? '1' : '0',
-    feature_remix_enabled: ppGetCheck('pp-feat-remix')    ? '1' : '0',
-    feature_extend_enabled:ppGetCheck('pp-feat-extend')   ? '1' : '0',
-    maintenance_mode:      ppGetCheck('pp-maint-enabled') ? '1' : '0',
-    maintenance_message:   ppGetVal('pp-maint-msg'),
-    custom_banner_html:    ppGetVal('pp-custom-html'),
-  };
-}
-function ppGetVal(id)   { var el = document.getElementById(id); return el ? el.value : ''; }
-function ppGetCheck(id) { var el = document.getElementById(id); return el ? el.checked : false; }
-
-// ── Save draft ─────────────────────────────────────────────────
-async function ppSaveDraft() {
-  ppMsg('Saving draft…', 'info');
-  try {
-    var res = await fetch('/api/admin/draft', {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ppCollect())
-    });
-    var d = await res.json();
-    if (!res.ok || !d.ok) { ppMsg('Save failed: ' + (d.error || res.status), 'error'); return; }
-    _ppDirty = true;  // draft saved but not published = still has unpublished changes
-    _ppHasChanges = true;
-    ppMsg('✅ Draft saved — ready to publish', 'ok');
-    ppUpdateStatusBar();
-    ppReloadPreview();
-  } catch(e) {
-    ppMsg('Network error: ' + e.message, 'error');
-  }
-}
-
-// ── Publish draft → live ───────────────────────────────────────
+// ── THE PUBLISH BUTTON ──────────────────────────────────────────
 async function ppPublish() {
-  // If there are unsaved edits, save first
-  if (_ppDirty) {
-    var saved = await ppSaveDraftSilent();
-    if (!saved) { ppMsg('Could not save draft before publishing.', 'error'); return; }
-  }
-  if (!confirm('Publish these changes to the live site? Users will see them immediately.')) return;
-  ppMsg('Publishing…', 'info');
-  try {
-    var res = await fetch('/api/admin/draft/publish', { method: 'POST', credentials: 'include' });
-    var d = await res.json();
-    if (!res.ok || !d.ok) { ppMsg('Publish failed: ' + (d.error || res.status), 'error'); return; }
-    _ppDirty = false;
-    _ppHasChanges = false;
-    ppSetTxt('pp-last-pub', new Date().toLocaleString());
-    ppMsg('🚀 Published to live! Changes are now visible to all users.', 'ok');
-    ppUpdateStatusBar();
-  } catch(e) {
-    ppMsg('Network error: ' + e.message, 'error');
-  }
-}
+  if (_ppPublishing) return;
 
-// Silent save (returns bool)
-async function ppSaveDraftSilent() {
+  if (!confirm(
+    'Publish Staging → Live?\n\n' +
+    'This will fast-forward the main branch to match staging and trigger a production deploy (~2 min).\n\n' +
+    'Users will see the change when the deploy finishes.'
+  )) return;
+
+  _ppPublishing = true;
+  var btn = document.getElementById('pp-publish-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.style.opacity = '.6';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing…';
+  }
+  ppMsg('🚀 Triggering production deploy — this takes ~2 minutes…', 'info');
+
   try {
-    var res = await fetch('/api/admin/draft', {
-      method: 'POST', credentials: 'include',
+    var res = await fetch('/api/admin/deploy/live', {
+      method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ppCollect())
+      body: JSON.stringify({ reason: 'Published from admin panel' })
     });
     var d = await res.json();
-    if (res.ok && d.ok) { _ppDirty = false; return true; }
-    return false;
-  } catch { return false; }
-}
 
-// ── Reset draft back to live ───────────────────────────────────
-async function ppResetDraft() {
-  if (!confirm('Discard all draft changes and revert to the current live config?')) return;
-  ppMsg('Resetting…', 'info');
-  try {
-    var res = await fetch('/api/admin/draft/reset', { method: 'POST', credentials: 'include' });
-    var d = await res.json();
-    if (!res.ok || !d.ok) { ppMsg('Reset failed.', 'error'); return; }
-    _ppDirty = false;
-    _ppHasChanges = false;
-    ppMsg('↩️ Draft reset to match live config.', 'ok');
-    ppLoad();
+    if (!res.ok || !d.ok) {
+      ppMsg('❌ Publish failed: ' + (d.error || ('HTTP ' + res.status)), 'error');
+    } else {
+      ppMsg('✅ Production deploy triggered! (SHA ' + (d.sha || '').slice(0,7) + ') — live in ~2 min. Status cards will update automatically.', 'ok');
+      // Immediately poll so the status cards start updating
+      setTimeout(ppLoad, 3000);
+    }
   } catch(e) {
-    ppMsg('Network error: ' + e.message, 'error');
+    ppMsg('❌ Network error: ' + e.message, 'error');
+  } finally {
+    _ppPublishing = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      btn.innerHTML = '<i class="fas fa-rocket"></i> Publish Staging → Live';
+    }
   }
 }
 
-// ── Preview iframe ─────────────────────────────────────────────
+// ── Preview iframe controls ─────────────────────────────────────
 function ppReloadPreview() {
   var iframe = document.getElementById('pp-iframe');
   if (!iframe) return;
-  // Add timestamp to bust any cache
-  var base = iframe.src.split('?')[0];
-  iframe.src = base + '?pp_draft=1&_t=' + Date.now();
-}
-
-function ppUpdatePreview() {
-  // Lightweight — just reload after a short debounce
-  clearTimeout(ppUpdatePreview._t);
-  ppUpdatePreview._t = setTimeout(ppReloadPreview, 1200);
-}
-
-function ppOpenPreview() {
-  window.open('/?pp_draft=1', '_blank', 'noopener');
+  var src = iframe.src.split('?')[0];
+  iframe.src = src + '?_t=' + Date.now();
 }
 
 function ppSetViewport(mode) {
   _ppViewport = mode;
-  var wrap = document.getElementById('pp-iframe-wrap');
+  var wrap  = document.getElementById('pp-iframe-wrap');
   var iframe = document.getElementById('pp-iframe');
-  var dBtn = document.getElementById('pp-vp-desktop');
-  var mBtn = document.getElementById('pp-vp-mobile');
+  var dBtn  = document.getElementById('pp-vp-desktop');
+  var mBtn  = document.getElementById('pp-vp-mobile');
   if (!wrap || !iframe) return;
 
-  var activeStyle  = 'padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600';
+  var activeStyle   = 'padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600';
   var inactiveStyle = 'padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer';
 
   if (mode === 'mobile') {
-    wrap.style.maxWidth  = '390px';
-    wrap.style.margin    = '0 auto';
-    iframe.style.width   = '390px';
-    iframe.style.transform = 'none';
+    wrap.style.maxWidth = '390px';
+    wrap.style.margin   = '0 auto';
+    iframe.style.width  = '390px';
     if (dBtn) dBtn.style.cssText = inactiveStyle;
     if (mBtn) mBtn.style.cssText = activeStyle;
   } else {
-    wrap.style.maxWidth  = '';
-    wrap.style.margin    = '';
-    iframe.style.width   = '100%';
-    iframe.style.transform = '';
+    wrap.style.maxWidth = '';
+    wrap.style.margin   = '';
+    iframe.style.width  = '100%';
     if (dBtn) dBtn.style.cssText = activeStyle;
     if (mBtn) mBtn.style.cssText = inactiveStyle;
   }
 }
 
-// ── Message helper ─────────────────────────────────────────────
+// ── Message helper ──────────────────────────────────────────────
 function ppMsg(msg, type) {
   var el = document.getElementById('pp-msg');
   if (!el) return;
-  el.textContent = msg;
+  el.textContent  = msg;
   el.style.display = 'block';
   var colors = {
-    ok:   { bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)',  color: '#6ee7b7' },
-    error:{ bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)',   color: '#fca5a5' },
-    info: { bg: 'rgba(78,159,255,.08)', border: 'rgba(78,159,255,.25)', color: '#93c5fd' },
+    ok:    { bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)',  color: '#6ee7b7' },
+    error: { bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)',   color: '#fca5a5' },
+    info:  { bg: 'rgba(78,159,255,.08)', border: 'rgba(78,159,255,.25)', color: '#93c5fd' },
   };
   var c = colors[type] || colors.info;
-  el.style.background  = c.bg;
-  el.style.border      = '1px solid ' + c.border;
-  el.style.color       = c.color;
+  el.style.background   = c.bg;
+  el.style.border       = '1px solid ' + c.border;
+  el.style.color        = c.color;
   el.style.borderRadius = '8px';
   el.style.padding      = '10px 14px';
   if (type !== 'info') {
     clearTimeout(ppMsg._t);
-    ppMsg._t = setTimeout(function(){ el.style.display='none'; }, 4000);
+    ppMsg._t = setTimeout(function(){ el.style.display = 'none'; }, 6000);
   }
 }
