@@ -1158,31 +1158,21 @@ async function createUser(db: D1Database, data: {
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
   const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
-  // Apply rollover: unused downloads carry over, capped at 500
-  const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE id=?').bind(userId).first<{gens_used:number,gens_limit:number}>()
+  // Always start fresh at plan's base limit — no rollover on upgrade/downgrade
   const newLimit = planLimits[plan] || 60
-  let rolledLimit = newLimit
-  if (currentUser) {
-    const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
-    rolledLimit = Math.min(5000, newLimit + unused)
-  }
   await db.prepare(
     `UPDATE users SET plan=?, gens_limit=?, gens_used=0, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?`
-  ).bind(plan, rolledLimit, stripeCustomerId, stripeSubId, userId).run()
+  ).bind(plan, newLimit, stripeCustomerId, stripeSubId, userId).run()
 }
 
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
   const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
-  const newMonthBase = planLimits[plan] || 60
-  const currentUser = await db.prepare('SELECT gens_used, gens_limit FROM users WHERE stripe_customer_id=?').bind(customerId).first<{gens_used:number,gens_limit:number}>()
-  if (!currentUser) return
-  const unused = Math.max(0, currentUser.gens_limit - currentUser.gens_used)
-  const rolledLimit = Math.min(5000, newMonthBase + unused)
-  // Reset gens_used, roll over unused plan points (NOT bonus_credits — those expire), reset download counter
+  const newLimit = planLimits[plan] || 60
+  // Always reset to exact plan limit — no rollover, clean slate each billing cycle
   await db.prepare(
     `UPDATE users SET gens_used=0, gens_limit=?, bonus_credits=0, downloads_used=0 WHERE stripe_customer_id=?`
-  ).bind(rolledLimit, customerId).run()
+  ).bind(newLimit, customerId).run()
 }
 
 // ── Admin subscription email notification ────────────────────────────────────
@@ -9832,7 +9822,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261004-68'
+const ASSET_VER = '20261004-69'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9942,7 +9932,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.68.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.69.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -12541,11 +12531,16 @@ function checkoutPage() {
           <div class="checkout-plan-summary__price"><span id="co-plan-price">$10</span><span>/mo</span></div>
         </div>
         <ul class="checkout-plan-summary__features" id="co-plan-features">
-          <li><i class="fas fa-check"></i> 900 points monthly</li>
-          <li><i class="fas fa-check"></i> Auto Split — up to 5 stems</li>
-          <li><i class="fas fa-check"></i> WAV download</li>
-          <li><i class="fas fa-check"></i> Commercial use rights</li>
-          <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
+          <!-- Creator features (default) — updated by JS when plan=pro -->
+          <li id="co-feat-points"><i class="fas fa-check"></i> 900 points monthly</li>
+          <li id="co-feat-split"><i class="fas fa-check"></i> Auto Split (up to 5 stems)</li>
+          <li id="co-feat-wav"><i class="fas fa-check"></i> WAV download</li>
+          <li id="co-feat-commercial"><i class="fas fa-check"></i> Commercial use rights</li>
+          <li id="co-feat-oneshot"><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
+          <li id="co-feat-extend" style="display:none"><i class="fas fa-check"></i> Song Extend + stem download</li>
+          <li id="co-feat-vocal" style="display:none"><i class="fas fa-check"></i> Vocals &amp; Instrumental split</li>
+          <li id="co-feat-cover" style="display:none"><i class="fas fa-check"></i> <i class="fas fa-guitar" style="color:#a855f7;font-size:.75rem"></i> AI Cover Song</li>
+          <li id="co-feat-priority" style="display:none"><i class="fas fa-check"></i> Priority queue</li>
         </ul>
         <div class="checkout-plan-summary__total"><span>Total today</span><strong id="co-plan-total">$10.00</strong></div>
       </div>
