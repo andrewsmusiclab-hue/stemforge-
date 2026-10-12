@@ -9822,7 +9822,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261004-69'
+const ASSET_VER = '20261004-70'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9932,7 +9932,7 @@ ${body}
   </div>
 </div>
 
-<script src="/static/app.v2.69.js?v=${ASSET_VER}"></script>
+<script src="/static/app.v2.70.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
@@ -11309,14 +11309,11 @@ function generatorPage() {
           <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left" disabled><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
             <button class="suno-chip" data-style="hip hop">Hip Hop</button>
-            <button class="suno-chip" data-style="trap">Trap</button>
-            <button class="suno-chip" data-style="drill">Drill</button>
             <button class="suno-chip" data-style="R&B">R&B</button>
             <button class="suno-chip" data-style="soca">Soca</button>
             <button class="suno-chip" data-style="lo-fi">Lo-Fi</button>
             <button class="suno-chip" data-style="boom bap">Boom Bap</button>
             <button class="suno-chip" data-style="afrobeats">Afrobeats</button>
-            <button class="suno-chip" data-style="dancehall">Dancehall</button>
             <button class="suno-chip" data-style="cinematic">Cinematic</button>
             <button class="suno-chip" data-style="reggaeton">Reggaeton</button>
             <button class="suno-chip" data-style="house">House</button>
