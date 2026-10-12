@@ -76,7 +76,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','signups','stuckjobs','broadcasts','security'];
+var adminTabs=['analytics','revenue','users','signups','stuckjobs','broadcasts','security','publish'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -95,7 +95,7 @@ function adminTab(tab){
   var hash = window.location.hash || '';
   var match = hash.match(/^#tab-(.+)$/);
   var startTab = match ? match[1] : 'analytics';
-  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email'];
+  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','publish'];
   if (validTabs.indexOf(startTab) === -1) startTab = 'analytics';
   if (startTab !== 'analytics') {
     adminTab(startTab);
@@ -1633,5 +1633,284 @@ async function adminDeleteSmartLink(id, title) {
     }
   } catch(e) {
     alert('Error: ' + e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  PREVIEW & PUBLISH TAB
+// ═══════════════════════════════════════════════════════════════
+
+var _ppDirty     = false;   // draft has unsaved changes
+var _ppHasChanges = false;  // draft differs from live
+var _ppViewport  = 'desktop';
+
+// ── Load draft state from API and populate form fields ──────────
+async function ppLoad() {
+  try {
+    var res = await fetch('/api/admin/draft', { credentials: 'include' });
+    var d   = await res.json();
+    if (!res.ok) { console.error('ppLoad failed', d); return; }
+
+    var draft = d.draft;
+    _ppHasChanges = d.has_unpublished_changes;
+
+    // Announcement
+    ppSetCheck('pp-ann-enabled', draft.announcement_enabled === '1');
+    ppSetVal('pp-ann-text',      draft.announcement_text      || '');
+    ppSetVal('pp-ann-color',     draft.announcement_color     || '#1d4ed8');
+    ppSetVal('pp-ann-color-hex', draft.announcement_color     || '#1d4ed8');
+    ppSetVal('pp-ann-link',      draft.announcement_link      || '');
+    ppSetVal('pp-ann-link-text', draft.announcement_link_text || '');
+
+    // Hero
+    ppSetVal('pp-hero-headline', draft.hero_headline || '');
+    ppSetVal('pp-hero-subline',  draft.hero_subline  || '');
+    ppSetVal('pp-hero-cta',      draft.hero_cta_text || '');
+
+    // Features
+    ppSetCheck('pp-feat-covers', draft.feature_covers_enabled !== '0');
+    ppSetCheck('pp-feat-remix',  draft.feature_remix_enabled  !== '0');
+    ppSetCheck('pp-feat-extend', draft.feature_extend_enabled !== '0');
+
+    // Maintenance
+    ppSetCheck('pp-maint-enabled', draft.maintenance_mode === '1');
+    ppSetVal('pp-maint-msg',       draft.maintenance_message || '');
+
+    // Custom HTML
+    ppSetVal('pp-custom-html', draft.custom_banner_html || '');
+
+    // Status bar
+    var pubAt = d.live_updated_at ? new Date(d.live_updated_at).toLocaleString() : 'Never';
+    ppSetTxt('pp-last-pub', pubAt);
+
+    _ppDirty = false;
+    ppUpdateStatusBar();
+    ppUpdatePreview();
+  } catch(e) {
+    console.error('ppLoad error', e);
+  }
+}
+
+function ppSetVal(id, val) { var el = document.getElementById(id); if (el) el.value = val; }
+function ppSetTxt(id, val) { var el = document.getElementById(id); if (el) el.textContent = val; }
+function ppSetCheck(id, checked) { var el = document.getElementById(id); if (el) el.checked = checked; }
+
+// ── Mark draft dirty (unsaved changes) ─────────────────────────
+function ppMarkDirty() {
+  _ppDirty = true;
+  ppUpdateStatusBar();
+}
+
+// ── Sync color picker ↔ hex input ──────────────────────────────
+function ppSyncColor(hexInput) {
+  ppMarkDirty();
+  var val = hexInput.value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+    ppSetVal('pp-ann-color', val);
+  }
+  ppUpdatePreview();
+}
+
+// ── Update status bar based on current state ───────────────────
+function ppUpdateStatusBar() {
+  var pill = document.getElementById('pp-status-pill');
+  var txt  = document.getElementById('pp-status-text');
+  var badge = document.getElementById('pp-badge');
+
+  var canPublish = _ppDirty || _ppHasChanges;
+
+  // Enable/disable publish buttons
+  ['pp-publish-btn','pp-publish-btn2'].forEach(function(id) {
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    btn.style.opacity        = canPublish ? '1'    : '.4';
+    btn.style.pointerEvents  = canPublish ? 'auto' : 'none';
+  });
+
+  // Badge on tab
+  if (badge) badge.style.display = canPublish ? 'inline-block' : 'none';
+
+  if (_ppDirty) {
+    if (pill) pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.3)';
+    if (txt)  txt.textContent = 'Draft unsaved — save first';
+    var dot = pill ? pill.querySelector('span') : null;
+    if (dot) dot.style.background = '#f59e0b';
+  } else if (_ppHasChanges) {
+    if (pill) pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(78,159,255,.12);color:#4e9fff;border:1px solid rgba(78,159,255,.3)';
+    if (txt)  txt.textContent = 'Draft ready to publish';
+    var dot = pill ? pill.querySelector('span') : null;
+    if (dot) dot.style.background = '#4e9fff';
+  } else {
+    if (pill) pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.3)';
+    if (txt)  txt.textContent = 'Live — up to date';
+    var dot = pill ? pill.querySelector('span') : null;
+    if (dot) dot.style.background = '#10b981';
+  }
+}
+
+// ── Collect form data → draft payload object ───────────────────
+function ppCollect() {
+  return {
+    announcement_enabled:  ppGetCheck('pp-ann-enabled')   ? '1' : '0',
+    announcement_text:     ppGetVal('pp-ann-text'),
+    announcement_color:    ppGetVal('pp-ann-color'),
+    announcement_link:     ppGetVal('pp-ann-link'),
+    announcement_link_text:ppGetVal('pp-ann-link-text'),
+    hero_headline:         ppGetVal('pp-hero-headline'),
+    hero_subline:          ppGetVal('pp-hero-subline'),
+    hero_cta_text:         ppGetVal('pp-hero-cta'),
+    feature_covers_enabled:ppGetCheck('pp-feat-covers')   ? '1' : '0',
+    feature_remix_enabled: ppGetCheck('pp-feat-remix')    ? '1' : '0',
+    feature_extend_enabled:ppGetCheck('pp-feat-extend')   ? '1' : '0',
+    maintenance_mode:      ppGetCheck('pp-maint-enabled') ? '1' : '0',
+    maintenance_message:   ppGetVal('pp-maint-msg'),
+    custom_banner_html:    ppGetVal('pp-custom-html'),
+  };
+}
+function ppGetVal(id)   { var el = document.getElementById(id); return el ? el.value : ''; }
+function ppGetCheck(id) { var el = document.getElementById(id); return el ? el.checked : false; }
+
+// ── Save draft ─────────────────────────────────────────────────
+async function ppSaveDraft() {
+  ppMsg('Saving draft…', 'info');
+  try {
+    var res = await fetch('/api/admin/draft', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ppCollect())
+    });
+    var d = await res.json();
+    if (!res.ok || !d.ok) { ppMsg('Save failed: ' + (d.error || res.status), 'error'); return; }
+    _ppDirty = true;  // draft saved but not published = still has unpublished changes
+    _ppHasChanges = true;
+    ppMsg('✅ Draft saved — ready to publish', 'ok');
+    ppUpdateStatusBar();
+    ppReloadPreview();
+  } catch(e) {
+    ppMsg('Network error: ' + e.message, 'error');
+  }
+}
+
+// ── Publish draft → live ───────────────────────────────────────
+async function ppPublish() {
+  // If there are unsaved edits, save first
+  if (_ppDirty) {
+    var saved = await ppSaveDraftSilent();
+    if (!saved) { ppMsg('Could not save draft before publishing.', 'error'); return; }
+  }
+  if (!confirm('Publish these changes to the live site? Users will see them immediately.')) return;
+  ppMsg('Publishing…', 'info');
+  try {
+    var res = await fetch('/api/admin/draft/publish', { method: 'POST', credentials: 'include' });
+    var d = await res.json();
+    if (!res.ok || !d.ok) { ppMsg('Publish failed: ' + (d.error || res.status), 'error'); return; }
+    _ppDirty = false;
+    _ppHasChanges = false;
+    ppSetTxt('pp-last-pub', new Date().toLocaleString());
+    ppMsg('🚀 Published to live! Changes are now visible to all users.', 'ok');
+    ppUpdateStatusBar();
+  } catch(e) {
+    ppMsg('Network error: ' + e.message, 'error');
+  }
+}
+
+// Silent save (returns bool)
+async function ppSaveDraftSilent() {
+  try {
+    var res = await fetch('/api/admin/draft', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ppCollect())
+    });
+    var d = await res.json();
+    if (res.ok && d.ok) { _ppDirty = false; return true; }
+    return false;
+  } catch { return false; }
+}
+
+// ── Reset draft back to live ───────────────────────────────────
+async function ppResetDraft() {
+  if (!confirm('Discard all draft changes and revert to the current live config?')) return;
+  ppMsg('Resetting…', 'info');
+  try {
+    var res = await fetch('/api/admin/draft/reset', { method: 'POST', credentials: 'include' });
+    var d = await res.json();
+    if (!res.ok || !d.ok) { ppMsg('Reset failed.', 'error'); return; }
+    _ppDirty = false;
+    _ppHasChanges = false;
+    ppMsg('↩️ Draft reset to match live config.', 'ok');
+    ppLoad();
+  } catch(e) {
+    ppMsg('Network error: ' + e.message, 'error');
+  }
+}
+
+// ── Preview iframe ─────────────────────────────────────────────
+function ppReloadPreview() {
+  var iframe = document.getElementById('pp-iframe');
+  if (!iframe) return;
+  // Add timestamp to bust any cache
+  var base = iframe.src.split('?')[0];
+  iframe.src = base + '?pp_draft=1&_t=' + Date.now();
+}
+
+function ppUpdatePreview() {
+  // Lightweight — just reload after a short debounce
+  clearTimeout(ppUpdatePreview._t);
+  ppUpdatePreview._t = setTimeout(ppReloadPreview, 1200);
+}
+
+function ppOpenPreview() {
+  window.open('/?pp_draft=1', '_blank', 'noopener');
+}
+
+function ppSetViewport(mode) {
+  _ppViewport = mode;
+  var wrap = document.getElementById('pp-iframe-wrap');
+  var iframe = document.getElementById('pp-iframe');
+  var dBtn = document.getElementById('pp-vp-desktop');
+  var mBtn = document.getElementById('pp-vp-mobile');
+  if (!wrap || !iframe) return;
+
+  var activeStyle  = 'padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600';
+  var inactiveStyle = 'padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer';
+
+  if (mode === 'mobile') {
+    wrap.style.maxWidth  = '390px';
+    wrap.style.margin    = '0 auto';
+    iframe.style.width   = '390px';
+    iframe.style.transform = 'none';
+    if (dBtn) dBtn.style.cssText = inactiveStyle;
+    if (mBtn) mBtn.style.cssText = activeStyle;
+  } else {
+    wrap.style.maxWidth  = '';
+    wrap.style.margin    = '';
+    iframe.style.width   = '100%';
+    iframe.style.transform = '';
+    if (dBtn) dBtn.style.cssText = activeStyle;
+    if (mBtn) mBtn.style.cssText = inactiveStyle;
+  }
+}
+
+// ── Message helper ─────────────────────────────────────────────
+function ppMsg(msg, type) {
+  var el = document.getElementById('pp-msg');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+  var colors = {
+    ok:   { bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)',  color: '#6ee7b7' },
+    error:{ bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)',   color: '#fca5a5' },
+    info: { bg: 'rgba(78,159,255,.08)', border: 'rgba(78,159,255,.25)', color: '#93c5fd' },
+  };
+  var c = colors[type] || colors.info;
+  el.style.background  = c.bg;
+  el.style.border      = '1px solid ' + c.border;
+  el.style.color       = c.color;
+  el.style.borderRadius = '8px';
+  el.style.padding      = '10px 14px';
+  if (type !== 'info') {
+    clearTimeout(ppMsg._t);
+    ppMsg._t = setTimeout(function(){ el.style.display='none'; }, 4000);
   }
 }

@@ -690,6 +690,15 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   )`).run()
   await db.prepare(`INSERT OR IGNORE INTO site_version (key, value, updated_at) VALUES ('active_version', 'live', ?)`).bind(Date.now()).run()
 
+  // ── Site drafts table — stores draft/live site config key-value pairs ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS site_drafts (
+    key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',
+    value TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (key, status)
+  )`).run()
+
   // ── Analytics page_views table ──
   await db.prepare(`CREATE TABLE IF NOT EXISTS page_views (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1986,7 +1995,7 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     if (!result) {
       // Not ready yet — check timeout (15 min max for chained extends)
       const ageMs = Date.now() - job.created_at
-      const timeoutMs = (job as any).chain_target_ms ? 15 * 60 * 1000 : 10 * 60 * 1000
+      const timeoutMs = (job as any).chain_target_ms ? 15 * 60 * 1000 : 20 * 60 * 1000
       if (ageMs > timeoutMs) {
         job.status = 'error'
         job.error = 'Stemforge generation timed out'
@@ -4582,8 +4591,10 @@ app.post('/api/stripe/webhook', async (c) => {
 
 app.get('/', async (c) => {
   // Logged-in users: redirect to /generator so they stay on their working page on refresh.
+  // Exception: ?pp_draft=1 means admin is previewing the home page — skip redirect.
   // Guests: serve the marketing home page.
-  if (c.env.DB && c.env.SESSION_SECRET) {
+  const isDraftPreview = c.req.query('pp_draft') === '1'
+  if (!isDraftPreview && c.env.DB && c.env.SESSION_SECRET) {
     const token = getSessionCookie(c.req.raw)
     const user = token ? await getSessionUser(c.env.DB, token) : null
     if (user) return c.redirect('/generator')
@@ -7636,6 +7647,139 @@ app.post('/api/admin/publish', async (c) => {
   return c.json({ ok: true, version: v })
 })
 
+// ═══════════════════════════════════════════════════════════════
+//  SITE DRAFT / PUBLISH SYSTEM
+//  Admin edits draft config → previews at /preview → publishes to live
+// ═══════════════════════════════════════════════════════════════
+
+// Default config shape — keys the frontend knows about
+const DRAFT_DEFAULTS: Record<string, string> = {
+  announcement_enabled:  '0',
+  announcement_text:     '',
+  announcement_color:    '#1d4ed8',
+  announcement_link:     '',
+  announcement_link_text:'',
+  hero_headline:         '',
+  hero_subline:          '',
+  hero_cta_text:         '',
+  feature_covers_enabled:'1',
+  feature_remix_enabled: '1',
+  feature_extend_enabled:'1',
+  maintenance_mode:      '0',
+  maintenance_message:   'StemForge is undergoing maintenance. We\'ll be back shortly!',
+  custom_banner_html:    '',
+}
+
+// GET /api/site-config?mode=live|draft — returns flat key/value object
+// live mode is public (no auth). draft mode requires admin session.
+app.get('/api/site-config', async (c) => {
+  if (!c.env.DB) return c.json(DRAFT_DEFAULTS)
+  const mode = c.req.query('mode') === 'draft' ? 'draft' : 'live'
+  if (mode === 'draft') {
+    const token = getSessionCookie(c.req.raw)
+    const user = token ? await getSessionUser(c.env.DB, token) : null
+    if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  }
+  try {
+    const rows = await c.env.DB.prepare(
+      `SELECT key, value FROM site_drafts WHERE status=?`
+    ).bind(mode).all<{key:string, value:string}>()
+    const config: Record<string,string> = { ...DRAFT_DEFAULTS }
+    for (const r of (rows.results || [])) config[r.key] = r.value
+    return c.json(config)
+  } catch {
+    return c.json(DRAFT_DEFAULTS)
+  }
+})
+
+// GET /api/admin/draft — returns { live: {...}, draft: {...}, has_unpublished_changes: bool }
+app.get('/api/admin/draft', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const liveRows   = await c.env.DB.prepare(`SELECT key,value,updated_at FROM site_drafts WHERE status='live'`).all<any>()
+  const draftRows  = await c.env.DB.prepare(`SELECT key,value,updated_at FROM site_drafts WHERE status='draft'`).all<any>()
+
+  const live:  Record<string,string> = { ...DRAFT_DEFAULTS }
+  const draft: Record<string,string> = { ...DRAFT_DEFAULTS }
+  let liveUpdatedAt  = 0
+  let draftUpdatedAt = 0
+
+  for (const r of (liveRows.results || []))  { live[r.key]  = r.value; if (r.updated_at > liveUpdatedAt)  liveUpdatedAt  = r.updated_at }
+  for (const r of (draftRows.results || [])) { draft[r.key] = r.value; if (r.updated_at > draftUpdatedAt) draftUpdatedAt = r.updated_at }
+
+  const has_unpublished_changes = JSON.stringify(draft) !== JSON.stringify(live)
+
+  return c.json({ live, draft, live_updated_at: liveUpdatedAt, draft_updated_at: draftUpdatedAt, has_unpublished_changes })
+})
+
+// POST /api/admin/draft — save one or more draft key/values
+// Body: { [key]: value, ... }
+app.post('/api/admin/draft', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const body = await c.req.json<Record<string,string>>()
+  const now = Date.now()
+  const stmts = []
+  for (const [key, value] of Object.entries(body)) {
+    if (!(key in DRAFT_DEFAULTS)) continue // only known keys
+    stmts.push(
+      c.env.DB.prepare(`INSERT OR REPLACE INTO site_drafts (key,status,value,updated_at) VALUES (?,?,?,?)`)
+        .bind(key, 'draft', String(value), now)
+    )
+  }
+  if (stmts.length) await c.env.DB.batch(stmts)
+  return c.json({ ok: true, saved: stmts.length })
+})
+
+// POST /api/admin/draft/publish — copy all draft rows → live, atomically
+app.post('/api/admin/draft/publish', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const now = Date.now()
+  // Read current draft
+  const draftRows = await c.env.DB.prepare(`SELECT key,value FROM site_drafts WHERE status='draft'`).all<any>()
+  // Build full config (defaults + draft overrides)
+  const full: Record<string,string> = { ...DRAFT_DEFAULTS }
+  for (const r of (draftRows.results || [])) full[r.key] = r.value
+
+  // Write everything to live in a batch
+  const stmts = Object.entries(full).map(([key, value]) =>
+    c.env.DB.prepare(`INSERT OR REPLACE INTO site_drafts (key,status,value,updated_at) VALUES (?,?,?,?)`)
+      .bind(key, 'live', String(value), now)
+  )
+  await c.env.DB.batch(stmts)
+  return c.json({ ok: true, published_at: now, keys: stmts.length })
+})
+
+// POST /api/admin/draft/reset — reset draft back to match live (discard draft changes)
+app.post('/api/admin/draft/reset', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const now = Date.now()
+  const liveRows = await c.env.DB.prepare(`SELECT key,value FROM site_drafts WHERE status='live'`).all<any>()
+  const full: Record<string,string> = { ...DRAFT_DEFAULTS }
+  for (const r of (liveRows.results || [])) full[r.key] = r.value
+
+  const stmts = Object.entries(full).map(([key, value]) =>
+    c.env.DB.prepare(`INSERT OR REPLACE INTO site_drafts (key,status,value,updated_at) VALUES (?,?,?,?)`)
+      .bind(key, 'draft', String(value), now)
+  )
+  await c.env.DB.batch(stmts)
+  return c.json({ ok: true, reset: true })
+})
+
 // GET /api/admin/analytics — aggregated page view analytics
 app.get('/api/admin/analytics', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
@@ -9822,7 +9966,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261004-70'
+const ASSET_VER = '20261012-71'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -9864,6 +10008,49 @@ fbq('track','PageView');
 ${extraHead}
 </head>
 <body>
+<!-- Site-config: loads live config (or draft for admin preview) and applies banner/flags -->
+<div id="sf-announcement-bar" style="display:none"></div>
+<div id="sf-maintenance-bar"  style="display:none"></div>
+<div id="sf-custom-banner"    style="display:none"></div>
+<script>
+(function(){
+  var isDraft = (new URLSearchParams(location.search).get('pp_draft') === '1');
+  var url = '/api/site-config' + (isDraft ? '?mode=draft' : '');
+  fetch(url, { credentials: 'include' }).then(function(r){ return r.json(); }).then(function(cfg){
+    // ── Announcement banner ──────────────────────────────────────────
+    if (cfg.announcement_enabled === '1' && cfg.announcement_text) {
+      var bar = document.getElementById('sf-announcement-bar');
+      if (bar) {
+        var inner = cfg.announcement_link
+          ? '<a href="' + cfg.announcement_link + '" style="color:inherit;text-decoration:underline;font-weight:700">' + (cfg.announcement_link_text || 'Learn more') + '</a>'
+          : '';
+        bar.style.cssText = 'display:block;background:' + (cfg.announcement_color||'#1d4ed8') + ';color:#fff;text-align:center;padding:9px 16px;font-size:.84rem;font-weight:600;font-family:Inter,sans-serif;line-height:1.4;position:relative;z-index:200';
+        bar.innerHTML = '<span>' + cfg.announcement_text + (inner ? ' &nbsp;' + inner : '') + '</span>'
+          + (isDraft ? '<span style="margin-left:10px;background:rgba(255,255,255,.2);padding:1px 7px;border-radius:4px;font-size:.72rem">DRAFT PREVIEW</span>' : '');
+      }
+    }
+    // ── Maintenance notice ───────────────────────────────────────────
+    if (cfg.maintenance_mode === '1' && cfg.maintenance_message) {
+      var mb = document.getElementById('sf-maintenance-bar');
+      if (mb) {
+        mb.style.cssText = 'display:block;background:linear-gradient(90deg,#7c2d12,#b45309);color:#fff;text-align:center;padding:9px 16px;font-size:.84rem;font-weight:600;font-family:Inter,sans-serif;line-height:1.4;position:relative;z-index:200';
+        mb.innerHTML = '<i class="fas fa-hard-hat" style="margin-right:7px"></i>' + cfg.maintenance_message;
+      }
+    }
+    // ── Custom banner HTML ───────────────────────────────────────────
+    if (cfg.custom_banner_html && cfg.custom_banner_html.trim()) {
+      var cb = document.getElementById('sf-custom-banner');
+      if (cb) {
+        cb.style.display = 'block';
+        cb.innerHTML = cfg.custom_banner_html;
+      }
+    }
+    // ── Feature flags: hide disabled features ────────────────────────
+    // These are picked up by app.v2.js — store on window for it to read
+    window._sfConfig = cfg;
+  }).catch(function(){});
+})();
+</script>
 ${globalSidebar()}
 <div class="gs-page-wrap">
 ${body}
@@ -14001,6 +14188,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="stuckjobs" onclick="adminTab('stuckjobs')" id="stuck-jobs-tab-btn"><i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs</button>
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
+      <button class="admin-tab" data-tab="publish" onclick="adminTab('publish');ppLoad()" id="pp-tab-btn"><i class="fas fa-rocket" style="color:#10b981"></i> Preview &amp; Publish <span id="pp-badge" style="display:none;background:#f59e0b;color:#000;border-radius:99px;padding:1px 7px;font-size:.72rem;font-weight:800;margin-left:4px">!</span></button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -14535,6 +14723,216 @@ function adminPage(user: User) {
     </div>
     <!-- ── /SECURITY TAB ────────────────────────────────────────────────────── -->
 
+    <!-- ── PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
+    <div id="admin-tab-publish" style="display:none">
+
+      <!-- Status bar -->
+      <div id="pp-status-bar" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:22px;padding:14px 18px;background:var(--surface);border:1px solid var(--border);border-radius:12px">
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:.75rem;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:1px">Status</div>
+          <div id="pp-status-pill" style="display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:99px;font-size:.82rem;font-weight:700;background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.3)">
+            <span style="width:7px;height:7px;border-radius:50%;background:#10b981;display:inline-block"></span>
+            <span id="pp-status-text">Live — up to date</span>
+          </div>
+        </div>
+        <div style="font-size:.78rem;color:var(--muted)">
+          Last published: <strong id="pp-last-pub" style="color:var(--text)">—</strong>
+        </div>
+        <div style="display:flex;gap:8px;margin-left:auto">
+          <button onclick="ppOpenPreview()" id="pp-preview-btn"
+            style="padding:8px 16px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.35);border-radius:8px;color:#4e9fff;font-size:.85rem;font-weight:600;cursor:pointer">
+            <i class="fas fa-eye" style="margin-right:6px"></i>Preview Live Site
+          </button>
+          <button onclick="ppPublish()" id="pp-publish-btn"
+            style="padding:8px 20px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:8px;color:#fff;font-size:.85rem;font-weight:700;cursor:pointer;opacity:.4;pointer-events:none">
+            <i class="fas fa-rocket" style="margin-right:6px"></i>Publish to Live
+          </button>
+        </div>
+      </div>
+
+      <!-- Two-column layout: editor left, preview right -->
+      <div style="display:grid;grid-template-columns:400px 1fr;gap:20px;align-items:start">
+
+        <!-- LEFT: editor panels -->
+        <div style="display:flex;flex-direction:column;gap:16px">
+
+          <!-- Announcement Banner -->
+          <div class="pp-card">
+            <div class="pp-card-header">
+              <i class="fas fa-bullhorn" style="color:#f59e0b"></i>
+              <span>Announcement Banner</span>
+              <label class="pp-toggle" style="margin-left:auto">
+                <input type="checkbox" id="pp-ann-enabled" onchange="ppMarkDirty()">
+                <span class="pp-toggle-slider"></span>
+              </label>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
+              <div>
+                <label class="pp-label">Banner text</label>
+                <input type="text" id="pp-ann-text" oninput="ppMarkDirty();ppUpdatePreview()" placeholder="e.g. 🎉 AI Cover Songs are now live!"
+                  class="pp-input"/>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <div>
+                  <label class="pp-label">Background color</label>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <input type="color" id="pp-ann-color" oninput="ppMarkDirty();ppUpdatePreview()" value="#1d4ed8"
+                      style="width:36px;height:36px;border:none;border-radius:6px;cursor:pointer;background:none;padding:0"/>
+                    <input type="text" id="pp-ann-color-hex" oninput="ppSyncColor(this)" placeholder="#1d4ed8"
+                      class="pp-input" style="flex:1;font-family:monospace"/>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label class="pp-label">Link URL <span style="color:var(--muted);font-weight:400">(optional)</span></label>
+                <input type="text" id="pp-ann-link" oninput="ppMarkDirty();ppUpdatePreview()" placeholder="https://stemforge.studio/feature"
+                  class="pp-input"/>
+              </div>
+              <div>
+                <label class="pp-label">Link text</label>
+                <input type="text" id="pp-ann-link-text" oninput="ppMarkDirty();ppUpdatePreview()" placeholder="Learn more →"
+                  class="pp-input"/>
+              </div>
+            </div>
+          </div>
+
+          <!-- Hero Overrides -->
+          <div class="pp-card">
+            <div class="pp-card-header">
+              <i class="fas fa-heading" style="color:#a78bfa"></i>
+              <span>Hero Text Overrides</span>
+            </div>
+            <p style="font-size:.78rem;color:var(--muted);margin:4px 0 14px;line-height:1.5">Leave blank to use the built-in default text.</p>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div>
+                <label class="pp-label">Headline</label>
+                <input type="text" id="pp-hero-headline" oninput="ppMarkDirty()" placeholder="Beat with AI — Release with Confidence"
+                  class="pp-input"/>
+              </div>
+              <div>
+                <label class="pp-label">Subline</label>
+                <input type="text" id="pp-hero-subline" oninput="ppMarkDirty()" placeholder="Stems, remixes, AI covers…"
+                  class="pp-input"/>
+              </div>
+              <div>
+                <label class="pp-label">CTA button text</label>
+                <input type="text" id="pp-hero-cta" oninput="ppMarkDirty()" placeholder="Start Free"
+                  class="pp-input"/>
+              </div>
+            </div>
+          </div>
+
+          <!-- Feature Flags -->
+          <div class="pp-card">
+            <div class="pp-card-header">
+              <i class="fas fa-toggle-on" style="color:#10b981"></i>
+              <span>Feature Flags</span>
+            </div>
+            <p style="font-size:.78rem;color:var(--muted);margin:4px 0 14px;line-height:1.5">Toggle features on/off sitewide. Off = hidden from users immediately on publish.</p>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div>
+                  <div style="font-size:.88rem;font-weight:600">AI Cover Songs</div>
+                  <div style="font-size:.75rem;color:var(--muted)">Show Cover Song feature on Create page</div>
+                </div>
+                <label class="pp-toggle"><input type="checkbox" id="pp-feat-covers" onchange="ppMarkDirty()" checked><span class="pp-toggle-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div>
+                  <div style="font-size:.88rem;font-weight:600">Remix / Beat Stem</div>
+                  <div style="font-size:.75rem;color:var(--muted)">Show Remix feature on Create page</div>
+                </div>
+                <label class="pp-toggle"><input type="checkbox" id="pp-feat-remix" onchange="ppMarkDirty()" checked><span class="pp-toggle-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div>
+                  <div style="font-size:.88rem;font-weight:600">Song Extend</div>
+                  <div style="font-size:.75rem;color:var(--muted)">Show Extend feature on Create page</div>
+                </div>
+                <label class="pp-toggle"><input type="checkbox" id="pp-feat-extend" onchange="ppMarkDirty()" checked><span class="pp-toggle-slider"></span></label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Maintenance Mode -->
+          <div class="pp-card" style="border-color:rgba(239,68,68,.25)">
+            <div class="pp-card-header">
+              <i class="fas fa-hard-hat" style="color:#ef4444"></i>
+              <span>Maintenance Mode</span>
+              <label class="pp-toggle" style="margin-left:auto">
+                <input type="checkbox" id="pp-maint-enabled" onchange="ppMarkDirty()">
+                <span class="pp-toggle-slider pp-toggle-slider--red"></span>
+              </label>
+            </div>
+            <p style="font-size:.78rem;color:var(--muted);margin:8px 0 12px;line-height:1.5">
+              When on, a banner warning is shown to all users. The site still works — this is just a heads-up message.
+            </p>
+            <div>
+              <label class="pp-label">Maintenance message</label>
+              <textarea id="pp-maint-msg" oninput="ppMarkDirty()" rows="2" placeholder="We're doing some maintenance. Back shortly!"
+                class="pp-input" style="resize:vertical"></textarea>
+            </div>
+          </div>
+
+          <!-- Custom Banner HTML -->
+          <div class="pp-card">
+            <div class="pp-card-header">
+              <i class="fas fa-code" style="color:#4e9fff"></i>
+              <span>Custom Banner HTML</span>
+            </div>
+            <p style="font-size:.78rem;color:var(--muted);margin:4px 0 12px;line-height:1.5">
+              Inject a custom HTML block above the main nav. Leave blank to disable. Use for promos, holiday banners, etc.
+            </p>
+            <textarea id="pp-custom-html" oninput="ppMarkDirty()" rows="4"
+              placeholder='&lt;div style="background:#7c3aed;color:#fff;text-align:center;padding:10px"&gt;🎉 Holiday Sale!&lt;/div&gt;'
+              class="pp-input" style="font-family:monospace;font-size:.78rem;resize:vertical"></textarea>
+          </div>
+
+          <!-- Action row -->
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button onclick="ppSaveDraft()" id="pp-save-btn"
+              style="flex:1;padding:10px 20px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.35);border-radius:8px;color:#4e9fff;font-size:.88rem;font-weight:700;cursor:pointer">
+              <i class="fas fa-save" style="margin-right:6px"></i>Save Draft
+            </button>
+            <button onclick="ppPublish()" id="pp-publish-btn2"
+              style="flex:1;padding:10px 20px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:8px;color:#fff;font-size:.88rem;font-weight:700;cursor:pointer;opacity:.4;pointer-events:none">
+              <i class="fas fa-rocket" style="margin-right:6px"></i>Publish to Live
+            </button>
+            <button onclick="ppResetDraft()" title="Discard draft changes and revert to current live config"
+              style="padding:10px 14px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;color:#f87171;font-size:.88rem;cursor:pointer">
+              <i class="fas fa-undo"></i>
+            </button>
+          </div>
+          <div id="pp-msg" style="display:none;padding:10px 14px;border-radius:8px;font-size:.83rem;font-weight:600"></div>
+        </div>
+
+        <!-- RIGHT: live preview iframe -->
+        <div style="position:sticky;top:20px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div style="font-size:.82rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1px"><i class="fas fa-desktop" style="margin-right:5px"></i>Preview — Draft View</div>
+            <div style="display:flex;gap:6px">
+              <button onclick="ppSetViewport('desktop')" id="pp-vp-desktop"
+                style="padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600">
+                <i class="fas fa-desktop"></i> Desktop
+              </button>
+              <button onclick="ppSetViewport('mobile')" id="pp-vp-mobile"
+                style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
+                <i class="fas fa-mobile-alt"></i> Mobile
+              </button>
+            </div>
+          </div>
+          <div id="pp-iframe-wrap" style="border:2px solid var(--border);border-radius:14px;overflow:hidden;background:#0b0e17;transition:all .3s;height:700px">
+            <iframe id="pp-iframe" src="/?pp_draft=1" style="width:100%;height:100%;border:none;display:block"
+              title="Draft preview"></iframe>
+          </div>
+          <div style="margin-top:8px;font-size:.73rem;color:var(--muted);text-align:center">
+            <i class="fas fa-info-circle" style="margin-right:4px"></i>This iframe shows the site with your current <strong>draft</strong> settings applied. Users see the <strong>live</strong> config until you publish.
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- ── /PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
+
   </div>
 </main>
 <style>
@@ -14547,6 +14945,19 @@ function adminPage(user: User) {
 .rv-bar-wrap{display:flex;align-items:center;gap:10px;font-size:.85rem}
 .rv-bar-track{flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden}
 .rv-bar-fill{height:100%;border-radius:4px;transition:width .5s}
+/* ── Preview & Publish tab ── */
+.pp-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
+.pp-card-header{display:flex;align-items:center;gap:8px;font-size:.92rem;font-weight:700;color:var(--text)}
+.pp-label{font-size:.78rem;color:var(--muted);display:block;margin-bottom:5px;font-weight:600;letter-spacing:.3px}
+.pp-input{width:100%;padding:8px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.87rem;box-sizing:border-box;outline:none;transition:border-color .15s}
+.pp-input:focus{border-color:var(--primary)}
+.pp-toggle{position:relative;display:inline-block;width:38px;height:22px;flex-shrink:0}
+.pp-toggle input{opacity:0;width:0;height:0}
+.pp-toggle-slider{position:absolute;inset:0;background:#334155;border-radius:22px;cursor:pointer;transition:.2s}
+.pp-toggle-slider:before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+.pp-toggle input:checked+.pp-toggle-slider{background:#10b981}
+.pp-toggle input:checked+.pp-toggle-slider--red{background:#ef4444}
+.pp-toggle input:checked+.pp-toggle-slider:before{transform:translateX(16px)}
 </style>
 <script src="/static/admin.v2.js?v=${ASSET_VER}"></script>
 
