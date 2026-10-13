@@ -8547,21 +8547,30 @@ app.get('/api/admin/users', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
   const q = (c.req.query('q') || '').trim()
-  let rows
+  const pageParam = parseInt(c.req.query('page') || '1', 10)
+  const limitParam = parseInt(c.req.query('limit') || '100', 10)
+  const page = Math.max(1, isNaN(pageParam) ? 1 : pageParam)
+  const perPage = [50, 100, 150, 200].includes(limitParam) ? limitParam : 100
+  const offset = (page - 1) * perPage
+  const cols = `id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at`
+  let rows, totalRow
   if (q) {
     const like = `%${q}%`
+    totalRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM users WHERE email LIKE ? OR name LIKE ?`
+    ).bind(like, like).first<{ cnt: number }>()
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT 200`
-    ).bind(like, like).all<any>()
+      `SELECT ${cols} FROM users WHERE email LIKE ? OR name LIKE ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).bind(like, like, perPage, offset).all<any>()
   } else {
+    totalRow = await c.env.DB.prepare(`SELECT COUNT(*) as cnt FROM users`).first<{ cnt: number }>()
     rows = await c.env.DB.prepare(
-      `SELECT id,email,name,plan,gens_used,gens_limit,bonus_credits,account_locked,lock_reason,stripe_subscription_id,stripe_customer_id,created_at,cycle_start,signup_source,signup_referrer,welcome_sent_at FROM users ORDER BY created_at DESC LIMIT 200`
-    ).all<any>()
+      `SELECT ${cols} FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?`
+    ).bind(perPage, offset).all<any>()
   }
-  // Enrich with Stripe renewal date where available (batch — one Stripe call per user with sub)
   const users = rows.results || []
-  // Return raw users without Stripe calls for speed — renewal date fetched client-side per-row if needed
-  return c.json({ users })
+  const total = totalRow?.cnt ?? 0
+  return c.json({ users, total, page, perPage })
 })
 
 // GET /api/admin/user-renewal/:userId — fetch Stripe renewal date for a single user
@@ -10535,7 +10544,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-80'
+const ASSET_VER = '20261013-81'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

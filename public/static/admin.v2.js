@@ -321,24 +321,95 @@ async function loadRevenue(){
 }
 
 var _userSearchTimeout=null;
+var _usersPage=1;
+var _usersPerPage=100;
+
 function initUserSearch(){
   var wrap=document.getElementById('admin-users-list');
   if(!wrap||document.getElementById('admin-user-search')) return;
-  var bar='<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px">'+
-    '<div style="position:relative;flex:1;max-width:360px">'+
-      '<i class="fas fa-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:.85rem"></i>'+
-      '<input id="admin-user-search" type="text" placeholder="Search by email or name…" '+
-        'style="width:100%;padding:9px 12px 9px 32px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.88rem;box-sizing:border-box"'+
-        ' oninput="onUserSearch(this.value)"/>'+
+  var bar=
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">'+
+      '<div style="position:relative;flex:1;min-width:200px;max-width:360px">'+
+        '<i class="fas fa-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:.85rem"></i>'+
+        '<input id="admin-user-search" type="text" placeholder="Search by email or name…" '+
+          'style="width:100%;padding:9px 12px 9px 32px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.88rem;box-sizing:border-box"'+
+          ' oninput="onUserSearch(this.value)"/>'+
+      '</div>'+
+      '<div style="display:flex;align-items:center;gap:6px">'+
+        '<label style="font-size:.8rem;color:var(--muted);white-space:nowrap">Per page:</label>'+
+        '<select id="admin-users-perpage" onchange="onUsersPerPageChange(this.value)" '+
+          'style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:.85rem;cursor:pointer">'+
+          '<option value="50">50</option>'+
+          '<option value="100" selected>100</option>'+
+          '<option value="150">150</option>'+
+          '<option value="200">200</option>'+
+        '</select>'+
+      '</div>'+
+      '<span id="admin-user-count" style="font-size:.82rem;color:var(--muted)"></span>'+
     '</div>'+
-    '<span id="admin-user-count" style="font-size:.82rem;color:var(--muted)"></span>'+
-  '</div>'+
-  '<div id="admin-users-table"></div>';
+    '<div id="admin-users-table"></div>'+
+    '<div id="admin-users-pagination" style="display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;margin-top:16px"></div>';
   wrap.innerHTML=bar;
 }
+
 function onUserSearch(q){
   clearTimeout(_userSearchTimeout);
+  _usersPage=1; // reset to page 1 on new search
   _userSearchTimeout=setTimeout(function(){ loadUsers(q); },320);
+}
+
+function onUsersPerPageChange(val){
+  _usersPerPage=parseInt(val,10)||100;
+  _usersPage=1;
+  var q=(document.getElementById('admin-user-search')||{}).value||'';
+  loadUsers(q);
+}
+
+function renderUsersPagination(total, page, perPage, q){
+  var el=document.getElementById('admin-users-pagination');
+  if(!el) return;
+  var totalPages=Math.max(1,Math.ceil(total/perPage));
+  if(totalPages<=1){ el.innerHTML=''; return; }
+  var btns='';
+  // Prev
+  btns+='<button onclick="goUsersPage('+(page-1)+',\''+q+'\')" '+
+    'style="padding:5px 12px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:'+(page===1?'var(--muted)':'var(--text)')+';cursor:'+(page===1?'default':'pointer')+';font-size:.82rem" '+(page===1?'disabled':'')+'>'+
+    '<i class="fas fa-chevron-left"></i></button>';
+  // Page numbers — show up to 7 buttons with ellipsis
+  var pages=[];
+  if(totalPages<=7){
+    for(var i=1;i<=totalPages;i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if(page>3) pages.push('…');
+    for(var i=Math.max(2,page-1);i<=Math.min(totalPages-1,page+1);i++) pages.push(i);
+    if(page<totalPages-2) pages.push('…');
+    pages.push(totalPages);
+  }
+  pages.forEach(function(p){
+    if(p==='…'){
+      btns+='<span style="padding:5px 4px;color:var(--muted);font-size:.82rem">…</span>';
+    } else {
+      var active=p===page;
+      btns+='<button onclick="goUsersPage('+p+',\''+q+'\')" '+
+        'style="padding:5px 12px;border:1px solid '+(active?'var(--primary)':'var(--border)')+';border-radius:7px;'+
+        'background:'+(active?'var(--primary)':'var(--surface)')+';color:'+(active?'#fff':'var(--text)')+';'+
+        'cursor:'+(active?'default':'pointer')+';font-size:.82rem;font-weight:'+(active?'700':'400')+'" '+(active?'disabled':'')+'>'+p+'</button>';
+    }
+  });
+  // Next
+  btns+='<button onclick="goUsersPage('+(page+1)+',\''+q+'\')" '+
+    'style="padding:5px 12px;border:1px solid var(--border);border-radius:7px;background:var(--surface);color:'+(page===totalPages?'var(--muted)':'var(--text)')+';cursor:'+(page===totalPages?'default':'pointer')+';font-size:.82rem" '+(page===totalPages?'disabled':'')+'>'+
+    '<i class="fas fa-chevron-right"></i></button>';
+  // Page info
+  var from=(page-1)*perPage+1, to=Math.min(page*perPage,total);
+  btns+='<span style="font-size:.78rem;color:var(--muted);margin-left:6px">'+from+'–'+to+' of '+total+'</span>';
+  el.innerHTML=btns;
+}
+
+function goUsersPage(page, q){
+  _usersPage=page;
+  loadUsers(q||'');
 }
 
 async function resendWelcomeEmail(email){
@@ -357,17 +428,26 @@ async function loadUsers(q){
   initUserSearch();
   var tableEl=document.getElementById('admin-users-table');
   var countEl=document.getElementById('admin-user-count');
+  var pagEl=document.getElementById('admin-users-pagination');
   if(!tableEl) return;
+  // Sync the per-page selector to current state
+  var ppSel=document.getElementById('admin-users-perpage');
+  if(ppSel) ppSel.value=String(_usersPerPage);
   tableEl.innerHTML='<p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
+  if(pagEl) pagEl.innerHTML='';
   try{
-    var url='/api/admin/users'+(q?'?q='+encodeURIComponent(q):'');
+    var params='?page='+_usersPage+'&limit='+_usersPerPage+(q?'&q='+encodeURIComponent(q):'');
+    var url='/api/admin/users'+params;
     var ctrl=new AbortController(),tid=setTimeout(function(){ctrl.abort();},12000);
     var res=await fetch(url,{signal:ctrl.signal,credentials:'include'});
     clearTimeout(tid);
     var data=await res.json();
     if(data.error){ tableEl.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
+    var total=data.total||0;
+    var page=data.page||_usersPage;
+    var perPage=data.perPage||_usersPerPage;
     if(!data.users||!data.users.length){ tableEl.innerHTML='<p style="color:var(--muted)">No users found.</p>'; return; }
-    if(countEl) countEl.textContent=data.users.length+' user'+(data.users.length!==1?'s':'');
+    if(countEl) countEl.textContent=total+' user'+(total!==1?'s':'')+(total>perPage?' (page '+page+' of '+Math.ceil(total/perPage)+')':'');
     tableEl.innerHTML='<div style="overflow-x:auto"><table class="admin-table"><thead><tr>'+
       '<th>Email / Name</th><th>Plan</th><th>Status</th>'+
       '<th>Points</th><th>Bonus</th>'+
@@ -451,6 +531,8 @@ async function loadUsers(q){
           if(el) el.textContent='—';
         });
     });
+    // Render pagination controls
+    renderUsersPagination(total, page, perPage, q||'');
     window._usersLoaded=true;
   }catch(e){ if(tableEl) tableEl.innerHTML='<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed to load: '+(e.message||'timeout')+'</p>'; }
 }
