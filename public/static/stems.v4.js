@@ -47,6 +47,7 @@
   var _taskId     = null;
   var _pollTimer  = null;
   var _pollSec    = 0;
+  var _pollMaxSec = 240;  // 4-minute timeout — stems can take up to 90s per MusicAPI docs
   var _tracks     = [];           // [{name,url,muted,soloed,vol,gainNode,buffer,sourceNode,loaded}]
   var _audioCtx   = null;
   var _masterGain = null;
@@ -370,7 +371,9 @@
       _taskId = data.task_id;
       _pollSec = 0;
       _setStatus('<div class="daw-spin"></div><span>Stemforge is separating your stems… (this can take 30–90 s)</span>', true);
-      _startPolling();
+      // Start polling — first poll fires after 5s (give background task time to submit),
+      // then every 15s thereafter (MusicAPI recommends 15-25s interval; rate limit = 1 req/3s)
+      setTimeout(function () { _doPoll(); _startPolling(); }, 5000);
     })
     .catch(function (err) {
       _setStatus('<span style="color:#f87171">❌ Stem splitter ran into an issue — please try again.</span>', false);
@@ -381,19 +384,46 @@
   function _startPolling () {
     if (_pollTimer) clearInterval(_pollTimer);
     _pollTimer = setInterval(function () {
-      _pollSec += 3;
+      _pollSec += 15;  // matches 15s interval
       _doPoll();
-    }, 3000);
+    }, 15000);  // 15s — MusicAPI docs recommend 15-25s; 3s was hitting rate limit (1 req/3s)
   }
 
   function _doPoll () {
     if (!_jobId || !_taskId) return;
+
+    // ── Timeout guard: 4 minutes max ──────────────────────────────────────────
+    if (_pollSec >= _pollMaxSec) {
+      clearInterval(_pollTimer); _pollTimer = null;
+      _setStatus('<span style="color:#f87171">❌ Stem splitting timed out — please try again.</span>', false);
+      _setExtractBtn('⚡ RETRY', false);
+      return;
+    }
+
     var url = '/api/job/stems/' + encodeURIComponent(_jobId) +
               '?mode=' + _mode +
               '&task_id=' + encodeURIComponent(_taskId);
     fetch(url, { credentials: 'include' })
-    .then(function (r) { return r.json(); })
+    .then(function (r) {
+      // Surface rate-limit errors instead of silently swallowing them
+      if (r.status === 429) {
+        console.warn('[stems] Poll rate-limited (429) — will retry in 15s');
+        return { status: 'processing', task_id: _taskId };
+      }
+      if (!r.ok) {
+        console.warn('[stems] Poll HTTP ' + r.status + ' — will retry');
+        return { status: 'processing', task_id: _taskId };
+      }
+      return r.json();
+    })
     .then(function (data) {
+      // Keep _taskId in sync: server may transition stemwait: → stemtask: UUID
+      // so always update to the latest task_id the server reports
+      if (data.task_id && data.task_id !== _taskId) {
+        console.log('[stems] task_id transition: ' + _taskId + ' → ' + data.task_id);
+        _taskId = data.task_id;
+      }
+
       if (data.status === 'ready') {
         clearInterval(_pollTimer); _pollTimer = null;
         _renderTracks(data.stems || []);
@@ -402,11 +432,15 @@
         _setStatus('<span style="color:#f87171">❌ ' + _esc(data.error || 'Stem splitting failed — please try again.') + '</span>', false);
         _setExtractBtn('⚡ RETRY', false);
       } else {
-        var dots = '.'.repeat((_pollSec / 3 % 3) + 1);
+        // Still processing — show elapsed time
+        var dots = '.'.repeat(Math.floor(_pollSec / 15) % 3 + 1);
         _setStatus('<div class="daw-spin"></div><span>Processing' + dots + ' (' + _pollSec + 's)</span>', true);
       }
     })
-    .catch(function () {}); // ignore transient poll errors
+    .catch(function (err) {
+      // Only log — don't surface transient network errors to user
+      console.warn('[stems] Poll fetch error (will retry):', err && err.message || err);
+    });
   }
 
   // ─────────────────────────────────────────────────────────────────────────
