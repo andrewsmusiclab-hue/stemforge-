@@ -7808,24 +7808,42 @@ app.post('/api/admin/send-apology-emails', async (c) => {
   </div>
 </div>`
 
+    // Create a broadcast_sends record so it shows in Broadcast History
+    const sendName = `Server Error Apology → ${recipient.name || recipient.email}`
+    const sendRecord = await c.env.DB.prepare(
+      `INSERT INTO broadcast_sends (name, subject, audience, sent_count, opened_count) VALUES (?,?,?,0,0)`
+    ).bind(sendName, subject, 'individual').run()
+    const sendId = sendRecord.meta.last_row_id as number
+
+    // Add open-tracking pixel to html
+    const openToken = await sha256Hex(`${sendId}:${recipient.id}:${(c.env as any).SESSION_SECRET || 'sf'}`)
+    const pixelUrl = `${siteUrl}/api/track/open?sid=${sendId}&t=${openToken}`
+    const trackedHtml = html + `<img src="${pixelUrl}" width="1" height="1" style="display:block;width:1px;height:1px;border:0;opacity:0" alt=""/>`
+
     let ok = false
     try {
       if (resendKey) {
         const res = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: fromEmail, to: [recipient.email], subject, html })
+          body: JSON.stringify({ from: fromEmail, to: [recipient.email], subject, html: trackedHtml })
         })
         ok = res.ok
       } else {
         const res = await fetch('https://api.mailersend.com/v1/email', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ from: { email: 'noreply@stemforge.studio', name: 'StemForge' }, to: [{ email: recipient.email }], subject, html })
+          body: JSON.stringify({ from: { email: 'noreply@stemforge.studio', name: 'StemForge' }, to: [{ email: recipient.email }], subject, html: trackedHtml })
         })
         ok = res.ok || res.status === 202
       }
     } catch (e: any) { ok = false }
+
+    if (ok) {
+      await c.env.DB.prepare(`UPDATE broadcast_sends SET sent_count=1 WHERE id=?`).bind(sendId).run()
+    } else {
+      await c.env.DB.prepare(`DELETE FROM broadcast_sends WHERE id=?`).bind(sendId).run()
+    }
     results.push({ email: recipient.email, name: recipient.name, ok })
   }
 
