@@ -6352,12 +6352,12 @@ app.get('/api/admin/stuck-jobs', async (c) => {
   const [generatingRows, errorRows] = await Promise.all([
     c.env.DB.prepare(
       `SELECT j.id, j.user_id, j.data, u.email FROM jobs j LEFT JOIN users u ON u.id = j.user_id
-       WHERE json_extract(j.data,'$.status')='generating' ORDER BY j.created_at ASC LIMIT 200`
+       WHERE json_extract(j.data,'$.status')='generating' AND j.deleted_at IS NULL ORDER BY j.created_at ASC LIMIT 200`
     ).all<{ id: string; user_id: string; data: string; email: string }>(),
     c.env.DB.prepare(
       `SELECT j.id, j.user_id, j.data, u.email FROM jobs j LEFT JOIN users u ON u.id = j.user_id
        WHERE json_extract(j.data,'$.status')='error'
-         AND j.created_at >= ? ORDER BY j.created_at DESC LIMIT 100`
+         AND j.deleted_at IS NULL AND j.created_at >= ? ORDER BY j.created_at DESC LIMIT 100`
     ).bind(last24hMs).all<{ id: string; user_id: string; data: string; email: string }>()
   ])
 
@@ -10122,7 +10122,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261012-73'
+const ASSET_VER = '20261012-74'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
