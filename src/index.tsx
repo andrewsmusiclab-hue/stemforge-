@@ -10535,7 +10535,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-79'
+const ASSET_VER = '20261013-80'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14754,6 +14754,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="revenue" onclick="adminTab('revenue')"><i class="fas fa-dollar-sign"></i> Revenue</button>
       <button class="admin-tab" data-tab="users" onclick="adminTab('users')"><i class="fas fa-users"></i> Users</button>
       <button class="admin-tab" data-tab="signups" onclick="adminTab('signups')"><i class="fab fa-google"></i> Signups</button>
+      <button class="admin-tab" data-tab="notices" onclick="adminTab('notices')"><i class="fas fa-bell" style="color:#f59e0b"></i> Notices</button>
       <button class="admin-tab" data-tab="stuckjobs" onclick="adminTab('stuckjobs')" id="stuck-jobs-tab-btn"><i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs</button>
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
@@ -14865,14 +14866,17 @@ function adminPage(user: User) {
         <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading users…</p>
       </div>
 
-      <!-- ── User Notices Tracking ────────────────────────────────────── -->
-      <div style="margin-top:32px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+    </div>
+
+    <!-- NOTICES TAB -->
+    <div id="admin-tab-notices" style="display:none">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
           <h3 style="margin:0;font-size:.98rem"><i class="fas fa-bell" style="color:#f59e0b;margin-right:8px"></i>User Notices <span style="font-size:.78rem;color:var(--muted);font-weight:400">(sent / viewed / dismissed — like email open tracking)</span></h3>
           <button onclick="loadAdminNotices()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
         </div>
         <div id="admin-notices-table" style="overflow-x:auto">
-          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Click Refresh to load…</p>
+          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
         </div>
       </div>
     </div>

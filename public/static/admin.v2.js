@@ -76,7 +76,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','signups','stuckjobs','broadcasts','security','publish'];
+var adminTabs=['analytics','revenue','users','signups','notices','stuckjobs','broadcasts','security','publish'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -84,7 +84,7 @@ function adminTab(tab){
   if(tab==='analytics'&&!window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
-  if(tab==='users'){ loadAdminNotices(); } // always refresh notices when switching to Users tab
+  if(tab==='notices'){ loadAdminNotices(); } // refresh notices when switching to Notices tab
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
