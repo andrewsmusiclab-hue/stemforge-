@@ -554,6 +554,25 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'oct2026-lyrics-panel',
+      date: 'October 2026',
+      title: 'Lyrics Panel — See Your Lyrics While You Play',
+      tag: 'NEW FEATURE',
+      tagColor: '#a855f7',
+      body: `<div style="margin:10px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.7">
+        <p style="margin-bottom:10px">Hit play on any track in your library that has lyrics and a <b style="color:#c084fc">lyrics panel</b> will instantly slide in from the right — showing your lyrics formatted with section headers as you listen.</p>
+        <img src="https://www.genspark.ai/api/files/s/eZaQMyA1"
+          alt="Lyrics panel preview"
+          style="width:100%;border-radius:10px;border:1px solid rgba(168,85,247,.2);margin-bottom:12px;display:block"/>
+        <ul style="margin:0;padding:0 0 0 16px">
+          <li><b style="color:#e2e8f0">Works on all library tabs</b> — Beats, Remixes, Extended, and Covers. Any track with lyrics gets the panel automatically.</li>
+          <li><b style="color:#e2e8f0">Section headers formatted</b> — Tags like <code style="color:#c084fc;font-size:.78rem">[Verse]</code>, <code style="color:#c084fc;font-size:.78rem">[Chorus]</code>, <code style="color:#c084fc;font-size:.78rem">[Hook]</code> display as glowing coloured labels so you can follow along easily.</li>
+          <li><b style="color:#e2e8f0">Swipe-in animation</b> — The panel slides in smoothly from the right edge, just like Suno's lyrics view.</li>
+          <li><b style="color:#e2e8f0">Auto-closes</b> — Closing the mini player or playing a track without lyrics closes the panel automatically.</li>
+        </ul>
+      </div>`
+    },
+    {
       id: 'sep2026-copyright-policy',
       date: 'September 2026',
       title: 'Important: Commercially Published Tracks',
