@@ -1844,6 +1844,46 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
           .bind('musicapi_busy', jobUserId, Date.now()).run()
       } catch { /* table may not exist on very first deploy — swallow */ }
     }
+    // ── Auto-notice: if this is a SERVER-side error (not user's fault), send a popup
+    // and refund their points automatically. Skip copyright errors — those are user errors.
+    const isUserError = msg.startsWith('LYRICS_COPYRIGHT:') || msg.startsWith('SERVER_BUSY:')
+    if (!isUserError && db) {
+      await autoNoticeServerError(db, jobUserId, jobId)
+    }
+  }
+}
+
+// ── Auto-notice helper — inserts a user_notices popup for server-side failures ──────────────
+// Called from startPipeline catch block for errors that are OUR fault (not user error).
+// Skips copyright errors (user's fault) and notices already sent for this job.
+async function autoNoticeServerError(db: D1Database, userId: string | null, jobId: string): Promise<void> {
+  if (!userId) return
+  try {
+    // Don't double-send: check if a notice for this job already exists
+    const existing = await db.prepare(
+      `SELECT id FROM user_notices WHERE user_id=? AND notice_key=?`
+    ).bind(userId, `auto-error-${jobId}`).first()
+    if (existing) return
+
+    await db.prepare(`
+      INSERT INTO user_notices (user_id, notice_key, title, body, icon, icon_gradient, cta_text, cta_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      userId,
+      `auto-error-${jobId}`,
+      'A note about your recent track',
+      'Your track didn\'t generate because of a problem on our end and we are working on it to fix it. We have refunded your points back to your account. Please try generating again in a couple hours.',
+      'fas fa-tools',
+      'linear-gradient(135deg,#f59e0b,#ef4444)',
+      'Got it',
+      ''
+    ).run()
+
+    // Refund the 20 points for this failed job
+    await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+      .bind(userId).run()
+  } catch (e: any) {
+    console.warn('[auto-notice] failed to insert notice:', e?.message)
   }
 }
 
@@ -7714,6 +7754,82 @@ app.post('/api/admin/broadcast/send-one', async (c) => {
 
   await c.env.DB.prepare(`UPDATE broadcast_sends SET sent_count=1 WHERE id=?`).bind(sendId).run()
   return c.json({ ok: true, sent: 1, to: recipient.email, name: recipient.name, send_id: sendId })
+})
+
+// POST /api/admin/send-apology-emails — one-shot: send server error apology emails
+// Secured by admin_key=ADMIN_EMAIL query param. Sends to a list of user emails.
+app.post('/api/admin/send-apology-emails', async (c) => {
+  const adminKey = c.req.query('admin_key')
+  const adminEmail = (c.env as any).ADMIN_EMAIL || 'andrewsmusiclab@gmail.com'
+  if (!adminKey || adminKey !== adminEmail) return c.json({ error: 'Forbidden' }, 403)
+
+  const resendKey = (c.env as any).RESEND_API_KEY
+  const mailerKey = (c.env as any).MAILERSEND_API_KEY
+  if (!resendKey && !mailerKey) return c.json({ error: 'No email API key configured' }, 500)
+
+  const body = await c.req.json<{ emails: string[] }>()
+  const emails = body.emails || []
+  if (!emails.length) return c.json({ error: 'emails array required' }, 400)
+
+  const siteUrl = (c.env as any).SITE_URL || 'https://stemforge.studio'
+  const fromEmail = 'StemForge <noreply@stemforge.studio>'
+  const subject = 'A note about your recent tracks on StemForge'
+  const results: any[] = []
+
+  for (const email of emails) {
+    const recipient = await c.env.DB.prepare(
+      `SELECT id, email, name FROM users WHERE email=? LIMIT 1`
+    ).bind(email.trim().toLowerCase()).first<{id:string, email:string, name:string}>()
+    if (!recipient) { results.push({ email, ok: false, error: 'User not found' }); continue }
+
+    const secret = (c.env as any).SESSION_SECRET || 'sf'
+    const unsubToken = await sha256Hex(recipient.id + secret)
+    const unsubUrl = `${siteUrl}/api/unsubscribe?id=${recipient.id}&t=${unsubToken}`
+
+    const html = `
+<div style="background:#080e1a;padding:40px 0;font-family:Inter,system-ui,sans-serif">
+  <div style="max-width:600px;margin:0 auto;background:#0d1117;border:1px solid #1e293b;border-radius:16px;overflow:hidden">
+    <div style="background:linear-gradient(135deg,#f59e0b,#ef4444);padding:32px;text-align:center">
+      <div style="font-size:2rem">🔧</div>
+      <h1 style="color:#fff;font-size:1.3rem;font-weight:700;margin:12px 0 0">A note about your recent tracks</h1>
+    </div>
+    <div style="padding:32px">
+      <p style="color:#e2e8f0;font-size:15px;line-height:1.7;margin:0 0 16px">Your tracks didn't generate because of a problem on our end and we are working on it to fix it.</p>
+      <p style="color:#e2e8f0;font-size:15px;line-height:1.7;margin:0 0 24px">We have refunded your full points back to your account. Please try generating again in a couple hours.</p>
+      <div style="text-align:center;margin:28px 0">
+        <a href="https://stemforge.studio/generator" style="display:inline-block;background:#4e9fff;color:#050c1a;padding:14px 32px;border-radius:10px;font-weight:700;font-size:15px;text-decoration:none">Go to Generator →</a>
+      </div>
+      <p style="color:#64748b;font-size:13px;text-align:center;margin:24px 0 0">— The StemForge Team</p>
+    </div>
+    <div style="padding:16px 32px;border-top:1px solid #1e293b;text-align:center;font-size:11px;color:#475569">
+      You're receiving this because you have a StemForge account.<br/>
+      <a href="${unsubUrl}" style="color:#4e9fff">Unsubscribe</a>
+    </div>
+  </div>
+</div>`
+
+    let ok = false
+    try {
+      if (resendKey) {
+        const res = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: fromEmail, to: [recipient.email], subject, html })
+        })
+        ok = res.ok
+      } else {
+        const res = await fetch('https://api.mailersend.com/v1/email', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${mailerKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: { email: 'noreply@stemforge.studio', name: 'StemForge' }, to: [{ email: recipient.email }], subject, html })
+        })
+        ok = res.ok || res.status === 202
+      }
+    } catch (e: any) { ok = false }
+    results.push({ email: recipient.email, name: recipient.name, ok })
+  }
+
+  return c.json({ results })
 })
 
 // GET /api/unsubscribe — one-click unsubscribe
