@@ -3055,69 +3055,111 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
   // ── stemtask: → poll MusicAPI /sonic/task/{id} for stem completion ─────────
   // task_id = "stemtask:<musicapi_task_id>" set by the background upload+submit above.
-  // MusicAPI returns a stems object with direct CDN URLs — no ZIP handling needed.
+  //
+  // REAL MusicAPI response shape (verified via live test 2026-10-13):
+  //   HTTP 202 while processing: { type: "not_ready", error: "task not ready, please wait few seconds." }
+  //   HTTP 200 when done:        { code: 200, message: "success", data: [ clip, clip, ... ] }
+  //
+  // There is NO top-level "state" or "stems" object — all data is in data.data[] clips array.
+  // Each clip: { clip_id, state: "succeeded"|"failed", title, audio_url, ... }
+  //
+  // stems/basic returns 4 clips in 2 variation pairs:
+  //   title contains "(Lead Vocal)"         -> vocal track
+  //   title contains "(Without Lead Vocal)" -> instrumental track
+  //
+  // stems/full returns one clip per instrument, title = stem name (e.g. "Drums", "Bass")
   if (stemJob.task_id.startsWith('stemtask:')) {
     const musicapiTaskId = stemJob.task_id.slice('stemtask:'.length)
     try {
       const res = await fetch(`${MUSICAPI_SONIC}/task/${musicapiTaskId}`, {
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
       })
+
+      // HTTP 202 = still processing ("not_ready") — keep polling
+      if (res.status === 202) {
+        return c.json({ status: 'processing', task_id: stemJob.task_id })
+      }
       if (!res.ok) {
         console.warn(`[stems/musicapi] Poll ${musicapiTaskId} returned ${res.status} — retrying`)
         return c.json({ status: 'processing', task_id: stemJob.task_id })
       }
+
       const data = await res.json() as any
+      // data.data is the array of clip objects
+      const clips: any[] = Array.isArray(data.data) ? data.data : []
 
-      // MusicAPI stems task returns:
-      // { state: 'succeeded'|'failed'|'pending'|'running', stems: { vocals: url, drums: url, ... } }
-      // (may be nested under data field — check both)
-      const taskState = data.state || data.data?.state || data.status
-      const stemsData = data.stems || data.data?.stems || {}
-
-      if (taskState === 'succeeded' || taskState === 'completed') {
-        // stems is a key→URL object: { vocals: "https://...", drums: "https://...", ... }
-        let stemTracks: StemTrack[] = Object.entries(stemsData)
-          .filter(([, url]) => typeof url === 'string' && (url as string).length > 0)
-          .map(([name, url]) => ({ name, url: url as string }))
-
-        if (!stemTracks.length) {
-          console.warn(`[stems/musicapi] succeeded but no stems in response: ${JSON.stringify(data).slice(0,200)}`)
-          return c.json({ status: 'processing', task_id: stemJob.task_id })
-        }
-
-        // For split_from_mix: filter to vocals + instrumental only
-        if (stemJob.mode === 'split_from_mix') {
-          const vocals = stemTracks.find(s => s.name === 'vocals')
-          const instr  = stemTracks.find(s => s.name === 'instrumental' || s.name === 'other')
-          stemTracks = []
-          if (vocals) stemTracks.push(vocals)
-          if (instr)  stemTracks.push({ name: 'instrumental', url: instr.url })
-          if (stemTracks.length === 1) {
-            const ex = stemTracks[0]
-            stemTracks.push({ name: ex.name === 'vocals' ? 'instrumental' : 'vocals', url: ex.url })
-          }
-        }
-
-        stemJob.status = 'ready'
-        stemJob.stems = stemTracks
-        const updatedJob = { ...job } as any
-        updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
-        await setJob(c.env.DB, updatedJob)
-        return c.json({ status: 'ready', stems: stemTracks, task_id: stemJob.task_id })
+      // If no clips yet, still processing
+      if (!clips.length) {
+        return c.json({ status: 'processing', task_id: stemJob.task_id })
       }
 
-      if (taskState === 'failed' || taskState === 'error') {
+      // If every clip has failed — surface error
+      if (clips.every((cl: any) => cl.state === 'failed')) {
         stemJob.status = 'error'
         stemJob.error = 'Stem splitting failed — please try again. If the problem persists, contact support.'
-        if (data.error || data.message) console.error(`[stems/musicapi] Task failed detail: ${data.error || data.message}`)
+        console.error(`[stems/musicapi] All clips failed for task ${musicapiTaskId}`)
         const updatedJob = { ...job } as any
         updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
         await setJob(c.env.DB, updatedJob)
         return c.json({ status: 'error', error: stemJob.error })
       }
 
-      // still pending/running — client keeps polling
-      return c.json({ status: 'processing', task_id: stemJob.task_id })
+      // Wait until every clip has reached a terminal state
+      const allDone = clips.every((cl: any) => cl.state === 'succeeded' || cl.state === 'failed')
+      if (!allDone) {
+        return c.json({ status: 'processing', task_id: stemJob.task_id })
+      }
+
+      // Only use succeeded clips with a real audio URL
+      const succeededClips = clips.filter((cl: any) => cl.state === 'succeeded' && cl.audio_url)
+
+      let stemTracks: StemTrack[] = []
+
+      if (stemJob.mode === 'split_from_mix') {
+        // stems/basic: find by title substring — "(Lead Vocal)" / "(Without Lead Vocal)"
+        const vocalClip = succeededClips.find((cl: any) => cl.title?.includes('Lead Vocal)'))
+        const instrClip = succeededClips.find((cl: any) => cl.title?.includes('Without Lead Vocal)'))
+        if (vocalClip) stemTracks.push({ name: 'vocals',       url: vocalClip.audio_url })
+        if (instrClip) stemTracks.push({ name: 'instrumental', url: instrClip.audio_url })
+        // Fallback: if title matching failed, just take first two succeeded clips
+        if (!stemTracks.length && succeededClips.length >= 2) {
+          stemTracks = [
+            { name: 'vocals',       url: succeededClips[0].audio_url },
+            { name: 'instrumental', url: succeededClips[1].audio_url },
+          ]
+        }
+      } else {
+        // stems/full: each clip is a distinct stem — derive name from title parenthetical
+        // MusicAPI may return 2 variation clips per stem; deduplicate by derived name
+        const seen = new Set<string>()
+        for (const cl of succeededClips) {
+          let stemName = ''
+          // Title format: "Song Name (Stem Name)" — extract the parenthetical
+          const parenMatch = cl.title?.match(/\(([^)]+)\)$/)
+          if (parenMatch) {
+            stemName = parenMatch[1].toLowerCase().replace(/\s+/g, '_')
+          } else if (cl.title) {
+            stemName = cl.title.toLowerCase().replace(/\s+/g, '_')
+          }
+          if (!stemName || seen.has(stemName)) continue
+          seen.add(stemName)
+          stemTracks.push({ name: stemName, url: cl.audio_url })
+        }
+      }
+
+      if (!stemTracks.length) {
+        console.warn(`[stems/musicapi] 200 OK but no usable clips — raw: ${JSON.stringify(data).slice(0,300)}`)
+        return c.json({ status: 'processing', task_id: stemJob.task_id })
+      }
+
+      console.log(`[stems/musicapi] Ready: ${stemTracks.map(s => s.name).join(', ')} for task ${musicapiTaskId}`)
+      stemJob.status = 'ready'
+      stemJob.stems = stemTracks
+      const updatedJob = { ...job } as any
+      updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
+      await setJob(c.env.DB, updatedJob)
+      return c.json({ status: 'ready', stems: stemTracks, task_id: stemJob.task_id })
+
     } catch (pollErr: any) {
       console.error(`[stems/musicapi] Poll error: ${pollErr?.message}`)
       return c.json({ status: 'processing', task_id: stemJob.task_id })
@@ -10640,7 +10682,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-86'
+const ASSET_VER = '20261013-88'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -10794,7 +10836,7 @@ ${body}
 </div>
 
 <script src="/static/app.v2.70.js?v=${ASSET_VER}"></script>
-<script src="/static/stems.v4.js"></script>
+<script src="/static/stems.v4.js?v=${ASSET_VER}"></script>
 <script>
 // Analytics beacon — fires on every page load, non-blocking
 (function(){

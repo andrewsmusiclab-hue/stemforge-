@@ -1,4 +1,4 @@
-// stems.v4.js — DAW-style Mureka stem player (replaces stems.v3.js)
+// stems.v4.js — DAW-style stem player
 // Overrides window.openStemsPanel / closeStemsPanel from app.js.
 // Two modes:
 //   "AUTO SPLIT"        → audio-separation-1 (vocals, drums, bass, other + extras)
@@ -10,7 +10,7 @@
   // ── Track colour palette (DAW / Pro Tools-style) ───────────────────────────
   var COLORS = {
     vocals:         { bg:'#0d1f35', wave:'#4fc3f7', border:'#29b6f6', label:'#7ed4fa' },
-    vocal:          { bg:'#0d1f35', wave:'#4fc3f7', border:'#29b6f6', label:'#7ed4fa' }, // Mureka uses 'vocal'
+    vocal:          { bg:'#0d1f35', wave:'#4fc3f7', border:'#29b6f6', label:'#7ed4fa' },
     drums:          { bg:'#0d2010', wave:'#66bb6a', border:'#4caf50', label:'#91d994' },
     bass:           { bg:'#200d30', wave:'#ce93d8', border:'#ba68c8', label:'#dca8e8' },
     other:          { bg:'#251800', wave:'#ffb74d', border:'#ffa726', label:'#ffc870' },
@@ -347,7 +347,7 @@
     _duration = 0;
     _offset = 0;
 
-    _setStatus('<div class="daw-spin"></div><span>Submitting to Mureka AI…</span>', true);
+    _setStatus('<div class="daw-spin"></div><span>Submitting to Stemforge AI…</span>', true);
     _setExtractBtn('⏳ Submitting…', true);
 
     fetch('/api/job/stems', {
@@ -369,11 +369,11 @@
       }
       _taskId = data.task_id;
       _pollSec = 0;
-      _setStatus('<div class="daw-spin"></div><span>Mureka is separating your stems… (this takes 30–90 s)</span>', true);
+      _setStatus('<div class="daw-spin"></div><span>Stemforge is separating your stems… (this can take 30–90 s)</span>', true);
       _startPolling();
     })
     .catch(function (err) {
-      _setStatus('<span style="color:#f87171">❌ ' + _esc(err.message) + '</span>', false);
+      _setStatus('<span style="color:#f87171">❌ Stem splitter ran into an issue — please try again.</span>', false);
       _setExtractBtn('⚡ EXTRACT STEMS', false);
     });
   }
@@ -399,7 +399,7 @@
         _renderTracks(data.stems || []);
       } else if (data.status === 'error') {
         clearInterval(_pollTimer); _pollTimer = null;
-        _setStatus('<span style="color:#f87171">❌ ' + _esc(data.error || 'Stem extraction failed') + '</span>', false);
+        _setStatus('<span style="color:#f87171">❌ ' + _esc(data.error || 'Stem splitting failed — please try again.') + '</span>', false);
         _setExtractBtn('⚡ RETRY', false);
       } else {
         var dots = '.'.repeat((_pollSec / 3 % 3) + 1);
