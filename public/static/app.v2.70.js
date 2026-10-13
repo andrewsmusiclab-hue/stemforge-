@@ -141,9 +141,8 @@ async function safeJson(res) {
 
 // ── User notices — fetch and show any pending popups ─────────────────────────
 (function sfCheckNotices() {
-  // Only run on pages that are inside the app (not landing page / login)
-  // We detect this by whether there's a session cookie present
-  if (!document.cookie.includes('sf_session')) return;
+  // Note: sf_session is HttpOnly so document.cookie cannot read it.
+  // The /api/notices endpoint handles auth server-side and returns [] for guests.
   setTimeout(function() {
     fetch('/api/notices', { credentials: 'include' })
       .then(function(r) { return r.json(); })
