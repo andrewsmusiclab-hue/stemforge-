@@ -7976,6 +7976,60 @@ app.get('/api/admin/analytics', async (c) => {
   })
 })
 
+// GET /api/admin/traffic-sources?period=today|yesterday|7d|30d|6m|1y
+app.get('/api/admin/traffic-sources', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const period = (c.req.query('period') || '30d').toLowerCase()
+  const now = Date.now()
+  const dayMs = 86400000
+  const todayStart = now - (now % dayMs)
+
+  let rangeStart: number
+  let label: string
+  switch (period) {
+    case 'today':
+      rangeStart = todayStart
+      label = 'Today'
+      break
+    case 'yesterday':
+      rangeStart = todayStart - dayMs
+      label = 'Yesterday'
+      break
+    case '7d':
+      rangeStart = todayStart - 6 * dayMs
+      label = '7d'
+      break
+    case '6m':
+      rangeStart = todayStart - 182 * dayMs
+      label = '6m'
+      break
+    case '1y':
+      rangeStart = todayStart - 364 * dayMs
+      label = '1y'
+      break
+    default: // 30d
+      rangeStart = todayStart - 29 * dayMs
+      label = '30d'
+  }
+
+  // For "yesterday" we cap at end of yesterday (start of today)
+  const rangeEnd = period === 'yesterday' ? todayStart : now
+
+  const sourcesRow = await c.env.DB.prepare(
+    `SELECT source, COUNT(*) as cnt FROM page_views WHERE created_at >= ? AND created_at < ? GROUP BY source ORDER BY cnt DESC LIMIT 20`
+  ).bind(rangeStart, rangeEnd).all<any>().catch(() => ({ results: [] }))
+
+  return c.json({
+    period,
+    label,
+    sources: (sourcesRow as any)?.results || [],
+  })
+})
+
 // GET /api/admin/revenue — MRR and profit breakdown
 app.get('/api/admin/revenue', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
@@ -10122,7 +10176,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261012-74'
+const ASSET_VER = '20261013-75'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14367,7 +14421,17 @@ function adminPage(user: User) {
           </div>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
-          <h3 style="margin-bottom:16px;font-size:.98rem"><i class="fas fa-share-alt" style="color:#10b981;margin-right:8px"></i>Traffic Sources (30d)</h3>
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+            <h3 style="margin:0;font-size:.98rem"><i class="fas fa-share-alt" style="color:#10b981;margin-right:8px"></i>Traffic Sources <span id="traffic-src-label" style="color:var(--muted);font-weight:400">(30d)</span></h3>
+            <div id="traffic-src-periods" style="display:flex;gap:4px;flex-wrap:wrap">
+              <button onclick="loadTrafficSources('today')"    class="ts-pill" data-period="today">Today</button>
+              <button onclick="loadTrafficSources('yesterday')" class="ts-pill" data-period="yesterday">Yesterday</button>
+              <button onclick="loadTrafficSources('7d')"       class="ts-pill" data-period="7d">7d</button>
+              <button onclick="loadTrafficSources('30d')"      class="ts-pill ts-pill--active" data-period="30d">30d</button>
+              <button onclick="loadTrafficSources('6m')"       class="ts-pill" data-period="6m">6m</button>
+              <button onclick="loadTrafficSources('1y')"       class="ts-pill" data-period="1y">1y</button>
+            </div>
+          </div>
           <div id="sources-chart"><p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p></div>
         </div>
       </div>
@@ -15034,6 +15098,10 @@ function adminPage(user: User) {
 .rv-bar-wrap{display:flex;align-items:center;gap:10px;font-size:.85rem}
 .rv-bar-track{flex:1;height:8px;background:var(--border);border-radius:4px;overflow:hidden}
 .rv-bar-fill{height:100%;border-radius:4px;transition:width .5s}
+/* ── Traffic Sources period pills ── */
+.ts-pill{padding:3px 10px;border-radius:99px;border:1px solid var(--border);background:var(--bg);color:var(--muted);font-size:.75rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap}
+.ts-pill:hover{border-color:var(--primary);color:var(--primary)}
+.ts-pill--active{background:var(--primary);border-color:var(--primary);color:#fff}
 /* ── Preview & Publish tab ── */
 .pp-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
 .pp-card-header{display:flex;align-items:center;gap:8px;font-size:.92rem;font-weight:700;color:var(--text)}

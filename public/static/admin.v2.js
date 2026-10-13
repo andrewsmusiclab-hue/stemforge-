@@ -196,9 +196,8 @@ async function loadAnalytics(){
           xLabels+
         '</svg>';
     }
-    var sources=d.sources||[],totalSrc=sources.reduce(function(a,s){return a+s.cnt;},0)||1,srcEl=document.getElementById('sources-chart');
-    if(!sources.length){ srcEl.innerHTML='<p style="color:var(--muted);font-size:.82rem">No traffic data yet</p>'; }
-    else { srcEl.innerHTML=sources.map(function(s){ var pct=Math.round((s.cnt/totalSrc)*100),icon=SOCIAL_ICONS[s.source||'direct']||SOCIAL_ICONS.referral,label=SOURCE_LABELS[s.source||'direct']||(s.source||'direct'); return '<div class="rv-bar-wrap" style="margin-bottom:10px"><div style="width:22px;text-align:center">'+icon+'</div><div style="width:80px;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+label+'</div><div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:var(--primary)"></div></div><div style="width:36px;text-align:right;font-size:.82rem;font-weight:700">'+s.cnt+'</div><div style="width:34px;text-align:right;font-size:.75rem;color:var(--muted)">'+pct+'%</div></div>'; }).join(''); }
+    // Traffic Sources: delegate to loadTrafficSources so the period filter works
+    loadTrafficSources('30d');
     var socialKeys=['tiktok','facebook','instagram','youtube','twitter','snapchat','pinterest','reddit','linkedin'],srcMap={};
     (d.sources||[]).forEach(function(s){srcMap[s.source]=s.cnt;});
     document.getElementById('social-breakdown').innerHTML=socialKeys.map(function(k){ var cnt=srcMap[k]||0; return '<div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center"><div style="font-size:1.4rem;margin-bottom:6px">'+(SOCIAL_ICONS[k]||'')+'</div><div style="font-size:1.1rem;font-weight:700">'+cnt+'</div><div style="font-size:.72rem;color:var(--muted);text-transform:capitalize;margin-top:2px">'+k+'</div></div>'; }).join('');
@@ -238,6 +237,54 @@ async function loadAnalytics(){
     document.getElementById('an-month').textContent='ERR';
     var be=document.getElementById('an-busy-30d'); if(be) be.textContent='ERR';
     var ce=document.getElementById('countries-chart'); if(ce) ce.innerHTML=eh;
+  }
+}
+
+// ── Traffic Sources period filter ────────────────────────────────
+var _tsCurrentPeriod = '30d';
+async function loadTrafficSources(period){
+  period = period || _tsCurrentPeriod;
+  _tsCurrentPeriod = period;
+  // Update active pill
+  var pills = document.querySelectorAll('#traffic-src-periods .ts-pill');
+  for(var i=0;i<pills.length;i++){
+    pills[i].classList.toggle('ts-pill--active', pills[i].dataset.period === period);
+  }
+  // Update label
+  var labelMap = {today:'Today',yesterday:'Yesterday','7d':'7d','30d':'30d','6m':'6m','1y':'1y'};
+  var lbl = document.getElementById('traffic-src-label');
+  if(lbl) lbl.textContent = '('+( labelMap[period]||period )+')';
+  // Show spinner
+  var srcEl = document.getElementById('sources-chart');
+  if(srcEl) srcEl.innerHTML = '<p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading…</p>';
+  try{
+    var ctrl = new AbortController(), tid = setTimeout(function(){ ctrl.abort(); }, 8000);
+    var res = await fetch('/api/admin/traffic-sources?period='+encodeURIComponent(period), {signal:ctrl.signal, credentials:'include'});
+    clearTimeout(tid);
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    var d = await res.json();
+    if(d.error) throw new Error(d.error);
+    var sources = d.sources || [];
+    if(!srcEl) return;
+    if(!sources.length){
+      srcEl.innerHTML = '<p style="color:var(--muted);font-size:.82rem">No traffic data for this period</p>';
+      return;
+    }
+    var totalSrc = sources.reduce(function(a,s){ return a+s.cnt; }, 0) || 1;
+    srcEl.innerHTML = sources.map(function(s){
+      var pct = Math.round((s.cnt/totalSrc)*100);
+      var icon = SOCIAL_ICONS[s.source||'direct'] || SOCIAL_ICONS.referral;
+      var lbl  = SOURCE_LABELS[s.source||'direct'] || (s.source||'direct');
+      return '<div class="rv-bar-wrap" style="margin-bottom:10px">'+
+        '<div style="width:22px;text-align:center">'+icon+'</div>'+
+        '<div style="width:80px;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+lbl+'</div>'+
+        '<div class="rv-bar-track"><div class="rv-bar-fill" style="width:'+pct+'%;background:var(--primary)"></div></div>'+
+        '<div style="width:36px;text-align:right;font-size:.82rem;font-weight:700">'+s.cnt+'</div>'+
+        '<div style="width:34px;text-align:right;font-size:.75rem;color:var(--muted)">'+pct+'%</div>'+
+      '</div>';
+    }).join('');
+  }catch(e){
+    if(srcEl) srcEl.innerHTML = '<p style="color:#fca5a5;font-size:.82rem">Error: '+String(e.message||e).slice(0,80)+'</p>';
   }
 }
 
