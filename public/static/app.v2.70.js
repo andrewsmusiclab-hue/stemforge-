@@ -2818,9 +2818,34 @@ document.addEventListener('DOMContentLoaded', () => {
     if (pipelineStatus) pipelineStatus.style.display = 'none';
     if (genEmpty) genEmpty.style.display = 'none';
     if (genResult) genResult.style.display = 'none';
+    if (pollInterval) clearInterval(pollInterval);
+
+    // Geo-block — show a friendly modal instead of the raw API error
+    if (msg && msg.indexOf('Country, region, or territory not supported') !== -1) {
+      showGeoBlockModal();
+      return;
+    }
+
     if (genError) genError.style.display = 'block';
     if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
-    if (pollInterval) clearInterval(pollInterval);
+  }
+
+  function showGeoBlockModal() {
+    var existing = document.getElementById('sf-geo-block-modal');
+    if (existing) { existing.style.display = 'flex'; return; }
+    var modal = document.createElement('div');
+    modal.id = 'sf-geo-block-modal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);padding:16px';
+    modal.innerHTML =
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:400px;width:90%;text-align:center;position:relative">' +
+        '<button onclick="document.getElementById(\'sf-geo-block-modal\').style.display=\'none\'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>' +
+        '<div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#0ea5e9,#6366f1);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-globe"></i></div>' +
+        '<h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Not available in your region</h3>' +
+        '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6">Song generation isn\'t supported in your region yet.<br>Any points used have been <strong style="color:var(--text)">refunded to your account</strong> automatically.</p>' +
+        '<button onclick="document.getElementById(\'sf-geo-block-modal\').style.display=\'none\'" style="display:block;width:100%;padding:13px 24px;background:linear-gradient(135deg,#0ea5e9,#6366f1);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer">Got it</button>' +
+      '</div>';
+    modal.addEventListener('click', function(e){ if (e.target === modal) modal.style.display = 'none'; });
+    document.body.appendChild(modal);
   }
 
   // ── Cancel generation ────────────────────────────────────────
