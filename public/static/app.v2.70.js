@@ -719,6 +719,99 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   window._sfCheckWhatsNewBadge();
 
+  // ── Feature Announcement Popup ────────────────────────────────
+  // Shows once per user per feature. Key matches the What's New entry id.
+  // Dismissed forever the moment user closes it — localStorage prevents re-show.
+  (function sfFeaturePopup() {
+    var FEAT_ID  = 'oct2026-lyrics-panel';
+    var LS_KEY   = 'sf_feat_seen_' + FEAT_ID;
+
+    // Already seen — never show again
+    try { if (localStorage.getItem(LS_KEY)) return; } catch(e) { return; }
+
+    function markSeen() {
+      try { localStorage.setItem(LS_KEY, '1'); } catch(e) {}
+    }
+
+    function showPopup() {
+      // Don't show on auth/landing pages — only when the user is actually logged in
+      var path = window.location.pathname;
+      if (path === '/' || path === '/login' || path === '/signup' || path === '/register') return;
+
+      // Already rendered (hot reload guard)
+      if (document.getElementById('sf-feat-popup-' + FEAT_ID)) return;
+
+      var overlay = document.createElement('div');
+      overlay.id = 'sf-feat-popup-' + FEAT_ID;
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.82);backdrop-filter:blur(8px);padding:16px;opacity:0;transition:opacity .25s ease';
+
+      overlay.innerHTML =
+        '<div style="background:#0f0f1a;border:1px solid rgba(168,85,247,.3);border-radius:20px;padding:0;max-width:480px;width:100%;position:relative;box-shadow:0 32px 80px rgba(0,0,0,.7),0 0 0 1px rgba(168,85,247,.08);overflow:hidden">' +
+
+          // Purple glow top bar
+          '<div style="height:3px;background:linear-gradient(90deg,transparent,hsl(270,70%,60%),hsl(310,80%,60%),transparent)"></div>' +
+
+          // Close X
+          '<button id="sf-feat-x-' + FEAT_ID + '" title="Close" style="position:absolute;top:14px;right:14px;width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.5);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:2;transition:all .15s" ' +
+            'onmouseenter="this.style.background=\'rgba(255,255,255,.14)\';this.style.color=\'#fff\'" ' +
+            'onmouseleave="this.style.background=\'rgba(255,255,255,.07)\';this.style.color=\'rgba(255,255,255,.5)\'">' +
+            '&#10005;' +
+          '</button>' +
+
+          '<div style="padding:28px 28px 26px">' +
+
+            // NEW badge + heading
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">' +
+              '<span style="font-size:.6rem;font-weight:800;letter-spacing:.08em;background:rgba(168,85,247,.18);color:#c084fc;border:1px solid rgba(168,85,247,.35);padding:3px 10px;border-radius:999px;white-space:nowrap">NEW FEATURE</span>' +
+              '<span style="font-size:.72rem;color:rgba(255,255,255,.35)">October 2026</span>' +
+            '</div>' +
+
+            '<h2 style="margin:0 0 8px;font-size:1.15rem;font-weight:800;color:#fff;line-height:1.3">Lyrics Panel — See Your Lyrics While You Play</h2>' +
+            '<p style="margin:0 0 16px;font-size:.84rem;color:rgba(255,255,255,.55);line-height:1.6">Hit play on any track with lyrics and the panel slides in from the right, formatted with section headers as you listen.</p>' +
+
+            // Screenshot
+            '<img src="https://www.genspark.ai/api/files/s/eZaQMyA1" alt="Lyrics panel" ' +
+              'style="width:100%;border-radius:10px;border:1px solid rgba(168,85,247,.2);display:block;margin-bottom:18px"/>' +
+
+            // Bullet points
+            '<ul style="margin:0 0 22px;padding:0 0 0 0;list-style:none;display:flex;flex-direction:column;gap:8px">' +
+              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">All library tabs</b> — Beats, Remixes, Extended &amp; Covers.</span></li>' +
+              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">Section headers</b> — <code style="color:#c084fc;font-size:.76rem">[Verse]</code> <code style="color:#c084fc;font-size:.76rem">[Chorus]</code> <code style="color:#c084fc;font-size:.76rem">[Hook]</code> render as coloured labels.</span></li>' +
+              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">Auto-closes</b> — closes when you close the player or switch to a non-lyric track.</span></li>' +
+            '</ul>' +
+
+            // CTA
+            '<button id="sf-feat-cta-' + FEAT_ID + '" style="display:block;width:100%;padding:13px 24px;background:linear-gradient(135deg,hsl(270,65%,50%),hsl(310,75%,55%));color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;letter-spacing:.01em;transition:opacity .15s" ' +
+              'onmouseenter="this.style.opacity=\'.88\'" onmouseleave="this.style.opacity=\'1\'">' +
+              'Got it — try it now' +
+            '</button>' +
+
+          '</div>' +
+        '</div>';
+
+      document.body.appendChild(overlay);
+
+      // Fade in
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() { overlay.style.opacity = '1'; });
+      });
+
+      function close() {
+        markSeen();
+        overlay.style.opacity = '0';
+        setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 260);
+      }
+
+      document.getElementById('sf-feat-x-' + FEAT_ID).addEventListener('click', close);
+      document.getElementById('sf-feat-cta-' + FEAT_ID).addEventListener('click', close);
+      overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+    }
+
+    // Show after a short delay so the page finishes painting
+    setTimeout(showPopup, 1400);
+  })();
+  // ── End Feature Announcement Popup ───────────────────────────
+
   // ── Show IP-blocked error on signup/register pages ────────────
   if (window.location.pathname === '/signup' || window.location.pathname === '/register') {
     const errParam = new URLSearchParams(window.location.search).get('error');
