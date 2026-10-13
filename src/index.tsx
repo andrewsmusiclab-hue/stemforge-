@@ -16388,8 +16388,56 @@ app.get('/api/admin/stem-diag', async (c) => {
     return c.json({ user_me: balRes, credits_v1: balRes2, sonic_credits: balRes3 })
   }
 
+  // ?job_id=xxx&mode=split_from_mix — dry-run the full POST flow for a specific job
+  // Reads the job from D1, checks credits, does upload+submit WITHOUT deducting credits or writing to D1
+  const diagJobId = c.req.query('job_id')
+  if (diagJobId) {
+    if (!c.env.DB) return c.json({ error: 'DB not configured' }, 500)
+    const diagMode = (c.req.query('mode') || 'split_from_mix') as StemMode
+    const diagJob = await getJob(c.env.DB, diagJobId)
+    if (!diagJob) return c.json({ error: `Job ${diagJobId} not found in D1` }, 404)
+    const diagStereoUrl = (diagJob as any).stereo_url || ''
+    const diagClipId    = (diagJob as any).clip_id   || ''
+    const steps: any = {
+      job_id: diagJobId,
+      mode: diagMode,
+      stereo_url: diagStereoUrl,
+      clip_id_on_job: diagClipId,
+    }
+    // Step 1: upload if no clip_id
+    let resolvedClipId = diagClipId
+    if (!resolvedClipId) {
+      let audioUrl = diagStereoUrl
+      if (audioUrl.startsWith('/')) audioUrl = `https://stemforge.studio${audioUrl}`
+      const upRes = await fetch(`${MUSICAPI_SONIC}/upload`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: audioUrl })
+      }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message }))
+      steps.upload = upRes
+      try { const j = JSON.parse(upRes.body); resolvedClipId = j?.clip_id || j?.data?.[0]?.clip_id || '' } catch {}
+      steps.resolved_clip_id = resolvedClipId
+    } else {
+      steps.upload = 'skipped (clip_id already on job)'
+      steps.resolved_clip_id = resolvedClipId
+    }
+    // Step 2: submit stems (DRY RUN — uses a known-good clip to avoid charge)
+    if (resolvedClipId) {
+      const endpoint = diagMode === 'split_from_mix' ? `${MUSICAPI_SONIC}/stems/basic` : `${MUSICAPI_SONIC}/stems/full`
+      const subRes = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clip_id: resolvedClipId })
+      }).then(async r => ({ status: r.status, body: await r.text() })).catch(e => ({ status: 0, body: e.message }))
+      steps.stems_submit = subRes
+    } else {
+      steps.stems_submit = 'skipped (no clip_id resolved)'
+    }
+    return c.json({ diag: 'job_flow', ...steps })
+  }
+
   const taskId = c.req.query('task_id')
-  if (!taskId) return c.json({ error: 'task_id param required. Use ?balance=1 to check MusicAPI balance only.' }, 400)
+  if (!taskId) return c.json({ error: 'task_id param required. Use ?balance=1 or ?job_id=xxx to diagnose.' }, 400)
 
   // Try both poll endpoints
   const sonicUrl = `${MUSICAPI_SONIC}/task/${taskId}`
