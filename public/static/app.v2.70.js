@@ -567,7 +567,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <ul style="margin:0;padding:0 0 0 16px">
           <li><b style="color:#e2e8f0">Works on all library tabs</b> — Beats, Remixes, Extended, and Covers. Any track with lyrics gets the panel automatically.</li>
           <li><b style="color:#e2e8f0">Section headers formatted</b> — Tags like <code style="color:#c084fc;font-size:.78rem">[Verse]</code>, <code style="color:#c084fc;font-size:.78rem">[Chorus]</code>, <code style="color:#c084fc;font-size:.78rem">[Hook]</code> display as glowing coloured labels so you can follow along easily.</li>
-          <li><b style="color:#e2e8f0">Swipe-in animation</b> — The panel slides in smoothly from the right edge, just like Suno's lyrics view.</li>
+          <li><b style="color:#e2e8f0">Swipe-in animation</b> — The panel slides in smoothly from the right edge as you hit play.</li>
           <li><b style="color:#e2e8f0">Auto-closes</b> — Closing the mini player or playing a track without lyrics closes the panel automatically.</li>
         </ul>
       </div>`
@@ -2340,7 +2340,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   window._clearCurrentCardIcon = _clearCurrentCardIcon;
 
-  // ── Lyrics Panel (Suno-style swipe-in from right) ───────────────────────────
+  // ── Lyrics Panel (swipe-in from right) ──────────────────────────────────────
   window.sfCloseLyricsPanel = function() {
     var lp = document.getElementById('sf-lyrics-panel');
     if (!lp) return;
