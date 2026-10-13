@@ -1464,6 +1464,7 @@ document.addEventListener('DOMContentLoaded', () => {
            ' data-title="' + displayTitle.replace(/"/g,'&quot;') + '"' +
            ' data-hue="' + hue + '"' +
            ' data-genre="' + (rawGenre||'music').replace(/"/g,'&quot;') + '"' +
+           (p.user_lyrics ? ' data-lyrics="' + p.user_lyrics.replace(/"/g,'&quot;').replace(/\n/g,'&#10;') + '"' : '') +
            '>' +
       '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',55%,12%),hsl(' + ((hue+60)%360) + ',65%,8%));position:relative;overflow:hidden">' +
         '<img src="' + (function(){var e=_sfLogoPool[_sfPickLogoIndex(i)];return e?e.src:'/static/stemforge-logo.png';}()) + '" alt="StemForge"' +
@@ -2320,6 +2321,98 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   window._clearCurrentCardIcon = _clearCurrentCardIcon;
 
+  // ── Lyrics Panel (Suno-style swipe-in from right) ───────────────────────────
+  window.sfCloseLyricsPanel = function() {
+    var lp = document.getElementById('sf-lyrics-panel');
+    if (!lp) return;
+    lp.style.transform = 'translateX(100%)';
+    lp.style.opacity = '0';
+    setTimeout(function() { if (lp.parentNode) lp.parentNode.removeChild(lp); }, 320);
+  };
+
+  window.sfShowLyricsPanel = function(lyricsText, trackTitle, hue) {
+    // Remove existing panel
+    var old = document.getElementById('sf-lyrics-panel');
+    if (old) old.parentNode.removeChild(old);
+
+    if (!lyricsText || !lyricsText.trim()) return;
+
+    // Format lyrics: section headers [Verse], [Chorus] etc. get styled differently
+    function formatLyrics(text) {
+      return text.split('\n').map(function(line) {
+        var trimmed = line.trim();
+        // Section header: [Verse], [Chorus], [Bridge], [Outro], [Intro], [Hook] etc.
+        if (/^\[.+\]$/.test(trimmed)) {
+          return '<div class="sf-lp-header">' + trimmed + '</div>';
+        }
+        if (trimmed === '') {
+          return '<div class="sf-lp-spacer"></div>';
+        }
+        return '<div class="sf-lp-line">' + trimmed.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>';
+      }).join('');
+    }
+
+    var panel = document.createElement('div');
+    panel.id = 'sf-lyrics-panel';
+    panel.style.cssText = [
+      'position:fixed',
+      'top:0',
+      'right:0',
+      'bottom:0',
+      'width:min(360px,92vw)',
+      'background:rgba(10,10,18,0.97)',
+      'border-left:1px solid hsla(' + (hue||220) + ',40%,40%,0.25)',
+      'box-shadow:-12px 0 48px rgba(0,0,0,0.7)',
+      'backdrop-filter:blur(20px)',
+      '-webkit-backdrop-filter:blur(20px)',
+      'z-index:10000',
+      'display:flex',
+      'flex-direction:column',
+      'overflow:hidden',
+      'transform:translateX(100%)',
+      'opacity:0',
+      'transition:transform 0.32s cubic-bezier(0.22,1,0.36,1), opacity 0.28s ease'
+    ].join(';');
+
+    panel.innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:space-between;padding:18px 20px 14px;flex-shrink:0;border-bottom:1px solid rgba(255,255,255,0.07)">' +
+        '<div style="display:flex;align-items:center;gap:10px;min-width:0">' +
+          '<div style="width:3px;height:22px;border-radius:2px;background:linear-gradient(180deg,hsl(' + (hue||220) + ',70%,60%),hsl(' + ((hue||220)+40)%360 + ',80%,50%));flex-shrink:0"></div>' +
+          '<div style="min-width:0">' +
+            '<div style="font-size:.7rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:hsl(' + (hue||220) + ',60%,65%);margin-bottom:2px">Lyrics</div>' +
+            '<div style="font-size:.88rem;font-weight:600;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:240px" title="' + (trackTitle||'').replace(/"/g,'&quot;') + '">' + (trackTitle||'Track') + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<button onclick="window.sfCloseLyricsPanel()" ' +
+          'style="width:32px;height:32px;border-radius:50%;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.5);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all .15s" ' +
+          'onmouseenter="this.style.background=\'rgba(255,255,255,0.12)\';this.style.color=\'#fff\'" ' +
+          'onmouseleave="this.style.background=\'rgba(255,255,255,0.05)\';this.style.color=\'rgba(255,255,255,0.5)\'">' +
+          '<i class="fas fa-times"></i>' +
+        '</button>' +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:22px 24px 120px;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.1) transparent" class="sf-lp-scroll">' +
+        '<style>' +
+          '#sf-lyrics-panel .sf-lp-header{font-size:.72rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:hsl(' + (hue||220) + ',55%,62%);margin:18px 0 8px;opacity:.85}' +
+          '#sf-lyrics-panel .sf-lp-header:first-child{margin-top:0}' +
+          '#sf-lyrics-panel .sf-lp-line{font-size:.93rem;line-height:1.75;color:rgba(255,255,255,.88);font-weight:400;letter-spacing:.01em}' +
+          '#sf-lyrics-panel .sf-lp-spacer{height:10px}' +
+          '#sf-lyrics-panel .sf-lp-scroll::-webkit-scrollbar{width:4px}' +
+          '#sf-lyrics-panel .sf-lp-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:4px}' +
+        '</style>' +
+        formatLyrics(lyricsText) +
+      '</div>';
+
+    document.body.appendChild(panel);
+    // Trigger slide-in on next frame
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        panel.style.transform = 'translateX(0)';
+        panel.style.opacity = '1';
+      });
+    });
+  };
+  // ── End Lyrics Panel ─────────────────────────────────────────────────────────
+
   window.playDashProject = function(btn) {
     const card       = btn.closest('.project-card');
     const stereoUrl  = card ? card.dataset.stereo : '';
@@ -2426,7 +2519,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
 
         <!-- Close -->
-        <button onclick="(function(){var p=document.getElementById('dash-mini-player');if(p){window._teardownDashAudio&&window._teardownDashAudio();p.remove();window._clearCurrentCardIcon&&window._clearCurrentCardIcon();}})()"
+        <button onclick="(function(){var p=document.getElementById('dash-mini-player');if(p){window._teardownDashAudio&&window._teardownDashAudio();p.remove();window._clearCurrentCardIcon&&window._clearCurrentCardIcon();window.sfCloseLyricsPanel&&window.sfCloseLyricsPanel();}})()"
           style="background:none;border:none;cursor:pointer;color:rgba(255,255,255,.35);font-size:17px;flex-shrink:0;line-height:1;padding:4px;transition:color .15s"
           onmouseenter="this.style.color='rgba(255,255,255,.8)'" onmouseleave="this.style.color='rgba(255,255,255,.35)'">
           <i class="fas fa-times"></i>
@@ -2439,6 +2532,17 @@ document.addEventListener('DOMContentLoaded', () => {
     // Track this card as the currently-playing card and flip its icon to pause
     _dashPlayingCardBtn = btn;
     _setCardPlayIcon(btn, true);
+
+    // ── Lyrics panel — show if track has lyrics ───────────────────────────────
+    var rawLyrics = card ? (card.dataset.lyrics || '') : '';
+    if (!rawLyrics && card && card.dataset.id && window._sfProjects && window._sfProjects[card.dataset.id]) {
+      rawLyrics = window._sfProjects[card.dataset.id].user_lyrics || '';
+    }
+    if (rawLyrics) {
+      sfShowLyricsPanel(rawLyrics.replace(/&#10;/g, '\n'), trackTitle, hue);
+    } else {
+      sfCloseLyricsPanel();
+    }
 
     // ── Drag to move ──────────────────────────────────────────────────────────
     (function() {
@@ -8409,7 +8513,9 @@ window.renderEditInstrumentPills = function (bp) {
       ' data-stereo="' + stereoUrl + '"' +
       ' data-id="' + p.id + '"' +
       ' data-title="' + title.replace(/"/g,'&quot;') + '"' +
-      ' data-hue="' + hue + '">' +
+      ' data-hue="' + hue + '"' +
+      (p.user_lyrics ? ' data-lyrics="' + p.user_lyrics.replace(/"/g,'&quot;').replace(/\n/g,'&#10;') + '"' : '') +
+      '>' +
       '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + hue2 + ',70%,10%));position:relative;overflow:hidden">' +
         '<img src="/static/stemforge-logo.png" alt="StemForge"' +
           ' style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.75;filter:hue-rotate(' + hue + 'deg) saturate(1.6) brightness(0.9);pointer-events:none;user-select:none"/>' +
@@ -10648,7 +10754,9 @@ window.toggleRefDropdown = function() {
       ' data-stereo="' + audioUrl + '"' +
       ' data-id="' + p.id + '"' +
       ' data-title="' + safeTitle + '"' +
-      ' data-hue="' + hue + '">' +
+      ' data-hue="' + hue + '"' +
+      (p.user_lyrics ? ' data-lyrics="' + p.user_lyrics.replace(/"/g,'&quot;').replace(/\n/g,'&#10;') + '"' : '') +
+      '>' +
       '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',60%,18%),hsl(' + hue2 + ',70%,10%));position:relative;overflow:hidden">' +
         '<img src="' + logoSrc + '" alt="StemForge"' +
           ' style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.82;filter:' + logoFilter + ';pointer-events:none;user-select:none"/>' +

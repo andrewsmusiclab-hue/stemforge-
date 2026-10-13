@@ -5429,6 +5429,8 @@ app.get('/api/projects', async (c) => {
         // One-shot specific fields
         sound_type: d.sound_type || null,
         audio_url: d.audio_url || null,
+        // Lyrics — user-typed or AI-generated, used by library lyrics panel
+        user_lyrics: d.user_lyrics || null,
       }
     })
     return c.json({ projects })
@@ -10544,7 +10546,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-81'
+const ASSET_VER = '20261013-82'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
