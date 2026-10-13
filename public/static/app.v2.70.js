@@ -139,6 +139,88 @@ async function safeJson(res) {
   window.addEventListener('resize', hide, true);
 })();
 
+// ── User notices — fetch and show any pending popups ─────────────────────────
+(function sfCheckNotices() {
+  // Only run on pages that are inside the app (not landing page / login)
+  // We detect this by whether there's a session cookie present
+  if (!document.cookie.includes('sf_session')) return;
+  setTimeout(function() {
+    fetch('/api/notices', { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var notices = (d && d.notices) || [];
+        if (!notices.length) return;
+        sfShowNoticeQueue(notices, 0);
+      })
+      .catch(function() {});
+  }, 1200); // small delay so page finishes painting first
+})();
+
+function sfShowNoticeQueue(notices, idx) {
+  if (idx >= notices.length) return;
+  sfShowNoticeModal(notices[idx], function() {
+    // After this one is dismissed, show the next (if any)
+    sfShowNoticeQueue(notices, idx + 1);
+  });
+}
+
+function sfShowNoticeModal(notice, onDismiss) {
+  var modalId = 'sf-notice-modal-' + notice.id;
+  var existing = document.getElementById(modalId);
+  if (existing) { existing.remove(); }
+
+  var modal = document.createElement('div');
+  modal.id = modalId;
+  modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);padding:16px';
+
+  var iconGradient = notice.icon_gradient || 'linear-gradient(135deg,#f59e0b,#ef4444)';
+  var icon = notice.icon || 'fas fa-info-circle';
+  var ctaUrl = notice.cta_url || '';
+  var ctaText = notice.cta_text || 'Got it';
+
+  function dismiss() {
+    modal.style.display = 'none';
+    fetch('/api/notices/dismiss', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: notice.id })
+    }).catch(function() {});
+    if (onDismiss) setTimeout(onDismiss, 200);
+  }
+
+  var ctaHtml = ctaUrl
+    ? '<a href="' + ctaUrl + '" target="_blank" onclick="document.getElementById(\'' + modalId + '\').style.display=\'none\';" style="display:block;width:100%;padding:13px 24px;background:' + iconGradient + ';color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;text-decoration:none;box-sizing:border-box;text-align:center">' + ctaText + '</a>'
+    : '<button onclick="(function(){var m=document.getElementById(\'' + modalId + '\');if(m)m.style.display=\'none\';fetch(\'/api/notices/dismiss\',{method:\'POST\',credentials:\'include\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({id:' + notice.id + '})}).catch(function(){});})()" style="display:block;width:100%;padding:13px 24px;background:' + iconGradient + ';color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer">' + ctaText + '</button>';
+
+  modal.innerHTML =
+    '<div style="background:var(--surface,#131c31);border:1px solid var(--border,#1e3a5f);border-radius:20px;padding:36px 32px;max-width:460px;width:90%;text-align:center;position:relative;box-shadow:0 24px 80px rgba(0,0,0,.6)">' +
+
+      // ── BIG visible X button ──────────────────────────────────────
+      '<button id="sf-notice-x-' + notice.id + '" style="position:absolute;top:12px;right:12px;width:34px;height:34px;border-radius:50%;background:rgba(239,68,68,.2);border:2px solid rgba(239,68,68,.6);color:#ef4444;font-size:1.2rem;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;padding:0;transition:background .15s" title="Close">&times;</button>' +
+
+      // ── Icon circle ───────────────────────────────────────────────
+      '<div style="width:60px;height:60px;border-radius:50%;background:' + iconGradient + ';display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.5rem;color:#fff"><i class="' + icon + '"></i></div>' +
+
+      // ── Title ─────────────────────────────────────────────────────
+      '<h3 style="font-size:1.2rem;font-weight:800;margin:0 0 14px;color:var(--text,#f1f5f9)">' + (notice.title || '') + '</h3>' +
+
+      // ── Body ──────────────────────────────────────────────────────
+      '<div style="color:var(--muted,#94a3b8);font-size:.9rem;line-height:1.7;margin:0 0 24px;text-align:left">' + (notice.body || '') + '</div>' +
+
+      // ── CTA ───────────────────────────────────────────────────────
+      ctaHtml +
+
+    '</div>';
+
+  document.body.appendChild(modal);
+
+  // Wire the X button dismiss after appending (so it exists in DOM)
+  var xBtn = document.getElementById('sf-notice-x-' + notice.id);
+  if (xBtn) xBtn.addEventListener('click', dismiss);
+  // Click backdrop to dismiss
+  modal.addEventListener('click', function(e) { if (e.target === modal) dismiss(); });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
 
   // ── Nav scroll ─────────────────────────────────────────────────

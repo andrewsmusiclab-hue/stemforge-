@@ -836,6 +836,22 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_signup_clicks_created_at ON signup_clicks (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_signup_clicks_event_type ON signup_clicks (event_type)`).run() } catch {}
 
+  // ── User notices table — per-user popup messages shown once on next login ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS user_notices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    notice_key TEXT NOT NULL,          -- unique slug e.g. 'copyright_warning_v1'
+    title TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',     -- HTML allowed
+    icon TEXT NOT NULL DEFAULT 'fas fa-info-circle',
+    icon_gradient TEXT NOT NULL DEFAULT 'linear-gradient(135deg,#f59e0b,#ef4444)',
+    cta_text TEXT NOT NULL DEFAULT 'Got it',
+    cta_url TEXT NOT NULL DEFAULT '',  -- optional link on CTA button
+    dismissed_at INTEGER,              -- NULL = not yet seen/dismissed
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+  )`).run()
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_notices_user_id ON user_notices (user_id)`).run() } catch {}
+
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -8124,6 +8140,70 @@ app.get('/api/admin/traffic-sources', async (c) => {
   })
 })
 
+// POST /api/admin/user-notice — create a notice for a specific user (admin only)
+app.post('/api/admin/user-notice', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const body = await c.req.json<any>().catch(() => ({}))
+  const { user_id, notice_key, title, body: noticeBody, icon, icon_gradient, cta_text, cta_url } = body
+  if (!user_id || !notice_key || !title) return c.json({ error: 'Missing user_id, notice_key, or title' }, 400)
+
+  // Upsert — replace existing undismissed notice with same key for same user
+  await c.env.DB.prepare(
+    `DELETE FROM user_notices WHERE user_id=? AND notice_key=? AND dismissed_at IS NULL`
+  ).bind(user_id, notice_key).run()
+
+  await c.env.DB.prepare(
+    `INSERT INTO user_notices (user_id, notice_key, title, body, icon, icon_gradient, cta_text, cta_url, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`
+  ).bind(
+    user_id, notice_key, title,
+    noticeBody || '',
+    icon || 'fas fa-shield-alt',
+    icon_gradient || 'linear-gradient(135deg,#f59e0b,#ef4444)',
+    cta_text || 'Got it',
+    cta_url || '',
+    Date.now()
+  ).run()
+
+  return c.json({ ok: true })
+})
+
+// GET /api/notices — fetch pending (undismissed) notices for the logged-in user
+app.get('/api/notices', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ notices: [] })
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ notices: [] })
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, notice_key, title, body, icon, icon_gradient, cta_text, cta_url
+     FROM user_notices WHERE user_id=? AND dismissed_at IS NULL ORDER BY created_at ASC LIMIT 5`
+  ).bind(user.id).all<any>().catch(() => ({ results: [] }))
+
+  return c.json({ notices: (rows as any).results || [] })
+})
+
+// POST /api/notices/dismiss — mark a notice as dismissed
+app.post('/api/notices/dismiss', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ ok: false })
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ ok: false })
+
+  const { id } = await c.req.json<any>().catch(() => ({}))
+  if (!id) return c.json({ ok: false })
+
+  await c.env.DB.prepare(
+    `UPDATE user_notices SET dismissed_at=? WHERE id=? AND user_id=?`
+  ).bind(Date.now(), id, user.id).run()
+
+  return c.json({ ok: true })
+})
+
 // GET /api/admin/revenue — MRR and profit breakdown
 app.get('/api/admin/revenue', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
@@ -10270,7 +10350,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-76'
+const ASSET_VER = '20261013-77'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14657,6 +14737,7 @@ function adminPage(user: User) {
           <div style="display:flex;gap:8px">
             <button onclick="bcOpenNew()" class="btn btn--outline btn--sm" style="border-color:#10b981;color:#10b981"><i class="fas fa-plus"></i> New Template</button>
             <button onclick="bcLoadTemplates()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
+            <button onclick="bcLoadCopyrightPreview()" class="btn btn--outline btn--sm" style="border-color:#f59e0b;color:#f59e0b" title="Preview the copyright warning popup card that Jared will see on next login"><i class="fas fa-shield-alt"></i> Preview Copyright Card</button>
           </div>
         </div>
         <div id="bc-templates-list" style="display:flex;flex-wrap:wrap;gap:10px">

@@ -1221,6 +1221,70 @@ function bcOpenNew() {
   bcSetStatus('New template — add blocks and click Save Template', '#64748b');
 }
 
+// ── Copyright Warning Card Preview ────────────────────────────────────────────
+// Loads a pre-built copyright notice card into the broadcast builder so you
+// can preview exactly what Jared will see as a popup on next login.
+function bcLoadCopyrightPreview() {
+  _bcEditId = null;
+  var nameEl    = document.getElementById('bc-template-name');
+  var subjectEl = document.getElementById('bc-subject');
+  if (nameEl)    nameEl.value    = 'Copyright Warning — User Notice Preview';
+  if (subjectEl) subjectEl.value = 'Important: Copyright Policy Reminder';
+
+  var cardHtml =
+    '<div style="max-width:420px;margin:0 auto;background:#131c31;border:1px solid #1e3a5f;border-radius:20px;padding:36px 32px;text-align:center;position:relative;font-family:Inter,system-ui,sans-serif">' +
+
+    // ── Close X ─────────────────────────────────────────────────
+    '<div style="position:absolute;top:14px;right:16px;width:30px;height:30px;border-radius:50%;background:rgba(239,68,68,.18);border:2px solid rgba(239,68,68,.5);display:flex;align-items:center;justify-content:center;cursor:pointer">' +
+      '<span style="color:#ef4444;font-size:1rem;font-weight:700;line-height:1">&#215;</span>' +
+    '</div>' +
+
+    // ── Gradient icon circle ─────────────────────────────────────
+    '<div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.5rem">' +
+      '&#9888;' +
+    '</div>' +
+
+    // ── Headline ─────────────────────────────────────────────────
+    '<h3 style="margin:0 0 10px;font-size:1.2rem;font-weight:800;color:#f1f5f9">Copyright &amp; Original Lyrics Policy</h3>' +
+
+    // ── Body copy ────────────────────────────────────────────────
+    '<p style="color:#94a3b8;font-size:.9rem;line-height:1.7;margin:0 0 14px">' +
+      'StemForge can only generate songs using <strong style="color:#f1f5f9">your own original lyrics</strong>. ' +
+      'Submitting lyrics from a published, copyrighted song — even as inspiration — will cause your job to fail and your points to be refunded.' +
+    '</p>' +
+
+    '<p style="color:#94a3b8;font-size:.9rem;line-height:1.7;margin:0 0 14px">' +
+      'This includes copying lyrics from <strong style="color:#f1f5f9">any artist&apos;s published song</strong> ' +
+      '(e.g. Nirvana, Drake, Taylor Swift, Eminem, etc.) or pasting text from a lyrics website.' +
+    '</p>' +
+
+    // ── ToS callout box ──────────────────────────────────────────
+    '<div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:12px 16px;margin:0 0 22px;text-align:left">' +
+      '<p style="margin:0;font-size:.82rem;color:#fbbf24;line-height:1.6">' +
+        '<strong>&#128209; Terms of Service — Section 5.1 &amp; Section 6:</strong><br/>' +
+        'By using StemForge you confirm that all lyrics you submit are your own original work and do not infringe on any third party&apos;s intellectual property rights. ' +
+        'Repeated submission of copyrighted material may result in account suspension. ' +
+        '<a href="https://stemforge.studio/terms" style="color:#4e9fff;text-decoration:underline" target="_blank">Read the full Terms &rarr;</a>' +
+      '</p>' +
+    '</div>' +
+
+    // ── CTA button ───────────────────────────────────────────────
+    '<a href="https://stemforge.studio/terms" target="_blank" style="display:inline-block;padding:13px 28px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;text-decoration:none;cursor:pointer">Read Terms of Service</a>' +
+
+    '<p style="color:#475569;font-size:.78rem;margin:16px 0 0">Got it — dismiss this message by clicking the <strong style="color:#ef4444">&#215;</strong> in the top right.</p>' +
+  '</div>';
+
+  window._bcBlocks = [{ id: 'bc-block-copy-preview', type: 'rawhtml', html: cardHtml }];
+  bcRenderBlocks();
+  // Set dark background to match popup style
+  var bgEl = document.getElementById('bc-bg-color');
+  if (bgEl) { bgEl.value = '#0a0f1e'; setTimeout(function(){ bgEl.dispatchEvent(new Event('input')); }, 50); }
+  bcUpdatePreview();
+  var wrap = document.getElementById('bc-builder-wrap');
+  if (wrap) { wrap.style.display = 'block'; wrap.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  bcSetStatus('Previewing copyright warning card — this is what Jared will see on next login', '#f59e0b');
+}
+
 function bcNewTemplate() {
   // Internal reset only (called after save) — does NOT show builder
   _bcEditId = null;
