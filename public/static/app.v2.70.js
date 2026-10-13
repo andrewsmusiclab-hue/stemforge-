@@ -2826,8 +2826,33 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // Copyright lyrics — show a friendly modal with guidance
+    if (msg && msg.indexOf('LYRICS_COPYRIGHT') !== -1) {
+      showCopyrightModal();
+      return;
+    }
+
     if (genError) genError.style.display = 'block';
     if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
+  }
+
+  function showCopyrightModal() {
+    var existing = document.getElementById('sf-copyright-modal');
+    if (existing) { existing.style.display = 'flex'; return; }
+    var modal = document.createElement('div');
+    modal.id = 'sf-copyright-modal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.75);backdrop-filter:blur(6px);padding:16px';
+    modal.innerHTML =
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:36px 32px;max-width:440px;width:90%;text-align:center;position:relative">' +
+        '<button onclick="document.getElementById(\'sf-copyright-modal\').style.display=\'none\'" style="position:absolute;top:14px;right:16px;background:none;border:none;color:var(--muted);font-size:1.1rem;cursor:pointer"><i class="fas fa-times"></i></button>' +
+        '<div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(135deg,#f59e0b,#ef4444);display:flex;align-items:center;justify-content:center;margin:0 auto 20px;font-size:1.4rem;color:#fff"><i class="fas fa-shield-alt"></i></div>' +
+        '<h3 style="font-size:1.2rem;font-weight:700;margin-bottom:8px">Published song detected</h3>' +
+        '<p style="color:var(--muted);font-size:.9rem;margin-bottom:8px;line-height:1.6">We detected lyrics from a <strong style="color:var(--text)">published copyrighted song</strong> in your submission. StemForge can\'t generate music using someone else\'s lyrics.</p>' +
+        '<p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.6">Your points have been <strong style="color:var(--text)">fully refunded</strong>. Try writing your own original lyrics — even a rough idea works great!</p>' +
+        '<button onclick="document.getElementById(\'sf-copyright-modal\').style.display=\'none\'" style="display:block;width:100%;padding:13px 24px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer">Got it</button>' +
+      '</div>';
+    modal.addEventListener('click', function(e){ if (e.target === modal) modal.style.display = 'none'; });
+    document.body.appendChild(modal);
   }
 
   function showGeoBlockModal() {

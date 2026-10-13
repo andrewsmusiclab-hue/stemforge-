@@ -1699,6 +1699,99 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
     // Otherwise → MusicAPI Producer (clean instrumental, Lyria 3 Pro)
     let stereoTaskId: string
     if (userLyrics) {
+      // ── Copyright / published lyrics detection ────────────────────────────────
+      // MusicAPI silently queues copyright-flagged lyrics but never completes them,
+      // causing the job to time out every time. Detect and reject upfront.
+      const lyricsLower = userLyrics.toLowerCase()
+      // Signals that the text was copy-pasted from a lyrics site (UI chrome included)
+      const lyricsPageChromePattern = /lyrics\s*\n.*about\s*\n.*tracklist|genius\.com|azlyrics|songlyrics|lyricsfreak|lyrics\.com|musixmatch/i
+      const hasSiteChrome = lyricsPageChromePattern.test(userLyrics)
+      // Known published song fingerprints — unique phrases that only appear in specific songs
+      const copyrightPhrases = [
+        'here we are now, entertain us',   // Smells Like Teen Spirit
+        'smell like teen spirit',
+        'a mulatto, an albino',
+        'smells like teen spirit',
+        'bohemian rhapsody',
+        'is this the real life',
+        'scaramouche, scaramouche',
+        'stairway to heaven',
+        "there's a lady who's sure",
+        'imagine all the people',
+        "you may say i'm a dreamer",
+        'billie jean is not my lover',
+        'billie jean is not my',
+        'wanna be startin somethin',
+        'sweet child o mine',
+        'she\'s got a smile that it seems to me',
+        'hotel california',
+        'on a dark desert highway',
+        'lose yourself in the music',
+        'his palms are sweaty, knees weak',
+        'purple haze all in my brain',
+        'purple haze all around',
+        "excuse me while i kiss the sky",
+        'like a rolling stone',
+        'once upon a time you dressed so fine',
+        'born in the usa',
+        'born down in a dead man',
+        'in the jungle, the mighty jungle',
+        'sweet home alabama',
+        'big wheels keep on turning',
+        'yesterday, all my troubles seemed so far away',
+        'yesterday love was such an easy game',
+        'hey jude, don\'t make it bad',
+        'we will rock you',
+        'buddy you\'re a boy make a big noise',
+        'we are the champions',
+        "i've paid my dues",
+        'thriller night',
+        'cause this is thriller',
+        'another one bites the dust',
+        'rolling in the deep',
+        'there\'s a fire starting in my heart',
+        'someone like you',
+        'i hate to turn up out of the blue',
+        'shape of you',
+        'i\'m in love with your body',
+        'blinding lights',
+        'i\'ve been on my own for long enough',
+        'old town road',
+        'i\'m gonna take my horse',
+        'bad guy',
+        'white shirt now red',
+        'drivers license',
+        'i got my driver\'s license last week',
+        'as it was',
+        'holdin\' me back',
+        'flowers',
+        'i can buy myself flowers',
+        'anti-hero',
+        "it's me, hi, i'm the problem",
+        'levitating',
+        'i got you moonlight',
+        'watermelon sugar high',
+        'taste it, taste it',
+        'dynamite',
+        "cause i, i, i'm in the stars tonight",
+        'stay',
+        'i do it all the time',  // stay by kid laroi
+        'uptown funk',
+        'don\'t believe me just watch',
+        'happy',
+        'clap along if you feel like a room without a roof',
+        'despacito',
+        'quiero respirar tu cuello despacito',
+      ]
+      const hasCopyrightPhrase = copyrightPhrases.some(p => lyricsLower.includes(p))
+      if (hasSiteChrome || hasCopyrightPhrase) {
+        // Refund points immediately
+        const costPoints = (job as any).cost_points || 20
+        await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`)
+          .bind(costPoints, (job as any).user_id).run().catch(() => {})
+        throw new Error('LYRICS_COPYRIGHT: These lyrics appear to be from a published copyrighted song. Please write your own original lyrics instead. Your points have been refunded.')
+      }
+      // ── End copyright detection ───────────────────────────────────────────────
       stereoTaskId = await startSongGeneration(blueprint, env.MUSICAPI_KEY, userLyrics, (job as any).vocal_gender, userDurationSec)
       ;(job as any).extend_task_type = 'song_generate'  // tells advancePipeline to use Sonic task poll
     } else {
@@ -4732,6 +4825,7 @@ app.post('/api/analytics/pageview', async (c) => {
       if (/tiktok\.com/i.test(referrer))    source = 'tiktok'
       else if (/facebook\.com|fb\.com/i.test(referrer)) source = 'facebook'
       else if (/instagram\.com/i.test(referrer)) source = 'instagram'
+      else if (/threads\.net/i.test(referrer)) source = 'threads'
       else if (/youtube\.com|youtu\.be/i.test(referrer)) source = 'youtube'
       else if (/twitter\.com|x\.com/i.test(referrer)) source = 'twitter'
       else if (/snapchat\.com/i.test(referrer)) source = 'snapchat'
@@ -10176,7 +10270,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-75'
+const ASSET_VER = '20261013-76'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
