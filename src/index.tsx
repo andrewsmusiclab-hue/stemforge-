@@ -1692,6 +1692,11 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
   let job = await getJob(db, jobId)
   if (!job) return
 
+  // Fetch user_id from the jobs TABLE column (not in data blob — getJob only reads data)
+  // This is needed for the copyright refund bind call and any other user-scoped DB writes
+  const jobRow = await db.prepare('SELECT user_id FROM jobs WHERE id = ?').bind(jobId).first<{ user_id: string | null }>()
+  const jobUserId: string | null = jobRow?.user_id ?? null
+
   try {
     // Step 1 — GPT blueprint (~2-3 s)
     job.status = 'blueprint'
@@ -1793,8 +1798,9 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
         'taste it, taste it',
         'dynamite',
         "cause i, i, i'm in the stars tonight",
-        'stay',
-        'i do it all the time',  // stay by kid laroi
+        // NOTE: 'stay' alone is too common — removed to prevent false positives
+        // Kid LAROI "Stay": unique phrase below
+        'i do it all the time, i stay',  // Stay by The Kid LAROI — more specific fingerprint
         'uptown funk',
         'don\'t believe me just watch',
         'happy',
@@ -1806,8 +1812,12 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
       if (hasSiteChrome || hasCopyrightPhrase) {
         // Refund points immediately
         const costPoints = (job as any).cost_points || 20
-        await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`)
-          .bind(costPoints, (job as any).user_id).run().catch(() => {})
+        // FIX v79: use jobUserId fetched from DB column — (job as any).user_id is always
+        // undefined because getJob() only parses the data blob, not the user_id table column
+        if (jobUserId) {
+          await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`)
+            .bind(costPoints, jobUserId).run().catch(() => {})
+        }
         throw new Error('LYRICS_COPYRIGHT: These lyrics appear to be from a published copyrighted song. Please write your own original lyrics instead. Your points have been refunded.')
       }
       // ── End copyright detection ───────────────────────────────────────────────
@@ -1831,7 +1841,7 @@ async function startPipeline(jobId: string, env: Bindings, userPlan?: string, us
     if (msg.startsWith('SERVER_BUSY:') && db) {
       try {
         await db.prepare(`INSERT INTO api_errors (error_type, user_id, created_at) VALUES (?, ?, ?)`)
-          .bind('musicapi_busy', (job as any).user_id || null, Date.now()).run()
+          .bind('musicapi_busy', jobUserId, Date.now()).run()
       } catch { /* table may not exist on very first deploy — swallow */ }
     }
   }
@@ -10391,7 +10401,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-78'
+const ASSET_VER = '20261013-79'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

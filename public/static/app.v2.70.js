@@ -2932,6 +2932,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // D1_TYPE_ERROR — internal DB error, hide the raw CF Workers message from users
+    if (msg && msg.indexOf('D1_TYPE_ERROR') !== -1) {
+      if (genError) genError.style.display = 'block';
+      if (genErrorMsg) genErrorMsg.textContent = 'We hit a technical snag on our end — your points have been preserved. Please try generating again in a few minutes.';
+      return;
+    }
+
     if (genError) genError.style.display = 'block';
     if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
   }
