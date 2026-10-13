@@ -84,6 +84,7 @@ function adminTab(tab){
   if(tab==='analytics'&&!window._analyticsLoaded){ loadAnalytics(); window._analyticsLoaded=true; }
   if(tab==='revenue'&&!window._revenueLoaded){ loadRevenue(); window._revenueLoaded=true; }
   if(tab==='users'&&!window._usersLoaded){ loadUsers(); window._usersLoaded=true; }
+  if(tab==='users'){ loadAdminNotices(); } // always refresh notices when switching to Users tab
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
@@ -1964,5 +1965,54 @@ function ppMsg(msg, type) {
   if (type !== 'info') {
     clearTimeout(ppMsg._t);
     ppMsg._t = setTimeout(function(){ el.style.display = 'none'; }, 6000);
+  }
+}
+
+// ── User Notices Tracking (like email open tracking) ─────────────────────────
+async function loadAdminNotices(){
+  var el=document.getElementById('admin-notices-table');
+  if(!el) return;
+  el.innerHTML='<p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Loading notices…</p>';
+  try{
+    var res=await fetch('/api/admin/notices',{credentials:'include'});
+    var data=await res.json();
+    if(data.error){ el.innerHTML='<p style="color:#ef4444">Error: '+data.error+'</p>'; return; }
+    var notices=data.notices||[];
+    if(!notices.length){
+      el.innerHTML='<p style="color:var(--muted);font-size:.85rem">No notices found.</p>';
+      return;
+    }
+    var fmt=function(ts){
+      if(!ts) return '<span style="color:var(--muted)">—</span>';
+      var d=new Date(ts);
+      return '<span title="'+d.toISOString()+'">'+d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'})+'</span>';
+    };
+    var statusBadge=function(n){
+      if(n.dismissed_at) return '<span style="background:rgba(16,185,129,.15);color:#10b981;font-size:.7rem;padding:2px 8px;border-radius:99px;font-weight:700;border:1px solid rgba(16,185,129,.3)"><i class="fas fa-check"></i> Dismissed</span>';
+      if(n.viewed_at)    return '<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.7rem;padding:2px 8px;border-radius:99px;font-weight:700;border:1px solid rgba(245,158,11,.3)"><i class="fas fa-eye"></i> Viewed</span>';
+      return '<span style="background:rgba(100,116,139,.12);color:var(--muted);font-size:.7rem;padding:2px 8px;border-radius:99px;font-weight:700;border:1px solid var(--border)"><i class="fas fa-clock"></i> Pending</span>';
+    };
+    el.innerHTML='<table class="admin-table" style="min-width:780px"><thead><tr>'+
+      '<th>User</th>'+
+      '<th>Notice</th>'+
+      '<th>Status</th>'+
+      '<th><i class="fas fa-paper-plane" style="color:#a78bfa"></i> Sent</th>'+
+      '<th><i class="fas fa-eye" style="color:#f59e0b"></i> Viewed</th>'+
+      '<th><i class="fas fa-times-circle" style="color:#10b981"></i> Dismissed (X clicked)</th>'+
+    '</tr></thead><tbody>'+
+    notices.map(function(n){
+      var email=n.email||n.user_id;
+      var name=n.name?('<div style="color:var(--muted);font-size:.75rem">'+n.name+'</div>'):'';
+      return '<tr>'+
+        '<td><div style="font-size:.83rem;font-weight:600">'+email+'</div>'+name+'</td>'+
+        '<td style="font-size:.82rem;max-width:200px"><div style="font-weight:600;color:var(--text)">'+n.title+'</div><div style="color:var(--muted);font-size:.73rem">'+n.notice_key+'</div></td>'+
+        '<td>'+statusBadge(n)+'</td>'+
+        '<td style="font-size:.78rem">'+fmt(n.created_at)+'</td>'+
+        '<td style="font-size:.78rem">'+fmt(n.viewed_at)+'</td>'+
+        '<td style="font-size:.78rem">'+fmt(n.dismissed_at)+'</td>'+
+      '</tr>';
+    }).join('')+'</tbody></table>';
+  }catch(e){
+    el.innerHTML='<p style="color:#ef4444"><i class="fas fa-exclamation-circle"></i> Failed: '+(e.message||e)+'</p>';
   }
 }

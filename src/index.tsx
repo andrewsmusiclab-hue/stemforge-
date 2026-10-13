@@ -847,9 +847,12 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     icon_gradient TEXT NOT NULL DEFAULT 'linear-gradient(135deg,#f59e0b,#ef4444)',
     cta_text TEXT NOT NULL DEFAULT 'Got it',
     cta_url TEXT NOT NULL DEFAULT '',  -- optional link on CTA button
-    dismissed_at INTEGER,              -- NULL = not yet seen/dismissed
+    viewed_at INTEGER,                 -- NULL = not yet seen; stamped when modal first renders
+    dismissed_at INTEGER,              -- NULL = not yet dismissed; stamped when X / CTA clicked
     created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
   )`).run()
+  // Idempotent: add viewed_at to older rows that pre-date this column
+  try { await db.prepare(`ALTER TABLE user_notices ADD COLUMN viewed_at INTEGER`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_notices_user_id ON user_notices (user_id)`).run() } catch {}
 
   // ── Performance indexes (idempotent) ──
@@ -8180,14 +8183,32 @@ app.get('/api/notices', async (c) => {
   if (!user) return c.json({ notices: [] })
 
   const rows = await c.env.DB.prepare(
-    `SELECT id, notice_key, title, body, icon, icon_gradient, cta_text, cta_url
+    `SELECT id, notice_key, title, body, icon, icon_gradient, cta_text, cta_url, viewed_at, created_at
      FROM user_notices WHERE user_id=? AND dismissed_at IS NULL ORDER BY created_at ASC LIMIT 5`
   ).bind(user.id).all<any>().catch(() => ({ results: [] }))
 
   return c.json({ notices: (rows as any).results || [] })
 })
 
-// POST /api/notices/dismiss — mark a notice as dismissed
+// POST /api/notices/view — stamp viewed_at when modal first renders (like email open tracking)
+app.post('/api/notices/view', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ ok: false })
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ ok: false })
+
+  const { id } = await c.req.json<any>().catch(() => ({}))
+  if (!id) return c.json({ ok: false })
+
+  // Only stamp the first time (don't overwrite an existing viewed_at)
+  await c.env.DB.prepare(
+    `UPDATE user_notices SET viewed_at=? WHERE id=? AND user_id=? AND viewed_at IS NULL`
+  ).bind(Date.now(), id, user.id).run()
+
+  return c.json({ ok: true })
+})
+
+// POST /api/notices/dismiss — mark a notice as dismissed (also stamps viewed_at if still null)
 app.post('/api/notices/dismiss', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ ok: false })
   const token = getSessionCookie(c.req.raw)
@@ -8197,11 +8218,31 @@ app.post('/api/notices/dismiss', async (c) => {
   const { id } = await c.req.json<any>().catch(() => ({}))
   if (!id) return c.json({ ok: false })
 
+  const now = Date.now()
+  // Stamp viewed_at too if the view endpoint was somehow skipped
   await c.env.DB.prepare(
-    `UPDATE user_notices SET dismissed_at=? WHERE id=? AND user_id=?`
-  ).bind(Date.now(), id, user.id).run()
+    `UPDATE user_notices SET dismissed_at=?, viewed_at=COALESCE(viewed_at,?) WHERE id=? AND user_id=?`
+  ).bind(now, now, id, user.id).run()
 
   return c.json({ ok: true })
+})
+
+// GET /api/admin/notices — list all user notices with tracking status (sent/viewed/dismissed)
+app.get('/api/admin/notices', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const rows = await c.env.DB.prepare(
+    `SELECT n.id, n.user_id, n.notice_key, n.title, n.created_at, n.viewed_at, n.dismissed_at,
+            u.email, u.name
+     FROM user_notices n
+     LEFT JOIN users u ON u.id = n.user_id
+     ORDER BY n.created_at DESC LIMIT 200`
+  ).all<any>().catch(() => ({ results: [] }))
+
+  return c.json({ notices: (rows as any).results || [] })
 })
 
 // GET /api/admin/revenue — MRR and profit breakdown
@@ -10350,7 +10391,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-77'
+const ASSET_VER = '20261013-78'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14678,6 +14719,17 @@ function adminPage(user: User) {
     <div id="admin-tab-users" style="display:none">
       <div id="admin-users-list" style="overflow-x:auto">
         <p style="color:var(--muted)"><i class="fas fa-spinner fa-spin"></i> Loading users…</p>
+      </div>
+
+      <!-- ── User Notices Tracking ────────────────────────────────────── -->
+      <div style="margin-top:32px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+          <h3 style="margin:0;font-size:.98rem"><i class="fas fa-bell" style="color:#f59e0b;margin-right:8px"></i>User Notices <span style="font-size:.78rem;color:var(--muted);font-weight:400">(sent / viewed / dismissed — like email open tracking)</span></h3>
+          <button onclick="loadAdminNotices()" class="btn btn--outline btn--sm"><i class="fas fa-sync-alt"></i> Refresh</button>
+        </div>
+        <div id="admin-notices-table" style="overflow-x:auto">
+          <p style="color:var(--muted);font-size:.85rem"><i class="fas fa-spinner fa-spin"></i> Click Refresh to load…</p>
+        </div>
       </div>
     </div>
 

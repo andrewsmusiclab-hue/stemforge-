@@ -177,8 +177,20 @@ function sfShowNoticeModal(notice, onDismiss) {
   var icon = notice.icon || 'fas fa-info-circle';
   var ctaUrl = notice.cta_url || '';
   var ctaText = notice.cta_text || 'Got it';
+  var _dismissed = false;
 
+  // ── Tracking: stamp viewed_at the moment the modal renders (like email open pixel) ──
+  fetch('/api/notices/view', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: notice.id })
+  }).catch(function() {});
+
+  // ── dismiss(): hides modal, stamps dismissed_at, fires onDismiss callback ──
+  // All close paths (X, backdrop, CTA) funnel through this — guarantees show-once
   function dismiss() {
+    if (_dismissed) return;
+    _dismissed = true;
     modal.style.display = 'none';
     fetch('/api/notices/dismiss', {
       method: 'POST', credentials: 'include',
@@ -188,9 +200,11 @@ function sfShowNoticeModal(notice, onDismiss) {
     if (onDismiss) setTimeout(onDismiss, 200);
   }
 
+  // CTA: always calls dismiss() regardless of whether there is a link.
+  // If there's a URL it opens in a new tab AND dismisses — notice never reappears.
   var ctaHtml = ctaUrl
-    ? '<a href="' + ctaUrl + '" target="_blank" onclick="document.getElementById(\'' + modalId + '\').style.display=\'none\';" style="display:block;width:100%;padding:13px 24px;background:' + iconGradient + ';color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;text-decoration:none;box-sizing:border-box;text-align:center">' + ctaText + '</a>'
-    : '<button onclick="(function(){var m=document.getElementById(\'' + modalId + '\');if(m)m.style.display=\'none\';fetch(\'/api/notices/dismiss\',{method:\'POST\',credentials:\'include\',headers:{\'Content-Type\':\'application/json\'},body:JSON.stringify({id:' + notice.id + '})}).catch(function(){});})()" style="display:block;width:100%;padding:13px 24px;background:' + iconGradient + ';color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer">' + ctaText + '</button>';
+    ? '<a id="sf-notice-cta-' + notice.id + '" href="' + ctaUrl + '" target="_blank" rel="noopener" style="display:block;width:100%;padding:13px 24px;background:' + iconGradient + ';color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;text-decoration:none;box-sizing:border-box;text-align:center">' + ctaText + '</a>'
+    : '<button id="sf-notice-cta-' + notice.id + '" style="display:block;width:100%;padding:13px 24px;background:' + iconGradient + ';color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer">' + ctaText + '</button>';
 
   modal.innerHTML =
     '<div style="background:var(--surface,#131c31);border:1px solid var(--border,#1e3a5f);border-radius:20px;padding:36px 32px;max-width:460px;width:90%;text-align:center;position:relative;box-shadow:0 24px 80px rgba(0,0,0,.6)">' +
@@ -214,10 +228,14 @@ function sfShowNoticeModal(notice, onDismiss) {
 
   document.body.appendChild(modal);
 
-  // Wire the X button dismiss after appending (so it exists in DOM)
+  // Wire up all three close paths after appending (elements now exist in DOM)
   var xBtn = document.getElementById('sf-notice-x-' + notice.id);
   if (xBtn) xBtn.addEventListener('click', dismiss);
-  // Click backdrop to dismiss
+
+  var ctaEl = document.getElementById('sf-notice-cta-' + notice.id);
+  if (ctaEl) ctaEl.addEventListener('click', dismiss); // fires for both <a> and <button>
+
+  // Backdrop click
   modal.addEventListener('click', function(e) { if (e.target === modal) dismiss(); });
 }
 
