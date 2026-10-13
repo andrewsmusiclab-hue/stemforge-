@@ -2928,8 +2928,8 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
             if (!uploadRes.ok) {
               const errText = await uploadRes.text().catch(() => '')
-              let errMsg = `MusicAPI upload error ${uploadRes.status}`
-              try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || errMsg } catch {}
+              let errMsg = `Stem splitter couldn't prepare your audio — please try again.`
+              try { const j = JSON.parse(errText) as any; if (j?.message || j?.error) console.error(`[stems/musicapi/bg] Upload detail: ${j?.message || j?.error}`) } catch {}
               console.error(`[stems/musicapi/bg] Upload error: ${errMsg}`)
               const freshJob2 = await getJob(bgDb, bgJobId)
               if (!freshJob2) return
@@ -2948,7 +2948,8 @@ app.get('/api/job/stems/:jobId', async (c) => {
             // /sonic/upload returns clip_id at top level (sync mode, no callback_url)
             clipId = uploadData?.clip_id || uploadData?.data?.[0]?.clip_id || uploadData?.data?.[0]?.id || ''
             if (!clipId) {
-              const errMsg = 'MusicAPI upload returned no clip_id: ' + JSON.stringify(uploadData).slice(0, 150)
+              const errMsg = 'Stem splitter failed to prepare your audio — please try again.'
+              console.error(`[stems/musicapi/bg] Upload returned no clip_id: ${JSON.stringify(uploadData).slice(0, 150)}`)
               console.error(`[stems/musicapi/bg] ${errMsg}`)
               const freshJob2 = await getJob(bgDb, bgJobId)
               if (!freshJob2) return
@@ -2989,9 +2990,9 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
           if (!musicapiRes.ok) {
             const errText = await musicapiRes.text().catch(() => '')
-            let errMsg = `Stemforge stem error ${musicapiRes.status}`
-            try { const j = JSON.parse(errText) as any; errMsg = j?.message || j?.error || j?.detail || errMsg } catch {}
-            if (musicapiRes.status === 429 || musicapiRes.status === 503 || errMsg.toLowerCase().includes('concurrent')) {
+            let errMsg = 'Stem splitter ran into an issue — please try again.'
+            try { const j = JSON.parse(errText) as any; if (j?.message || j?.error || j?.detail) console.error(`[stems/musicapi/bg] Detail: ${j?.message || j?.error || j?.detail}`) } catch {}
+            if (musicapiRes.status === 429 || musicapiRes.status === 503) {
               errMsg = 'Stem splitting is currently busy — please try again in 30–60 seconds.'
               // Log capacity error to DB for admin tracking
               if (bgDb) {
@@ -3013,8 +3014,8 @@ app.get('/api/job/stems/:jobId', async (c) => {
           const data = await musicapiRes.json() as any
           const stemTaskId = data.task_id || data.data?.task_id
           if (!stemTaskId) {
-            const errMsg = 'MusicAPI stems returned no task_id: ' + JSON.stringify(data).slice(0, 200)
-            console.error(`[stems/musicapi/bg] ${errMsg}`)
+            const errMsg = 'Stem splitter failed to start — please try again.'
+            console.error(`[stems/musicapi/bg] No task_id in stem response: ${JSON.stringify(data).slice(0, 200)}`)
             freshStem.status = 'error'
             freshStem.error = errMsg
             const errJob = { ...freshJob } as any
@@ -3039,7 +3040,8 @@ app.get('/api/job/stems/:jobId', async (c) => {
             const freshStem = freshStems.find((s: StemJob) => s.task_id === bgTaskId)
             if (!freshStem) return
             freshStem.status = 'error'
-            freshStem.error = bgErr?.message || 'Stem extraction failed'
+            freshStem.error = 'Stem splitting failed unexpectedly — please try again.'
+            console.error(`[stems/musicapi/bg] Caught error detail: ${bgErr?.message}`)
             const errJob = { ...freshJob } as any
             errJob.stem_jobs = freshStems.map((s: StemJob) => s.task_id === bgTaskId ? freshStem : s)
             await setJob(bgDb, errJob)
@@ -3106,7 +3108,8 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
       if (taskState === 'failed' || taskState === 'error') {
         stemJob.status = 'error'
-        stemJob.error = data.error || data.message || 'Stem extraction failed'
+        stemJob.error = 'Stem splitting failed — please try again. If the problem persists, contact support.'
+        if (data.error || data.message) console.error(`[stems/musicapi] Task failed detail: ${data.error || data.message}`)
         const updatedJob = { ...job } as any
         updatedJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
         await setJob(c.env.DB, updatedJob)
