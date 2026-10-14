@@ -2733,7 +2733,6 @@ app.get('/api/health', (c) => c.json({ status: 'ok', service: 'StemForge' }))
 
 // POST /api/job/stems — start stem extraction
 app.post('/api/job/stems', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Stemforge stem service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2814,7 +2813,6 @@ app.post('/api/job/stems', async (c) => {
 
 // GET /api/job/stems/:jobId — poll stem extraction status
 app.get('/api/job/stems/:jobId', async (c) => {
-  if (!c.env.MUREKA_API_KEY) return c.json({ error: 'Stemforge stem service not configured' }, 500)
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
@@ -2894,6 +2892,24 @@ app.get('/api/job/stems/:jobId', async (c) => {
 
       c.executionCtx.waitUntil((async () => {
         try {
+          // ── Guard: verify API key is present in this worker instance ──────
+          if (!bgKey) {
+            console.error(`[stems/mureka/bg] MUREKA_API_KEY is empty/missing in worker environment — cannot call stem API`)
+            const freshJob2 = await getJob(bgDb, bgJobId)
+            if (freshJob2) {
+              const freshStems2 = Array.isArray((freshJob2 as any).stem_jobs) ? (freshJob2 as any).stem_jobs as StemJob[] : []
+              const freshStem2 = freshStems2.find((s: StemJob) => s.task_id === bgTaskId)
+              if (freshStem2) {
+                freshStem2.status = 'error'
+                freshStem2.error = 'Stem splitter is not configured — please contact support.'
+                const errJob2 = { ...freshJob2 } as any
+                errJob2.stem_jobs = freshStems2.map((s: StemJob) => s.task_id === bgTaskId ? freshStem2 : s)
+                await setJob(bgDb, errJob2)
+              }
+            }
+            return
+          }
+
           // ── Resolve audio URL for Mureka ──────────────────────────────────
           // If the URL is a self-referencing /api/extend-audio-proxy/ URL,
           // we need to get a real public URL. Options:
@@ -2910,7 +2926,7 @@ app.get('/api/job/stems/:jobId', async (c) => {
           // ── Call Mureka /v1/song/stem ─────────────────────────────────────
           // model: audio-separation-1 = 5 stems, audio-separation-3 = 2 stems
           const murekaModel = bgMode === 'split_from_mix' ? 'audio-separation-3' : 'audio-separation-1'
-          console.log(`[stems/mureka/bg] Calling song/stem model=${murekaModel} url=${audioUrl.slice(0,80)} taskId=${bgTaskId}`)
+          console.log(`[stems/mureka/bg] Calling song/stem model=${murekaModel} url=${audioUrl.slice(0,80)} taskId=${bgTaskId} keyLen=${bgKey?.length ?? 0}`)
 
           const murekaRes = await fetch(`${MUREKA_BASE}/song/stem`, {
             method: 'POST',
@@ -10549,7 +10565,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-93'
+const ASSET_VER = '20261013-94'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
