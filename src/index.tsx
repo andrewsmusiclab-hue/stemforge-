@@ -2770,13 +2770,13 @@ app.post('/api/job/stems', async (c) => {
     }
   }
 
-  // Deduct credits: 5-stem = 75pts, 2-stem vocals+instrumental = 30pts
-  const stemCost = mode === 'auto' ? 30 : 70
+  // Deduct credits: auto split (5 stems) = 70pts, vocals+instrumental (2 stems) = 40pts
+  const stemCost = mode === 'auto' ? 70 : 40
   const stemFreshUser = await c.env.DB.prepare(`SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
   const stemBonus = stemFreshUser?.bonus_credits ?? 0
   const stemMain = stemFreshUser ? (stemFreshUser.gens_limit - stemFreshUser.gens_used) : 0
   if (!stemFreshUser || stemMain + stemBonus < stemCost) {
-    return c.json({ error: `Not enough points. ${mode === 'auto' ? 'Auto Split costs 30 points' : 'Vocals & Instrumental costs 70 points'} and you only have ${Math.max(0, stemMain + stemBonus)} remaining.`, limit_reached: true }, 403)
+    return c.json({ error: `Not enough points. ${mode === 'auto' ? 'Auto Split costs 70 points' : 'Vocals & Instrumental costs 40 points'} and you only have ${Math.max(0, stemMain + stemBonus)} remaining.`, limit_reached: true }, 403)
   }
   if (stemBonus >= stemCost) {
     await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id=?`).bind(stemCost, user.id).run()
@@ -10549,7 +10549,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-92'
+const ASSET_VER = '20261013-93'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12552,7 +12552,7 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 900 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
-          <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (30 pts)</li>
+          <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (70 pts)</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
           <li class="muted"><i class="fas fa-times"></i> Vocals &amp; Instrumental split</li>
@@ -12609,8 +12609,8 @@ function pricingPage() {
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">40 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
@@ -14278,8 +14278,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         <div class="credit-table">
           <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Points Cost</span><span>Available On</span></div>
           <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">30 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">40 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
           <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -15812,7 +15812,7 @@ function termsPage() {
   <h3>4.2 Paid Plans</h3>
   <p>We offer the following paid subscription tiers, billed monthly:</p>
   <ul>
-    <li><strong>Creator Plan ($10/month):</strong> 900 points monthly, Auto Split (30 pts), Vocals &amp; Instrumental (70 pts), WAV download, One Shot Creator (15 pts), commercial use rights</li>
+    <li><strong>Creator Plan ($10/month):</strong> 900 points monthly, Auto Split (70 pts), Vocals &amp; Instrumental (40 pts), WAV download, One Shot Creator (15 pts), commercial use rights</li>
     <li><strong>Pro Artist Plan ($26/month):</strong> 2,000 points monthly, all split modes, WAV download, commercial use rights, priority queue, Stemforge Remix, Song Extend, AI Cover Song</li>
   </ul>
 

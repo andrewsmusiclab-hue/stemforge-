@@ -616,8 +616,8 @@ document.addEventListener('DOMContentLoaded', () => {
       tag: 'PLAN UPDATE',
       tagColor: '#38bdf8',
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
-        <li><b style="color:#38bdf8">Creator can now use Auto Split</b> — Creator plan members can open the Stem Player on any beat and use the <b style="color:#38bdf8">Auto Split</b> tab to split their track into up to 5 stems: <span style="color:#e2e8f0">Vocals · Drums · Bass · Other · Instrumental</span>. One split costs 30 pts total — not per stem.</li>
-        <li><b style="color:#e2e8f0">Vocals &amp; Instrumental stays Pro Artist only</b> — The V&amp;I tab (2-stem separation at 70 pts) remains exclusive to Pro Artist. Creator users will see a locked state with an upgrade prompt when they click that tab.</li>
+        <li><b style="color:#38bdf8">Creator can now use Auto Split</b> — Creator plan members can open the Stem Player on any beat and use the <b style="color:#38bdf8">Auto Split</b> tab to split their track into up to 5 stems: <span style="color:#e2e8f0">Vocals · Drums · Bass · Other · Instrumental</span>. One split costs 70 pts total — not per stem.</li>
+        <li><b style="color:#e2e8f0">Vocals &amp; Instrumental stays Pro Artist only</b> — The V&amp;I tab (2-stem separation at 40 pts) remains exclusive to Pro Artist. Creator users will see a locked state with an upgrade prompt when they click that tab.</li>
         <li><b style="color:#e2e8f0">Free users still fully blocked</b> — Free plan users cannot access the Stem Player at all. Upgrade to Creator or Pro Artist to unlock splitting.</li>
         <li><b style="color:#e2e8f0">One Shot Creator added to Pro Artist</b> — The <i class="fas fa-bolt" style="color:#f59e0b"></i> <b style="color:#fcd34d">One Shot Creator</b> SFX generator is now listed on all Pro Artist plan cards across the site.</li>
       </ul>`
@@ -667,7 +667,7 @@ document.addEventListener('DOMContentLoaded', () => {
       tagColor: '#4fc3f7',
       body: `<ul style="margin:8px 0 0;padding:0 0 0 16px;line-height:1.7;font-size:.81rem;color:#94a3b8">
         <li><b style="color:#e2e8f0">Auto Split renamed</b> — "Up to 5 Stems" is now called <b>Auto Split</b> for clarity.</li>
-        <li><b style="color:#e2e8f0">New credit pricing</b> — Auto Split now costs <b>30 pts</b> (down from 75). Vocals &amp; Instrumental now costs <b>70 pts</b> (was 30) to reflect its higher quality output.</li>
+        <li><b style="color:#e2e8f0">New credit pricing</b> — Auto Split now costs <b>70 pts</b>. Vocals &amp; Instrumental now costs <b>40 pts</b>.</li>
         <li><b style="color:#e2e8f0">Master scrubber</b> — The stem player now has a full timeline scrubber so you can skip to any point in the track instantly.</li>
         <li><b style="color:#e2e8f0">Solo behaviour fixed</b> — Hitting Solo on a track now lights up the Mute button red on all other tracks, exactly like a DAW.</li>
         <li><b style="color:#e2e8f0">Full-mix stems removed</b> — "Song" and "Instrumental" stems (which were just the full stereo mix duplicated) no longer appear in the stem player.</li>
