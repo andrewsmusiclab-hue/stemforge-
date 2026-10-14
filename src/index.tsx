@@ -806,8 +806,8 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   } catch {}
 
   // ── Migrate existing users to correct point limits (runs on every cold start, idempotent) ──
-  // Free users: 60 pts (3 beats)
-  await db.prepare(`UPDATE users SET gens_limit = 60   WHERE plan = 'free'      AND gens_limit < 60`).run()
+  // Free users: 75 pts (3 beats)
+  await db.prepare(`UPDATE users SET gens_limit = 75   WHERE plan = 'free'      AND gens_limit < 75`).run()
   // Creator users below 900 → 900 pts
   await db.prepare(`UPDATE users SET gens_limit = 900  WHERE plan = 'creator'   AND gens_limit < 900`).run()
   // Pro users below 2000 → 2000 pts
@@ -1171,23 +1171,23 @@ async function createUser(db: D1Database, data: {
   signup_source?: string, signup_referrer?: string
 }): Promise<void> {
   await ensureAuthTables(db)
-  const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
+  const planLimits: Record<string, number> = { free:75, creator:900, pro:2000 }
   const plan = data.plan || 'free'
   const now = Date.now()
   await db.prepare(
     `INSERT INTO users (id, email, name, avatar, plan, gens_used, gens_limit, password_hash, google_id, registration_ip, created_at, cycle_start, signup_source, signup_referrer)
      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(data.id, data.email, data.name, data.avatar || null, plan,
-    planLimits[plan] || 60, data.password_hash || null, data.google_id || null,
+    planLimits[plan] || 75, data.password_hash || null, data.google_id || null,
     data.registration_ip || null, now, plan === 'free' ? now : null,
     data.signup_source || null, data.signup_referrer || null).run()
 }
 
 async function updateUserPlan(db: D1Database, userId: string, plan: string,
   stripeCustomerId: string, stripeSubId: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
+  const planLimits: Record<string, number> = { free:75, creator:900, pro:2000 }
   // Always start fresh at plan's base limit — no rollover on upgrade/downgrade
-  const newLimit = planLimits[plan] || 60
+  const newLimit = planLimits[plan] || 75
   await db.prepare(
     `UPDATE users SET plan=?, gens_limit=?, gens_used=0, stripe_customer_id=?, stripe_subscription_id=? WHERE id=?`
   ).bind(plan, newLimit, stripeCustomerId, stripeSubId, userId).run()
@@ -1195,8 +1195,8 @@ async function updateUserPlan(db: D1Database, userId: string, plan: string,
 
 // ── Monthly reset with rollover (called on invoice.paid Stripe event) ─────
 async function resetMonthlyDownloads(db: D1Database, customerId: string, plan: string): Promise<void> {
-  const planLimits: Record<string, number> = { free:60, creator:900, pro:2000 }
-  const newLimit = planLimits[plan] || 60
+  const planLimits: Record<string, number> = { free:75, creator:900, pro:2000 }
+  const newLimit = planLimits[plan] || 75
   // Always reset to exact plan limit — no rollover, clean slate each billing cycle
   await db.prepare(
     `UPDATE users SET gens_used=0, gens_limit=?, bonus_credits=0, downloads_used=0 WHERE stripe_customer_id=?`
@@ -1881,8 +1881,8 @@ async function autoNoticeServerError(db: D1Database, userId: string | null, jobI
       ''
     ).run()
 
-    // Refund the 20 points for this failed job
-    await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+    // Refund the 25 points for this failed job
+    await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
       .bind(userId).run()
   } catch (e: any) {
     console.warn('[auto-notice] failed to insert notice:', e?.message)
@@ -2382,8 +2382,8 @@ app.post('/api/generate', async (c) => {
   }
 
   // Enforce per-plan generation limit (bonus_credits consumed first)
-  const totalAvailable20 = (authUser.gens_limit - authUser.gens_used) + authUser.bonus_credits
-  if (totalAvailable20 < 20) {
+  const totalAvailable25 = (authUser.gens_limit - authUser.gens_used) + authUser.bonus_credits
+  if (totalAvailable25 < 25) {
     return c.json({
       error: `Points limit reached. You have used all your points for this month. Upgrade your plan or get more credits to continue.`,
       limit_reached: true
@@ -2393,15 +2393,15 @@ app.post('/api/generate', async (c) => {
   const userId: string = authUser.id
   const userPlan: string = authUser.plan
 
-  // Deduct 20 pts — consume bonus_credits first, then gens_used
-  if (authUser.bonus_credits >= 20) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 20 WHERE id = ?`).bind(authUser.id).run()
+  // Deduct 25 pts — consume bonus_credits first, then gens_used
+  if (authUser.bonus_credits >= 25) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 25 WHERE id = ?`).bind(authUser.id).run()
   } else if (authUser.bonus_credits > 0) {
     const fromBonus = authUser.bonus_credits
-    const fromMain = 20 - fromBonus
+    const fromMain = 25 - fromBonus
     await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(fromMain, authUser.id).run()
   } else {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id = ?`).bind(authUser.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 25 WHERE id = ?`).bind(authUser.id).run()
   }
 
   // Build enriched prompt from all UI inputs
@@ -2511,9 +2511,9 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
 
       if (pollData.type === 'failed') {
         job.status = 'error'
-        job.error  = 'Generation failed on music server — 20 points refunded.'
+        job.error  = 'Generation failed on music server — 25 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
         console.log(`[lazy-rescue] marked_error_refunded job=${row.id}`)
         continue
       }
@@ -2527,9 +2527,9 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
           job.status = 'error'
           job.error  = isExtend
             ? 'Song Extend expired on music server — 20 points refunded.'
-            : 'Stemforge generation timed out — 20 points refunded.'
+            : 'Stemforge generation timed out — 25 points refunded.'
           await setJob(env.DB, job)
-          if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+          if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
           console.log(`[lazy-rescue] expired_refunded job=${row.id} isExtend=${isExtend} age_min=${Math.round(ageMs/60000)}`)
         }
         continue
@@ -2556,15 +2556,15 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error  = 'Generation failed on music server — 20 points refunded.'
+        job.error  = 'Generation failed on music server — 25 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
         console.log(`[lazy-rescue] failed+refunded job=${row.id}`)
       } else if (ageMs > FIFTEEN_MIN) {
         job.status = 'error'
         job.error  = 'Stemforge generation timed out after 15 minutes'
         await setJob(env.DB, job)
-        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
         console.log(`[lazy-rescue] timed_out state=${clip.state} job=${row.id}`)
       }
     } catch (err: any) {
@@ -3594,7 +3594,7 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 //  Uploads the beat's stereo_url to MusicAPI /sonic/upload,
 //  calls MusicAPI Producer /producer/create with reference_clip_id.
 //  Creates a NEW Job in D1 so the result appears in the library.
-//  Costs 20 pts. Available to creator/pro/developer plans.
+//  Costs 25 pts. Available to creator/pro/developer plans.
 //  Frontend polls the new job via existing POST /api/poll/:id.
 // ═══════════════════════════════════════════════════════════════
 app.post('/api/job/remix', async (c) => {
@@ -3631,19 +3631,19 @@ app.post('/api/job/remix', async (c) => {
     return c.json({ error: 'job_id or audio_url required' }, 400)
   }
 
-  // Deduct 20 points — bonus_credits consumed first
+  // Deduct 25 points — bonus_credits consumed first
   const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
   const freshBonus = fresh?.bonus_credits ?? 0
   const freshMain = fresh ? (fresh.gens_limit - fresh.gens_used) : 0
-  if (!fresh || freshMain + freshBonus < 20) {
-    return c.json({ error: `Not enough points. Stemforge Remix costs 20 points and you only have ${Math.max(0, freshMain + freshBonus)} remaining.`, limit_reached: true }, 403)
+  if (!fresh || freshMain + freshBonus < 25) {
+    return c.json({ error: `Not enough points. Stemforge Remix costs 25 points and you only have ${Math.max(0, freshMain + freshBonus)} remaining.`, limit_reached: true }, 403)
   }
-  if (freshBonus >= 20) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 20 WHERE id=?`).bind(user.id).run()
+  if (freshBonus >= 25) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 25 WHERE id=?`).bind(user.id).run()
   } else if (freshBonus > 0) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(20 - freshBonus, user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(25 - freshBonus, user.id).run()
   } else {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 20 WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 25 WHERE id=?`).bind(user.id).run()
   }
 
   // Build style tags from the source job's blueprint for Sonic /upload-cover
@@ -3709,7 +3709,7 @@ app.post('/api/job/remix', async (c) => {
     const coverText = await coverRes.text()
     console.log(`[remix] /sonic/upload-cover HTTP ${coverRes.status}: ${coverText.slice(0,600)}`)
     if (!coverRes.ok) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id=?`).bind(user.id).run()
       let coverErrData: any = {}
       try { coverErrData = JSON.parse(coverText) } catch {}
       const apiErrMsg = coverErrData.message || coverErrData.error || coverText.slice(0, 200)
@@ -3725,13 +3725,13 @@ app.post('/api/job/remix', async (c) => {
     genTaskId = coverData.task_id || coverData.steps?.cover?.task_id || coverData.data?.[0]?.id || ''
     if (!genTaskId) {
       console.error(`[remix] upload-cover returned no task_id: ${coverText.slice(0,200)}`)
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again. Please try again.' }, 500)
     }
     console.log(`[remix] upload-cover task started: ${genTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id=?`).bind(user.id).run()
     return c.json({ error: `Something went wrong starting your remix: ${err?.message || 'unknown error'}` }, 500)
   }
 
@@ -6619,11 +6619,11 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
       const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
       const clip = clips[0]
 
-      // Helper: refund 20 pts to the job owner
+      // Helper: refund 25 pts to the job owner
       const refundUser = async () => {
         if (row.user_id) {
           try {
-            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`).bind(row.user_id).run()
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
           } catch (e: any) { console.warn(`[rescue] refund failed user=${row.user_id}:`, e?.message) }
         }
       }
@@ -6634,7 +6634,7 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
         job.status = 'error'
         job.error = isExtend
           ? 'Song Extend expired on music server — 20 points refunded.'
-          : 'Stemforge task expired — 20 points refunded.'
+          : 'Stemforge task expired — 25 points refunded.'
         await setJob(c.env.DB, job)
         await refundUser()
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: 'no_clip_data', task_id: job.stereo_task_id })
@@ -6657,14 +6657,14 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
           results.push({ id: row.id, title: job.title, action: 'marked_ready', url_prefix: url.slice(0, 60), task_id: job.stereo_task_id })
         } else {
           job.status = 'error'
-          job.error = 'Task succeeded but no audio_url — 20 points refunded.'
+          job.error = 'Task succeeded but no audio_url — 25 points refunded.'
           await setJob(c.env.DB, job)
           await refundUser()
           results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: 'succeeded_no_url', task_id: job.stereo_task_id })
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error = 'Generation failed on music server — 20 points refunded.'
+        job.error = 'Generation failed on music server — 25 points refunded.'
         await setJob(c.env.DB, job)
         await refundUser()
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: clip.error || 'task_failed', task_id: job.stereo_task_id })
@@ -6674,7 +6674,7 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
         const timeoutMs = isExtend ? 60 * 60 * 1000 : 30 * 60 * 1000
         if (ageMs > timeoutMs) {
           job.status = 'error'
-          job.error = `Timed out after ${Math.round(ageMs / 60000)} minutes — 20 points refunded.`
+          job.error = `Timed out after ${Math.round(ageMs / 60000)} minutes — 25 points refunded.`
           await setJob(c.env.DB, job)
           await refundUser()
           results.push({ id: row.id, title: job.title, action: 'timed_out_refunded', state: clip.state, task_id: job.stereo_task_id })
@@ -10565,7 +10565,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-94'
+const ASSET_VER = '20261013-95'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -11176,7 +11176,7 @@ function homePage() {
           <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
           <p class="plan-card__desc">Try the engine. No card needed.</p>
           <ul class="plan-card__features">
-            <li><i class="fas fa-check"></i> 60 points monthly</li>
+            <li><i class="fas fa-check"></i> 75 points monthly</li>
             <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
             <li class="muted"><i class="fas fa-times"></i> Downloads</li>
             <li class="muted"><i class="fas fa-times"></i> Commercial use</li>
@@ -12538,11 +12538,11 @@ function pricingPage() {
         <div class="plan-card__tier">Free</div>
         <div class="plan-card__price"><span class="plan-card__amount">$0</span><span>/month</span></div>
         <p class="plan-card__desc">Try the engine. No card needed.</p>
-        <div class="plan-card__credits"><i class="fas fa-music"></i> 60 points monthly</div>
+        <div class="plan-card__credits"><i class="fas fa-music"></i> 75 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
           <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
-          <li><i class="fas fa-check"></i> 60 points monthly — free forever</li>
+          <li><i class="fas fa-check"></i> 75 points monthly — free forever</li>
           <li class="muted"><i class="fas fa-times"></i> Downloads</li>
           <li class="muted"><i class="fas fa-times"></i> Commercial use rights</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
@@ -14099,7 +14099,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <div class="sub-plan-card__price">$0<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 60 points monthly</li>
+            <li><i class="fas fa-check"></i> 75 points monthly</li>
             <li><i class="fas fa-check"></i> Stereo preview &amp; playback</li>
           </ul>
           ${user.plan === 'free'
@@ -16494,11 +16494,11 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
       // MusicAPI failed shape: { type: 'failed', error: '...', already_refunded: true }
       if (pollData.type === 'failed') {
         job.status = 'error'
-        job.error = `Generation failed on music server — 20 points refunded.`
+        job.error = `Generation failed on music server — 25 points refunded.`
         await setJob(c.env.DB, job)
-        // Refund 20 points to the user
+        // Refund 25 points to the user
         if (row.user_id) {
-          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
             .bind(row.user_id).run()
         }
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: pollData.error })
@@ -16512,7 +16512,7 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
           job.error = 'Stemforge generation timed out after 15 minutes'
           await setJob(c.env.DB, job)
           if (row.user_id) {
-            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
               .bind(row.user_id).run()
           }
           results.push({ id: row.id, title: job.title, action: 'timed_out_refunded' })
@@ -16545,10 +16545,10 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error = 'Generation failed on music server — 20 points refunded.'
+        job.error = 'Generation failed on music server — 25 points refunded.'
         await setJob(c.env.DB, job)
         if (row.user_id) {
-          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
             .bind(row.user_id).run()
         }
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: clip.error })
@@ -16559,7 +16559,7 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
           job.error = 'Stemforge generation timed out after 15 minutes'
           await setJob(c.env.DB, job)
           if (row.user_id) {
-            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 20) WHERE id = ?`)
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
               .bind(row.user_id).run()
           }
           results.push({ id: row.id, title: job.title, action: 'timed_out_refunded', state: clip.state })
