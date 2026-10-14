@@ -1400,6 +1400,8 @@ interface StemJob {
   error?: string
   target_instrument?: string // for split_from_mix / advanced
   created_at: number
+  last_polled_at?: number    // timestamp of last actual MusicAPI /sonic/task poll
+                             // used to throttle server-side calls to ≤1 per 15s
 }
 
 interface Job {
@@ -3070,7 +3072,28 @@ app.get('/api/job/stems/:jobId', async (c) => {
   // stems/full returns one clip per instrument, title = stem name (e.g. "Drums", "Bass")
   if (stemJob.task_id.startsWith('stemtask:')) {
     const musicapiTaskId = stemJob.task_id.slice('stemtask:'.length)
+
+    // ── Server-side poll throttle ─────────────────────────────────────────────
+    // MusicAPI rate limit = 1 req / 3s (standard plan), shared across ALL routes
+    // (song generation, extend, cover, stem poll, etc.).
+    // We only call MusicAPI if at least 15s have passed since the last actual poll.
+    // If the frontend polls more frequently (e.g. during a page reload), we just
+    // return 'processing' from cache without consuming a rate-limit slot.
+    const POLL_THROTTLE_MS = 15_000
+    const lastPolled = stemJob.last_polled_at || 0
+    const msSinceLastPoll = Date.now() - lastPolled
+    if (msSinceLastPoll < POLL_THROTTLE_MS) {
+      console.log(`[stems/musicapi] Throttling poll for ${musicapiTaskId} — last polled ${Math.round(msSinceLastPoll/1000)}s ago, waiting for ${Math.round((POLL_THROTTLE_MS - msSinceLastPoll)/1000)}s more`)
+      return c.json({ status: 'processing', task_id: stemJob.task_id })
+    }
+
     try {
+      // Record the poll timestamp BEFORE the fetch so concurrent requests also see it
+      stemJob.last_polled_at = Date.now()
+      const throttledJob = { ...job } as any
+      throttledJob.stem_jobs = stemJobs.map((s: StemJob) => s.task_id === stemJob!.task_id ? stemJob! : s)
+      await setJob(c.env.DB, throttledJob)
+
       const res = await fetch(`${MUSICAPI_SONIC}/task/${musicapiTaskId}`, {
         headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
       })
@@ -10682,7 +10705,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-90'
+const ASSET_VER = '20261013-91'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
