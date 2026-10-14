@@ -10565,7 +10565,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-94b'
+const ASSET_VER = '20261013-94'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -16254,31 +16254,6 @@ app.get('/api/admin/stem-diag', async (c) => {
     const token = getSessionCookie(c.req.raw)
     const user = token ? await getSessionUser(c.env.DB, token) : null
     if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  }
-
-  // Mureka key diagnostic: ?mureka=1
-  if (c.req.query('mureka') === '1') {
-    const mk = c.env.MUREKA_API_KEY
-    const mkLen = mk?.length ?? 0
-    const mkPresent = !!mk && mkLen > 0
-    // Test the key against Mureka API
-    let murekaTest: any = null
-    if (mkPresent) {
-      try {
-        const testRes = await fetch(`${MUREKA_BASE}/user/info`, {
-          headers: { 'Authorization': `Bearer ${mk}` }
-        })
-        murekaTest = { status: testRes.status, body: await testRes.text().catch(() => '') }
-      } catch (e: any) {
-        murekaTest = { status: 0, error: e?.message }
-      }
-    }
-    return c.json({
-      mureka_key_present: mkPresent,
-      mureka_key_length: mkLen,
-      mureka_key_prefix: mkPresent ? mk!.slice(0, 8) + '...' : null,
-      mureka_api_test: murekaTest
-    })
   }
 
   // Balance-only mode: ?balance=1 skips task poll and just returns MusicAPI account balance
