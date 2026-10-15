@@ -572,19 +572,18 @@ document.addEventListener('DOMContentLoaded', () => {
             <img src="/static/stem-tutorial-step1.png"
               alt="Beat card with 3-dot menu"
               style="width:100%;max-width:320px;border-radius:10px;border:1px solid #1e3a2e;display:block;margin:0 auto"/>
-            <!-- Arrow + label pointing to the 3-dot button (top-right corner of card) -->
-            <svg viewBox="0 0 320 380" style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:320px;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
-              <!-- Curved arrow from label toward the 3-dots button -->
+            <!-- SVG viewBox matches real image: 770x967. Button center confirmed at (533,728). Label placed bottom-left, arrow curves up-right to land on button. -->
+            <svg viewBox="0 0 770 967" style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:320px;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
               <defs>
-                <marker id="arrowhead1" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-                  <polygon points="0 0, 8 3, 0 6" fill="#10b981"/>
+                <marker id="arrowhead1" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+                  <polygon points="0 0, 10 4, 0 8" fill="#10b981"/>
                 </marker>
               </defs>
-              <!-- Arrow shaft -->
-              <path d="M 100 330 Q 180 300 262 255" stroke="#10b981" stroke-width="2.5" fill="none" stroke-dasharray="none" marker-end="url(#arrowhead1)"/>
-              <!-- Label bubble -->
-              <rect x="14" y="312" width="148" height="32" rx="7" fill="#10b981" opacity="0.92"/>
-              <text x="88" y="332" text-anchor="middle" font-family="sans-serif" font-size="12" font-weight="700" fill="#fff">Click these 3 dots ⋯</text>
+              <!-- Arrow tip lands exactly on button center (533,728) -->
+              <path d="M 170 870 Q 300 820 522 734" stroke="#10b981" stroke-width="6" fill="none" marker-end="url(#arrowhead1)"/>
+              <!-- Label bubble bottom-left -->
+              <rect x="30" y="848" width="280" height="52" rx="12" fill="#10b981" opacity="0.95"/>
+              <text x="170" y="880" text-anchor="middle" font-family="sans-serif" font-size="28" font-weight="800" fill="#fff">Click these 3 dots ⋯</text>
             </svg>
           </div>
         </div>
@@ -599,20 +598,20 @@ document.addEventListener('DOMContentLoaded', () => {
             <img src="/static/stem-tutorial-step2.png"
               alt="Context menu with Get Stems option"
               style="width:100%;max-width:320px;border-radius:10px;border:1px solid #1e3a2e;display:block;margin:0 auto"/>
-            <!-- Circle + label around "Get Stems" row -->
-            <svg viewBox="0 0 320 560" style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:320px;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+            <!-- SVG viewBox matches real image: 768x1024. "Get Stems" row center confirmed at (375,728). -->
+            <svg viewBox="0 0 768 1024" style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:320px;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
               <defs>
-                <marker id="arrowhead2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-                  <polygon points="0 0, 8 3, 0 6" fill="#10b981"/>
+                <marker id="arrowhead2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+                  <polygon points="0 0, 10 4, 0 8" fill="#10b981"/>
                 </marker>
               </defs>
-              <!-- Highlight circle around "Get Stems" row (~y=370 in a 560-tall view) -->
-              <ellipse cx="175" cy="372" rx="100" ry="22" stroke="#10b981" stroke-width="2.5" fill="#10b98122"/>
-              <!-- Arrow from label to circle -->
-              <path d="M 100 490 Q 120 440 148 396" stroke="#10b981" stroke-width="2.5" fill="none" marker-end="url(#arrowhead2)"/>
+              <!-- Ellipse highlight around the exact "Get Stems" row (cx=375, cy=728, full row width ~240px, height ~32px) -->
+              <ellipse cx="375" cy="728" rx="200" ry="30" stroke="#10b981" stroke-width="5" fill="#10b98118"/>
+              <!-- Arrow from label (bottom-left) up to the ellipse -->
+              <path d="M 170 920 Q 220 840 340 758" stroke="#10b981" stroke-width="6" fill="none" marker-end="url(#arrowhead2)"/>
               <!-- Label bubble -->
-              <rect x="14" y="472" width="130" height="30" rx="7" fill="#10b981" opacity="0.92"/>
-              <text x="79" y="491" text-anchor="middle" font-family="sans-serif" font-size="12" font-weight="700" fill="#fff">Click here</text>
+              <rect x="30" y="896" width="190" height="52" rx="12" fill="#10b981" opacity="0.95"/>
+              <text x="125" y="928" text-anchor="middle" font-family="sans-serif" font-size="30" font-weight="800" fill="#fff">Click here</text>
             </svg>
           </div>
         </div>
@@ -627,36 +626,41 @@ document.addEventListener('DOMContentLoaded', () => {
             <img src="/static/stem-tutorial-step3.png"
               alt="Stem Studio split mode selector"
               style="width:100%;border-radius:10px;border:1px solid #1e3a2e;display:block"/>
-            <!-- SVG annotations: numbered arrows for the 3-step sequence -->
-            <svg viewBox="0 0 900 160" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+            <!--
+              SVG viewBox: 800 wide (image) x 430 tall (image 288 + 142 label area below).
+              Image buttons confirmed at y=133 (all 3 on same row):
+                AUTO SPLIT:      cx=367
+                VOCALS & INST.:  cx=449
+                EXTRACT STEMS:   cx=554
+              Labels sit at y=340-400 (below the image, in the extended canvas).
+              Each arrow goes FROM label UP TO its button center.
+            -->
+            <svg viewBox="0 0 800 430" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
               <defs>
-                <marker id="ah3a" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#f59e0b"/></marker>
-                <marker id="ah3b" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#38bdf8"/></marker>
-                <marker id="ah3c" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#10b981"/></marker>
+                <marker id="ah3a" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0,10 4,0 8" fill="#f59e0b"/></marker>
+                <marker id="ah3b" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0,10 4,0 8" fill="#38bdf8"/></marker>
+                <marker id="ah3c" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0,10 4,0 8" fill="#10b981"/></marker>
               </defs>
 
-              <!-- ① Auto Split label + arrow -->
-              <circle cx="38" cy="130" r="11" fill="#f59e0b"/>
-              <text x="38" y="135" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="800" fill="#000">1</text>
-              <path d="M 49 125 Q 160 95 338 60" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#ah3a)"/>
-              <rect x="4" y="138" width="68" height="16" rx="4" fill="#f59e0b" opacity=".9"/>
-              <text x="38" y="150" text-anchor="middle" font-family="sans-serif" font-size="9" font-weight="700" fill="#000">AUTO SPLIT</text>
+              <!-- ① AUTO SPLIT — label at y≈350, arrow points straight up to (367,143) -->
+              <rect x="295" y="330" width="144" height="44" rx="8" fill="#f59e0b" opacity=".95"/>
+              <text x="367" y="347" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="800" fill="#000">① AUTO SPLIT</text>
+              <text x="367" y="364" text-anchor="middle" font-family="sans-serif" font-size="10" font-weight="600" fill="#78350f">pick this OR ②</text>
+              <line x1="367" y1="328" x2="367" y2="150" stroke="#f59e0b" stroke-width="4" marker-end="url(#ah3a)"/>
 
-              <!-- ② Vocals & Inst. label + arrow -->
-              <circle cx="148" cy="130" r="11" fill="#38bdf8"/>
-              <text x="148" y="135" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="800" fill="#000">2</text>
-              <path d="M 159 125 Q 310 90 448 60" stroke="#38bdf8" stroke-width="2" fill="none" marker-end="url(#ah3b)"/>
-              <rect x="105" y="138" width="86" height="16" rx="4" fill="#38bdf8" opacity=".9"/>
-              <text x="148" y="150" text-anchor="middle" font-family="sans-serif" font-size="9" font-weight="700" fill="#000">VOCALS &amp; INST.</text>
+              <!-- ② VOCALS & INST. — label at y≈395, arrow points straight up to (449,143) -->
+              <rect x="374" y="380" width="150" height="40" rx="8" fill="#38bdf8" opacity=".95"/>
+              <text x="449" y="405" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="800" fill="#0c1a2e">② VOCALS &amp; INST.</text>
+              <line x1="449" y1="378" x2="449" y2="150" stroke="#38bdf8" stroke-width="4" marker-end="url(#ah3b)"/>
 
-              <!-- ③ Extract Stems button label + arrow -->
-              <circle cx="285" cy="130" r="11" fill="#10b981"/>
-              <text x="285" y="135" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="800" fill="#fff">3</text>
-              <path d="M 296 124 Q 490 80 660 58" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#ah3c)"/>
-              <rect x="230" y="138" width="110" height="16" rx="4" fill="#10b981" opacity=".9"/>
-              <text x="285" y="150" text-anchor="middle" font-family="sans-serif" font-size="9" font-weight="700" fill="#fff">EXTRACT STEMS</text>
+              <!-- ③ EXTRACT STEMS — label at y≈330, arrow points straight up to (554,143) -->
+              <rect x="472" y="295" width="164" height="40" rx="8" fill="#10b981" opacity=".95"/>
+              <text x="554" y="320" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="800" fill="#fff">③ EXTRACT STEMS</text>
+              <line x1="554" y1="293" x2="554" y2="150" stroke="#10b981" stroke-width="4" marker-end="url(#ah3c)"/>
             </svg>
           </div>
+          <!-- Extra height so the SVG label area below the image isn't clipped -->
+          <div style="height:148px"></div>
           <div style="margin-top:8px;background:#0d1f17;border:1px solid #1e3a2e;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#94a3b8">
             <b style="color:#10b981">① Pick Auto Split</b> (up to 5 stems — Vocals, Drums, Bass, Other, Instrumental) <b style="color:#94a3b8">OR</b>
             <b style="color:#38bdf8"> ② Vocals &amp; Inst.</b> (2-stem clean separation) →
