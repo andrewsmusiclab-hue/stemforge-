@@ -560,10 +560,10 @@ document.addEventListener('DOMContentLoaded', () => {
       tag: 'HOW-TO GUIDE',
       tagColor: '#10b981',
       body: `<div style="margin:10px 0 0;display:flex;flex-direction:column;gap:10px">
-        <img src="/static/stem-guide-step1.png" alt="Step 1 - Click the 3 dots" style="width:100%;border-radius:10px;display:block"/>
-        <img src="/static/stem-guide-step2.png" alt="Step 2 - Click Get Stems" style="width:100%;border-radius:10px;display:block"/>
-        <img src="/static/stem-guide-step3.png" alt="Step 3 - Choose split mode and extract" style="width:100%;border-radius:10px;display:block"/>
-        <img src="/static/stem-guide-step4.png" alt="Step 4 - Download your stems" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-v2-step1.png" alt="Step 1 - Click the 3 dots" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-v2-step2.png" alt="Step 2 - Click Get Stems" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-v2-step3.png" alt="Step 3 - Choose split mode and extract" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-v2-step4.png" alt="Step 4 - Download your stems" style="width:100%;border-radius:10px;display:block"/>
       </div>`
     },
     {
