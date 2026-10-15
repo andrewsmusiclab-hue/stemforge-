@@ -554,6 +554,19 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'oct2026-stem-splitter-guide',
+      date: 'October 2026',
+      title: 'How to Access the Stem Splitter',
+      tag: 'HOW-TO GUIDE',
+      tagColor: '#10b981',
+      body: `<div style="margin:10px 0 0;display:flex;flex-direction:column;gap:10px">
+        <img src="/static/stem-guide-step1.png" alt="Step 1 - Click the 3 dots" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-step2.png" alt="Step 2 - Click Get Stems" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-step3.png" alt="Step 3 - Choose split mode and extract" style="width:100%;border-radius:10px;display:block"/>
+        <img src="/static/stem-guide-step4.png" alt="Step 4 - Download your stems" style="width:100%;border-radius:10px;display:block"/>
+      </div>`
+    },
+    {
       id: 'oct2026-lyrics-panel',
       date: 'October 2026',
       title: 'Lyrics Panel — See Your Lyrics While You Play',
