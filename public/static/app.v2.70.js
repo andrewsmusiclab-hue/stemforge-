@@ -554,6 +554,149 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'oct2026-stem-splitter-tutorial',
+      date: 'October 2026',
+      title: 'How to Access the Stem Splitter',
+      tag: 'HOW-TO GUIDE',
+      tagColor: '#10b981',
+      body: `<div style="margin:12px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.6">
+        <p style="margin:0 0 14px;color:#cbd5e1;font-size:.83rem">Split any beat into individual stems — vocals, drums, bass &amp; more — in 4 easy steps.</p>
+
+        <!-- STEP 1 -->
+        <div style="margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="background:#10b981;color:#fff;font-size:.62rem;font-weight:800;padding:2px 9px;border-radius:999px;letter-spacing:.6px">STEP 1</span>
+            <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Find your track — click the <span style="color:#10b981">⋯</span> menu</span>
+          </div>
+          <div style="position:relative;display:inline-block;width:100%">
+            <img src="https://www.genspark.ai/api/files/s/YoPZDZ3w"
+              alt="Beat card with 3-dot menu"
+              style="width:100%;max-width:320px;border-radius:10px;border:1px solid #1e3a2e;display:block;margin:0 auto"/>
+            <!-- Arrow + label pointing to the 3-dot button (top-right corner of card) -->
+            <svg viewBox="0 0 320 380" style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:320px;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+              <!-- Curved arrow from label toward the 3-dots button -->
+              <defs>
+                <marker id="arrowhead1" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                  <polygon points="0 0, 8 3, 0 6" fill="#10b981"/>
+                </marker>
+              </defs>
+              <!-- Arrow shaft -->
+              <path d="M 100 330 Q 180 300 262 255" stroke="#10b981" stroke-width="2.5" fill="none" stroke-dasharray="none" marker-end="url(#arrowhead1)"/>
+              <!-- Label bubble -->
+              <rect x="14" y="312" width="148" height="32" rx="7" fill="#10b981" opacity="0.92"/>
+              <text x="88" y="332" text-anchor="middle" font-family="sans-serif" font-size="12" font-weight="700" fill="#fff">Click these 3 dots ⋯</text>
+            </svg>
+          </div>
+        </div>
+
+        <!-- STEP 2 -->
+        <div style="margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="background:#10b981;color:#fff;font-size:.62rem;font-weight:800;padding:2px 9px;border-radius:999px;letter-spacing:.6px">STEP 2</span>
+            <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Select <span style="color:#10b981">Get Stems</span> from the menu</span>
+          </div>
+          <div style="position:relative;display:inline-block;width:100%">
+            <img src="https://www.genspark.ai/api/files/s/zGr66RlD"
+              alt="Context menu with Get Stems option"
+              style="width:100%;max-width:320px;border-radius:10px;border:1px solid #1e3a2e;display:block;margin:0 auto"/>
+            <!-- Circle + label around "Get Stems" row -->
+            <svg viewBox="0 0 320 560" style="position:absolute;top:0;left:50%;transform:translateX(-50%);width:100%;max-width:320px;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="arrowhead2" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                  <polygon points="0 0, 8 3, 0 6" fill="#10b981"/>
+                </marker>
+              </defs>
+              <!-- Highlight circle around "Get Stems" row (~y=370 in a 560-tall view) -->
+              <ellipse cx="175" cy="372" rx="100" ry="22" stroke="#10b981" stroke-width="2.5" fill="#10b98122"/>
+              <!-- Arrow from label to circle -->
+              <path d="M 100 490 Q 120 440 148 396" stroke="#10b981" stroke-width="2.5" fill="none" marker-end="url(#arrowhead2)"/>
+              <!-- Label bubble -->
+              <rect x="14" y="472" width="130" height="30" rx="7" fill="#10b981" opacity="0.92"/>
+              <text x="79" y="491" text-anchor="middle" font-family="sans-serif" font-size="12" font-weight="700" fill="#fff">Click here</text>
+            </svg>
+          </div>
+        </div>
+
+        <!-- STEP 3 -->
+        <div style="margin-bottom:18px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="background:#10b981;color:#fff;font-size:.62rem;font-weight:800;padding:2px 9px;border-radius:999px;letter-spacing:.6px">STEP 3</span>
+            <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Choose a split mode, then hit <span style="color:#10b981">⚡ Extract Stems</span></span>
+          </div>
+          <div style="position:relative;display:inline-block;width:100%">
+            <img src="https://www.genspark.ai/api/files/s/2BhV5OIt"
+              alt="Stem Studio split mode selector"
+              style="width:100%;border-radius:10px;border:1px solid #1e3a2e;display:block"/>
+            <!-- SVG annotations: numbered arrows for the 3-step sequence -->
+            <svg viewBox="0 0 900 160" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="ah3a" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#f59e0b"/></marker>
+                <marker id="ah3b" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#38bdf8"/></marker>
+                <marker id="ah3c" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><polygon points="0 0,7 2.5,0 5" fill="#10b981"/></marker>
+              </defs>
+
+              <!-- ① Auto Split label + arrow -->
+              <circle cx="38" cy="130" r="11" fill="#f59e0b"/>
+              <text x="38" y="135" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="800" fill="#000">1</text>
+              <path d="M 49 125 Q 160 95 338 60" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#ah3a)"/>
+              <rect x="4" y="138" width="68" height="16" rx="4" fill="#f59e0b" opacity=".9"/>
+              <text x="38" y="150" text-anchor="middle" font-family="sans-serif" font-size="9" font-weight="700" fill="#000">AUTO SPLIT</text>
+
+              <!-- ② Vocals & Inst. label + arrow -->
+              <circle cx="148" cy="130" r="11" fill="#38bdf8"/>
+              <text x="148" y="135" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="800" fill="#000">2</text>
+              <path d="M 159 125 Q 310 90 448 60" stroke="#38bdf8" stroke-width="2" fill="none" marker-end="url(#ah3b)"/>
+              <rect x="105" y="138" width="86" height="16" rx="4" fill="#38bdf8" opacity=".9"/>
+              <text x="148" y="150" text-anchor="middle" font-family="sans-serif" font-size="9" font-weight="700" fill="#000">VOCALS &amp; INST.</text>
+
+              <!-- ③ Extract Stems button label + arrow -->
+              <circle cx="285" cy="130" r="11" fill="#10b981"/>
+              <text x="285" y="135" text-anchor="middle" font-family="sans-serif" font-size="11" font-weight="800" fill="#fff">3</text>
+              <path d="M 296 124 Q 490 80 660 58" stroke="#10b981" stroke-width="2" fill="none" marker-end="url(#ah3c)"/>
+              <rect x="230" y="138" width="110" height="16" rx="4" fill="#10b981" opacity=".9"/>
+              <text x="285" y="150" text-anchor="middle" font-family="sans-serif" font-size="9" font-weight="700" fill="#fff">EXTRACT STEMS</text>
+            </svg>
+          </div>
+          <div style="margin-top:8px;background:#0d1f17;border:1px solid #1e3a2e;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#94a3b8">
+            <b style="color:#10b981">① Pick Auto Split</b> (up to 5 stems — Vocals, Drums, Bass, Other, Instrumental) <b style="color:#94a3b8">OR</b>
+            <b style="color:#38bdf8"> ② Vocals &amp; Inst.</b> (2-stem clean separation) →
+            <b style="color:#10b981"> ③ Click ⚡ Extract Stems</b> to start processing.
+          </div>
+        </div>
+
+        <!-- STEP 4 -->
+        <div style="margin-bottom:4px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="background:#10b981;color:#fff;font-size:.62rem;font-weight:800;padding:2px 9px;border-radius:999px;letter-spacing:.6px">STEP 4</span>
+            <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Download individual stems or hit <span style="color:#10b981">↓ DL ALL</span></span>
+          </div>
+          <div style="position:relative;display:inline-block;width:100%">
+            <img src="https://www.genspark.ai/api/files/s/684vRZWv"
+              alt="Stem Studio player with DL ALL button"
+              style="width:100%;border-radius:10px;border:1px solid #1e3a2e;display:block"/>
+            <!-- Arrow + label pointing at DL ALL button (bottom-right of image) -->
+            <svg viewBox="0 0 1050 530" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="arrowhead4" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                  <polygon points="0 0, 8 3, 0 6" fill="#f59e0b"/>
+                </marker>
+              </defs>
+              <!-- Highlight box around DL ALL button -->
+              <rect x="935" y="486" width="100" height="32" rx="8" stroke="#f59e0b" stroke-width="3" fill="#f59e0b22"/>
+              <!-- Arrow from label toward DL ALL -->
+              <path d="M 720 430 Q 830 440 930 500" stroke="#f59e0b" stroke-width="2.5" fill="none" marker-end="url(#arrowhead4)"/>
+              <!-- Label bubble -->
+              <rect x="590" y="408" width="196" height="30" rx="8" fill="#f59e0b" opacity=".93"/>
+              <text x="688" y="427" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="800" fill="#000">↓ Download Stems Here</text>
+            </svg>
+          </div>
+          <div style="margin-top:8px;background:#0d1f17;border:1px solid #1e3a2e;border-radius:8px;padding:10px 12px;font-size:.78rem;color:#94a3b8">
+            Each stem has its own <b style="color:#e2e8f0">↓ DL</b> button to download individually, or click <b style="color:#f59e0b">↓ DL ALL</b> (bottom-right) to download every stem at once as a ZIP.
+          </div>
+        </div>
+      </div>`
+    },
+    {
       id: 'oct2026-lyrics-panel',
       date: 'October 2026',
       title: 'Lyrics Panel — See Your Lyrics While You Play',
