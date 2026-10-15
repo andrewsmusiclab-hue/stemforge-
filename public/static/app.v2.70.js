@@ -569,7 +569,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Find your track — click the <span style="color:#10b981">⋯</span> menu</span>
           </div>
           <div style="position:relative;display:inline-block;width:100%">
-            <img src="https://www.genspark.ai/api/files/s/YoPZDZ3w"
+            <img src="/static/stem-tutorial-step1.png"
               alt="Beat card with 3-dot menu"
               style="width:100%;max-width:320px;border-radius:10px;border:1px solid #1e3a2e;display:block;margin:0 auto"/>
             <!-- Arrow + label pointing to the 3-dot button (top-right corner of card) -->
@@ -596,7 +596,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Select <span style="color:#10b981">Get Stems</span> from the menu</span>
           </div>
           <div style="position:relative;display:inline-block;width:100%">
-            <img src="https://www.genspark.ai/api/files/s/zGr66RlD"
+            <img src="/static/stem-tutorial-step2.png"
               alt="Context menu with Get Stems option"
               style="width:100%;max-width:320px;border-radius:10px;border:1px solid #1e3a2e;display:block;margin:0 auto"/>
             <!-- Circle + label around "Get Stems" row -->
@@ -624,7 +624,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Choose a split mode, then hit <span style="color:#10b981">⚡ Extract Stems</span></span>
           </div>
           <div style="position:relative;display:inline-block;width:100%">
-            <img src="https://www.genspark.ai/api/files/s/2BhV5OIt"
+            <img src="/static/stem-tutorial-step3.png"
               alt="Stem Studio split mode selector"
               style="width:100%;border-radius:10px;border:1px solid #1e3a2e;display:block"/>
             <!-- SVG annotations: numbered arrows for the 3-step sequence -->
@@ -671,7 +671,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span style="color:#e2e8f0;font-size:.82rem;font-weight:700">Download individual stems or hit <span style="color:#10b981">↓ DL ALL</span></span>
           </div>
           <div style="position:relative;display:inline-block;width:100%">
-            <img src="https://www.genspark.ai/api/files/s/684vRZWv"
+            <img src="/static/stem-tutorial-step4.png"
               alt="Stem Studio player with DL ALL button"
               style="width:100%;border-radius:10px;border:1px solid #1e3a2e;display:block"/>
             <!-- Arrow + label pointing at DL ALL button (bottom-right of image) -->
