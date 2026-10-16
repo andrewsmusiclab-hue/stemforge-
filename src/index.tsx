@@ -9682,7 +9682,9 @@ app.get('/api/oneshot-audio/:id', async (c) => {
     }
     return c.json({ error: 'Audio not available' }, 404)
   }
+  // Primary path: oneshots/ prefix; legacy fallback: beats/ prefix
   const obj = await c.env.IMAGES.get(`oneshots/${id}.mp3`)
+         || await c.env.IMAGES.get(`beats/${id}.mp3`)
   if (!obj) return c.json({ error: 'Not found' }, 404)
   const safeFilename = id.replace(/[^a-zA-Z0-9_-]/g, '_')
   return new Response(obj.body, {
@@ -9722,7 +9724,10 @@ app.get('/api/track-audio/:id', async (c) => {
   // ── One-shots: serve directly from R2 (no redirect loop, instant playback) ─
   if ((job as any).is_sfx || jobId.startsWith('sfx_') || jobId.startsWith('os_')) {
     if (c.env.IMAGES) {
-      const obj = await c.env.IMAGES.get(`oneshots/${jobId}.mp3`)
+      // Primary path: oneshots/ prefix (all newly created SFX/one-shots)
+      let obj = await c.env.IMAGES.get(`oneshots/${jobId}.mp3`)
+      // Legacy fallback: some early jobs were mistakenly stored under beats/ prefix
+      if (!obj) obj = await c.env.IMAGES.get(`beats/${jobId}.mp3`)
       if (obj) {
         return new Response(obj.body, {
           headers: { ...commonHeaders, 'Content-Type': 'audio/mpeg', 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=86400' }
@@ -9932,7 +9937,9 @@ app.get('/api/download-wav/:id', async (c) => {
   // ── One-shots: MP3 as-is, no conversion needed ──────────────────────────
   if ((job as any).is_sfx || jobId.startsWith('sfx_') || jobId.startsWith('os_')) {
     if (c.env.IMAGES) {
+      // Primary path: oneshots/ prefix; legacy fallback: beats/ prefix
       const obj = await c.env.IMAGES.get(`oneshots/${jobId}.mp3`)
+             || await c.env.IMAGES.get(`beats/${jobId}.mp3`)
       if (obj) {
         const safeT = ((job as any).title || (job as any).sound_type || 'oneshot')
           .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'oneshot'
@@ -10045,9 +10052,10 @@ app.get('/api/download-mp3/:id', async (c) => {
 
   // ── One-shots: serve directly from R2 (ElevenLabs MP3, no transcoding needed) ──
   if ((job as any).is_sfx || jobId.startsWith('sfx_') || jobId.startsWith('os_')) {
-    const r2Key = `oneshots/${jobId}.mp3`
     if (c.env.IMAGES) {
-      const obj = await c.env.IMAGES.get(r2Key)
+      // Primary path: oneshots/ prefix; legacy fallback: beats/ prefix
+      const obj = await c.env.IMAGES.get(`oneshots/${jobId}.mp3`)
+             || await c.env.IMAGES.get(`beats/${jobId}.mp3`)
       if (obj) {
         const safeT = ((job as any).title || (job as any).sound_type || 'oneshot')
           .replace(/[^a-zA-Z0-9 \-_]/g, '').replace(/\s+/g, '_').toLowerCase() || 'oneshot'
@@ -10565,7 +10573,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261013-103'
+const ASSET_VER = '20261016-104'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
