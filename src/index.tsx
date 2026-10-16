@@ -101,6 +101,36 @@ async function setJob(db: D1Database | undefined, job: Job, userId?: string): Pr
 }
 
 // ═══════════════════════════════════════════════════════════════
+//  POINT TRANSACTION LOGGER
+//  Call after every gens_used / bonus_credits mutation.
+//  type: 'deduct' | 'refund' | 'bonus' | 'reset'
+//  points: always positive (we store the sign via type)
+// ═══════════════════════════════════════════════════════════════
+async function logTx(
+  db: D1Database,
+  userId: string,
+  type: 'deduct' | 'refund' | 'bonus' | 'reset',
+  label: string,
+  points: number,
+  jobId?: string | null
+): Promise<void> {
+  try {
+    // Fetch current balance to record balance_after
+    const u = await db.prepare(
+      `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`
+    ).bind(userId).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
+    const balanceAfter = u ? (u.gens_limit - u.gens_used) + (u.bonus_credits ?? 0) : null
+    await db.prepare(
+      `INSERT INTO point_transactions (user_id, job_id, type, label, points, balance_after, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(userId, jobId ?? null, type, label, points, balanceAfter, Date.now()).run()
+  } catch (e: any) {
+    // Never let logging break the main flow
+    console.warn('[logTx] failed:', e?.message)
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
 //  MP3 → TRUE PCM WAV CONVERSION
 //  Uses mpg123-decoder (WASM-based, no Node.js APIs, runs in CF Workers).
 //  Converts MP3 ArrayBuffer → 16-bit PCM WAV ArrayBuffer in-process.
@@ -1884,6 +1914,7 @@ async function autoNoticeServerError(db: D1Database, userId: string | null, jobI
     // Refund the 25 points for this failed job
     await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
       .bind(userId).run()
+    await logTx(db, userId, 'refund', `Refund — server error (${jobId})`, 25, jobId)
   } catch (e: any) {
     console.warn('[auto-notice] failed to insert notice:', e?.message)
   }
@@ -2403,6 +2434,7 @@ app.post('/api/generate', async (c) => {
   } else {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 25 WHERE id = ?`).bind(authUser.id).run()
   }
+  await logTx(c.env.DB, authUser.id, 'deduct', 'Beat Generation', 25, null)
 
   // Build enriched prompt from all UI inputs
   const parts: string[] = []
@@ -2513,7 +2545,7 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         job.status = 'error'
         job.error  = 'Generation failed on music server — 25 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
+        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 25, row.id) }
         console.log(`[lazy-rescue] marked_error_refunded job=${row.id}`)
         continue
       }
@@ -2529,7 +2561,7 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
             ? 'Song Extend expired on music server — 20 points refunded.'
             : 'Stemforge generation timed out — 25 points refunded.'
           await setJob(env.DB, job)
-          if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
+          if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, isExtend ? 20 : 25, row.id) }
           console.log(`[lazy-rescue] expired_refunded job=${row.id} isExtend=${isExtend} age_min=${Math.round(ageMs/60000)}`)
         }
         continue
@@ -2558,13 +2590,13 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         job.status = 'error'
         job.error  = 'Generation failed on music server — 25 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
+        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 25, row.id) }
         console.log(`[lazy-rescue] failed+refunded job=${row.id}`)
       } else if (ageMs > FIFTEEN_MIN) {
         job.status = 'error'
         job.error  = 'Stemforge generation timed out after 15 minutes'
         await setJob(env.DB, job)
-        if (row.user_id) await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
+        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, 25, row.id) }
         console.log(`[lazy-rescue] timed_out state=${clip.state} job=${row.id}`)
       }
     } catch (err: any) {
@@ -2784,6 +2816,7 @@ app.post('/api/job/stems', async (c) => {
   } else {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id=?`).bind(stemCost, user.id).run()
   }
+  await logTx(c.env.DB, user.id, 'deduct', mode === 'auto' ? 'Auto Stem Split (5 stems)' : 'Stem Split — Vocals & Instrumental', stemCost, job_id)
 
   // Mureka /v1/song/stem returns zip_url SYNCHRONOUSLY (no polling needed).
   // We queue a "stemwait:" task_id and fire the actual Mureka call in waitUntil()
@@ -3397,6 +3430,7 @@ app.post('/api/job/regen-stem', async (c) => {
     return c.json({ error: `Not enough points. Regen costs 30 points and you only have ${regenFresh ? Math.max(0, regenFresh.gens_limit - regenFresh.gens_used) : 0} remaining.`, limit_reached: true }, 403)
   }
   await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 30 WHERE id=?`).bind(user.id).run()
+  await logTx(c.env.DB, user.id, 'deduct', 'Stem Regen', 30, null)
 
   const body = await c.req.json<{ job_id: string; stem_type: string }>()
   const { job_id, stem_type } = body
@@ -3645,6 +3679,7 @@ app.post('/api/job/remix', async (c) => {
   } else {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 25 WHERE id=?`).bind(user.id).run()
   }
+  await logTx(c.env.DB, user.id, 'deduct', 'Remix', 25, job_id ?? null)
 
   // Build style tags from the source job's blueprint for Sonic /upload-cover
   const bp = srcJob.blueprint
@@ -5591,6 +5626,7 @@ app.post('/api/job/extend-upload', async (c) => {
   } else {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(EXTEND_COST, user.id).run()
   }
+  await logTx(c.env.DB, user.id, 'deduct', 'Song Extend (upload)', EXTEND_COST, null)
 
   try {
     const isInstrumental = make_instrumental === true
@@ -5819,6 +5855,7 @@ app.post('/api/job/extend', async (c) => {
   } else {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(EXTEND_COST, user.id).run()
   }
+  await logTx(c.env.DB, user.id, 'deduct', 'Song Extend (library)', EXTEND_COST, null)
 
   const isInstrumental = make_instrumental === true
 
@@ -8641,7 +8678,43 @@ app.post('/api/admin/user/add-credits', async (c) => {
   if (!before) return c.json({ error: 'User not found' }, 404)
   const newBonus = (before.bonus_credits ?? 0) + amt
   await c.env.DB.prepare(`UPDATE users SET bonus_credits=? WHERE id=?`).bind(newBonus, user_id).run()
+  await logTx(c.env.DB, user_id, 'bonus', `Admin bonus credit grant (+${amt})`, amt, null)
   return c.json({ ok: true, bonus_credits: newBonus, gens_used: before.gens_used, gens_limit: before.gens_limit, remaining: (before.gens_limit - before.gens_used) + newBonus })
+})
+
+// GET /api/admin/point-transactions — paginated point transaction log
+app.get('/api/admin/point-transactions', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const admin = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(admin, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const page    = Math.max(1, parseInt(c.req.query('page')  || '1'))
+  const perPage = Math.min(100, parseInt(c.req.query('per_page') || '50'))
+  const userId  = c.req.query('user_id') || null
+  const type    = c.req.query('type')    || null
+  const offset  = (page - 1) * perPage
+
+  let where = 'WHERE 1=1'
+  const binds: any[] = []
+  if (userId) { where += ' AND pt.user_id=?'; binds.push(userId) }
+  if (type)   { where += ' AND pt.type=?';    binds.push(type) }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT pt.id, pt.user_id, pt.job_id, pt.type, pt.label, pt.points, pt.balance_after, pt.created_at,
+            u.email, u.name as user_name
+     FROM point_transactions pt
+     LEFT JOIN users u ON u.id = pt.user_id
+     ${where}
+     ORDER BY pt.created_at DESC
+     LIMIT ? OFFSET ?`
+  ).bind(...binds, perPage, offset).all()
+
+  const countRow = await c.env.DB.prepare(
+    `SELECT COUNT(*) as cnt FROM point_transactions pt ${where}`
+  ).bind(...binds).first<{ cnt: number }>()
+
+  return c.json({ transactions: rows.results || [], total: countRow?.cnt ?? 0, page, perPage })
 })
 
 // POST /api/admin/user/lock — lock or unlock a user account
@@ -9569,6 +9642,7 @@ app.post('/api/generate-oneshot-sfx', async (c) => {
       } else {
         await c.env.DB.prepare('UPDATE users SET gens_used = gens_used + ? WHERE id=?').bind(SFX_COST, user.id).run()
       }
+      await logTx(c.env.DB, user.id, 'deduct', `One Shot / SFX — ${prompt.trim().slice(0, 40)}`, SFX_COST, sfxId)
     } catch { /* ignore deduction error — don't block the user */ }
   }
 
@@ -10315,6 +10389,7 @@ app.post('/api/job/cover-song', async (c) => {
   } else {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(COVER_COST, user.id).run()
   }
+  await logTx(c.env.DB, user.id, 'deduct', 'AI Cover Song', COVER_COST, null)
 
   // Build cover request — field names must match MusicAPI docs exactly
   const hasLyrics = !!(lyrics && lyrics.trim())
@@ -10573,7 +10648,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261016-104'
+const ASSET_VER = '20261016-105'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14796,6 +14871,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="stuckjobs" onclick="adminTab('stuckjobs')" id="stuck-jobs-tab-btn"><i class="fas fa-exclamation-triangle" style="color:#f59e0b"></i> Stuck Jobs</button>
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
+      <button class="admin-tab" data-tab="pointlog" onclick="adminTab('pointlog');loadPointLog()"><i class="fas fa-coins" style="color:#f59e0b"></i> Point Log</button>
       <button class="admin-tab" data-tab="publish" onclick="adminTab('publish')" id="pp-tab-btn"><i class="fas fa-rocket" style="color:#10b981"></i> Preview &amp; Publish <span id="pp-badge" style="display:none;background:#f59e0b;color:#000;border-radius:99px;padding:1px 7px;font-size:.72rem;font-weight:800;margin-left:4px">!</span></button>
     </div>
 
@@ -15355,6 +15431,128 @@ function adminPage(user: User) {
       </script>
     </div>
     <!-- ── /SECURITY TAB ────────────────────────────────────────────────────── -->
+
+    <!-- ── POINT LOG TAB ──────────────────────────────────────────────────── -->
+    <div id="admin-tab-pointlog" style="display:none">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+        <input id="ptlog-user-filter" type="text" placeholder="Filter by email or user ID…" style="flex:1;min-width:200px;padding:8px 12px;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#fff;font-size:.85rem" oninput="loadPointLog(1)">
+        <select id="ptlog-type-filter" onchange="loadPointLog(1)" style="padding:8px 12px;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#fff;font-size:.85rem">
+          <option value="">All types</option>
+          <option value="deduct">Deductions</option>
+          <option value="refund">Refunds</option>
+          <option value="bonus">Bonus</option>
+          <option value="reset">Resets</option>
+        </select>
+        <button onclick="loadPointLog(1)" style="padding:8px 16px;background:var(--primary);border:none;border-radius:8px;color:#fff;font-size:.85rem;font-weight:600;cursor:pointer"><i class="fas fa-sync-alt"></i> Refresh</button>
+      </div>
+
+      <div style="overflow-x:auto;border-radius:12px;border:1px solid var(--border)">
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          <thead>
+            <tr style="background:rgba(255,255,255,.04);color:var(--muted);text-align:left">
+              <th style="padding:10px 14px;font-weight:600">Time</th>
+              <th style="padding:10px 14px;font-weight:600">User</th>
+              <th style="padding:10px 14px;font-weight:600">Type</th>
+              <th style="padding:10px 14px;font-weight:600">Description</th>
+              <th style="padding:10px 14px;font-weight:600;text-align:right">Points</th>
+              <th style="padding:10px 14px;font-weight:600;text-align:right">Balance After</th>
+              <th style="padding:10px 14px;font-weight:600">Job</th>
+            </tr>
+          </thead>
+          <tbody id="ptlog-body">
+            <tr><td colspan="7" style="padding:24px;text-align:center;color:var(--muted)">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div id="ptlog-pagination" style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:.82rem;color:var(--muted)">
+        <span id="ptlog-info"></span>
+        <div style="display:flex;gap:8px">
+          <button id="ptlog-prev" onclick="loadPointLog(window._ptlogPage-1)" style="padding:6px 14px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:6px;color:#fff;cursor:pointer;font-size:.8rem">← Prev</button>
+          <button id="ptlog-next" onclick="loadPointLog(window._ptlogPage+1)" style="padding:6px 14px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:6px;color:#fff;cursor:pointer;font-size:.8rem">Next →</button>
+        </div>
+      </div>
+
+      <script>
+      window._ptlogPage = 1;
+      async function loadPointLog(page) {
+        page = page || window._ptlogPage || 1;
+        if (page < 1) return;
+        window._ptlogPage = page;
+
+        const userRaw = (document.getElementById('ptlog-user-filter')||{}).value || '';
+        const typeVal = (document.getElementById('ptlog-type-filter')||{}).value || '';
+
+        // Determine if the filter looks like a user ID or email
+        const isUserId = userRaw.startsWith('u_');
+        const params = new URLSearchParams({ page, per_page: 50 });
+        if (isUserId) params.set('user_id', userRaw);
+        if (typeVal)  params.set('type', typeVal);
+
+        const tbody = document.getElementById('ptlog-body');
+        tbody.innerHTML = '<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--muted)">Loading…</td></tr>';
+
+        let data;
+        try {
+          const r = await fetch('/api/admin/point-transactions?' + params);
+          data = await r.json();
+        } catch(e) {
+          tbody.innerHTML = '<tr><td colspan="7" style="padding:24px;text-align:center;color:#f87171">Failed to load</td></tr>';
+          return;
+        }
+
+        // If user typed email, filter client-side (server only filters by user_id)
+        let rows = data.transactions || [];
+        if (userRaw && !isUserId) {
+          const q = userRaw.toLowerCase();
+          rows = rows.filter(r => (r.email||'').toLowerCase().includes(q) || (r.user_name||'').toLowerCase().includes(q));
+        }
+
+        if (!rows.length) {
+          tbody.innerHTML = '<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--muted)">No transactions found</td></tr>';
+          document.getElementById('ptlog-info').textContent = '0 results';
+          document.getElementById('ptlog-prev').disabled = true;
+          document.getElementById('ptlog-next').disabled = true;
+          return;
+        }
+
+        const typeColors = { deduct:'#f87171', refund:'#34d399', bonus:'#a78bfa', reset:'#94a3b8' };
+        const typeIcons  = { deduct:'fa-minus-circle', refund:'fa-undo', bonus:'fa-gift', reset:'fa-sync' };
+
+        tbody.innerHTML = rows.map(tx => {
+          const date = new Date(tx.created_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+          const color = typeColors[tx.type] || '#94a3b8';
+          const icon  = typeIcons[tx.type]  || 'fa-circle';
+          const pts   = tx.type === 'deduct' ? '-' + tx.points : '+' + tx.points;
+          const ptsColor = tx.type === 'deduct' ? '#f87171' : '#34d399';
+          const jobLink = tx.job_id
+            ? '<span style="font-family:monospace;font-size:.75rem;color:#60a5fa;cursor:pointer" title="' + tx.job_id + '">' + tx.job_id.slice(0,16) + '…</span>'
+            : '<span style="color:var(--muted)">—</span>';
+          const bal = tx.balance_after != null ? tx.balance_after + ' pts' : '—';
+          return \`<tr style="border-top:1px solid rgba(255,255,255,.05);transition:background .15s" onmouseover="this.style.background='rgba(255,255,255,.03)'" onmouseout="this.style.background=''">
+            <td style="padding:10px 14px;color:var(--muted);white-space:nowrap">\${date}</td>
+            <td style="padding:10px 14px">
+              <div style="font-weight:600;color:#e2e8f0;font-size:.82rem">\${tx.user_name || '—'}</div>
+              <div style="font-size:.72rem;color:var(--muted)">\${tx.email || tx.user_id}</div>
+            </td>
+            <td style="padding:10px 14px"><span style="background:\${color}22;color:\${color};padding:2px 8px;border-radius:99px;font-size:.75rem;font-weight:700"><i class="fas \${icon}" style="margin-right:4px"></i>\${tx.type}</span></td>
+            <td style="padding:10px 14px;color:#cbd5e1">\${tx.label}</td>
+            <td style="padding:10px 14px;text-align:right;font-weight:700;color:\${ptsColor};font-size:.88rem">\${pts}</td>
+            <td style="padding:10px 14px;text-align:right;color:var(--muted)">\${bal}</td>
+            <td style="padding:10px 14px">\${jobLink}</td>
+          </tr>\`;
+        }).join('');
+
+        const total = data.total || rows.length;
+        const perPage = data.perPage || 50;
+        const totalPages = Math.ceil(total / perPage);
+        document.getElementById('ptlog-info').textContent = \`Page \${page} of \${totalPages} — \${total} total transactions\`;
+        document.getElementById('ptlog-prev').disabled = page <= 1;
+        document.getElementById('ptlog-next').disabled = page >= totalPages;
+      }
+      </script>
+    </div>
+    <!-- ── /POINT LOG TAB ──────────────────────────────────────────────────── -->
 
     <!-- ── PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
     <div id="admin-tab-publish" style="display:none">
