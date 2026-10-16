@@ -5302,7 +5302,18 @@ window.generateOneshotSfx = async function() {
         if (typeof showUpgradeToast === 'function') showUpgradeToast('One Shot Creator requires the Pro Artist plan.');
         else alert('One Shot Creator requires the Pro Artist plan.');
       } else if (data.limit_reached) {
-        alert('Not enough points. ' + (data.error || ''));
+        // Remove any existing limit card first
+        const existing = document.getElementById('oneshot-limit-card');
+        if (existing) existing.remove();
+        const limitCard = document.createElement('div');
+        limitCard.id = 'oneshot-limit-card';
+        limitCard.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-top:16px;text-align:center';
+        limitCard.innerHTML = '<i class="fas fa-lock" style="font-size:1.5rem;color:var(--accent);margin-bottom:10px;display:block"></i>' +
+          '<strong style="display:block;margin-bottom:6px">Generation limit reached</strong>' +
+          '<p style="color:var(--text-2);font-size:.9rem;margin-bottom:14px">' + (data.error || 'You have used all your points.') + '</p>' +
+          '<a href="/pricing" class="btn btn--primary btn--sm"><i class="fas fa-arrow-up"></i> Upgrade plan</a>';
+        if (resultEl) resultEl.parentNode.insertBefore(limitCard, resultEl);
+        else if (statusEl) statusEl.parentNode.insertBefore(limitCard, statusEl.nextSibling);
       } else {
         alert('Error: ' + (data.error || 'Generation failed'));
       }
