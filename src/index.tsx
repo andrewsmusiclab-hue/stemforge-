@@ -1675,15 +1675,28 @@ async function startSongGeneration(blueprint: Blueprint, apiKey: string, userLyr
     stylePrompt = stylePrompt.replace(/,?\s*$/, '') + `, ${vocalGender} vocalist`
   }
 
+  // Guard: Sonic enforces a 5000-char limit on the prompt field.
+  // Truncate lyrics gracefully at the last newline before the limit to avoid mid-line cuts.
+  // We leave headroom for any whitespace/encoding so we cap at 4800 chars.
+  const SONIC_PROMPT_LIMIT = 4800
+  let safeLyrics = userLyrics
+  if (safeLyrics.length > SONIC_PROMPT_LIMIT) {
+    const truncated = safeLyrics.slice(0, SONIC_PROMPT_LIMIT)
+    // Snap back to last newline so we don't cut mid-line
+    const lastNewline = truncated.lastIndexOf('\n')
+    safeLyrics = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated
+    console.warn(`[startSongGeneration] Lyrics truncated from ${userLyrics.length} to ${safeLyrics.length} chars to stay under Sonic 5000-char limit`)
+  }
+
   // If user provided real custom lyrics → custom_mode=true (prompt = their lyrics)
   // If no custom lyrics (AI scaffold '[Verse]\n[Chorus]') → custom_mode=false so Sonic
   // auto-generates lyrics from the style prompt instead of singing placeholder text
-  const hasCustomLyrics = userLyrics && userLyrics !== '[Verse]\n[Chorus]' && userLyrics.trim().length > 10
+  const hasCustomLyrics = safeLyrics && safeLyrics !== '[Verse]\n[Chorus]' && safeLyrics.trim().length > 10
   const body: Record<string, any> = hasCustomLyrics
     ? {
         custom_mode: true,
         tags: stylePrompt.slice(0, 200),
-        prompt: userLyrics,
+        prompt: safeLyrics,   // length-guarded — max 4800 chars
         duration: durationSec,
         mv: 'sonic-v5'
       }
@@ -2437,9 +2450,15 @@ app.post('/api/generate', async (c) => {
   await logTx(c.env.DB, authUser.id, 'deduct', 'Beat Generation', 25, null)
 
   // Build enriched prompt from all UI inputs
+  // NOTE: The frontend already prefixes the prompt with the genre/style chip value,
+  // so we only append the genre tag if the prompt doesn't already contain it — prevents
+  // duplicate entries like "K-Pop. Sexy beat, genre: K-Pop, ..." that inflated prompt length.
   const parts: string[] = []
   if (prompt) parts.push(prompt)
-  if (genre) parts.push(`genre: ${genre}`)
+  // Only add explicit genre tag if genre isn't already embedded in the prompt string
+  if (genre && !prompt?.toLowerCase().startsWith(genre.toLowerCase())) {
+    parts.push(`genre: ${genre}`)
+  }
   if (bpm) parts.push(`${bpm} BPM`)
   if (vocal_space) parts.push(`vocal space: ${vocal_space}`)
   if (energy) parts.push(`energy: ${energy}`)
@@ -10648,7 +10667,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261016-106'
+const ASSET_VER = '20261017-107'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

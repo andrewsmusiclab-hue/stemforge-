@@ -3167,6 +3167,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // Character length error from the generation API — show a friendly, actionable message
+    if (msg && (msg.indexOf('character length') !== -1 || msg.indexOf('less than 5000') !== -1 || msg.indexOf('prompt character') !== -1)) {
+      if (genError) genError.style.display = 'block';
+      if (genErrorMsg) genErrorMsg.textContent = 'Your lyrics are too long. Please shorten them to under 4,800 characters and try again — less is usually more!';
+      return;
+    }
+
     if (genError) genError.style.display = 'block';
     if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
   }
@@ -3347,6 +3354,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const inlineBtn = document.querySelector('.suno-create-inline');
       if (inlineBtn) { inlineBtn.style.background = 'rgba(239,68,68,.1)'; setTimeout(() => inlineBtn.style.background = '', 600); }
       return;
+    }
+
+    // Guard: warn user if lyrics are too long before sending to server
+    // The generation API enforces a 5000-char limit on the lyrics/prompt field.
+    // We warn at 4800 chars (backend will truncate gracefully, but user should know).
+    const LYRICS_WARN_LIMIT = 4800;
+    const rawLyricsVal = document.getElementById('gen-lyrics')?.value || '';
+    if (rawLyricsVal.length > LYRICS_WARN_LIMIT) {
+      const charCount = rawLyricsVal.length;
+      const over = charCount - LYRICS_WARN_LIMIT;
+      // Show a non-blocking warning toast — we still let it through (backend truncates)
+      const existing = document.getElementById('sf-lyrics-warn');
+      if (existing) existing.remove();
+      const warn = document.createElement('div');
+      warn.id = 'sf-lyrics-warn';
+      warn.style.cssText = 'background:var(--surface-2);border:1px solid #f59e0b;border-radius:10px;padding:12px 16px;margin-bottom:12px;display:flex;align-items:flex-start;gap:10px;font-size:.85rem;line-height:1.5';
+      warn.innerHTML = '<i class="fas fa-exclamation-triangle" style="color:#f59e0b;margin-top:2px;flex-shrink:0"></i>' +
+        '<span><strong>Lyrics are long (' + charCount.toLocaleString() + ' chars).</strong> We\'ll use the first ' + LYRICS_WARN_LIMIT.toLocaleString() + ' characters. ' +
+        'To include everything, shorten your lyrics by ~' + over.toLocaleString() + ' characters.</span>';
+      const lyricsArea = document.getElementById('gen-lyrics');
+      if (lyricsArea && lyricsArea.parentNode) lyricsArea.parentNode.insertBefore(warn, lyricsArea);
+      // Auto-dismiss after 8 s
+      setTimeout(function(){ if (warn.parentNode) warn.remove(); }, 8000);
     }
 
     // Scroll result area into view on mobile
