@@ -3174,6 +3174,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // Timeout / expired / queue stuck — show a friendly message that includes Stemforge
+    if (msg && (msg.indexOf('timed out') !== -1 || msg.indexOf('expired') !== -1 || msg.indexOf('stuck') !== -1 || msg.indexOf('queue') !== -1)) {
+      if (genError) genError.style.display = 'block';
+      if (genErrorMsg) genErrorMsg.textContent = 'Stemforge couldn\'t complete this track in time — your points have been refunded. Please try again in a moment!';
+      return;
+    }
+
     if (genError) genError.style.display = 'block';
     if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
   }
