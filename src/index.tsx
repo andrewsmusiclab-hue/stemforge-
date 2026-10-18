@@ -8565,6 +8565,59 @@ app.post('/api/admin/security/change-email', async (c) => {
   return c.json({ ok: true, message: 'Email updated in database. Update ADMIN_EMAIL secret in Cloudflare dashboard to match.' })
 })
 
+// POST /api/admin/security/update-secrets — push one or more secrets to Cloudflare Pages via API
+// Requires CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_PAGES_PROJECT env secrets
+app.post('/api/admin/security/update-secrets', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const cfToken     = (c.env as any).CLOUDFLARE_API_TOKEN
+  const accountId   = (c.env as any).CLOUDFLARE_ACCOUNT_ID
+  const projectName = (c.env as any).CLOUDFLARE_PAGES_PROJECT || 'stemforge'
+
+  if (!cfToken || !accountId) {
+    return c.json({ error: 'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set as Cloudflare secrets first. See instructions below.' }, 400)
+  }
+
+  const { secrets } = await c.req.json<{ secrets: Record<string, string> }>()
+  if (!secrets || typeof secrets !== 'object' || Object.keys(secrets).length === 0) {
+    return c.json({ error: 'No secrets provided' }, 400)
+  }
+
+  // Filter out empty values
+  const toUpdate = Object.entries(secrets).filter(([, v]) => v && v.trim())
+  if (toUpdate.length === 0) return c.json({ error: 'All values are empty' }, 400)
+
+  const results: { key: string; ok: boolean; error?: string }[] = []
+
+  for (const [key, value] of toUpdate) {
+    try {
+      // Upsert secret via Cloudflare Pages API
+      const res = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments/secrets`,
+        {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${cfToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: key, text: value.trim(), type: 'secret_text' })
+        }
+      )
+      const data: any = await res.json()
+      if (data.success) {
+        results.push({ key, ok: true })
+      } else {
+        results.push({ key, ok: false, error: data.errors?.[0]?.message || 'Unknown error' })
+      }
+    } catch (e: any) {
+      results.push({ key, ok: false, error: e?.message || 'Fetch failed' })
+    }
+  }
+
+  const allOk = results.every(r => r.ok)
+  return c.json({ ok: allOk, results })
+})
+
 app.get('/api/admin/ping', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB/secret', admin: false })
   const token = getSessionCookie(c.req.raw)
@@ -10667,7 +10720,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-108'
+const ASSET_VER = '20261018-109'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15334,6 +15387,80 @@ function adminPage(user: User) {
           </button>
         </div>
 
+        <!-- Secrets Manager -->
+        <div style="background:var(--surface);border:1px solid rgba(239,68,68,.35);border-radius:14px;padding:24px">
+          <h3 style="margin:0 0 6px;font-size:.97rem;display:flex;align-items:center;gap:8px">
+            <i class="fas fa-shield-alt" style="color:#ef4444"></i> Secrets Manager
+          </h3>
+          <p style="color:var(--muted);font-size:.82rem;margin:0 0 18px;line-height:1.5">
+            Paste your new API keys below and hit <strong style="color:#fff">Push to Cloudflare</strong>. Leave any field blank to skip it — only filled fields are updated. Values are sent directly to Cloudflare and never stored in the database or git.
+          </p>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">OPENAI_API_KEY</label>
+              <input type="password" id="sec_OPENAI_API_KEY" placeholder="sk-proj-…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">GOOGLE_CLIENT_SECRET</label>
+              <input type="password" id="sec_GOOGLE_CLIENT_SECRET" placeholder="GOCSPX-…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">STRIPE_SECRET_KEY</label>
+              <input type="password" id="sec_STRIPE_SECRET_KEY" placeholder="sk_live_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">STRIPE_WEBHOOK_SECRET</label>
+              <input type="password" id="sec_STRIPE_WEBHOOK_SECRET" placeholder="whsec_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">REPLICATE_API_KEY</label>
+              <input type="password" id="sec_REPLICATE_API_KEY" placeholder="r8_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">MUREKA_API_KEY</label>
+              <input type="password" id="sec_MUREKA_API_KEY" placeholder="op_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">SESSION_SECRET</label>
+              <input type="password" id="sec_SESSION_SECRET" placeholder="sf_s3ss10n_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">CRON_SECRET</label>
+              <input type="password" id="sec_CRON_SECRET" placeholder="sf_cron_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
+          </div>
+
+          <button type="button" onclick="secToggleAllSecrets()"
+            style="margin-top:12px;background:none;border:1px solid var(--border);border-radius:7px;color:var(--muted);font-size:.8rem;padding:5px 12px;cursor:pointer">
+            <i class="fas fa-eye" id="sec-toggle-vis-icon"></i> <span id="sec-toggle-vis-label">Show values</span>
+          </button>
+
+          <div id="sec-secrets-msg" style="display:none;margin-top:12px;font-size:.83rem;padding:10px 14px;border-radius:8px;line-height:1.6"></div>
+
+          <div id="sec-cf-warn" style="display:none;margin-top:12px;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:10px;padding:12px 14px;font-size:.81rem;color:#fcd34d;line-height:1.6">
+            <p style="margin:0 0 6px;font-weight:700"><i class="fas fa-exclamation-triangle" style="margin-right:5px"></i>One-time setup required</p>
+            <p style="margin:0">To use the push button, add these two secrets in <strong>Cloudflare Pages → stemforge → Settings → Environment Variables</strong>:</p>
+            <ol style="margin:6px 0 0 16px;padding:0">
+              <li><code>CLOUDFLARE_API_TOKEN</code> — create at <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" style="color:#60a5fa">dash.cloudflare.com → API Tokens</a> (needs <em>Cloudflare Pages: Edit</em> permission)</li>
+              <li><code>CLOUDFLARE_ACCOUNT_ID</code> — found on your Cloudflare dashboard homepage (right sidebar)</li>
+            </ol>
+            <p style="margin:8px 0 0">After adding both, redeploy once and the button will work.</p>
+          </div>
+
+          <button onclick="secPushSecrets()" id="sec-push-btn"
+            style="margin-top:16px;padding:10px 24px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:none;border-radius:10px;color:#fff;font-size:.9rem;font-weight:700;cursor:pointer">
+            <i class="fas fa-cloud-upload-alt" style="margin-right:7px"></i>Push to Cloudflare
+          </button>
+        </div>
+
         <!-- Info box -->
         <div style="background:rgba(59,130,246,.06);border:1px solid rgba(59,130,246,.2);border-radius:12px;padding:16px 18px;font-size:.82rem;color:#94a3b8;line-height:1.6">
           <p style="margin:0 0 6px;font-weight:600;color:#60a5fa"><i class="fas fa-info-circle" style="margin-right:5px"></i>How admin access works</p>
@@ -15445,6 +15572,95 @@ function adminPage(user: User) {
           }
         } catch(e) {
           secMsg('sec-email-msg', 'Network error — please try again.', false);
+        }
+      }
+
+      // ── Secrets Manager ──────────────────────────────────────────────────────
+      var _secShowingValues = false;
+      var _secFieldIds = [
+        'sec_OPENAI_API_KEY','sec_GOOGLE_CLIENT_SECRET','sec_STRIPE_SECRET_KEY',
+        'sec_STRIPE_WEBHOOK_SECRET','sec_REPLICATE_API_KEY','sec_MUREKA_API_KEY',
+        'sec_SESSION_SECRET','sec_CRON_SECRET'
+      ];
+
+      function secToggleAllSecrets() {
+        _secShowingValues = !_secShowingValues;
+        _secFieldIds.forEach(function(id) {
+          var el = document.getElementById(id);
+          if (el) el.type = _secShowingValues ? 'text' : 'password';
+        });
+        var ico = document.getElementById('sec-toggle-vis-icon');
+        var lbl = document.getElementById('sec-toggle-vis-label');
+        if (ico) ico.className = _secShowingValues ? 'fas fa-eye-slash' : 'fas fa-eye';
+        if (lbl) lbl.textContent = _secShowingValues ? 'Hide values' : 'Show values';
+      }
+
+      function secSecretsMsg(msg, ok, isHtml) {
+        var el = document.getElementById('sec-secrets-msg');
+        if (!el) return;
+        if (isHtml) { el.innerHTML = msg; } else { el.textContent = msg; }
+        el.style.display = 'block';
+        el.style.background = ok ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)';
+        el.style.border     = ok ? '1px solid rgba(16,185,129,.3)' : '1px solid rgba(239,68,68,.3)';
+        el.style.color      = ok ? '#6ee7b7' : '#fca5a5';
+      }
+
+      async function secPushSecrets() {
+        var secrets = {};
+        _secFieldIds.forEach(function(id) {
+          var el = document.getElementById(id);
+          var key = id.replace('sec_', '');
+          if (el && el.value.trim()) secrets[key] = el.value.trim();
+        });
+
+        if (Object.keys(secrets).length === 0) {
+          secSecretsMsg('No keys entered — fill in at least one field.', false, false);
+          return;
+        }
+
+        var btn = document.getElementById('sec-push-btn');
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin" style="margin-right:7px"></i>Pushing…'; }
+        document.getElementById('sec-secrets-msg').style.display = 'none';
+        document.getElementById('sec-cf-warn').style.display = 'none';
+
+        try {
+          var res = await fetch('/api/admin/security/update-secrets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({ secrets: secrets })
+          });
+          var d = await res.json();
+
+          if (res.status === 400 && d.error && d.error.indexOf('CLOUDFLARE_API_TOKEN') !== -1) {
+            document.getElementById('sec-cf-warn').style.display = 'block';
+            secSecretsMsg('Setup required — see the yellow box below.', false, false);
+          } else if (d.ok) {
+            var lines = (d.results || []).map(function(r) {
+              return r.ok
+                ? '<span style="color:#6ee7b7">✅ ' + r.key + ' updated</span>'
+                : '<span style="color:#fca5a5">❌ ' + r.key + ': ' + (r.error || 'failed') + '</span>';
+            }).join('<br>');
+            secSecretsMsg('✅ All secrets pushed successfully!<br>' + lines, true, true);
+            // Clear the fields
+            _secFieldIds.forEach(function(id) {
+              var el = document.getElementById(id);
+              if (el) el.value = '';
+            });
+          } else if (d.results) {
+            var lines2 = (d.results || []).map(function(r) {
+              return r.ok
+                ? '<span style="color:#6ee7b7">✅ ' + r.key + '</span>'
+                : '<span style="color:#fca5a5">❌ ' + r.key + ': ' + (r.error || 'failed') + '</span>';
+            }).join('<br>');
+            secSecretsMsg('Some keys failed:<br>' + lines2, false, true);
+          } else {
+            secSecretsMsg(d.error || 'Something went wrong. Please try again.', false, false);
+          }
+        } catch(e) {
+          secSecretsMsg('Network error — please try again.', false, false);
+        } finally {
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-cloud-upload-alt" style="margin-right:7px"></i>Push to Cloudflare'; }
         }
       }
       </script>
