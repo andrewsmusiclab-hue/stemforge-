@@ -89,6 +89,7 @@ function adminTab(tab){
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
   if(tab==='publish'){ ppStartPolling(); } else { ppStopPolling(); }
+  if(tab==='security'&&typeof vaultLoad==='function'){ vaultLoad(); }
   // Persist active tab in URL hash so hard refresh restores it
   try { history.replaceState(null, '', '#tab-' + tab); } catch(e) {}
 }
@@ -97,7 +98,7 @@ function adminTab(tab){
   var hash = window.location.hash || '';
   var match = hash.match(/^#tab-(.+)$/);
   var startTab = match ? match[1] : 'analytics';
-  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','publish'];
+  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','publish','security','pointlog'];
   if (validTabs.indexOf(startTab) === -1) startTab = 'analytics';
   if (startTab !== 'analytics') {
     adminTab(startTab);

@@ -10934,7 +10934,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-117'
+const ASSET_VER = '20261018-118'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15981,8 +15981,7 @@ function adminPage(user: User) {
         vaultLoad();
       }
 
-      // Load vault when security tab opens
-      vaultLoad();
+      // vaultLoad() is triggered by adminTab('security') in admin.v2.js — not on page load
       </script>
     </div>
     <!-- ── /SECURITY TAB ────────────────────────────────────────────────────── -->
