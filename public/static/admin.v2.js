@@ -89,7 +89,7 @@ function adminTab(tab){
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
   if(tab==='publish'){ ppStartPolling(); } else { ppStopPolling(); }
-  if(tab==='security'&&typeof vaultLoad==='function'){ vaultLoad(); }
+  if(tab==='security'){ if(typeof vaultLoad==='function'){ vaultLoad(); } else { setTimeout(function(){ if(typeof vaultLoad==='function') vaultLoad(); },500); } }
   // Persist active tab in URL hash so hard refresh restores it
   try { history.replaceState(null, '', '#tab-' + tab); } catch(e) {}
 }

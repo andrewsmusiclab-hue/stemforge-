@@ -10934,7 +10934,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-118'
+const ASSET_VER = '20261018-119'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15917,7 +15917,7 @@ function adminPage(user: User) {
       }
 
       // ── Dev Vault JS ────────────────────────────────────────────────────────
-      async function vaultLoad() {
+      window.vaultLoad = async function vaultLoad() {
         var list = document.getElementById('vault-list');
         if (!list) return;
         try {
@@ -15945,7 +15945,7 @@ function adminPage(user: User) {
         }
       }
 
-      async function vaultSave() {
+      window.vaultSave = async function vaultSave() {
         var key   = (document.getElementById('vault-new-key') as HTMLInputElement)?.value?.trim();
         var value = (document.getElementById('vault-new-value') as HTMLInputElement)?.value?.trim();
         var label = (document.getElementById('vault-new-label') as HTMLInputElement)?.value?.trim();
@@ -15975,7 +15975,7 @@ function adminPage(user: User) {
         }
       }
 
-      async function vaultDelete(key) {
+      window.vaultDelete = async function vaultDelete(key) {
         if (!confirm('Delete vault entry "' + key + '"?')) return;
         await fetch('/api/admin/vault/' + encodeURIComponent(key), { method:'DELETE', credentials:'include' });
         vaultLoad();
