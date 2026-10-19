@@ -11476,7 +11476,8 @@ window.toggleRefDropdown = function() {
   // ── END VoiceForge inline functions ──────────────────────────────────────
 
 
-  // ── StemForge 3D Logo Cube — Three.js WebGL v4 (DAW stem skin, hammer on axis) ──
+
+  // ── StemForge 3D Logo Cube v5 — UMD script chain, no ES modules ──────────
   window._sfInitCube = function(user) {
     var wrap   = document.getElementById('sf-cube-wrap');
     var canvas = document.getElementById('sf-cube-canvas');
@@ -11486,461 +11487,264 @@ window.toggleRefDropdown = function() {
     if (window._sfCubeActive) return;
     window._sfCubeActive = true;
 
-    var _sfCubeCode = `
-(async function() {
-  const THREE_CDN  = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-  const ADDONS     = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/';
-
-  const { WebGLRenderer, Scene, PerspectiveCamera, Clock,
-          AmbientLight, DirectionalLight, PointLight,
-          BoxGeometry, PlaneGeometry, CylinderGeometry, SphereGeometry,
-          ConeGeometry, TorusGeometry, EdgesGeometry, BufferGeometry,
-          Mesh, LineSegments, Line, Group,
-          MeshPhysicalMaterial, MeshStandardMaterial, MeshBasicMaterial, LineBasicMaterial,
-          CanvasTexture, Color, Vector3, Vector2,
-          ACESFilmicToneMapping, BackSide, PMREMGenerator } = await import(THREE_CDN);
-
-  const { EffectComposer }     = await import(ADDONS + 'postprocessing/EffectComposer.js');
-  const { RenderPass }         = await import(ADDONS + 'postprocessing/RenderPass.js');
-  const { UnrealBloomPass }    = await import(ADDONS + 'postprocessing/UnrealBloomPass.js');
-  const { RoundedBoxGeometry } = await import(ADDONS + 'geometries/RoundedBoxGeometry.js');
-  const { OutputPass }         = await import(ADDONS + 'postprocessing/OutputPass.js');
-
-  const canvas = document.getElementById('sf-cube-canvas');
-  if (!canvas) return;
-  const wrap = document.getElementById('sf-cube-wrap');
-
-  // ── Size ──────────────────────────────────────────────────────────────────
-  const W = wrap.clientWidth || 420;
-  const H = 400;
-  canvas.width  = W;
-  canvas.height = H;
-
-  // ── Renderer ──────────────────────────────────────────────────────────────
-  const renderer = new WebGLRenderer({ canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.setSize(W, H);
-  renderer.toneMapping         = ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.4;
-
-  // ── Scene / Camera ────────────────────────────────────────────────────────
-  const scene  = new Scene();
-  const camera = new PerspectiveCamera(34, W/H, 0.1, 100);
-  camera.position.set(0, 0.6, 6.2);
-
-  // ── IBL env ───────────────────────────────────────────────────────────────
-  const envCvs = document.createElement('canvas');
-  envCvs.width = 512; envCvs.height = 256;
-  const ec = envCvs.getContext('2d');
-  ec.fillStyle='#000'; ec.fillRect(0,0,512,256);
-  const kl=ec.createRadialGradient(400,25,0,400,25,200); kl.addColorStop(0,'rgba(255,255,255,0.9)'); kl.addColorStop(1,'rgba(0,0,0,0)');
-  ec.fillStyle=kl; ec.fillRect(0,0,512,256);
-  const cl=ec.createRadialGradient(0,128,0,0,128,220); cl.addColorStop(0,'rgba(0,210,255,0.5)'); cl.addColorStop(1,'rgba(0,0,0,0)');
-  ec.fillStyle=cl; ec.fillRect(0,0,512,256);
-  const rl=ec.createRadialGradient(256,256,0,256,256,220); rl.addColorStop(0,'rgba(255,120,20,0.4)'); rl.addColorStop(1,'rgba(0,0,0,0)');
-  ec.fillStyle=rl; ec.fillRect(0,0,512,256);
-  const envTex = new CanvasTexture(envCvs);
-  envTex.mapping = 303;
-  const pmrem = new PMREMGenerator(renderer);
-  pmrem.compileEquirectangularShader();
-  const envMap = pmrem.fromEquirectangular(envTex).texture;
-  scene.environment = envMap;
-
-  // ── Lights ────────────────────────────────────────────────────────────────
-  scene.add(new AmbientLight(0xffffff, 0.5));
-  const key = new DirectionalLight(0xffffff, 3.0); key.position.set(4,7,5); scene.add(key);
-  const fill = new PointLight(0x00d2ff, 6.0, 30); fill.position.set(-4,3,4); scene.add(fill);
-  const rim  = new PointLight(0xff8c20, 3.5, 22); rim.position.set(1,6,-4); scene.add(rim);
-  const bot  = new PointLight(0x0040ff, 1.5, 14); bot.position.set(0,-5,3); scene.add(bot);
-
-  // ── DAW stem waveform texture ─────────────────────────────────────────────
-  // Each face: 4 horizontal tiers with dense, sharp, mirrored vertical-bar
-  // audio stem waveforms — exactly matching the StemForge logo pattern
-  function makeDAWStemFace(variant, isImpact) {
-    const SZ = 512;
-    const c  = document.createElement('canvas');
-    c.width = c.height = SZ;
-    const ctx = c.getContext('2d');
-
-    // Deep navy background
-    ctx.fillStyle = '#060d1c';
-    ctx.fillRect(0,0,SZ,SZ);
-
-    // 4 tiers top→bottom matching logo
-    const tiers = [
-      // top: impact/hot zone — orange-gold → cyan transition
-      { bg:'#0d1a2e', waveCol:'#00f0ff', waveCol2:'#ffa040', amp:52, density:180, style:'hot' },
-      // tier 2: neon cyan — most prominent
-      { bg:'#081525', waveCol:'#00e5ff', waveCol2:'#80f0ff', amp:38, density:160, style:'mid' },
-      // tier 3: medium cyan-blue
-      { bg:'#060f1e', waveCol:'#00b4d8', waveCol2:'#4dd0e1', amp:28, density:150, style:'mid' },
-      // tier 4: deep steel blue — low bass, sparse
-      { bg:'#040c18', waveCol:'#0077b6', waveCol2:'#2a9fd6', amp:18, density:130, style:'bass' },
+    // Load UMD scripts in order, then run cube init
+    var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
+    var scripts = [
+      BASE128 + 'build/three.min.js',
+      BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js',
+      BASE128 + 'examples/js/shaders/CopyShader.js',
+      BASE128 + 'examples/js/shaders/LuminosityHighPassShader.js',
+      BASE128 + 'examples/js/postprocessing/EffectComposer.js',
+      BASE128 + 'examples/js/postprocessing/RenderPass.js',
+      BASE128 + 'examples/js/postprocessing/ShaderPass.js',
+      BASE128 + 'examples/js/postprocessing/UnrealBloomPass.js',
     ];
 
-    const tierH = Math.floor(SZ / 4);
-    const divH  = 4; // divider gap
-    const seed  = variant * 7919 + 1234;
-
-    tiers.forEach((td, ti) => {
-      const y0   = ti * tierH;
-      const y1   = y0 + tierH - divH;
-      const midY = (y0 + y1) / 2;
-      const halfH = (y1 - y0) / 2 - 4;
-
-      // Tier background
-      const bg = ctx.createLinearGradient(0,y0,0,y1);
-      bg.addColorStop(0, td.bg);
-      bg.addColorStop(0.5, '#0a1628');
-      bg.addColorStop(1, td.bg);
-      ctx.fillStyle = bg;
-      ctx.fillRect(0, y0, SZ, y1-y0);
-
-      // Impact glow on top tier
-      if (ti === 0 && isImpact) {
-        const ig = ctx.createRadialGradient(SZ*0.6, y0, 0, SZ*0.6, y0, SZ*0.55);
-        ig.addColorStop(0, 'rgba(255,180,60,0.45)');
-        ig.addColorStop(0.4, 'rgba(255,100,20,0.15)');
-        ig.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = ig;
-        ctx.fillRect(0, y0, SZ, y1-y0);
-      }
-
-      // Top bevel highlight
-      const bev = ctx.createLinearGradient(0,y0,0,y0+6);
-      bev.addColorStop(0, 'rgba(0,230,255,0.7)');
-      bev.addColorStop(1, 'rgba(0,230,255,0)');
-      ctx.fillStyle = bev;
-      ctx.fillRect(0, y0, SZ, 6);
-
-      // Bottom shadow
-      const bsh = ctx.createLinearGradient(0,y1-4,0,y1);
-      bsh.addColorStop(0,'rgba(0,0,0,0)');
-      bsh.addColorStop(1,'rgba(0,0,0,0.6)');
-      ctx.fillStyle = bsh;
-      ctx.fillRect(0, y1-4, SZ, 4);
-
-      // Generate pseudo-random bar heights for this tier+variant
-      // using a seeded sequence so each face looks different but consistent
-      const N = td.density;
-      const barW = SZ / N;
-      const rng = (i) => {
-        let x = Math.sin(seed + ti*1000 + i*17.3) * 43758.5453;
-        return x - Math.floor(x);
-      };
-
-      // Build bar heights — make them look like real audio stems
-      // with clusters of activity and some quieter sections
-      const heights = [];
-      for (let i=0; i<N; i++) {
-        const r1 = rng(i);
-        const r2 = rng(i + 500);
-        const r3 = rng(i + 1000);
-        // envelope: louder in middle sections, quieter at edges
-        const env = Math.sin(i/N * Math.PI);
-        // transient spikes
-        const spike = r1 > 0.88 ? (0.7 + r2*0.3) : (r1 * 0.6 + r2 * 0.3);
-        heights.push(Math.max(0.03, spike * env * 0.95 + r3 * 0.08));
-      }
-
-      // Smooth slightly (moving avg of 2) to avoid aliasing
-      const smoothH = heights.map((h,i) =>
-        i===0 ? h : (h * 0.7 + heights[i-1] * 0.3)
-      );
-
-      // Draw outer glow pass
-      ctx.save();
-      ctx.shadowColor = td.waveCol;
-      ctx.shadowBlur  = 10;
-      ctx.globalAlpha = 0.35;
-      for (let i=0; i<N; i++) {
-        const bh  = smoothH[i] * halfH;
-        const bx  = i * barW;
-        const col = (ti===0 && isImpact && i/N > 0.45)
-          ? td.waveCol2 : td.waveCol;
-        ctx.fillStyle = col;
-        // mirrored bars — top half
-        ctx.fillRect(bx, midY-bh-1, Math.max(1,barW-1), bh+1);
-        // bottom mirror
-        ctx.fillRect(bx, midY, Math.max(1,barW-1), bh+1);
-      }
-      ctx.restore();
-
-      // Draw main bars
-      ctx.save();
-      ctx.shadowColor = td.waveCol;
-      ctx.shadowBlur  = 6;
-      ctx.globalAlpha = 1.0;
-      for (let i=0; i<N; i++) {
-        const bh  = smoothH[i] * halfH;
-        const bx  = i * barW;
-        // Color: on top impact tier, right side bars shift to orange-gold
-        const frac = i / N;
-        let col;
-        if (ti===0 && isImpact) {
-          // left side cyan, right side gold transition
-          const r = Math.min(1, frac * 2.5);
-          const gc = ctx.createLinearGradient(bx, midY-bh, bx, midY+bh);
-          gc.addColorStop(0, td.waveCol2);
-          gc.addColorStop(0.5, frac>0.5 ? td.waveCol2 : td.waveCol);
-          gc.addColorStop(1, td.waveCol2);
-          ctx.fillStyle = gc;
-        } else {
-          const gc = ctx.createLinearGradient(bx, midY-bh, bx, midY+bh);
-          gc.addColorStop(0, td.waveCol2);
-          gc.addColorStop(0.5, td.waveCol);
-          gc.addColorStop(1, td.waveCol2);
-          ctx.fillStyle = gc;
-        }
-        ctx.fillRect(bx+0.5, midY-bh, Math.max(0.8,barW-1), bh);
-        ctx.fillRect(bx+0.5, midY, Math.max(0.8,barW-1), bh);
-      }
-      ctx.restore();
-
-      // Center line
-      ctx.save();
-      ctx.strokeStyle = 'rgba(0,230,255,0.25)';
-      ctx.lineWidth   = 1;
-      ctx.beginPath(); ctx.moveTo(0,midY); ctx.lineTo(SZ,midY); ctx.stroke();
-      ctx.restore();
-
-      // Divider line between tiers
-      if (ti < 3) {
-        ctx.fillStyle = 'rgba(0,0,0,0.85)';
-        ctx.fillRect(0, y1, SZ, divH);
-        ctx.fillStyle = 'rgba(0,200,255,0.18)';
-        ctx.fillRect(0, y1, SZ, 1);
-      }
-    });
-
-    // Left + right edge rim glow
-    ['left','right'].forEach(side => {
-      const rg = ctx.createLinearGradient(
-        side==='left'?0:SZ, 0, side==='left'?18:SZ-18, 0
-      );
-      rg.addColorStop(0,'rgba(0,230,255,0.5)');
-      rg.addColorStop(1,'rgba(0,230,255,0)');
-      ctx.fillStyle=rg; ctx.fillRect(side==='left'?0:SZ-18,0,18,SZ);
-    });
-
-    return c;
-  }
-
-  // ── Cube group (cube + overlays + hammer + splash all rotate together) ─────
-  const cubeGroup = new Group();
-  cubeGroup.position.y = -0.1;
-  scene.add(cubeGroup);
-
-  // ── Cube body — RoundedBoxGeometry ────────────────────────────────────────
-  const SIZE   = 2.3;
-  const RADIUS = 0.055;
-  const geo    = new RoundedBoxGeometry(SIZE, SIZE, SIZE, 4, RADIUS);
-  const cubeMat = new MeshPhysicalMaterial({
-    metalness:          0.9,
-    roughness:          0.12,
-    clearcoat:          0.7,
-    clearcoatRoughness: 0.07,
-    color:              new Color(0x070e1c),
-    emissive:           new Color(0x001a33),
-    emissiveIntensity:  0.12,
-    envMap:             envMap,
-    envMapIntensity:    2.5,
-  });
-  const cube = new Mesh(geo, cubeMat);
-  cubeGroup.add(cube);
-
-  // ── Edge glow (inside group — rotates with cube) ──────────────────────────
-  const edgeMat = new LineBasicMaterial({color:0x00e5ff, transparent:true, opacity:0.7});
-  const edges   = new LineSegments(new EdgesGeometry(new BoxGeometry(SIZE,SIZE,SIZE)), edgeMat);
-  cubeGroup.add(edges);
-
-  // ── Bloom shell ───────────────────────────────────────────────────────────
-  const shellMat = new MeshBasicMaterial({color:0x00aaff,transparent:true,opacity:0.03,side:BackSide});
-  const shell    = new Mesh(new RoundedBoxGeometry(SIZE+0.2,SIZE+0.2,SIZE+0.2,4,RADIUS+0.05), shellMat);
-  cubeGroup.add(shell);
-
-  // ── Face overlay planes — parented to cubeGroup, local coords ────────────
-  // In local space the cube face is at ±SIZE/2 on each axis.
-  // Planes sit 0.008 outside each face so they're always visible.
-  const FO = SIZE/2 + 0.008; // face offset in local space
-  const PS = SIZE - RADIUS*2; // plane size
-  const faceDefs = [
-    { pos:[0,0, FO],  rotY:0,            wave:0, impact:true  }, // front
-    { pos:[0,0,-FO],  rotY:Math.PI,      wave:1, impact:false }, // back
-    { pos:[ FO,0,0],  rotY:-Math.PI/2,   wave:2, impact:false }, // right
-    { pos:[-FO,0,0],  rotY: Math.PI/2,   wave:3, impact:false }, // left
-  ];
-
-  faceDefs.forEach(fd => {
-    const tex  = new CanvasTexture(makeDAWStemFace(fd.wave, fd.impact));
-    tex.needsUpdate = true;
-    const mat  = new MeshPhysicalMaterial({
-      map:               tex,
-      emissiveMap:       tex,
-      emissive:          new Color(0x003366),
-      emissiveIntensity: 0.8,
-      metalness:         0.5,
-      roughness:         0.3,
-      transparent:       false,
-      envMap:            envMap,
-      envMapIntensity:   0.8,
-    });
-    const plane = new Mesh(new PlaneGeometry(PS, PS), mat);
-    plane.position.set(...fd.pos);
-    plane.rotation.y = fd.rotY;
-    cubeGroup.add(plane); // child of group → rotates with cube automatically
-  });
-
-  // ── 3D Hammer — child of cubeGroup ───────────────────────────────────────
-  const hammerG = new Group();
-  // Materials
-  const steel = new MeshPhysicalMaterial({
-    color:0xb0c8e0, metalness:0.96, roughness:0.08,
-    clearcoat:0.9, clearcoatRoughness:0.04,
-    envMap, envMapIntensity:3.0
-  });
-  const dsteel = new MeshPhysicalMaterial({
-    color:0x2a3a4a, metalness:0.9, roughness:0.2,
-    envMap, envMapIntensity:1.2
-  });
-  const wood = new MeshStandardMaterial({
-    color:0x5a3010, metalness:0.0, roughness:0.85
-  });
-
-  // Head — RoundedBoxGeometry for smooth edges
-  const headM = new Mesh(new RoundedBoxGeometry(0.82, 0.46, 0.38, 4, 0.05), steel);
-  hammerG.add(headM);
-
-  // Face plates (dark steel caps)
-  [-0.38, 0.38].forEach(x => {
-    const fm = new Mesh(new BoxGeometry(0.06, 0.38, 0.30), dsteel);
-    fm.position.x = x; hammerG.add(fm);
-  });
-
-  // Handle
-  const handleM = new Mesh(new CylinderGeometry(0.058, 0.048, 1.5, 16), wood);
-  handleM.position.set(0.58, -0.65, 0);
-  handleM.rotation.z = 0.5;
-  hammerG.add(handleM);
-
-  // Collar (steel ring where head meets handle)
-  const collarM = new Mesh(new CylinderGeometry(0.09, 0.09, 0.10, 16), steel);
-  collarM.position.set(0.24, -0.20, 0);
-  collarM.rotation.z = 0.5;
-  hammerG.add(collarM);
-
-  // Position hammer above cube top-right — in local group coords
-  hammerG.rotation.set(0.08, -0.18, -0.50);
-  hammerG.position.set(0.48, SIZE/2 + 0.62, 0.35);
-  cubeGroup.add(hammerG); // rotates with cube
-
-  // ── 3D Splash — child of cubeGroup ───────────────────────────────────────
-  const splashG = new Group();
-  // Position at the impact point on top of cube
-  splashG.position.set(0.28, SIZE/2 + 0.02, 0.28);
-
-  // 12 spark rays
-  const RAYS = [
-    [-0.7, 0.9, 0.20, 0.55, 0xffffff],
-    [ 0.15, 0.95,-0.10, 0.62, 0xffe066],
-    [-0.42, 0.78, 0.55, 0.48, 0xff9800],
-    [ 0.75, 0.65, 0.18, 0.58, 0xffffff],
-    [-0.55, 1.05,-0.28, 0.44, 0xff6600],
-    [ 0.38, 1.10, 0.42, 0.50, 0xffd700],
-    [-0.22, 0.55,-0.65, 0.40, 0x80e5ff],
-    [ 0.82, 0.48, 0.38, 0.46, 0xffffff],
-    [-0.90, 0.40, 0.10, 0.37, 0xff8c00],
-    [ 0.10, 0.72,-0.72, 0.42, 0xffe0a0],
-    [ 0.48, 0.80, 0.68, 0.35, 0xffff80],
-    [-0.30, 0.90,-0.48, 0.39, 0xffa040],
-  ];
-  RAYS.forEach(([dx,dy,dz,len,col]) => {
-    const d  = new Vector3(dx,dy,dz).normalize();
-    const bg = new BufferGeometry().setFromPoints([new Vector3(0,0,0), new Vector3(d.x*len,d.y*len,d.z*len)]);
-    splashG.add(new Line(bg, new LineBasicMaterial({color:col,transparent:true,opacity:0.9})));
-    const dot = new Mesh(new SphereGeometry(0.022,8,8), new MeshBasicMaterial({color:col}));
-    dot.position.set(d.x*len,d.y*len,d.z*len);
-    splashG.add(dot);
-  });
-
-  // White flash core
-  const flashM = new Mesh(new SphereGeometry(0.12,16,16), new MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.95}));
-  splashG.add(flashM);
-  // Orange halo
-  const haloM  = new Mesh(new SphereGeometry(0.22,16,16), new MeshBasicMaterial({color:0xff8800,transparent:true,opacity:0.28,side:BackSide}));
-  splashG.add(haloM);
-  // Cyan shockwave ring
-  const ringPts=[];
-  for(let a=0;a<=64;a++){const r=0.30,th=a/64*Math.PI*2;ringPts.push(new Vector3(Math.cos(th)*r,0,Math.sin(th)*r));}
-  splashG.add(new Line(new BufferGeometry().setFromPoints(ringPts), new LineBasicMaterial({color:0x00d2ff,transparent:true,opacity:0.65})));
-
-  cubeGroup.add(splashG); // rotates with cube
-
-  // ── Post-processing ───────────────────────────────────────────────────────
-  const composer = new EffectComposer(renderer);
-  composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new Vector2(W,H), 0.65, 0.4, 0.70);
-  composer.addPass(bloom);
-  composer.addPass(new OutputPass());
-
-  // ── Interaction ───────────────────────────────────────────────────────────
-  let rotX=-0.20, rotY=0.55, velX=0, velY=0, dragging=false, lastMX=0, lastMY=0;
-  let autoSpin=true, idleTimer=null;
-  function resetIdle(){autoSpin=false;clearTimeout(idleTimer);idleTimer=setTimeout(()=>{autoSpin=true;velX=0;velY=0;},3500);}
-
-  canvas.addEventListener('mousedown',e=>{dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.clientX;lastMY=e.clientY;e.preventDefault();});
-  window.addEventListener('mousemove',e=>{if(!dragging)return;velY=(e.clientX-lastMX)*0.007;velX=(e.clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.clientX;lastMY=e.clientY;});
-  window.addEventListener('mouseup',()=>{if(dragging){dragging=false;resetIdle();}});
-  canvas.addEventListener('touchstart',e=>{if(e.touches.length!==1)return;dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
-  canvas.addEventListener('touchmove',e=>{if(!dragging||e.touches.length!==1)return;velY=(e.touches[0].clientX-lastMX)*0.007;velX=(e.touches[0].clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
-  canvas.addEventListener('touchend',()=>{dragging=false;resetIdle();});
-  window.addEventListener('resize',()=>{const nw=wrap.clientWidth||420;camera.aspect=nw/H;camera.updateProjectionMatrix();renderer.setSize(nw,H);composer.setSize(nw,H);});
-
-  // ── Render loop ───────────────────────────────────────────────────────────
-  const clock = new Clock();
-  let rafId;
-  let _flashM = flashM, _haloM = haloM, _bloom = bloom, _edgeMat = edgeMat;
-  let _fill = fill, _rim = rim;
-  (function loop(){
-    rafId = requestAnimationFrame(loop);
-    const t = clock.getElapsedTime();
-
-    if(!dragging){
-      if(autoSpin){ rotY+=0.0032; }
-      else{ velX*=0.93;velY*=0.93;rotX+=velX;rotY+=velY;rotX=Math.max(-1.1,Math.min(1.1,rotX)); }
+    function loadNext(i, done) {
+      if (i >= scripts.length) { done(); return; }
+      var s = document.createElement('script');
+      s.src = scripts[i];
+      s.onload  = function() { loadNext(i+1, done); };
+      s.onerror = function() { console.error('[SFCube] failed to load', scripts[i]); loadNext(i+1, done); };
+      document.head.appendChild(s);
     }
 
-    const bob = Math.sin(t*0.65)*0.06;
+    loadNext(0, function() { _sfRunCube(); });
 
-    // Rotate entire group (cube + faces + hammer + splash all move together)
-    cubeGroup.rotation.x = rotX;
-    cubeGroup.rotation.y = rotY;
-    cubeGroup.position.y = -0.1 + bob;
+    function _sfRunCube() {
+      var T = window.THREE;
+      if (!T) { console.error('[SFCube] THREE not found'); return; }
 
-    // Pulse effects
-    _edgeMat.opacity         = 0.55 + 0.22*Math.sin(t*2.0);
-    _flashM.material.opacity = 0.80 + 0.18*Math.sin(t*3.8);
-    _haloM.material.opacity  = 0.20 + 0.12*Math.sin(t*2.9);
-    _fill.intensity          = 5.0  + 2.0*Math.sin(t*2.2);
-    _rim.intensity           = 3.0  + 1.0*Math.sin(t*1.6+1.1);
-    _bloom.strength          = 0.60 + 0.15*Math.sin(t*1.4);
+      var W = (wrap.clientWidth || 420);
+      var H = 400;
+      canvas.width  = W;
+      canvas.height = H;
 
-    composer.render();
-  })();
+      // ── Renderer ──────────────────────────────────────────────────────────
+      var renderer = new T.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
+      renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+      renderer.setSize(W,H);
+      renderer.toneMapping         = T.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.4;
 
-  (new MutationObserver(()=>{ if(!document.getElementById('sf-cube-canvas')) cancelAnimationFrame(rafId); }))
-    .observe(document.body,{childList:true,subtree:true});
-})();
-`;
-    // Use Blob URL — textContent on injected module scripts is blocked by Chrome/Safari
-    var _sfBlob = new Blob([_sfCubeCode], {type:'text/javascript'});
-    var _sfBlobUrl = URL.createObjectURL(_sfBlob);
-    var mod = document.createElement('script');
-    mod.type = 'module';
-    mod.setAttribute('data-sf-cube','1');
-    mod.src = _sfBlobUrl;
-    mod.onload = function(){ URL.revokeObjectURL(_sfBlobUrl); };
-    document.head.appendChild(mod);
+      // ── Scene / Camera ─────────────────────────────────────────────────────
+      var scene  = new T.Scene();
+      var camera = new T.PerspectiveCamera(34, W/H, 0.1, 100);
+      camera.position.set(0, 0.6, 6.2);
+
+      // ── IBL env (procedural) ───────────────────────────────────────────────
+      var envCvs = document.createElement('canvas');
+      envCvs.width=512; envCvs.height=256;
+      var ec = envCvs.getContext('2d');
+      ec.fillStyle='#000'; ec.fillRect(0,0,512,256);
+      var kl=ec.createRadialGradient(400,25,0,400,25,200); kl.addColorStop(0,'rgba(255,255,255,0.9)'); kl.addColorStop(1,'rgba(0,0,0,0)'); ec.fillStyle=kl; ec.fillRect(0,0,512,256);
+      var cl=ec.createRadialGradient(0,128,0,0,128,220); cl.addColorStop(0,'rgba(0,210,255,0.5)'); cl.addColorStop(1,'rgba(0,0,0,0)'); ec.fillStyle=cl; ec.fillRect(0,0,512,256);
+      var rl=ec.createRadialGradient(256,256,0,256,256,220); rl.addColorStop(0,'rgba(255,120,20,0.4)'); rl.addColorStop(1,'rgba(0,0,0,0)'); ec.fillStyle=rl; ec.fillRect(0,0,512,256);
+      var envTex = new T.CanvasTexture(envCvs);
+      envTex.mapping = T.EquirectangularReflectionMapping;
+      var pmrem = new T.PMREMGenerator(renderer);
+      pmrem.compileEquirectangularShader();
+      var envMap = pmrem.fromEquirectangular(envTex).texture;
+      scene.environment = envMap;
+
+      // ── Lights ─────────────────────────────────────────────────────────────
+      scene.add(new T.AmbientLight(0xffffff, 0.5));
+      var key = new T.DirectionalLight(0xffffff, 3.0); key.position.set(4,7,5); scene.add(key);
+      var fill = new T.PointLight(0x00d2ff, 6.0, 30); fill.position.set(-4,3,4); scene.add(fill);
+      var rim  = new T.PointLight(0xff8c20, 3.5, 22); rim.position.set(1,6,-4); scene.add(rim);
+      var bot  = new T.PointLight(0x0040ff, 1.5, 14); bot.position.set(0,-5,3); scene.add(bot);
+
+      // ── DAW stem waveform texture ──────────────────────────────────────────
+      function makeDAWStemFace(variant, isImpact) {
+        var SZ=512, c=document.createElement('canvas'); c.width=c.height=SZ;
+        var ctx=c.getContext('2d');
+        ctx.fillStyle='#060d1c'; ctx.fillRect(0,0,SZ,SZ);
+        var tiers=[
+          {bg:'#0d1a2e',wc:'#00f0ff',wc2:'#ffa040',amp:52,density:160},
+          {bg:'#081525',wc:'#00e5ff',wc2:'#80f0ff',amp:38,density:150},
+          {bg:'#060f1e',wc:'#00b4d8',wc2:'#4dd0e1',amp:28,density:140},
+          {bg:'#040c18',wc:'#0077b6',wc2:'#2a9fd6',amp:18,density:120},
+        ];
+        var tierH=Math.floor(SZ/4), divH=4, seed=variant*7919+1234;
+        tiers.forEach(function(td,ti){
+          var y0=ti*tierH, y1=y0+tierH-divH, midY=(y0+y1)/2, halfH=(y1-y0)/2-4;
+          var bg=ctx.createLinearGradient(0,y0,0,y1);
+          bg.addColorStop(0,td.bg); bg.addColorStop(0.5,'#0a1628'); bg.addColorStop(1,td.bg);
+          ctx.fillStyle=bg; ctx.fillRect(0,y0,SZ,y1-y0);
+          // Impact glow top tier
+          if(ti===0&&isImpact){
+            var ig=ctx.createRadialGradient(SZ*0.6,y0,0,SZ*0.6,y0,SZ*0.55);
+            ig.addColorStop(0,'rgba(255,180,60,0.45)'); ig.addColorStop(0.4,'rgba(255,100,20,0.15)'); ig.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=ig; ctx.fillRect(0,y0,SZ,y1-y0);
+          }
+          // Bevel top
+          var bev=ctx.createLinearGradient(0,y0,0,y0+6); bev.addColorStop(0,'rgba(0,230,255,0.7)'); bev.addColorStop(1,'rgba(0,230,255,0)');
+          ctx.fillStyle=bev; ctx.fillRect(0,y0,SZ,6);
+          // Bottom shadow
+          var bsh=ctx.createLinearGradient(0,y1-4,0,y1); bsh.addColorStop(0,'rgba(0,0,0,0)'); bsh.addColorStop(1,'rgba(0,0,0,0.6)');
+          ctx.fillStyle=bsh; ctx.fillRect(0,y1-4,SZ,4);
+          // Build bar heights — seeded pseudo-random DAW stems
+          var N=td.density, barW=SZ/N, heights=[];
+          function rng(i){var x=Math.sin(seed+ti*1000+i*17.3)*43758.5453; return x-Math.floor(x);}
+          for(var i=0;i<N;i++){
+            var r1=rng(i),r2=rng(i+500),r3=rng(i+1000);
+            var env=Math.sin(i/N*Math.PI);
+            var spike=r1>0.88?(0.7+r2*0.3):(r1*0.6+r2*0.3);
+            heights.push(Math.max(0.03,spike*env*0.95+r3*0.08));
+          }
+          var smoothH=heights.map(function(h,i){return i===0?h:(h*0.7+heights[i-1]*0.3);});
+          // Outer glow
+          ctx.save(); ctx.shadowColor=td.wc; ctx.shadowBlur=10; ctx.globalAlpha=0.35;
+          for(var i=0;i<N;i++){
+            var bh=smoothH[i]*halfH, bx=i*barW;
+            var col=(ti===0&&isImpact&&i/N>0.45)?td.wc2:td.wc;
+            ctx.fillStyle=col;
+            ctx.fillRect(bx,midY-bh-1,Math.max(1,barW-1),bh+1);
+            ctx.fillRect(bx,midY,Math.max(1,barW-1),bh+1);
+          }
+          ctx.restore();
+          // Main bars with gradient
+          ctx.save(); ctx.shadowColor=td.wc; ctx.shadowBlur=6; ctx.globalAlpha=1.0;
+          for(var i=0;i<N;i++){
+            var bh=smoothH[i]*halfH, bx=i*barW;
+            var gc=ctx.createLinearGradient(bx,midY-bh,bx,midY+bh);
+            var topC=(ti===0&&isImpact&&i/N>0.4)?td.wc2:td.wc2;
+            gc.addColorStop(0,topC); gc.addColorStop(0.5,td.wc); gc.addColorStop(1,topC);
+            ctx.fillStyle=gc;
+            ctx.fillRect(bx+0.5,midY-bh,Math.max(0.8,barW-1),bh);
+            ctx.fillRect(bx+0.5,midY,Math.max(0.8,barW-1),bh);
+          }
+          ctx.restore();
+          // Center line
+          ctx.save(); ctx.strokeStyle='rgba(0,230,255,0.2)'; ctx.lineWidth=1;
+          ctx.beginPath(); ctx.moveTo(0,midY); ctx.lineTo(SZ,midY); ctx.stroke(); ctx.restore();
+          // Divider
+          if(ti<3){ ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,y1,SZ,divH); ctx.fillStyle='rgba(0,200,255,0.18)'; ctx.fillRect(0,y1,SZ,1); }
+        });
+        // Edge rim glow
+        ['left','right'].forEach(function(side){
+          var rg=ctx.createLinearGradient(side==='left'?0:SZ,0,side==='left'?18:SZ-18,0);
+          rg.addColorStop(0,'rgba(0,230,255,0.5)'); rg.addColorStop(1,'rgba(0,230,255,0)');
+          ctx.fillStyle=rg; ctx.fillRect(side==='left'?0:SZ-18,0,18,SZ);
+        });
+        return c;
+      }
+
+      // ── Cube group (everything rotates together) ────────────────────────────
+      var cubeGroup = new T.Group();
+      cubeGroup.position.y = -0.1;
+      scene.add(cubeGroup);
+
+      // ── Cube body ──────────────────────────────────────────────────────────
+      var SIZE=2.3, RADIUS=0.055;
+      var geo = new T.RoundedBoxGeometry(SIZE,SIZE,SIZE,4,RADIUS);
+      var cubeMat = new T.MeshPhysicalMaterial({
+        metalness:0.9, roughness:0.12, clearcoat:0.7, clearcoatRoughness:0.07,
+        color:new T.Color(0x070e1c), emissive:new T.Color(0x001a33), emissiveIntensity:0.12,
+        envMap:envMap, envMapIntensity:2.5
+      });
+      var cube = new T.Mesh(geo, cubeMat);
+      cubeGroup.add(cube);
+
+      // ── Edge glow ──────────────────────────────────────────────────────────
+      var edgeMat = new T.LineBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.7});
+      var edges   = new T.LineSegments(new T.EdgesGeometry(new T.BoxGeometry(SIZE,SIZE,SIZE)), edgeMat);
+      cubeGroup.add(edges);
+
+      // ── Bloom shell ────────────────────────────────────────────────────────
+      var shellMat = new T.MeshBasicMaterial({color:0x00aaff,transparent:true,opacity:0.03,side:T.BackSide});
+      var shell    = new T.Mesh(new T.RoundedBoxGeometry(SIZE+0.2,SIZE+0.2,SIZE+0.2,4,RADIUS+0.05), shellMat);
+      cubeGroup.add(shell);
+
+      // ── Face overlay planes (local coords → auto-rotate with group) ─────────
+      var FO=SIZE/2+0.008, PS=SIZE-RADIUS*2;
+      var faceDefs=[
+        {pos:[0,0, FO],  rotY:0,          wave:0, impact:true },
+        {pos:[0,0,-FO],  rotY:Math.PI,    wave:1, impact:false},
+        {pos:[ FO,0,0],  rotY:-Math.PI/2, wave:2, impact:false},
+        {pos:[-FO,0,0],  rotY: Math.PI/2, wave:3, impact:false},
+      ];
+      faceDefs.forEach(function(fd){
+        var tex=new T.CanvasTexture(makeDAWStemFace(fd.wave,fd.impact));
+        tex.needsUpdate=true;
+        var mat=new T.MeshPhysicalMaterial({
+          map:tex, emissiveMap:tex, emissive:new T.Color(0x003366),
+          emissiveIntensity:0.85, metalness:0.4, roughness:0.35,
+          envMap:envMap, envMapIntensity:0.7
+        });
+        var plane=new T.Mesh(new T.PlaneGeometry(PS,PS),mat);
+        plane.position.set(fd.pos[0],fd.pos[1],fd.pos[2]);
+        plane.rotation.y=fd.rotY;
+        cubeGroup.add(plane);
+      });
+
+      // ── 3D Hammer (child of cubeGroup) ────────────────────────────────────
+      var hammerG=new T.Group();
+      var steel=new T.MeshPhysicalMaterial({color:0xb0c8e0,metalness:0.96,roughness:0.08,clearcoat:0.9,clearcoatRoughness:0.04,envMap:envMap,envMapIntensity:3.0});
+      var dsteel=new T.MeshPhysicalMaterial({color:0x2a3a4a,metalness:0.9,roughness:0.2,envMap:envMap,envMapIntensity:1.2});
+      var wood=new T.MeshStandardMaterial({color:0x5a3010,metalness:0.0,roughness:0.85});
+      var headM=new T.Mesh(new T.RoundedBoxGeometry(0.82,0.46,0.38,4,0.05),steel); hammerG.add(headM);
+      [-0.38,0.38].forEach(function(x){var fm=new T.Mesh(new T.BoxGeometry(0.06,0.38,0.30),dsteel);fm.position.x=x;hammerG.add(fm);});
+      var handleM=new T.Mesh(new T.CylinderGeometry(0.058,0.048,1.5,16),wood); handleM.position.set(0.58,-0.65,0); handleM.rotation.z=0.5; hammerG.add(handleM);
+      var collarM=new T.Mesh(new T.CylinderGeometry(0.09,0.09,0.10,16),steel); collarM.position.set(0.24,-0.20,0); collarM.rotation.z=0.5; hammerG.add(collarM);
+      hammerG.rotation.set(0.08,-0.18,-0.50);
+      hammerG.position.set(0.48, SIZE/2+0.62, 0.35);
+      cubeGroup.add(hammerG);
+
+      // ── 3D Splash (child of cubeGroup) ────────────────────────────────────
+      var splashG=new T.Group();
+      splashG.position.set(0.28, SIZE/2+0.02, 0.28);
+      var RAYS=[[-0.7,0.9,0.20,0.55,0xffffff],[0.15,0.95,-0.10,0.62,0xffe066],[-0.42,0.78,0.55,0.48,0xff9800],[0.75,0.65,0.18,0.58,0xffffff],[-0.55,1.05,-0.28,0.44,0xff6600],[0.38,1.10,0.42,0.50,0xffd700],[-0.22,0.55,-0.65,0.40,0x80e5ff],[0.82,0.48,0.38,0.46,0xffffff],[-0.90,0.40,0.10,0.37,0xff8c00],[0.10,0.72,-0.72,0.42,0xffe0a0],[0.48,0.80,0.68,0.35,0xffff80],[-0.30,0.90,-0.48,0.39,0xffa040]];
+      RAYS.forEach(function(r){
+        var d=new T.Vector3(r[0],r[1],r[2]).normalize(),len=r[3],col=r[4];
+        var bg=new T.BufferGeometry().setFromPoints([new T.Vector3(0,0,0),new T.Vector3(d.x*len,d.y*len,d.z*len)]);
+        splashG.add(new T.Line(bg,new T.LineBasicMaterial({color:col,transparent:true,opacity:0.9})));
+        var dot=new T.Mesh(new T.SphereGeometry(0.022,8,8),new T.MeshBasicMaterial({color:col}));
+        dot.position.set(d.x*len,d.y*len,d.z*len); splashG.add(dot);
+      });
+      var flashM=new T.Mesh(new T.SphereGeometry(0.12,16,16),new T.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.95})); splashG.add(flashM);
+      var haloM=new T.Mesh(new T.SphereGeometry(0.22,16,16),new T.MeshBasicMaterial({color:0xff8800,transparent:true,opacity:0.28,side:T.BackSide})); splashG.add(haloM);
+      var ringPts=[]; for(var a=0;a<=64;a++){var r2=0.30,th=a/64*Math.PI*2;ringPts.push(new T.Vector3(Math.cos(th)*r2,0,Math.sin(th)*r2));}
+      splashG.add(new T.Line(new T.BufferGeometry().setFromPoints(ringPts),new T.LineBasicMaterial({color:0x00d2ff,transparent:true,opacity:0.65})));
+      cubeGroup.add(splashG);
+
+      // ── Post-processing ────────────────────────────────────────────────────
+      var composer=new T.EffectComposer(renderer);
+      composer.addPass(new T.RenderPass(scene,camera));
+      var bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.65,0.4,0.70);
+      composer.addPass(bloom);
+
+      // ── Interaction ────────────────────────────────────────────────────────
+      var rotX=-0.20,rotY=0.55,velX=0,velY=0,dragging=false,lastMX=0,lastMY=0;
+      var autoSpin=true,idleTimer=null;
+      function resetIdle(){autoSpin=false;clearTimeout(idleTimer);idleTimer=setTimeout(function(){autoSpin=true;velX=0;velY=0;},3500);}
+      canvas.addEventListener('mousedown',function(e){dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.clientX;lastMY=e.clientY;e.preventDefault();});
+      window.addEventListener('mousemove',function(e){if(!dragging)return;velY=(e.clientX-lastMX)*0.007;velX=(e.clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.clientX;lastMY=e.clientY;});
+      window.addEventListener('mouseup',function(){if(dragging){dragging=false;resetIdle();}});
+      canvas.addEventListener('touchstart',function(e){if(e.touches.length!==1)return;dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
+      canvas.addEventListener('touchmove',function(e){if(!dragging||e.touches.length!==1)return;velY=(e.touches[0].clientX-lastMX)*0.007;velX=(e.touches[0].clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
+      canvas.addEventListener('touchend',function(){dragging=false;resetIdle();});
+      window.addEventListener('resize',function(){var nw=wrap.clientWidth||420;camera.aspect=nw/H;camera.updateProjectionMatrix();renderer.setSize(nw,H);composer.setSize(nw,H);});
+
+      // ── Render loop ────────────────────────────────────────────────────────
+      var clock=new T.Clock(), rafId;
+      (function loop(){
+        rafId=requestAnimationFrame(loop);
+        var t=clock.getElapsedTime();
+        if(!dragging){if(autoSpin){rotY+=0.0032;}else{velX*=0.93;velY*=0.93;rotX+=velX;rotY+=velY;rotX=Math.max(-1.1,Math.min(1.1,rotX));}}
+        var bob=Math.sin(t*0.65)*0.06;
+        cubeGroup.rotation.x=rotX; cubeGroup.rotation.y=rotY; cubeGroup.position.y=-0.1+bob;
+        edgeMat.opacity=0.55+0.22*Math.sin(t*2.0);
+        flashM.material.opacity=0.80+0.18*Math.sin(t*3.8);
+        haloM.material.opacity=0.20+0.12*Math.sin(t*2.9);
+        fill.intensity=5.0+2.0*Math.sin(t*2.2);
+        rim.intensity=3.0+1.0*Math.sin(t*1.6+1.1);
+        bloom.strength=0.60+0.15*Math.sin(t*1.4);
+        composer.render();
+      })();
+
+      (new MutationObserver(function(){if(!document.getElementById('sf-cube-canvas'))cancelAnimationFrame(rafId);})).observe(document.body,{childList:true,subtree:true});
+    } // end _sfRunCube
   };
   // ── END StemForge 3D Logo Cube ────────────────────────────────────────
 
