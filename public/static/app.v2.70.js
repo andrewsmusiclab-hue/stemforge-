@@ -241,13 +241,23 @@ function sfShowNoticeModal(notice, onDismiss) {
 
 // ── StemForge 3D Logo Cube v5 — UMD script chain, no ES modules ──────────
 window._sfInitCube = function(user) {
+  // ── DIAGNOSTIC: write to body immediately so we can see it on any page ──
+  var _dbg = document.createElement('div');
+  _dbg.id = 'sf-cube-dbg';
+  _dbg.style.cssText = 'position:fixed;bottom:60px;left:0;right:0;z-index:99999;background:rgba(0,0,0,0.85);color:#0f0;font:11px monospace;padding:6px 10px;max-height:180px;overflow-y:auto';
+  document.body.appendChild(_dbg);
+  function D(msg,col){ _dbg.innerHTML+='<div style="color:'+(col||'#0f0')+'">'+msg+'</div>'; console.log('[SFCube]',msg); }
+
+  D('_sfInitCube called. user='+(user?user.email:'null')+' is_admin='+(user&&user.is_admin));
   var wrap   = document.getElementById('sf-cube-wrap');
   var canvas = document.getElementById('sf-cube-canvas');
-  if (!wrap || !canvas) return;
-  if (!user || !user.is_admin) { wrap.style.display='none'; return; }
+  D('wrap='+(wrap?'FOUND':'MISSING')+' canvas='+(canvas?'FOUND':'MISSING'));
+  if (!wrap || !canvas) { D('ABORT: elements missing','#f66'); return; }
+  if (!user || !user.is_admin) { D('ABORT: not admin','#fa0'); wrap.style.display='none'; return; }
   wrap.style.display = 'flex';
-  if (window._sfCubeActive) return;
+  if (window._sfCubeActive) { D('ABORT: already active','#fa0'); return; }
   window._sfCubeActive = true;
+  D('proceeding with script load...');
 
   // Load UMD scripts in order, then run cube init
   var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
@@ -262,13 +272,7 @@ window._sfInitCube = function(user) {
     BASE128 + 'examples/js/postprocessing/UnrealBloomPass.js',
   ];
 
-  // On-screen debug badge so we can see what fails even on mobile
-  var badge = document.getElementById('sf-cube-badge');
-  function sfLog(msg, col) {
-    console.log('[SFCube]', msg);
-    if (badge) badge.innerHTML += '<br><span style="color:'+(col||'#0f0')+';font-size:10px">'+msg+'</span>';
-  }
-  sfLog('init started');
+  var sfLog = D; // reuse the fixed overlay logger
 
   function loadNext(i, done) {
     if (i >= scripts.length) { done(); return; }
