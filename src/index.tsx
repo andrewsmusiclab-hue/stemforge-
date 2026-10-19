@@ -8701,10 +8701,9 @@ app.get('/api/admin/key-check', async (c) => {
     results.REPLICATE_LIVE_TEST = r.ok ? '✅ Connected (HTTP ' + r.status + ')' : '❌ Failed (HTTP ' + r.status + ')'
   } catch(e: any) { results.REPLICATE_LIVE_TEST = '❌ Network error: ' + e.message }
 
-  // 12. Live test — Mureka (account check)
+  // 12. Live test — Mureka (GET /v1/account/billing — 200 = key valid, 401 = key rejected)
   try {
-    const r = await fetch('https://api.mureka.ai/v1/account/query-coins', {
-      method: 'GET',
+    const r = await fetch('https://api.mureka.ai/v1/account/billing', {
       headers: { 'Authorization': `Bearer ${murekaKey}` }
     })
     results.MUREKA_LIVE_TEST = r.ok ? '✅ Connected (HTTP ' + r.status + ')' : '❌ Failed (HTTP ' + r.status + ')'
@@ -10807,7 +10806,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-111'
+const ASSET_VER = '20261018-113'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
