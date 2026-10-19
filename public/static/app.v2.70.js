@@ -11475,506 +11475,422 @@ window.toggleRefDropdown = function() {
   }
   // ── END VoiceForge inline functions ──────────────────────────────────────
 
-  // ── StemForge 3D Logo Cube — Three.js WebGL v2 ───────────────────────────
-  // Faces: emissive waveform textures (always visible, not lighting-dependent)
-  // Hammer + splash: separate 3D meshes above the cube
+  // ── StemForge 3D Logo Cube — Three.js WebGL v3 (Resend quality) ──────────
+  // Uses: ES module importmap, RoundedBoxGeometry, MeshPhysicalMaterial,
+  //       UnrealBloomPass, EffectComposer, PMREMGenerator IBL, SMAA
   window._sfInitCube = function(user) {
     var wrap   = document.getElementById('sf-cube-wrap');
     var canvas = document.getElementById('sf-cube-canvas');
     if (!wrap || !canvas) return;
-    if (!user || !user.is_admin) { wrap.style.display = 'none'; return; }
+    if (!user || !user.is_admin) { wrap.style.display='none'; return; }
     wrap.style.display = 'flex';
 
-    function loadScript(src, cb) {
-      if (document.querySelector('script[src="'+src+'"]')) { cb(); return; }
-      var s = document.createElement('script');
-      s.src = src; s.onload = cb;
-      s.onerror = function(){ console.warn('[SFCube] failed:', src); };
-      document.head.appendChild(s);
+    // Inject importmap once, then bootstrap via inline module script
+    if (!document.querySelector('script[data-sf-importmap]')) {
+      var im = document.createElement('script');
+      im.type = 'importmap';
+      im.setAttribute('data-sf-importmap','1');
+      im.textContent = JSON.stringify({
+        imports: {
+          'three': 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js',
+          'three/addons/': 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/'
+        }
+      });
+      document.head.appendChild(im);
     }
 
-    loadScript('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js', function() {
-      if (typeof THREE === 'undefined') { console.warn('[SFCube] THREE missing'); return; }
-      bootstrap();
+    // Guard: only init once
+    if (window._sfCubeActive) return;
+    window._sfCubeActive = true;
+
+    var mod = document.createElement('script');
+    mod.type = 'module';
+    mod.setAttribute('data-sf-cube','1');
+    mod.textContent = /* js */`
+(async function() {
+  const { WebGLRenderer, Scene, PerspectiveCamera, Clock,
+          AmbientLight, DirectionalLight, PointLight,
+          BoxGeometry, CylinderGeometry, SphereGeometry, EdgesGeometry, BufferGeometry,
+          Mesh, LineSegments, Line, Group,
+          MeshPhysicalMaterial, MeshStandardMaterial, MeshBasicMaterial, LineBasicMaterial,
+          CanvasTexture, Color, Vector3, Vector2,
+          ACESFilmicToneMapping, BackSide, PMREMGenerator,
+          RGBAFormat, FloatType, WebGLRenderTarget } = await import('three');
+
+  const { EffectComposer }   = await import('three/addons/postprocessing/EffectComposer.js');
+  const { RenderPass }       = await import('three/addons/postprocessing/RenderPass.js');
+  const { UnrealBloomPass }  = await import('three/addons/postprocessing/UnrealBloomPass.js');
+  const { RoundedBoxGeometry } = await import('three/addons/geometries/RoundedBoxGeometry.js');
+  const { OutputPass }       = await import('three/addons/postprocessing/OutputPass.js');
+
+  const canvas = document.getElementById('sf-cube-canvas');
+  if (!canvas) return;
+  const wrap   = document.getElementById('sf-cube-wrap');
+
+  // ── Canvas size ──────────────────────────────────────────────────────────
+  const W = (wrap.clientWidth  || 420);
+  const H = 400;
+  canvas.width  = W;
+  canvas.height = H;
+
+  // ── Renderer ─────────────────────────────────────────────────────────────
+  const renderer = new WebGLRenderer({ canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(W, H);
+  renderer.toneMapping         = ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.35;
+
+  // ── Scene / Camera ───────────────────────────────────────────────────────
+  const scene  = new Scene();
+  const camera = new PerspectiveCamera(34, W/H, 0.1, 100);
+  camera.position.set(0, 0.4, 6.0);
+
+  // ── IBL Environment — procedural studio via PMREMGenerator ──────────────
+  // Build a tiny 1×1 env texture from a gradient canvas
+  const envSize = 256;
+  const envCvs  = document.createElement('canvas');
+  envCvs.width  = envSize * 4; envCvs.height = envSize * 2;
+  const ec = envCvs.getContext('2d');
+  // pure black bg
+  ec.fillStyle = '#000'; ec.fillRect(0,0,envCvs.width,envCvs.height);
+  // top-right white key light patch
+  const kl = ec.createRadialGradient(envCvs.width*0.78, envCvs.height*0.1, 0, envCvs.width*0.78, envCvs.height*0.1, envCvs.width*0.35);
+  kl.addColorStop(0,'rgba(255,255,255,0.85)'); kl.addColorStop(1,'rgba(0,0,0,0)');
+  ec.fillStyle=kl; ec.fillRect(0,0,envCvs.width,envCvs.height);
+  // left cyan fill
+  const cl = ec.createRadialGradient(0, envCvs.height*0.5, 0, 0, envCvs.height*0.5, envCvs.width*0.4);
+  cl.addColorStop(0,'rgba(0,200,255,0.45)'); cl.addColorStop(1,'rgba(0,0,0,0)');
+  ec.fillStyle=cl; ec.fillRect(0,0,envCvs.width,envCvs.height);
+  // warm orange back rim
+  const rl = ec.createRadialGradient(envCvs.width*0.5, envCvs.height, 0, envCvs.width*0.5, envCvs.height, envCvs.width*0.45);
+  rl.addColorStop(0,'rgba(255,120,20,0.35)'); rl.addColorStop(1,'rgba(0,0,0,0)');
+  ec.fillStyle=rl; ec.fillRect(0,0,envCvs.width,envCvs.height);
+
+  const envTex = new CanvasTexture(envCvs);
+  envTex.mapping = 303; // EquirectangularReflectionMapping
+  const pmrem   = new PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envMap  = pmrem.fromEquirectangular(envTex).texture;
+  scene.environment = envMap;
+
+  // ── Lights ───────────────────────────────────────────────────────────────
+  scene.add(new AmbientLight(0xffffff, 0.6));
+  const key = new DirectionalLight(0xffffff, 3.5); key.position.set(4, 6, 5); scene.add(key);
+  const fill = new PointLight(0x00d2ff, 5.0, 30); fill.position.set(-4, 3, 4); scene.add(fill);
+  const rim  = new PointLight(0xff8c20, 3.0, 22); rim.position.set(1, 5, -4); scene.add(rim);
+  const bot  = new PointLight(0x0040ff, 1.5, 14); bot.position.set(0,-5, 3); scene.add(bot);
+
+  // ── Waveform face texture ─────────────────────────────────────────────────
+  function makeWaveFace(variant) {
+    const SZ  = 512;
+    const cvs = document.createElement('canvas');
+    cvs.width = cvs.height = SZ;
+    const ctx = cvs.getContext('2d');
+
+    // Dark navy background
+    const bg = ctx.createLinearGradient(0,0,0,SZ);
+    bg.addColorStop(0,'#080f1e'); bg.addColorStop(0.5,'#060c18'); bg.addColorStop(1,'#050a14');
+    ctx.fillStyle=bg; ctx.fillRect(0,0,SZ,SZ);
+
+    const tierH = Math.floor(SZ/4);
+    const gapH  = 5;
+    const tiers = [
+      { bg0:'#12203a',bg1:'#0b1830', wc:'#5ce1e6', wc2:'#b8f0ff', amp:40, style:'spike',  splash:true  },
+      { bg0:'#0d1830',bg1:'#081020', wc:'#00d2ff', wc2:'#80e5ff', amp:30, style:'music',  splash:false },
+      { bg0:'#0a1428',bg1:'#060c1a', wc:'#00a6ff', wc2:'#40c4ff', amp:24, style:'dense',  splash:false },
+      { bg0:'#081020',bg1:'#050810', wc:'#1e6bff', wc2:'#5090ff', amp:18, style:'bass',   splash:false },
+    ];
+
+    tiers.forEach((td, ti) => {
+      const ty0  = ti*(tierH+gapH);
+      const ty1  = ty0 + tierH;
+      const midY = ty0 + tierH/2;
+
+      // slab bg
+      const sg = ctx.createLinearGradient(0,ty0,0,ty1);
+      sg.addColorStop(0,td.bg0); sg.addColorStop(0.5,td.bg1); sg.addColorStop(1,td.bg0);
+      ctx.fillStyle=sg; ctx.fillRect(0,ty0,SZ,ty1-ty0);
+
+      // shelf bevel top
+      const bev=ctx.createLinearGradient(0,ty0,0,ty0+7);
+      bev.addColorStop(0,'rgba(92,225,230,0.65)'); bev.addColorStop(1,'rgba(92,225,230,0)');
+      ctx.fillStyle=bev; ctx.fillRect(0,ty0,SZ,7);
+
+      // bottom shelf shadow
+      const bsh=ctx.createLinearGradient(0,ty1-5,0,ty1);
+      bsh.addColorStop(0,'rgba(0,0,0,0)'); bsh.addColorStop(1,'rgba(0,0,0,0.5)');
+      ctx.fillStyle=bsh; ctx.fillRect(0,ty1-5,SZ,5);
+
+      // hammer impact warm glow on top tier
+      if (td.splash) {
+        const sg2=ctx.createRadialGradient(SZ*0.58,ty0,0,SZ*0.58,ty0,SZ*0.5);
+        sg2.addColorStop(0,'rgba(255,200,80,0.32)'); sg2.addColorStop(0.5,'rgba(255,100,20,0.10)'); sg2.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=sg2; ctx.fillRect(0,ty0,SZ,ty1-ty0);
+      }
+
+      const phase = variant*1.4 + ti*1.1;
+
+      // outer glow pass
+      ctx.save();
+      ctx.shadowColor=td.wc; ctx.shadowBlur=20;
+      ctx.strokeStyle=td.wc; ctx.lineWidth=3; ctx.globalAlpha=0.3;
+      drawW(ctx,td.style,0,SZ,midY,td.amp*0.7,phase+0.15);
+      ctx.restore();
+
+      // main wave
+      ctx.save();
+      ctx.shadowColor=td.wc; ctx.shadowBlur=12;
+      const wg=ctx.createLinearGradient(0,midY-td.amp,0,midY+td.amp);
+      wg.addColorStop(0,td.wc2); wg.addColorStop(0.5,td.wc); wg.addColorStop(1,td.wc+'99');
+      ctx.strokeStyle=wg; ctx.lineWidth=2.2; ctx.globalAlpha=1.0;
+      drawW(ctx,td.style,0,SZ,midY,td.amp,phase);
+      ctx.restore();
+
+      // fill under wave
+      ctx.save();
+      ctx.globalAlpha=0.14; ctx.fillStyle=td.wc;
+      fillW(ctx,td.style,0,SZ,midY,td.amp,phase,ty0,ty1);
+      ctx.restore();
     });
 
-    function bootstrap() {
-      var T = THREE;
+    // rim edge glow
+    ['left','right'].forEach(side => {
+      const rg=ctx.createLinearGradient(side==='left'?0:SZ, 0, side==='left'?20:SZ-20, 0);
+      rg.addColorStop(0,'rgba(92,225,230,0.45)'); rg.addColorStop(1,'rgba(92,225,230,0)');
+      ctx.fillStyle=rg; ctx.fillRect(side==='left'?0:SZ-20, 0, 20, SZ);
+    });
 
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // WAVEFORM FACE TEXTURE — matches logo exactly
-      // 4 tiers, each with realistic audio waveform, glowing cyan/blue
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      function makeWaveFace(variant) {
-        var SZ  = 512;
-        var cvs = document.createElement('canvas');
-        cvs.width = cvs.height = SZ;
-        var ctx = cvs.getContext('2d');
+    return cvs;
+  }
 
-        // ── Background: deep dark navy panels ──────────────────────────────
-        var bgGrad = ctx.createLinearGradient(0, 0, 0, SZ);
-        bgGrad.addColorStop(0,   '#080f1e');
-        bgGrad.addColorStop(0.5, '#060c18');
-        bgGrad.addColorStop(1,   '#050a14');
-        ctx.fillStyle = bgGrad;
-        ctx.fillRect(0, 0, SZ, SZ);
-
-        // ── 4 Tier slabs with beveled edges ────────────────────────────────
-        var tierH   = SZ / 4;   // each tier = 128px
-        var gapH    = 4;        // gap between tiers
-        var tierDefs = [
-          // { topColor, midColor, waveColor, ampScale, freqStyle, hasSplash }
-          { bg0:'#12203a', bg1:'#0a1628', wc:'#5ce1e6', wc2:'#a8eeff', amp:38, style:'spike',  splash:true  },  // tier 1 top
-          { bg0:'#0d1830', bg1:'#080f20', wc:'#00d2ff', wc2:'#80e5ff', amp:28, style:'music',  splash:false },  // tier 2
-          { bg0:'#0a1428', bg1:'#060c1a', wc:'#00a6ff', wc2:'#40c4ff', amp:22, style:'dense',  splash:false },  // tier 3
-          { bg0:'#081020', bg1:'#050810', wc:'#1e6bff', wc2:'#4a90ff', amp:16, style:'bass',   splash:false },  // tier 4 bottom
-        ];
-
-        tierDefs.forEach(function(td, ti) {
-          var ty0 = ti * tierH + (ti > 0 ? gapH*ti : 0);
-          var ty1 = ty0 + tierH - gapH;
-          var midY = ty0 + (ty1 - ty0) / 2;
-
-          // Slab background gradient
-          var sg = ctx.createLinearGradient(0, ty0, 0, ty1);
-          sg.addColorStop(0,   td.bg0);
-          sg.addColorStop(0.5, td.bg1);
-          sg.addColorStop(1,   td.bg0);
-          ctx.fillStyle = sg;
-          ctx.fillRect(0, ty0, SZ, ty1 - ty0);
-
-          // Bevel top edge glow (the "shelf lip" from the logo)
-          var bev = ctx.createLinearGradient(0, ty0, 0, ty0+6);
-          bev.addColorStop(0, 'rgba(92,225,230,0.55)');
-          bev.addColorStop(1, 'rgba(92,225,230,0)');
-          ctx.fillStyle = bev;
-          ctx.fillRect(0, ty0, SZ, 6);
-
-          // Splash/impact glow on top tier from hammer
-          if (td.splash) {
-            var splashGrad = ctx.createRadialGradient(SZ*0.55, ty0, 0, SZ*0.55, ty0, SZ*0.45);
-            splashGrad.addColorStop(0,   'rgba(255,200,100,0.28)');
-            splashGrad.addColorStop(0.4, 'rgba(255,130, 40,0.10)');
-            splashGrad.addColorStop(1,   'rgba(255,100,  0,0)');
-            ctx.fillStyle = splashGrad;
-            ctx.fillRect(0, ty0, SZ, ty1-ty0);
-          }
-
-          // ── Draw waveform ────────────────────────────────────────────────
-          var wavePhase = variant * 1.3 + ti * 0.9;
-
-          // glow pass (wider, softer)
-          ctx.save();
-          ctx.shadowColor = td.wc;
-          ctx.shadowBlur  = 16;
-          ctx.strokeStyle = td.wc2;
-          ctx.lineWidth   = 1.8;
-          ctx.globalAlpha = 0.45;
-          drawWave(ctx, td.style, 0, SZ, midY, td.amp * 0.6, wavePhase + 0.2);
-          ctx.restore();
-
-          // main waveform pass
-          ctx.save();
-          ctx.shadowColor = td.wc;
-          ctx.shadowBlur  = 10;
-
-          // gradient stroke along the wave
-          var wg = ctx.createLinearGradient(0, midY - td.amp, 0, midY + td.amp);
-          wg.addColorStop(0,   td.wc2);
-          wg.addColorStop(0.5, td.wc);
-          wg.addColorStop(1,   td.wc2 + '99');
-          ctx.strokeStyle = wg;
-          ctx.lineWidth   = 2.0;
-          ctx.globalAlpha = 0.95;
-          drawWave(ctx, td.style, 0, SZ, midY, td.amp, wavePhase);
-          ctx.restore();
-
-          // filled area under the waveform (like a real DAW stem)
-          ctx.save();
-          ctx.globalAlpha = 0.12;
-          ctx.fillStyle   = td.wc;
-          ctx.shadowBlur  = 0;
-          fillWave(ctx, td.style, 0, SZ, midY, td.amp, wavePhase, ty0, ty1);
-          ctx.restore();
-        });
-
-        // ── Outer rim glow (left+right edges of whole face) ────────────────
-        var rimL = ctx.createLinearGradient(0,0,18,0);
-        rimL.addColorStop(0, 'rgba(92,225,230,0.35)');
-        rimL.addColorStop(1, 'rgba(92,225,230,0)');
-        ctx.fillStyle = rimL;
-        ctx.fillRect(0, 0, 18, SZ);
-
-        var rimR = ctx.createLinearGradient(SZ,0,SZ-18,0);
-        rimR.addColorStop(0, 'rgba(92,225,230,0.35)');
-        rimR.addColorStop(1, 'rgba(92,225,230,0)');
-        ctx.fillStyle = rimR;
-        ctx.fillRect(SZ-18, 0, 18, SZ);
-
-        return cvs;
-      }
-
-      // ── Waveform drawing helpers ─────────────────────────────────────────
-      function drawWave(ctx, style, x0, x1, cy, amp, phase) {
-        ctx.beginPath();
-        var steps = 200;
-        for (var i = 0; i <= steps; i++) {
-          var t  = i / steps;
-          var x  = x0 + t * (x1 - x0);
-          var y  = cy + waveY(style, t, amp, phase);
-          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-      }
-
-      function fillWave(ctx, style, x0, x1, cy, amp, phase, ty0, ty1) {
-        ctx.beginPath();
-        var steps = 200;
-        ctx.moveTo(x0, cy);
-        for (var i = 0; i <= steps; i++) {
-          var t = i / steps;
-          var x = x0 + t*(x1-x0);
-          var y = cy + waveY(style, t, amp, phase);
-          ctx.lineTo(x, y);
-        }
-        ctx.lineTo(x1, cy);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      function waveY(style, t, amp, phase) {
-        switch(style) {
-          case 'spike':
-            // high-energy transient peaks like tier 1 of logo
-            return amp * Math.sin(t*Math.PI*12 + phase)
-                       * (0.4 + 0.6*Math.pow(Math.abs(Math.sin(t*Math.PI*5)),0.4));
-          case 'music':
-            // broader musical waveform, tier 2
-            return amp * Math.sin(t*Math.PI*6 + phase)
-                       * (0.5 + 0.5*Math.sin(t*Math.PI*2.5 + phase*0.5));
-          case 'dense':
-            // sawtooth-like spiky, tier 3
-            return amp * Math.sin(t*Math.PI*18 + phase)
-                       * (0.6 + 0.4*Math.abs(Math.sin(t*Math.PI*4)));
-          case 'bass':
-            // low freq smooth rolling, tier 4
-            return amp * Math.sin(t*Math.PI*3 + phase)
-                       * (0.7 + 0.3*Math.sin(t*Math.PI + phase*0.3));
-          default:
-            return amp * Math.sin(t*Math.PI*8 + phase);
-        }
-      }
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // BOTTOM FACE — dark grid
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      function makeBottomFace() {
-        var SZ = 512, cvs = document.createElement('canvas');
-        cvs.width = cvs.height = SZ;
-        var ctx = cvs.getContext('2d');
-        ctx.fillStyle = '#030810';
-        ctx.fillRect(0,0,SZ,SZ);
-        ctx.strokeStyle = 'rgba(0,200,255,0.07)';
-        ctx.lineWidth = 1;
-        for (var g=0; g<SZ; g+=64) {
-          ctx.beginPath(); ctx.moveTo(g,0); ctx.lineTo(g,SZ); ctx.stroke();
-          ctx.beginPath(); ctx.moveTo(0,g); ctx.lineTo(SZ,g); ctx.stroke();
-        }
-        return cvs;
-      }
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // SCENE SETUP
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      var W = canvas.parentElement.clientWidth || 420;
-      var H = 380;
-      canvas.width = W; canvas.height = H;
-
-      var renderer = new T.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      renderer.setSize(W, H);
-      renderer.toneMapping = T.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.2;
-
-      var scene  = new T.Scene();
-      var camera = new T.PerspectiveCamera(36, W/H, 0.1, 100);
-      camera.position.set(0, 0.5, 5.8);
-
-      // ── Lighting ───────────────────────────────────────────────────────────
-      // Strong ambient so faces are ALWAYS visible
-      scene.add(new T.AmbientLight(0xffffff, 1.8));
-      // White key from top-right
-      var key = new T.DirectionalLight(0xffffff, 2.0);
-      key.position.set(3, 5, 4); scene.add(key);
-      // Cyan fill matching waveform color
-      var fill = new T.PointLight(0x00d2ff, 3.5, 25);
-      fill.position.set(-3, 2, 3); scene.add(fill);
-      // Orange/warm rim from behind (hammer side)
-      var rim = new T.PointLight(0xff8c20, 2.0, 18);
-      rim.position.set(1, 4, -3); scene.add(rim);
-      // Subtle bottom bounce
-      var bounce = new T.PointLight(0x0050ff, 1.2, 12);
-      bounce.position.set(0, -4, 2); scene.add(bounce);
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // CUBE — MeshStandardMaterial with emissive map so faces glow always
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      var geo = new T.BoxGeometry(2.4, 2.4, 2.4);
-
-      function tex(cvs) {
-        var t = new T.CanvasTexture(cvs); t.needsUpdate=true; return t;
-      }
-
-      // face canvases
-      var wc0 = makeWaveFace(0), wc1 = makeWaveFace(1),
-          wc2 = makeWaveFace(2), wc3 = makeWaveFace(3),
-          bot = makeBottomFace();
-
-      // Using MeshStandardMaterial with BOTH map AND emissiveMap
-      // emissive ensures the waveform pattern always shows even in shadow
-      function waveMat(cvs, emissiveStrength) {
-        var t = tex(cvs);
-        return new T.MeshStandardMaterial({
-          map:             t,
-          emissiveMap:     t,
-          emissive:        new T.Color(0x00aaff),
-          emissiveIntensity: emissiveStrength || 0.55,
-          metalness:       0.75,
-          roughness:       0.25,
-        });
-      }
-
-      // top face — dark with impact glow, no waveform (hammer sits on top)
-      var topCvs = (function(){
-        var SZ=512, c=document.createElement('canvas'); c.width=c.height=SZ;
-        var ctx=c.getContext('2d');
-        var bg=ctx.createRadialGradient(SZ*0.55,SZ*0.3,10,SZ/2,SZ/2,SZ*0.7);
-        bg.addColorStop(0,'#1a1408'); bg.addColorStop(0.3,'#0d1525'); bg.addColorStop(1,'#050910');
-        ctx.fillStyle=bg; ctx.fillRect(0,0,SZ,SZ);
-        // impact glow spot where hammer will hit
-        var ig=ctx.createRadialGradient(SZ*0.52,SZ*0.15,0,SZ*0.52,SZ*0.15,SZ*0.4);
-        ig.addColorStop(0,'rgba(255,210,80,0.5)'); ig.addColorStop(0.5,'rgba(255,120,20,0.15)'); ig.addColorStop(1,'rgba(0,0,0,0)');
-        ctx.fillStyle=ig; ctx.fillRect(0,0,SZ,SZ);
-        // grid
-        ctx.strokeStyle='rgba(0,200,255,0.08)'; ctx.lineWidth=1;
-        for(var g=0;g<SZ;g+=64){ctx.beginPath();ctx.moveTo(g,0);ctx.lineTo(g,SZ);ctx.stroke();ctx.beginPath();ctx.moveTo(0,g);ctx.lineTo(SZ,g);ctx.stroke();}
-        return c;
-      })();
-
-      var materials = [
-        waveMat(wc0, 0.6),   // +X right
-        waveMat(wc1, 0.6),   // -X left
-        new T.MeshStandardMaterial({ map:tex(topCvs), emissiveMap:tex(topCvs), emissive:new T.Color(0xff6600), emissiveIntensity:0.3, metalness:0.8, roughness:0.2 }), // +Y top
-        new T.MeshStandardMaterial({ map:tex(bot),    emissiveMap:tex(bot),    emissive:new T.Color(0x002244), emissiveIntensity:0.2, metalness:0.9, roughness:0.3 }), // -Y bottom
-        waveMat(wc2, 0.6),   // +Z front
-        waveMat(wc3, 0.6),   // -Z back
-      ];
-
-      var cube = new T.Mesh(geo, materials);
-      cube.position.y = -0.1;
-      scene.add(cube);
-
-      // ── Edge glow ──────────────────────────────────────────────────────────
-      var edgeGeo = new T.EdgesGeometry(geo);
-      var edgeMat = new T.LineBasicMaterial({ color:0x5ce1e6, transparent:true, opacity:0.7 });
-      var edges   = new T.LineSegments(edgeGeo, edgeMat);
-      cube.add(edges);
-
-      // Outer bloom shell
-      var shellMat = new T.MeshBasicMaterial({ color:0x00d2ff, transparent:true, opacity:0.035, side:T.BackSide });
-      scene.add(new T.Mesh(new T.BoxGeometry(2.58, 2.58, 2.58), shellMat));
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // HAMMER — separate 3D mesh group, positioned above/beside the cube
-      // Head: BoxGeometry (heavy hammer head)
-      // Handle: CylinderGeometry (round handle)
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      var hammerGroup = new T.Group();
-
-      // Metallic steel material for hammer
-      var steelMat = new T.MeshStandardMaterial({
-        color:     0xb8c8d8,
-        metalness: 0.95,
-        roughness: 0.12,
-        envMapIntensity: 1.5,
-      });
-      var darkSteelMat = new T.MeshStandardMaterial({
-        color:     0x4a5a6a,
-        metalness: 0.9,
-        roughness: 0.2,
-      });
-      var woodMat = new T.MeshStandardMaterial({
-        color:     0x7a4f1e,
-        metalness: 0.0,
-        roughness: 0.85,
-      });
-
-      // Hammer HEAD — large rectangular block
-      var headGeo  = new T.BoxGeometry(0.72, 0.44, 0.38);
-      var headMesh = new T.Mesh(headGeo, steelMat);
-      headMesh.position.set(0, 0, 0);
-      hammerGroup.add(headMesh);
-
-      // Hammer head face detail (darker face plates)
-      var faceGeo  = new T.BoxGeometry(0.06, 0.38, 0.32);
-      var faceL    = new T.Mesh(faceGeo, darkSteelMat);
-      faceL.position.set(-0.33, 0, 0); hammerGroup.add(faceL);
-      var faceR    = new T.Mesh(faceGeo, darkSteelMat);
-      faceR.position.set( 0.33, 0, 0); hammerGroup.add(faceR);
-
-      // HANDLE — cylinder
-      var handleGeo  = new T.CylinderGeometry(0.065, 0.055, 1.5, 12);
-      var handleMesh = new T.Mesh(handleGeo, woodMat);
-      handleMesh.position.set(0.58, -0.65, 0);
-      handleMesh.rotation.z = 0.52;  // angled like in the logo
-      hammerGroup.add(handleMesh);
-
-      // Handle metal collar
-      var collarGeo  = new T.CylinderGeometry(0.09, 0.09, 0.1, 12);
-      var collarMesh = new T.Mesh(collarGeo, steelMat);
-      collarMesh.position.set(0.24, -0.2, 0);
-      collarMesh.rotation.z = 0.52;
-      hammerGroup.add(collarMesh);
-
-      // Position & rotate whole hammer group
-      // Logo shows hammer at ~30-35° from horizontal, striking top-left of cube
-      hammerGroup.rotation.z = -0.55;  // tilt
-      hammerGroup.rotation.y =  0.2;   // slight 3D angle
-      hammerGroup.position.set(0.55, 2.05, 0.5); // above cube top face
-      scene.add(hammerGroup);
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // SPLASH — impact burst between hammer and cube top
-      // Rendered as a separate group of line rays + sprite dots
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      var splashGroup = new T.Group();
-      // Impact point: just above cube top face
-      var impactY = 1.25;
-      var impactX = 0.3;
-      var impactZ = 0.3;
-
-      // Spark ray definitions: [dirX, dirY, dirZ, length, color]
-      var rays = [
-        [-0.9,  1.0,  0.3, 0.55, 0xffffff],
-        [ 0.2,  1.1, -0.1, 0.65, 0xffe066],
-        [-0.5,  0.9,  0.6, 0.50, 0xff9800],
-        [ 0.8,  0.8,  0.2, 0.60, 0xffffff],
-        [-0.7,  1.2, -0.3, 0.45, 0xff6600],
-        [ 0.4,  1.3,  0.5, 0.52, 0xffd700],
-        [-0.3,  0.7, -0.7, 0.42, 0x80e5ff],
-        [ 0.9,  0.6,  0.4, 0.48, 0xffffff],
-        [-1.1,  0.5,  0.1, 0.38, 0xff8c00],
-        [ 0.1,  0.9, -0.8, 0.44, 0xffe0a0],
-      ];
-
-      rays.forEach(function(r) {
-        var dir  = new T.Vector3(r[0], r[1], r[2]).normalize();
-        var len  = r[3];
-        var col  = r[4];
-
-        // Line ray
-        var pts  = [ new T.Vector3(0,0,0), new T.Vector3(dir.x*len, dir.y*len, dir.z*len) ];
-        var lineGeo = new T.BufferGeometry().setFromPoints(pts);
-        var lineMat = new T.LineBasicMaterial({ color:col, transparent:true, opacity:0.9 });
-        var line    = new T.Line(lineGeo, lineMat);
-        splashGroup.add(line);
-
-        // Spark dot at tip
-        var dotGeo  = new T.SphereGeometry(0.028, 6, 6);
-        var dotMat  = new T.MeshBasicMaterial({ color:col });
-        var dot     = new T.Mesh(dotGeo, dotMat);
-        dot.position.set(dir.x*len, dir.y*len, dir.z*len);
-        splashGroup.add(dot);
-      });
-
-      // White core flash at impact point (small bright sphere)
-      var flashGeo  = new T.SphereGeometry(0.12, 12, 12);
-      var flashMat  = new T.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:0.92 });
-      var flash     = new T.Mesh(flashGeo, flashMat);
-      splashGroup.add(flash);
-
-      // Orange glow halo at impact
-      var haloGeo = new T.SphereGeometry(0.22, 12, 12);
-      var haloMat = new T.MeshBasicMaterial({ color:0xff8800, transparent:true, opacity:0.28, side:T.BackSide });
-      splashGroup.add(new T.Mesh(haloGeo, haloMat));
-
-      splashGroup.position.set(impactX, impactY, impactZ);
-      scene.add(splashGroup);
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // ROTATION STATE
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      var rotX = -0.25, rotY = 0.55;
-      var velX = 0,     velY = 0;
-      var dragging = false, lastMX = 0, lastMY = 0;
-      var autoSpin = true, idleTimer = null;
-
-      function resetIdle() {
-        autoSpin = false;
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(function(){ autoSpin=true; velX=0; velY=0; }, 3500);
-      }
-
-      canvas.addEventListener('mousedown', function(e){
-        dragging=true; autoSpin=false; velX=0; velY=0;
-        lastMX=e.clientX; lastMY=e.clientY; e.preventDefault();
-      });
-      window.addEventListener('mousemove', function(e){
-        if(!dragging) return;
-        velY=(e.clientX-lastMX)*0.008; velX=(e.clientY-lastMY)*0.008;
-        rotY+=velY; rotX+=velX; rotX=Math.max(-1.1,Math.min(1.1,rotX));
-        lastMX=e.clientX; lastMY=e.clientY;
-      });
-      window.addEventListener('mouseup', function(){ if(dragging){dragging=false;resetIdle();} });
-      canvas.addEventListener('touchstart',function(e){ if(e.touches.length!==1)return; dragging=true;autoSpin=false;velX=0;velY=0; lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY; e.preventDefault(); },{passive:false});
-      canvas.addEventListener('touchmove', function(e){ if(!dragging||e.touches.length!==1)return; velY=(e.touches[0].clientX-lastMX)*0.008;velX=(e.touches[0].clientY-lastMY)*0.008; rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX)); lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY; e.preventDefault(); },{passive:false});
-      canvas.addEventListener('touchend',function(){ dragging=false;resetIdle(); });
-
-      window.addEventListener('resize', function(){
-        var nw=canvas.parentElement.clientWidth||420;
-        camera.aspect=nw/H; camera.updateProjectionMatrix(); renderer.setSize(nw,H);
-      });
-
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      // RENDER LOOP
-      // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-      var clock = new T.Clock();
-      var rafId;
-      (function loop() {
-        rafId = requestAnimationFrame(loop);
-        var t = clock.getElapsedTime();
-
-        // rotation
-        if (!dragging) {
-          if (autoSpin) { rotY += 0.004; }
-          else { velX*=0.92; velY*=0.92; rotX+=velX; rotY+=velY; rotX=Math.max(-1.1,Math.min(1.1,rotX)); }
-        }
-
-        // Apply rotation to cube only — hammer + splash stay fixed (world space)
-        cube.rotation.x = rotX;
-        cube.rotation.y = rotY;
-        // float
-        var bob = Math.sin(t * 0.65) * 0.07;
-        cube.position.y   = -0.1 + bob;
-        // hammer bobs slightly with the cube (as if resting on it)
-        hammerGroup.position.y = 2.05 + bob;
-        splashGroup.position.y = impactY + bob;
-
-        // pulse effects
-        edgeMat.opacity      = 0.55 + 0.2 * Math.sin(t * 1.9);
-        flashMat.opacity     = 0.75 + 0.2 * Math.sin(t * 3.5);
-        haloMat.opacity      = 0.2  + 0.12* Math.sin(t * 2.8);
-        fill.intensity       = 3.0  + 1.2 * Math.sin(t * 2.1);
-        rim.intensity        = 1.8  + 0.6 * Math.sin(t * 1.5 + 1.2);
-
-        renderer.render(scene, camera);
-      })();
-
-      // cleanup
-      (new MutationObserver(function(){
-        if(!document.getElementById('sf-cube-canvas')){ cancelAnimationFrame(rafId); }
-      })).observe(document.body,{childList:true,subtree:true});
+  function waveY(style,t,amp,phase) {
+    switch(style) {
+      case 'spike': return amp*Math.sin(t*Math.PI*12+phase)*(0.35+0.65*Math.pow(Math.abs(Math.sin(t*Math.PI*5)),0.3));
+      case 'music': return amp*Math.sin(t*Math.PI*6+phase)*(0.5+0.5*Math.sin(t*Math.PI*2.5+phase*0.5));
+      case 'dense': return amp*Math.sin(t*Math.PI*18+phase)*(0.6+0.4*Math.abs(Math.sin(t*Math.PI*4)));
+      case 'bass':  return amp*Math.sin(t*Math.PI*3+phase)*(0.7+0.3*Math.sin(t*Math.PI+phase*0.3));
+      default: return amp*Math.sin(t*Math.PI*8+phase);
     }
+  }
+  function drawW(ctx,style,x0,x1,cy,amp,phase) {
+    ctx.beginPath();
+    for(let i=0;i<=200;i++){const t=i/200;const x=x0+t*(x1-x0);const y=cy+waveY(style,t,amp,phase);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+    ctx.stroke();
+  }
+  function fillW(ctx,style,x0,x1,cy,amp,phase) {
+    ctx.beginPath(); ctx.moveTo(x0,cy);
+    for(let i=0;i<=200;i++){const t=i/200;ctx.lineTo(x0+t*(x1-x0),cy+waveY(style,t,amp,phase));}
+    ctx.lineTo(x1,cy); ctx.closePath(); ctx.fill();
+  }
+
+  // ── Cube — RoundedBoxGeometry for smooth edge highlights ─────────────────
+  const SIZE    = 2.3;
+  const RADIUS  = 0.06;
+  const geo     = new RoundedBoxGeometry(SIZE, SIZE, SIZE, 4, RADIUS);
+
+  function tex(cvs){ const t=new CanvasTexture(cvs); t.needsUpdate=true; return t; }
+
+  function waveMat(cvs) {
+    const t = tex(cvs);
+    return new MeshPhysicalMaterial({
+      map:               t,
+      emissiveMap:       t,
+      emissive:          new Color(0x0088cc),
+      emissiveIntensity: 0.7,
+      metalness:         0.88,
+      roughness:         0.14,
+      clearcoat:         0.6,
+      clearcoatRoughness:0.08,
+      envMap:            envMap,
+      envMapIntensity:   1.8,
+    });
+  }
+
+  // top face texture (impact zone)
+  const topCvs=(()=>{
+    const SZ=512,c=document.createElement('canvas');c.width=c.height=SZ;
+    const ctx=c.getContext('2d');
+    const bg=ctx.createRadialGradient(SZ*0.58,SZ*0.25,5,SZ/2,SZ/2,SZ*0.75);
+    bg.addColorStop(0,'#1c1608');bg.addColorStop(0.3,'#0d1525');bg.addColorStop(1,'#050910');
+    ctx.fillStyle=bg;ctx.fillRect(0,0,SZ,SZ);
+    const ig=ctx.createRadialGradient(SZ*0.55,SZ*0.18,0,SZ*0.55,SZ*0.18,SZ*0.42);
+    ig.addColorStop(0,'rgba(255,215,80,0.55)');ig.addColorStop(0.45,'rgba(255,110,15,0.18)');ig.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=ig;ctx.fillRect(0,0,SZ,SZ);
+    ctx.strokeStyle='rgba(0,200,255,0.07)';ctx.lineWidth=1;
+    for(let g=0;g<SZ;g+=64){ctx.beginPath();ctx.moveTo(g,0);ctx.lineTo(g,SZ);ctx.stroke();ctx.beginPath();ctx.moveTo(0,g);ctx.lineTo(SZ,g);ctx.stroke();}
+    return c;
+  })();
+
+  // NOTE: RoundedBoxGeometry is a single geometry (not 6-sided like BoxGeometry)
+  // We use a single material for all faces
+  const cubeMat = new MeshPhysicalMaterial({
+    metalness:          0.88,
+    roughness:          0.14,
+    clearcoat:          0.65,
+    clearcoatRoughness: 0.08,
+    color:              new Color(0x0a1828),
+    emissive:           new Color(0x003366),
+    emissiveIntensity:  0.15,
+    envMap:             envMap,
+    envMapIntensity:    2.2,
+  });
+  const cube = new Mesh(geo, cubeMat);
+  cube.position.y = -0.1;
+  scene.add(cube);
+
+  // Front/back/side planes with waveform textures (layered quads on cube faces)
+  // We overlay flat PlaneGeometry quads just in front of each face
+  const { PlaneGeometry } = await import('three');
+  const faceOffset = SIZE/2 + 0.005;
+  const faceDefs = [
+    { pos:[0,0, faceOffset], rot:[0,0,0],         wave:0 },  // front
+    { pos:[0,0,-faceOffset], rot:[0,Math.PI,0],   wave:1 },  // back
+    { pos:[ faceOffset,0,0], rot:[0,-Math.PI/2,0],wave:2 },  // right
+    { pos:[-faceOffset,0,0], rot:[0, Math.PI/2,0],wave:3 },  // left
+  ];
+  faceDefs.forEach(fd => {
+    const plane = new Mesh(
+      new PlaneGeometry(SIZE-RADIUS*2, SIZE-RADIUS*2),
+      waveMat(makeWaveFace(fd.wave))
+    );
+    plane.position.set(...fd.pos);
+    plane.rotation.set(...fd.rot);
+    scene.add(plane);  // world space so they follow cube rotation
+    cube._faces = cube._faces || [];
+    cube._faces.push(plane);
+  });
+
+  // Edge glow
+  const edgeGeo = new EdgesGeometry(new BoxGeometry(SIZE,SIZE,SIZE));
+  const edgeMat = new LineBasicMaterial({color:0x5ce1e6,transparent:true,opacity:0.75});
+  const edges   = new LineSegments(edgeGeo,edgeMat);
+  cube.add(edges);
+
+  // Bloom shell
+  const shellM = new MeshBasicMaterial({color:0x00ccff,transparent:true,opacity:0.04,side:BackSide});
+  const shell  = new Mesh(new RoundedBoxGeometry(SIZE+0.18,SIZE+0.18,SIZE+0.18,4,RADIUS+0.04),shellM);
+  scene.add(shell);
+
+  // ── 3D Hammer ─────────────────────────────────────────────────────────────
+  const hammerG = new Group();
+  const steel   = new MeshPhysicalMaterial({color:0xc8d8e8,metalness:0.96,roughness:0.10,clearcoat:0.8,clearcoatRoughness:0.05,envMap,envMapIntensity:2.5});
+  const dsteel  = new MeshPhysicalMaterial({color:0x3a4a5a,metalness:0.92,roughness:0.18,envMap,envMapIntensity:1.5});
+  const wood    = new MeshStandardMaterial({color:0x6b3e12,metalness:0,roughness:0.88});
+
+  // Head
+  const headM = new Mesh(new RoundedBoxGeometry(0.78,0.48,0.40,4,0.04),steel);
+  hammerG.add(headM);
+  // face plates
+  [-0.36,0.36].forEach(x=>{const fm=new Mesh(new BoxGeometry(0.055,0.40,0.34),dsteel);fm.position.x=x;hammerG.add(fm);});
+  // Handle
+  const handleM=new Mesh(new CylinderGeometry(0.062,0.052,1.55,16),wood);
+  handleM.position.set(0.6,-0.68,0); handleM.rotation.z=0.5; hammerG.add(handleM);
+  // Collar
+  const collarM=new Mesh(new CylinderGeometry(0.095,0.095,0.11,16),steel);
+  collarM.position.set(0.25,-0.22,0); collarM.rotation.z=0.5; hammerG.add(collarM);
+
+  hammerG.rotation.set(0.1,-0.2,-0.52);
+  hammerG.position.set(0.5,2.08,0.4);
+  scene.add(hammerG);
+
+  // ── 3D Splash ─────────────────────────────────────────────────────────────
+  const splashG = new Group();
+  const IY=1.28, IX=0.28, IZ=0.28;
+
+  const RAYS=[
+    [-0.85, 1.05, 0.28,0.58,0xffffff],[ 0.18, 1.15,-0.12,0.68,0xffe066],
+    [-0.52, 0.92, 0.62,0.52,0xff9800],[ 0.82, 0.78, 0.22,0.62,0xffffff],
+    [-0.68, 1.22,-0.32,0.47,0xff6600],[ 0.42, 1.32, 0.48,0.54,0xffd700],
+    [-0.28, 0.68,-0.72,0.44,0x80e5ff],[ 0.92, 0.58, 0.42,0.50,0xffffff],
+    [-1.08, 0.48, 0.12,0.40,0xff8c00],[ 0.12, 0.88,-0.82,0.46,0xffe0a0],
+    [ 0.55, 0.95, 0.75,0.38,0xffff80],[-0.35, 1.05,-0.55,0.42,0xffa040],
+  ];
+  RAYS.forEach(([dx,dy,dz,len,col])=>{
+    const d=new Vector3(dx,dy,dz).normalize();
+    const lg=new BufferGeometry().setFromPoints([new Vector3(0,0,0),new Vector3(d.x*len,d.y*len,d.z*len)]);
+    splashG.add(new Line(lg,new LineBasicMaterial({color:col,transparent:true,opacity:0.92})));
+    const dot=new Mesh(new SphereGeometry(0.025,8,8),new MeshBasicMaterial({color:col}));
+    dot.position.set(d.x*len,d.y*len,d.z*len); splashG.add(dot);
+  });
+
+  // White flash core
+  const flashM=new Mesh(new SphereGeometry(0.14,16,16),new MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.95}));
+  splashG.add(flashM);
+  // Orange halo
+  const haloM=new Mesh(new SphereGeometry(0.26,16,16),new MeshBasicMaterial({color:0xff8800,transparent:true,opacity:0.30,side:BackSide}));
+  splashG.add(haloM);
+  // Blue shockwave ring
+  const ringPts=[];for(let a=0;a<=64;a++){const r=0.34,th=a/64*Math.PI*2;ringPts.push(new Vector3(Math.cos(th)*r,0,Math.sin(th)*r));}
+  splashG.add(new Line(new BufferGeometry().setFromPoints(ringPts),new LineBasicMaterial({color:0x00d2ff,transparent:true,opacity:0.7})));
+
+  splashG.position.set(IX,IY,IZ);
+  scene.add(splashG);
+
+  // ── Post-processing: UnrealBloom + OutputPass ─────────────────────────────
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+
+  const bloom = new UnrealBloomPass(new Vector2(W,H), 0.55, 0.38, 0.72);
+  // strength=0.55, radius=0.38, threshold=0.72 — only bright edges bloom
+  composer.addPass(bloom);
+
+  const out = new OutputPass();
+  composer.addPass(out);
+
+  // ── Rotation state ────────────────────────────────────────────────────────
+  let rotX=-0.25,rotY=0.55,velX=0,velY=0,dragging=false,lastMX=0,lastMY=0;
+  let autoSpin=true, idleTimer=null;
+  function resetIdle(){ autoSpin=false; clearTimeout(idleTimer); idleTimer=setTimeout(()=>{autoSpin=true;velX=0;velY=0;},3500); }
+
+  canvas.addEventListener('mousedown',e=>{dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.clientX;lastMY=e.clientY;e.preventDefault();});
+  window.addEventListener('mousemove',e=>{if(!dragging)return;velY=(e.clientX-lastMX)*0.007;velX=(e.clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.clientX;lastMY=e.clientY;});
+  window.addEventListener('mouseup',()=>{if(dragging){dragging=false;resetIdle();}});
+  canvas.addEventListener('touchstart',e=>{if(e.touches.length!==1)return;dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
+  canvas.addEventListener('touchmove',e=>{if(!dragging||e.touches.length!==1)return;velY=(e.touches[0].clientX-lastMX)*0.007;velX=(e.touches[0].clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
+  canvas.addEventListener('touchend',()=>{dragging=false;resetIdle();});
+  window.addEventListener('resize',()=>{const nw=wrap.clientWidth||420;camera.aspect=nw/H;camera.updateProjectionMatrix();renderer.setSize(nw,H);composer.setSize(nw,H);});
+
+  // ── Render loop ───────────────────────────────────────────────────────────
+  const clock = new Clock();
+  let rafId;
+  (function loop() {
+    rafId = requestAnimationFrame(loop);
+    const t = clock.getElapsedTime();
+
+    if (!dragging) {
+      if (autoSpin) { rotY+=0.0035; }
+      else { velX*=0.93;velY*=0.93;rotX+=velX;rotY+=velY;rotX=Math.max(-1.1,Math.min(1.1,rotX)); }
+    }
+
+    const bob = Math.sin(t*0.65)*0.07;
+
+    // rotate cube body + face planes together
+    cube.rotation.x = rotX; cube.rotation.y = rotY;
+    cube.position.y  = -0.1+bob;
+    shell.rotation.x = rotX; shell.rotation.y = rotY;
+    shell.position.y = -0.1+bob;
+    if (cube._faces) cube._faces.forEach(f=>{ f.rotation.set(cube.rotation.x,cube.rotation.y,0); f.position.y=-0.1+bob; });
+
+    // hammer + splash follow bob but stay in world orientation
+    hammerG.position.y = 2.08+bob;
+    splashG.position.y = IY+bob;
+
+    // pulse
+    edgeMat.opacity      = 0.6+0.22*Math.sin(t*2.0);
+    flashM.material.opacity = 0.80+0.18*Math.sin(t*3.8);
+    haloM.material.opacity  = 0.22+0.12*Math.sin(t*2.9);
+    fill.intensity       = 4.5+1.8*Math.sin(t*2.2);
+    rim.intensity        = 2.6+0.9*Math.sin(t*1.6+1.1);
+    bloom.strength       = 0.50+0.12*Math.sin(t*1.4);
+
+    composer.render();
+  })();
+
+  (new MutationObserver(()=>{ if(!document.getElementById('sf-cube-canvas')) cancelAnimationFrame(rafId); }))
+    .observe(document.body,{childList:true,subtree:true});
+})();
+`;
+    document.head.appendChild(mod);
   };
   // ── END StemForge 3D Logo Cube ────────────────────────────────────────
 
