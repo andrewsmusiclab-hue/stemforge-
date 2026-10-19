@@ -8590,28 +8590,39 @@ app.post('/api/admin/security/update-secrets', async (c) => {
   const toUpdate = Object.entries(secrets).filter(([, v]) => v && v.trim())
   if (toUpdate.length === 0) return c.json({ error: 'All values are empty' }, 400)
 
+  // Build the deployment_configs patch — all secrets go into production environment
+  // Cloudflare Pages API: PATCH /accounts/:id/pages/projects/:name
+  // Body: { deployment_configs: { production: { env_vars: { KEY: { value, type } } } } }
+  const envVars: Record<string, { value: string; type: string }> = {}
+  for (const [key, value] of toUpdate) {
+    envVars[key] = { value: value.trim(), type: 'secret_text' }
+  }
+
   const results: { key: string; ok: boolean; error?: string }[] = []
 
-  for (const [key, value] of toUpdate) {
-    try {
-      // Upsert secret via Cloudflare Pages API
-      const res = await fetch(
-        `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${projectName}/deployments/secrets`,
-        {
-          method: 'PUT',
-          headers: { 'Authorization': `Bearer ${cfToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: key, text: value.trim(), type: 'secret_text' })
-        }
-      )
-      const data: any = await res.json()
-      if (data.success) {
-        results.push({ key, ok: true })
-      } else {
-        results.push({ key, ok: false, error: data.errors?.[0]?.message || 'Unknown error' })
+  try {
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/pages/projects/${projectName}`,
+      {
+        method: 'PATCH',
+        headers: { 'Authorization': `Bearer ${cfToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deployment_configs: {
+            production: { env_vars: envVars },
+            preview:    { env_vars: envVars }
+          }
+        })
       }
-    } catch (e: any) {
-      results.push({ key, ok: false, error: e?.message || 'Fetch failed' })
+    )
+    const data: any = await res.json()
+    if (data.success) {
+      for (const [key] of toUpdate) results.push({ key, ok: true })
+    } else {
+      const errMsg = data.errors?.[0]?.message || 'Unknown Cloudflare API error'
+      for (const [key] of toUpdate) results.push({ key, ok: false, error: errMsg })
     }
+  } catch (e: any) {
+    for (const [key] of toUpdate) results.push({ key, ok: false, error: e?.message || 'Fetch failed' })
   }
 
   const allOk = results.every(r => r.ok)
@@ -10720,7 +10731,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-109'
+const ASSET_VER = '20261018-110'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
