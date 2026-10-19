@@ -76,7 +76,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','signups','notices','stuckjobs','broadcasts','security','publish'];
+var adminTabs=['analytics','revenue','users','signups','notices','stuckjobs','broadcasts','security'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
@@ -88,7 +88,7 @@ function adminTab(tab){
   if(tab==='signups'&&!window._signupsLoaded){ loadSignupClicks(); window._signupsLoaded=true; }
   if(tab==='stuckjobs'){ loadStuckJobs(); }
   if(tab==='broadcasts'&&!window._broadcastsLoaded){ loadBroadcastStats(); bcLoadTemplates(); bcLoadHistory(); window._broadcastsLoaded=true; }
-  if(tab==='publish'){ ppStartPolling(); } else { ppStopPolling(); }
+
   if(tab==='security'){ if(typeof vaultLoad==='function'){ vaultLoad(); } else { setTimeout(function(){ if(typeof vaultLoad==='function') vaultLoad(); },500); } }
   // Persist active tab in URL hash so hard refresh restores it
   try { history.replaceState(null, '', '#tab-' + tab); } catch(e) {}
@@ -98,7 +98,7 @@ function adminTab(tab){
   var hash = window.location.hash || '';
   var match = hash.match(/^#tab-(.+)$/);
   var startTab = match ? match[1] : 'analytics';
-  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','publish','security','pointlog'];
+  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','security','pointlog'];
   if (validTabs.indexOf(startTab) === -1) startTab = 'analytics';
   if (startTab !== 'analytics') {
     adminTab(startTab);
@@ -1835,221 +1835,6 @@ async function adminDeleteSmartLink(id, title) {
 // ═══════════════════════════════════════════════════════════════
 //  PREVIEW & PUBLISH TAB  —  Staging → Live code-level deploy
 // ═══════════════════════════════════════════════════════════════
-
-var _ppViewport   = 'desktop';
-var _ppPollTimer  = null;   // setInterval handle for status polling
-var _ppPublishing = false;  // prevent double-clicks while deploy is in-flight
-
-// ── Status colours ──────────────────────────────────────────────
-var PP_COLORS = {
-  success:     { dot: '#10b981', text: 'success',     bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)',  fg: '#6ee7b7' },
-  in_progress: { dot: '#f59e0b', text: 'in progress', bg: 'rgba(245,158,11,.1)',  border: 'rgba(245,158,11,.3)',  fg: '#fcd34d' },
-  queued:      { dot: '#4e9fff', text: 'queued',      bg: 'rgba(78,159,255,.08)', border: 'rgba(78,159,255,.25)', fg: '#93c5fd' },
-  failure:     { dot: '#ef4444', text: 'failed',      bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)',   fg: '#fca5a5' },
-  cancelled:   { dot: '#64748b', text: 'cancelled',   bg: 'rgba(100,116,139,.1)', border: 'rgba(100,116,139,.3)', fg: '#94a3b8' },
-  unknown:     { dot: '#334155', text: 'unknown',     bg: 'rgba(51,65,85,.1)',    border: 'rgba(51,65,85,.3)',    fg: '#64748b' },
-};
-
-function ppRunColor(run) {
-  if (!run) return PP_COLORS.unknown;
-  if (run.status === 'in_progress') return PP_COLORS.in_progress;
-  if (run.status === 'queued')      return PP_COLORS.queued;
-  if (run.conclusion === 'success') return PP_COLORS.success;
-  if (run.conclusion === 'failure') return PP_COLORS.failure;
-  if (run.conclusion === 'cancelled') return PP_COLORS.cancelled;
-  return PP_COLORS.unknown;
-}
-
-// ── Relative time helper ────────────────────────────────────────
-function ppRelTime(iso) {
-  if (!iso) return '—';
-  var diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff <  60) return diff + 's ago';
-  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
-  return Math.floor(diff/86400) + 'd ago';
-}
-
-// ── Render one deploy run card ──────────────────────────────────
-function ppRenderRun(cardId, dotId, run) {
-  var card = document.getElementById(cardId);
-  var dot  = document.getElementById(dotId);
-  if (!card) return;
-
-  var c = ppRunColor(run);
-  if (dot) dot.style.background = c.dot;
-
-  if (!run) {
-    card.innerHTML = '<span style="color:#64748b;font-size:.78rem">No deploys found — push to the staging branch to trigger one.</span>';
-    return;
-  }
-
-  var statusLabel = run.status === 'completed' ? (run.conclusion || 'completed') : run.status;
-  var timeStr     = ppRelTime(run.updated_at || run.started_at);
-  var link        = run.url ? '<a href="' + run.url + '" target="_blank" rel="noopener" style="color:#4e9fff;font-size:.75rem;text-decoration:none;margin-left:auto;white-space:nowrap"><i class="fas fa-external-link-alt"></i> View run</a>' : '';
-
-  var spinner = (run.status === 'in_progress' || run.status === 'queued')
-    ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid ' + c.dot + ';border-top-color:transparent;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px"></span>'
-    : '';
-
-  card.innerHTML =
-    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-      spinner +
-      '<span style="font-size:.82rem;font-weight:700;color:' + c.fg + '">' + statusLabel + '</span>' +
-      '<span style="color:#64748b;font-size:.75rem">' + timeStr + '</span>' +
-      link +
-    '</div>';
-}
-
-// ── Check if GITHUB_TOKEN is configured ────────────────────────
-function ppCheckGhToken(data) {
-  var el = document.getElementById('pp-gh-status');
-  if (!el) return;
-  if (data && data.error && data.error.includes('GITHUB_TOKEN')) {
-    el.textContent = '⚠️ Token missing';
-    el.style.color = '#f59e0b';
-  } else {
-    el.textContent = '✅ Token configured';
-    el.style.color = '#10b981';
-  }
-}
-
-// ── Load / refresh deploy status from API ──────────────────────
-async function ppLoad() {
-  try {
-    var res = await fetch('/api/admin/deploy/status', { credentials: 'include' });
-    var d   = await res.json();
-
-    ppRenderRun('pp-staging-run', 'pp-staging-status-dot', d.staging);
-    ppRenderRun('pp-live-run',    'pp-live-status-dot',    d.production);
-    ppCheckGhToken(d);
-
-    // Badge: show ! if a live deploy is actively in-flight (so admin knows)
-    var badge = document.getElementById('pp-badge');
-    var liveInFlight = d.production && (d.production.status === 'in_progress' || d.production.status === 'queued');
-    if (badge) badge.style.display = liveInFlight ? 'inline-block' : 'none';
-
-  } catch(e) {
-    console.error('ppLoad error', e);
-    var card = document.getElementById('pp-staging-run');
-    if (card) card.innerHTML = '<span style="color:#ef4444;font-size:.78rem">Could not reach /api/admin/deploy/status</span>';
-  }
-}
-
-// ── Start / stop polling (every 12 s while tab is open) ────────
-function ppStartPolling() {
-  ppLoad(); // immediate first fetch
-  if (_ppPollTimer) clearInterval(_ppPollTimer);
-  _ppPollTimer = setInterval(ppLoad, 12000);
-}
-
-function ppStopPolling() {
-  if (_ppPollTimer) { clearInterval(_ppPollTimer); _ppPollTimer = null; }
-}
-
-// ── THE PUBLISH BUTTON ──────────────────────────────────────────
-async function ppPublish() {
-  if (_ppPublishing) return;
-
-  if (!confirm(
-    'Publish Staging → Live?\n\n' +
-    'This will fast-forward the main branch to match staging and trigger a production deploy (~2 min).\n\n' +
-    'Users will see the change when the deploy finishes.'
-  )) return;
-
-  _ppPublishing = true;
-  var btn = document.getElementById('pp-publish-btn');
-  if (btn) {
-    btn.disabled = true;
-    btn.style.opacity = '.6';
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Publishing…';
-  }
-  ppMsg('🚀 Triggering production deploy — this takes ~2 minutes…', 'info');
-
-  try {
-    var res = await fetch('/api/admin/deploy/live', {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason: 'Published from admin panel' })
-    });
-    var d = await res.json();
-
-    if (!res.ok || !d.ok) {
-      ppMsg('❌ Publish failed: ' + (d.error || ('HTTP ' + res.status)), 'error');
-    } else {
-      ppMsg('✅ Production deploy triggered! (SHA ' + (d.sha || '').slice(0,7) + ') — live in ~2 min. Status cards will update automatically.', 'ok');
-      // Immediately poll so the status cards start updating
-      setTimeout(ppLoad, 3000);
-    }
-  } catch(e) {
-    ppMsg('❌ Network error: ' + e.message, 'error');
-  } finally {
-    _ppPublishing = false;
-    if (btn) {
-      btn.disabled = false;
-      btn.style.opacity = '1';
-      btn.innerHTML = '<i class="fas fa-rocket"></i> Publish Staging → Live';
-    }
-  }
-}
-
-// ── Preview iframe controls ─────────────────────────────────────
-function ppReloadPreview() {
-  var iframe = document.getElementById('pp-iframe');
-  if (!iframe) return;
-  var src = iframe.src.split('?')[0];
-  iframe.src = src + '?_t=' + Date.now();
-}
-
-function ppSetViewport(mode) {
-  _ppViewport = mode;
-  var wrap  = document.getElementById('pp-iframe-wrap');
-  var iframe = document.getElementById('pp-iframe');
-  var dBtn  = document.getElementById('pp-vp-desktop');
-  var mBtn  = document.getElementById('pp-vp-mobile');
-  if (!wrap || !iframe) return;
-
-  var activeStyle   = 'padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600';
-  var inactiveStyle = 'padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer';
-
-  if (mode === 'mobile') {
-    wrap.style.maxWidth = '390px';
-    wrap.style.margin   = '0 auto';
-    iframe.style.width  = '390px';
-    if (dBtn) dBtn.style.cssText = inactiveStyle;
-    if (mBtn) mBtn.style.cssText = activeStyle;
-  } else {
-    wrap.style.maxWidth = '';
-    wrap.style.margin   = '';
-    iframe.style.width  = '100%';
-    if (dBtn) dBtn.style.cssText = activeStyle;
-    if (mBtn) mBtn.style.cssText = inactiveStyle;
-  }
-}
-
-// ── Message helper ──────────────────────────────────────────────
-function ppMsg(msg, type) {
-  var el = document.getElementById('pp-msg');
-  if (!el) return;
-  el.textContent  = msg;
-  el.style.display = 'block';
-  var colors = {
-    ok:    { bg: 'rgba(16,185,129,.1)',  border: 'rgba(16,185,129,.3)',  color: '#6ee7b7' },
-    error: { bg: 'rgba(239,68,68,.1)',   border: 'rgba(239,68,68,.3)',   color: '#fca5a5' },
-    info:  { bg: 'rgba(78,159,255,.08)', border: 'rgba(78,159,255,.25)', color: '#93c5fd' },
-  };
-  var c = colors[type] || colors.info;
-  el.style.background   = c.bg;
-  el.style.border       = '1px solid ' + c.border;
-  el.style.color        = c.color;
-  el.style.borderRadius = '8px';
-  el.style.padding      = '10px 14px';
-  if (type !== 'info') {
-    clearTimeout(ppMsg._t);
-    ppMsg._t = setTimeout(function(){ el.style.display = 'none'; }, 6000);
-  }
-}
 
 // ── User Notices Tracking (like email open tracking) ─────────────────────────
 async function loadAdminNotices(){
