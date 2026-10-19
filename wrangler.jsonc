@@ -7,20 +7,13 @@
     "nodejs_compat"
   ],
   "vars": {
-    "OPENAI_API_KEY": "REDACTED_OPENAI_KEY",
+    "SITE_URL": "https://stemforge.studio",
+    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com",
     "GOOGLE_CLIENT_ID": "651689276754-6hgjfc7olij98f2t42l0df8ei6oduldu.apps.googleusercontent.com",
-    "GOOGLE_CLIENT_SECRET": "REDACTED_GOOGLE_SECRET",
-    "STRIPE_SECRET_KEY": "REDACTED_STRIPE_KEY",
-    "STRIPE_WEBHOOK_SECRET": "REDACTED_STRIPE_WEBHOOK",
     "STRIPE_CREATOR_PRICE_ID": "price_1TqKUSBGtMHyMzRlSqmFzjv3",
     "STRIPE_PRO_PRICE_ID": "price_1TqKWHBGtMHyMzRlY1IhNBh8",
     "STRIPE_CREATOR_PRICE_ID_LEGACY": "price_1TqKUSBGtMHyMzRlSqmFzjv3",
-    "STRIPE_PRO_PRICE_ID_LEGACY": "price_1TqKWHBGtMHyMzRlY1IhNBh8",
-    "SESSION_SECRET": "REDACTED_SESSION_SECRET",
-    "SITE_URL": "https://stemforge.studio",
-    "REPLICATE_API_KEY": "REDACTED_REPLICATE_KEY",
-    "ADMIN_EMAIL": "andrewsmusiclab@gmail.com",
-    "CRON_SECRET": "REDACTED_CRON_SECRET"
+    "STRIPE_PRO_PRICE_ID_LEGACY": "price_1TqKWHBGtMHyMzRlY1IhNBh8"
   },
   "d1_databases": [
     {

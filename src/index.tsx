@@ -8637,6 +8637,82 @@ app.get('/api/admin/ping', async (c) => {
 })
 
 
+// GET /api/admin/key-check — test all API keys are present and reachable
+app.get('/api/admin/key-check', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+
+  const env = c.env as any
+  const results: Record<string, any> = {}
+
+  // 1. Check OpenAI key is present + valid format
+  const openaiKey = env.OPENAI_API_KEY || ''
+  results.OPENAI_API_KEY = openaiKey.startsWith('sk-') ? { present: true, format: '✅ Valid format' } : { present: !!openaiKey, format: '❌ Unexpected format' }
+
+  // 2. Check Google Client Secret present
+  const googleSecret = env.GOOGLE_CLIENT_SECRET || ''
+  results.GOOGLE_CLIENT_SECRET = { present: !!googleSecret, format: googleSecret.startsWith('GOCSPX-') ? '✅ Valid format' : (googleSecret ? '❌ Unexpected format' : '❌ Missing') }
+
+  // 3. Check Stripe Secret Key present
+  const stripeKey = env.STRIPE_SECRET_KEY || ''
+  results.STRIPE_SECRET_KEY = { present: !!stripeKey, format: stripeKey.startsWith('sk_live_') || stripeKey.startsWith('sk_test_') ? '✅ Valid format' : (stripeKey ? '❌ Unexpected format' : '❌ Missing') }
+
+  // 4. Check Stripe Webhook Secret
+  const stripeWebhook = env.STRIPE_WEBHOOK_SECRET || ''
+  results.STRIPE_WEBHOOK_SECRET = { present: !!stripeWebhook, format: stripeWebhook.startsWith('whsec_') ? '✅ Valid format' : (stripeWebhook ? '❌ Unexpected format' : '❌ Missing') }
+
+  // 5. Check Replicate key
+  const replicateKey = env.REPLICATE_API_KEY || ''
+  results.REPLICATE_API_KEY = { present: !!replicateKey, format: replicateKey.startsWith('r8_') ? '✅ Valid format' : (replicateKey ? '❌ Unexpected format' : '❌ Missing') }
+
+  // 6. Check Mureka key
+  const murekaKey = env.MUREKA_API_KEY || ''
+  results.MUREKA_API_KEY = { present: !!murekaKey, format: murekaKey.startsWith('op_') ? '✅ Valid format' : (murekaKey ? '❌ Unexpected format' : '❌ Missing') }
+
+  // 7. Check Session Secret
+  results.SESSION_SECRET = { present: !!(env.SESSION_SECRET), format: env.SESSION_SECRET ? '✅ Present' : '❌ Missing' }
+
+  // 8. Check Cron Secret
+  results.CRON_SECRET = { present: !!(env.CRON_SECRET), format: env.CRON_SECRET ? '✅ Present' : '❌ Missing' }
+
+  // 9. Live test — OpenAI API (cheap models list call, no tokens spent)
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', {
+      headers: { 'Authorization': `Bearer ${openaiKey}` }
+    })
+    results.OPENAI_LIVE_TEST = r.ok ? '✅ Connected (HTTP ' + r.status + ')' : '❌ Failed (HTTP ' + r.status + ')'
+  } catch(e: any) { results.OPENAI_LIVE_TEST = '❌ Network error: ' + e.message }
+
+  // 10. Live test — Stripe (fetch balance, no charge)
+  try {
+    const r = await fetch('https://api.stripe.com/v1/balance', {
+      headers: { 'Authorization': `Bearer ${stripeKey}` }
+    })
+    results.STRIPE_LIVE_TEST = r.ok ? '✅ Connected (HTTP ' + r.status + ')' : '❌ Failed (HTTP ' + r.status + ')'
+  } catch(e: any) { results.STRIPE_LIVE_TEST = '❌ Network error: ' + e.message }
+
+  // 11. Live test — Replicate (whoami)
+  try {
+    const r = await fetch('https://api.replicate.com/v1/account', {
+      headers: { 'Authorization': `Token ${replicateKey}` }
+    })
+    results.REPLICATE_LIVE_TEST = r.ok ? '✅ Connected (HTTP ' + r.status + ')' : '❌ Failed (HTTP ' + r.status + ')'
+  } catch(e: any) { results.REPLICATE_LIVE_TEST = '❌ Network error: ' + e.message }
+
+  // 12. Live test — Mureka (account check)
+  try {
+    const r = await fetch('https://api.mureka.ai/v1/account/query-coins', {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${murekaKey}` }
+    })
+    results.MUREKA_LIVE_TEST = r.ok ? '✅ Connected (HTTP ' + r.status + ')' : '❌ Failed (HTTP ' + r.status + ')'
+  } catch(e: any) { results.MUREKA_LIVE_TEST = '❌ Network error: ' + e.message }
+
+  return c.json({ ok: true, results })
+})
+
 // GET /api/admin/fix-indexes — one-shot: create missing DB indexes for performance
 app.get('/api/admin/fix-indexes', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
@@ -10731,7 +10807,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-110'
+const ASSET_VER = '20261018-111'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
