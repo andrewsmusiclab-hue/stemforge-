@@ -8957,6 +8957,86 @@ app.get('/api/voice/poll/:jobId', async (c) => {
   return c.json({ status: 'running' })
 })
 
+// POST /api/voice/upload-audio — accept a raw audio file (MP3/WAV), store to R2, return public URL
+// Admin-only: accepts multipart/form-data with field "audio" (file)
+app.post('/api/voice/upload-audio', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Please log in first.' }, 401)
+  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
+
+  let formData: FormData
+  try {
+    formData = await c.req.formData()
+  } catch {
+    return c.json({ error: 'Invalid request — expected multipart/form-data.' }, 400)
+  }
+
+  const file = formData.get('audio') as File | null
+  if (!file || typeof file.arrayBuffer !== 'function') {
+    return c.json({ error: 'No audio file provided.' }, 400)
+  }
+
+  // Validate MIME / extension
+  const name = (file.name || '').toLowerCase()
+  const mime = (file.type || '').toLowerCase()
+  const isWav = name.endsWith('.wav') || mime.includes('wav')
+  const isMp3 = name.endsWith('.mp3') || mime.includes('mpeg') || mime.includes('mp3')
+  if (!isWav && !isMp3) {
+    return c.json({ error: 'Only MP3 and WAV files are supported.' }, 400)
+  }
+
+  // 20 MB hard limit
+  const MAX_BYTES = 20 * 1024 * 1024
+  const buf = await file.arrayBuffer()
+  if (buf.byteLength > MAX_BYTES) {
+    return c.json({ error: 'File is too large. Maximum size is 20 MB.' }, 400)
+  }
+
+  const ext   = isWav ? 'wav' : 'mp3'
+  const ct    = isWav ? 'audio/wav' : 'audio/mpeg'
+  const key   = `voice-samples/${user.id}-${Date.now()}.${ext}`
+
+  try {
+    await c.env.IMAGES.put(key, buf, { httpMetadata: { contentType: ct } })
+  } catch (e) {
+    console.warn('[voice/upload-audio] R2 put error:', (e as any)?.message)
+    return c.json({ error: 'Upload failed. Please try again.' }, 500)
+  }
+
+  const siteUrl = (c.env.SITE_URL || 'https://stemforge.studio').replace(/\/$/, '')
+  const publicUrl = `${siteUrl}/api/voice/sample/${encodeURIComponent(key)}`
+  return c.json({ ok: true, url: publicUrl })
+})
+
+// GET /api/voice/sample/:key — stream a voice sample from R2 (auth required, owner or admin)
+app.get('/api/voice/sample/:key', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Unauthorised' }, 401)
+
+  const key = decodeURIComponent(c.req.param('key'))
+  // Only allow access to own samples (or admin)
+  const ownerPrefix = `voice-samples/${user.id}-`
+  if (!key.startsWith(ownerPrefix) && !isAdmin(user, c.env)) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+
+  const ct = obj.httpMetadata?.contentType || (key.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': ct,
+      'Cache-Control': 'private, max-age=3600',
+    },
+  })
+})
+
 // GET /api/admin/ping — zero-DB health check, confirms Worker is alive and auth cookie works
 // POST /api/admin/security/change-password — admin changes their own login password
 app.post('/api/admin/security/change-password', async (c) => {
@@ -11250,7 +11330,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-126'
+const ASSET_VER = '20261019-127'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12512,15 +12592,74 @@ function generatorPage() {
           <div id="voice-create-section">
             <div style="margin-bottom:8px">
               <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — CLONE YOUR VOICE</span>
-
             </div>
             <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
-              Provide a public URL to a clean MP3 or WAV file of your voice (10–30 seconds, solo vocals, no music). The URL must end in <code style="color:#34d399">.mp3</code> or <code style="color:#34d399">.wav</code>.
+              Upload a clean MP3 or WAV of your voice (10–60 seconds, solo vocals, no music). If your clip is longer than 30 seconds you can trim it below before cloning.
             </div>
+
+            <!-- Drop zone -->
+            <div id="voice-drop-zone"
+              onclick="document.getElementById('voice-file-input').click()"
+              ondragover="event.preventDefault();this.style.borderColor='#10b981';this.style.background='rgba(16,185,129,.08)'"
+              ondragleave="this.style.borderColor='rgba(16,185,129,.3)';this.style.background='rgba(16,185,129,.03)'"
+              ondrop="event.preventDefault();this.style.borderColor='rgba(16,185,129,.3)';this.style.background='rgba(16,185,129,.03)';handleVoiceFileDrop(event)"
+              style="border:2px dashed rgba(16,185,129,.3);border-radius:10px;padding:20px 14px;text-align:center;cursor:pointer;background:rgba(16,185,129,.03);transition:all .2s;margin-bottom:8px">
+              <i class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#10b981;margin-bottom:6px;display:block"></i>
+              <span style="font-size:.84rem;color:var(--muted)">Click or drag &amp; drop an MP3 / WAV file</span>
+              <input type="file" id="voice-file-input" accept=".mp3,.wav,audio/mpeg,audio/wav" style="display:none" onchange="handleVoiceFileSelect(this)"/>
+            </div>
+
+            <!-- Selected file info -->
+            <div id="voice-file-info" style="display:none;font-size:.8rem;color:#34d399;padding:6px 10px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:7px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
+              <i class="fas fa-file-audio"></i>
+              <span id="voice-file-name" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+              <span id="voice-file-dur" style="flex-shrink:0;color:#6b7280"></span>
+              <button onclick="clearVoiceFile()" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:.85rem;padding:0 2px" title="Remove file"><i class="fas fa-times"></i></button>
+            </div>
+
+            <!-- Trim UI — shown only when duration > 30s -->
+            <div id="voice-trim-section" style="display:none;background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:14px;margin-bottom:8px">
+              <div style="font-size:.8rem;font-weight:700;color:#34d399;margin-bottom:10px;letter-spacing:.03em">
+                <i class="fas fa-cut" style="margin-right:5px"></i>TRIM TO 30 SECONDS
+              </div>
+              <div style="font-size:.77rem;color:var(--muted);margin-bottom:12px">
+                Your clip is longer than 30 s. Drag the handles to select up to 30 seconds of your best vocal section.
+              </div>
+
+              <!-- Waveform / progress bar placeholder -->
+              <div style="position:relative;height:40px;background:rgba(255,255,255,.04);border-radius:6px;overflow:hidden;margin-bottom:10px">
+                <div id="voice-trim-bar" style="position:absolute;top:0;bottom:0;background:rgba(16,185,129,.25);border-left:2px solid #10b981;border-right:2px solid #10b981;cursor:grab"></div>
+                <div id="voice-trim-waveform" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;padding:0 4px;gap:1px;pointer-events:none"></div>
+              </div>
+
+              <!-- Start / End sliders stacked -->
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <label style="font-size:.77rem;color:var(--muted);width:40px">Start</label>
+                  <input type="range" id="voice-trim-start" min="0" step="0.1" value="0"
+                    style="flex:1;accent-color:#10b981"
+                    oninput="onVoiceTrimChange('start')"/>
+                  <span id="voice-trim-start-lbl" style="font-size:.77rem;color:#34d399;width:38px;text-align:right">0.0 s</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <label style="font-size:.77rem;color:var(--muted);width:40px">End</label>
+                  <input type="range" id="voice-trim-end" min="0" step="0.1" value="30"
+                    style="flex:1;accent-color:#10b981"
+                    oninput="onVoiceTrimChange('end')"/>
+                  <span id="voice-trim-end-lbl" style="font-size:.77rem;color:#34d399;width:38px;text-align:right">30.0 s</span>
+                </div>
+              </div>
+              <div id="voice-trim-dur-info" style="font-size:.76rem;color:var(--muted);margin-top:8px;text-align:right"></div>
+
+              <!-- Preview trimmed audio -->
+              <button onclick="previewVoiceTrim()" id="voice-trim-preview-btn"
+                style="margin-top:10px;padding:7px 14px;background:none;border:1px solid rgba(16,185,129,.4);border-radius:8px;color:#34d399;cursor:pointer;font-size:.8rem;font-weight:600">
+                <i class="fas fa-play" style="margin-right:5px"></i>Preview Trim
+              </button>
+              <audio id="voice-trim-preview-audio" style="display:none;width:100%;margin-top:8px;border-radius:6px;accent-color:#10b981" controls></audio>
+            </div>
+
             <div style="display:flex;flex-direction:column;gap:8px">
-              <input type="text" id="voice-url-input" placeholder="https://example.com/my-voice.mp3"
-                style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(16,185,129,.3);border-radius:8px;color:#e2e8f0;font-size:.85rem;box-sizing:border-box;outline:none"
-                onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.3)'"/>
               <input type="text" id="voice-label-input" placeholder="Voice name (optional, e.g. My Voice)"
                 style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(16,185,129,.2);border-radius:8px;color:#e2e8f0;font-size:.85rem;box-sizing:border-box;outline:none"
                 onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
