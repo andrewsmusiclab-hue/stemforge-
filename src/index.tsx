@@ -8663,6 +8663,47 @@ app.delete('/api/admin/vault/:key', async (c) => {
 //  VOICE CLONE ROUTES  (Sonic persona_music)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Voice error sanitiser — maps raw upstream errors to Stemforge-branded messages ──
+// Never passes through any wording that would reveal the underlying AI service.
+function sanitiseVoiceError(raw: string | undefined | null, context: 'clone' | 'generate'): string {
+  const s = (raw || '').toLowerCase()
+  // Insufficient credits on the upstream side (shouldn't happen — we check first, but just in case)
+  if (s.includes('credit') || s.includes('quota') || s.includes('insufficient') || s.includes('limit exceeded'))
+    return 'You don\'t have enough points for this. Please top up and try again.'
+  // Bad audio URL / format
+  if (s.includes('audio') && (s.includes('invalid') || s.includes('format') || s.includes('unsupported') || s.includes('cannot') || s.includes('decode')))
+    return 'We couldn\'t process that audio file. Make sure it\'s a clean MP3 or WAV with clear vocals, then try again.'
+  // URL not reachable / download failed
+  if (s.includes('download') || s.includes('fetch') || s.includes('url') || s.includes('http') || s.includes('not found') || s.includes('404') || s.includes('403') || s.includes('inaccessible'))
+    return 'We couldn\'t access that audio URL. Make sure the link is publicly accessible, then try again.'
+  // Audio too short / too long
+  if (s.includes('too short') || s.includes('too long') || s.includes('duration') || s.includes('length'))
+    return 'Your audio sample is the wrong length. Please use a 10–60 second clip of your voice and try again.'
+  // No vocals detected
+  if (s.includes('vocal') || s.includes('no voice') || s.includes('speech') || s.includes('silence'))
+    return 'We couldn\'t detect a clear voice in the audio. Please use a clip with solo vocals and no background music.'
+  // Persona expired / invalid
+  if (s.includes('persona') || s.includes('not found') || s.includes('expired'))
+    return context === 'generate'
+      ? 'Your saved voice has expired. Please re-clone your voice in Step 1 and try again.'
+      : 'Voice clone failed. Please try again with a different audio sample.'
+  // Content policy
+  if (s.includes('policy') || s.includes('content') || s.includes('prohibited') || s.includes('banned') || s.includes('copyright') || s.includes('flagged'))
+    return 'This audio couldn\'t be processed due to content restrictions. Please use original audio that you own.'
+  // Rate limit / busy
+  if (s.includes('rate') || s.includes('throttle') || s.includes('too many') || s.includes('busy') || s.includes('queue'))
+    return 'Our voice AI is busy right now. Please wait 30 seconds and try again.'
+  // Task failed generically
+  if (s.includes('failed') || s.includes('error') || s.includes('timeout') || s.includes('timed out'))
+    return context === 'clone'
+      ? 'Voice cloning failed. Please try again — if it keeps happening, try a different audio clip.'
+      : 'Voice generation failed. Your points have been refunded. Please try again.'
+  // Fallback
+  return context === 'clone'
+    ? 'Voice cloning ran into a problem. Please try again.'
+    : 'Voice generation ran into a problem. Your points have been refunded. Please try again.'
+}
+
 // POST /api/voice/create — clone a voice from an audio URL
 // Calls MusicAPI POST /api/v1/sonic/create-voice → stores persona_id on the user
 // Cost: 5 pts (one-time per clone)
@@ -8718,8 +8759,9 @@ app.post('/api/voice/create', async (c) => {
       } else {
         await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
       }
-      const errMsg = apiData?.error || apiData?.message || 'Voice creation failed'
-      return c.json({ error: errMsg }, 502)
+      const rawErr = apiData?.error || apiData?.message || ''
+      console.warn('[voice/create] upstream error:', rawErr)
+      return c.json({ error: sanitiseVoiceError(rawErr, 'clone') }, 502)
     }
     personaId = apiData.data.persona_id
   } catch (e: any) {
@@ -8731,7 +8773,8 @@ app.post('/api/voice/create', async (c) => {
     } else {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
     }
-    return c.json({ error: 'Network error contacting voice service' }, 502)
+    console.warn('[voice/create] network error:', (e as any)?.message)
+    return c.json({ error: 'StemForge couldn\'t reach the voice AI right now. Please try again in a moment.' }, 502)
   }
 
   // Store persona_id + label on the user
@@ -8839,8 +8882,9 @@ app.post('/api/voice/generate', async (c) => {
       } else {
         await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(GEN_COST, user.id).run()
       }
-      const errMsg = apiData?.error || apiData?.message || 'Generation failed'
-      return c.json({ error: errMsg }, 502)
+      const rawErr = apiData?.error || apiData?.message || ''
+      console.warn('[voice/generate] upstream error:', rawErr)
+      return c.json({ error: sanitiseVoiceError(rawErr, 'generate') }, 502)
     }
     taskId = apiData.task_id
   } catch (e: any) {
@@ -8852,7 +8896,8 @@ app.post('/api/voice/generate', async (c) => {
     } else {
       await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(GEN_COST, user.id).run()
     }
-    return c.json({ error: 'Network error contacting AI service' }, 502)
+    console.warn('[voice/generate] network error:', (e as any)?.message)
+    return c.json({ error: 'StemForge couldn\'t reach the voice AI right now. Please try again in a moment.' }, 502)
   }
 
   // Store voice_job record
@@ -8899,12 +8944,14 @@ app.get('/api/voice/poll/:jobId', async (c) => {
     return c.json({ status: 'succeeded', audio_url: audioUrl, title: job.title })
   }
   if (state === 'failed' || clip?.state === 'failed') {
-    const errMsg = clip?.error_message || 'Generation failed'
-    await c.env.DB.prepare(`UPDATE voice_jobs SET status = 'failed', error = ? WHERE id = ?`).bind(errMsg, jobId).run()
+    const rawErr = clip?.error_message || ''
+    console.warn('[voice/poll] upstream failed:', rawErr)
+    const userMsg = sanitiseVoiceError(rawErr, 'generate')
+    await c.env.DB.prepare(`UPDATE voice_jobs SET status = 'failed', error = ? WHERE id = ?`).bind(rawErr, jobId).run()  // store raw in DB for admin debugging
     // Refund
     await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(job.cost_pts, user.id).run()
     await logTx(c.env.DB, user.id, 'refund', `Refund — voice generation failed (${job.title || jobId})`, job.cost_pts, jobId)
-    return c.json({ status: 'failed', error: errMsg })
+    return c.json({ status: 'failed', error: userMsg })
   }
 
   return c.json({ status: 'running' })
@@ -11203,7 +11250,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-122'
+const ASSET_VER = '20261019-123'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
