@@ -851,7 +851,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!user) return;
       window._sfUser = user;
 
-      // ── Voice Clone button — beta, admin-only visibility ─────────
+      // ── VoiceForge button — beta, admin-only visibility ─────────
       // The button is hidden by default (display:none in the HTML).
       // Only reveal it for the admin account used for testing.
       (function() {
@@ -10968,7 +10968,7 @@ window.toggleRefDropdown = function() {
   // Handle any library tab hash on load (/dashboard#beats, /dashboard#covers, etc.)
   // This makes the "Go to Library" banner link land on the correct tab automatically.
 
-  // ── Voice Clone functions ─────────────────────────────────────────────────
+  // ── VoiceForge functions ─────────────────────────────────────────────────
   var _voicePollTimer     = null;
   var _voiceCurrentJobId  = null;
   var _voiceAudioFile     = null;   // raw File object selected by user
@@ -11282,7 +11282,7 @@ window.toggleRefDropdown = function() {
       } else {
         statusIcon.className = 'fas fa-info-circle';
         statusIcon.style.color = '#6b7280';
-        statusText.textContent = 'No voice cloned yet — upload a sample below.';
+        statusText.textContent = 'No voice forged yet — upload a sample below.';
         statusBar.style.borderColor = 'rgba(255,255,255,.08)';
         deleteBtn.style.display = 'none';
         if (createSec) createSec.style.display = '';
@@ -11321,7 +11321,7 @@ window.toggleRefDropdown = function() {
   };
 
   window.deleteVoicePersona = async function() {
-    if (!confirm('Remove your saved voice? You can re-clone anytime.')) return;
+    if (!confirm('Remove your saved voice? You can re-forge anytime.')) return;
     try {
       await fetch('/api/voice/persona', { method: 'DELETE' });
       window.loadVoiceStatus();
@@ -11362,7 +11362,7 @@ window.toggleRefDropdown = function() {
     } catch (e) {
       showVoiceMsg(msg, 'error', 'Upload failed. Please try again.');
       btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice';
+      btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice';
       return;
     }
 
@@ -11376,18 +11376,18 @@ window.toggleRefDropdown = function() {
       });
       var data = await res.json();
       if (data.ok) {
-        showVoiceMsg(msg, 'success', '✅ Voice cloned! You can now generate songs in your voice.');
+        showVoiceMsg(msg, 'success', '✅ Voice forged! You can now generate songs in your voice.');
         if (labIn) labIn.value = '';
         window.clearVoiceFile();
         setTimeout(function() { window.loadVoiceStatus(); }, 800);
       } else {
-        showVoiceMsg(msg, 'error', data.error || 'Voice clone failed. Please try again.');
+        showVoiceMsg(msg, 'error', data.error || 'VoiceForge failed. Please try again.');
       }
     } catch (e) {
       showVoiceMsg(msg, 'error', 'Network error. Please try again.');
     } finally {
       btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice';
+      btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice';
     }
   };
 
@@ -11470,7 +11470,7 @@ window.toggleRefDropdown = function() {
       }
     }, 15000);
   }
-  // ── END Voice Clone inline functions ──────────────────────────────────────
+  // ── END VoiceForge inline functions ──────────────────────────────────────
 
   var _hashTab = (window.location.hash || '').replace('#', '');
   var _validTabs = ['beats','covers','remixes','extended','oneshots','uploads','trash'];

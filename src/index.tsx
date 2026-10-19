@@ -894,7 +894,7 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
   )`).run()
 
-  // ── Voice Clone — persona_id stored on user + async voice generation jobs ──
+  // ── VoiceForge — persona_id stored on user + async voice generation jobs ──
   // persona_id is the MusicAPI persona created from a user's uploaded voice sample
   try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_id TEXT`).run() } catch {}
   try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_label TEXT`).run() } catch {}
@@ -8660,7 +8660,7 @@ app.delete('/api/admin/vault/:key', async (c) => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  VOICE CLONE ROUTES  (Sonic persona_music)
+//  VOICEFORGE ROUTES  (Sonic persona_music)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Voice error sanitiser — maps raw upstream errors to Stemforge-branded messages ──
@@ -8685,8 +8685,8 @@ function sanitiseVoiceError(raw: string | undefined | null, context: 'clone' | '
   // Persona expired / invalid
   if (s.includes('persona') || s.includes('not found') || s.includes('expired'))
     return context === 'generate'
-      ? 'Your saved voice has expired. Please re-clone your voice in Step 1 and try again.'
-      : 'Voice clone failed. Please try again with a different audio sample.'
+      ? 'Your saved voice has expired. Please re-forge your voice in Step 1 and try again.'
+      : 'VoiceForge failed. Please try again with a different audio sample.'
   // Content policy
   if (s.includes('policy') || s.includes('content') || s.includes('prohibited') || s.includes('banned') || s.includes('copyright') || s.includes('flagged'))
     return 'This audio couldn\'t be processed due to content restrictions. Please use original audio that you own.'
@@ -8696,11 +8696,11 @@ function sanitiseVoiceError(raw: string | undefined | null, context: 'clone' | '
   // Task failed generically
   if (s.includes('failed') || s.includes('error') || s.includes('timeout') || s.includes('timed out'))
     return context === 'clone'
-      ? 'Voice cloning failed. Please try again — if it keeps happening, try a different audio clip.'
+      ? 'VoiceForge failed. Please try again — if it keeps happening, try a different audio clip.'
       : 'Voice generation failed. Your points have been refunded. Please try again.'
   // Fallback
   return context === 'clone'
-    ? 'Voice cloning ran into a problem. Please try again.'
+    ? 'VoiceForge ran into a problem. Please try again.'
     : 'Voice generation ran into a problem. Your points have been refunded. Please try again.'
 }
 
@@ -8780,7 +8780,7 @@ app.post('/api/voice/create', async (c) => {
   // Store persona_id + label on the user
   const personaLabel = (label || '').trim() || 'My Voice'
   await c.env.DB.prepare(`UPDATE users SET persona_id = ?, persona_label = ? WHERE id = ?`).bind(personaId, personaLabel, user.id).run()
-  await logTx(c.env.DB, user.id, 'deduct', 'Voice Clone — create persona', CLONE_COST, null)
+  await logTx(c.env.DB, user.id, 'deduct', 'VoiceForge — create persona', CLONE_COST, null)
 
   return c.json({ ok: true, persona_id: personaId, label: personaLabel })
 })
@@ -11330,7 +11330,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-127'
+const ASSET_VER = '20261019-128'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12565,18 +12565,18 @@ function generatorPage() {
         <i class="fas fa-microphone-alt"></i> Cover Song
       </button>
       <button class="creator-tab-btn" id="ctab-voice" onclick="openVoicePanel()"
-        data-tooltip="Clone your voice and generate songs in your own voice — Creator &amp; Pro plans."
+        data-tooltip="Forge your voice and generate songs in your own voice — Creator &amp; Pro plans."
         style="display:none">
-        <i class="fas fa-fingerprint"></i> Voice Clone
+        <i class="fas fa-fingerprint"></i> VoiceForge
       </button>
     </div>
 
-    <!-- ── Voice Clone inline panel ──────────────────────────────── -->
+    <!-- ── VoiceForge inline panel ───────────────────────────────── -->
     <div id="voice-inline-panel" style="display:none;margin-top:16px">
       <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
         <div class="suno-card__header" style="padding-bottom:10px">
           <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
-          <span class="suno-card__title" style="color:#34d399">Voice Clone</span>
+          <span class="suno-card__title" style="color:#34d399">VoiceForge</span>
           <button onclick="closeVoicePanel()" style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem"><i class="fas fa-times"></i></button>
         </div>
         <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
@@ -12591,7 +12591,7 @@ function generatorPage() {
           <!-- Step 2: Create voice (hidden once persona exists) -->
           <div id="voice-create-section">
             <div style="margin-bottom:8px">
-              <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — CLONE YOUR VOICE</span>
+              <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — FORGE YOUR VOICE</span>
             </div>
             <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
               Upload a clean MP3 or WAV of your voice (10–60 seconds, solo vocals, no music). If your clip is longer than 30 seconds you can trim it below before cloning.
@@ -12665,7 +12665,7 @@ function generatorPage() {
                 onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
               <button id="voice-clone-btn" onclick="createVoicePersona()"
                 style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                <i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice
+                <i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice
               </button>
               <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
             </div>
