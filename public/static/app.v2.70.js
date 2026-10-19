@@ -10957,6 +10957,229 @@ window.toggleRefDropdown = function() {
 
   // Handle any library tab hash on load (/dashboard#beats, /dashboard#covers, etc.)
   // This makes the "Go to Library" banner link land on the correct tab automatically.
+  // ── Voice Clone — open/close panel + load status ──────────────────────────
+  (function() {
+    'use strict';
+
+    var _voicePollTimer = null;
+    var _voiceCurrentJobId = null;
+
+    // Load persona status from server and update UI
+    window.loadVoiceStatus = async function() {
+      var statusIcon = document.getElementById('voice-status-icon');
+      var statusText = document.getElementById('voice-status-text');
+      var statusBar  = document.getElementById('voice-status-bar');
+      var deleteBtn  = document.getElementById('voice-delete-btn');
+      var createSec  = document.getElementById('voice-create-section');
+      var genLocked  = document.getElementById('voice-gen-locked');
+      var genForm    = document.getElementById('voice-gen-form');
+      if (!statusText) return;
+
+      statusIcon.className = 'fas fa-circle-notch fa-spin';
+      statusIcon.style.color = '#10b981';
+      statusText.textContent = 'Loading voice status…';
+
+      try {
+        var res = await fetch('/api/voice/status');
+        var data = await res.json();
+        if (data.persona_id) {
+          statusIcon.className = 'fas fa-check-circle';
+          statusIcon.style.color = '#10b981';
+          statusText.innerHTML = '<b style="color:#34d399">' + (data.persona_label || 'Voice') + '</b> — ready to generate';
+          statusBar.style.borderColor = 'rgba(16,185,129,.4)';
+          deleteBtn.style.display = '';
+          // Hide create section, unlock gen form
+          if (createSec) createSec.style.display = 'none';
+          if (genLocked) genLocked.style.display = 'none';
+          if (genForm) { genForm.style.display = 'flex'; }
+        } else {
+          statusIcon.className = 'fas fa-info-circle';
+          statusIcon.style.color = '#6b7280';
+          statusText.textContent = 'No voice cloned yet — create one below.';
+          statusBar.style.borderColor = 'rgba(255,255,255,.08)';
+          deleteBtn.style.display = 'none';
+          if (createSec) createSec.style.display = '';
+          if (genLocked) genLocked.style.display = '';
+          if (genForm) genForm.style.display = 'none';
+        }
+      } catch (e) {
+        statusIcon.className = 'fas fa-exclamation-circle';
+        statusText.textContent = 'Could not load voice status.';
+      }
+    };
+
+    window.openVoicePanel = function() {
+      // Close other panels
+      var coverPanel = document.getElementById('cover-inline-panel');
+      if (coverPanel) coverPanel.style.display = 'none';
+      var panel = document.getElementById('voice-inline-panel');
+      if (!panel) return;
+      var isOpen = panel.style.display === 'block';
+      panel.style.display = isOpen ? 'none' : 'block';
+      if (!isOpen) {
+        // Reset result/progress areas
+        var prog = document.getElementById('voice-gen-progress');
+        var result = document.getElementById('voice-gen-result');
+        var msg = document.getElementById('voice-gen-msg');
+        var cloneMsg = document.getElementById('voice-clone-msg');
+        if (prog)    { prog.style.display = 'none'; }
+        if (result)  { result.style.display = 'none'; }
+        if (msg)     { msg.style.display = 'none'; }
+        if (cloneMsg){ cloneMsg.style.display = 'none'; }
+        window.loadVoiceStatus();
+      }
+    };
+
+    window.closeVoicePanel = function() {
+      var panel = document.getElementById('voice-inline-panel');
+      if (panel) panel.style.display = 'none';
+    };
+
+    window.deleteVoicePersona = async function() {
+      if (!confirm('Remove your saved voice? You can re-clone anytime (5 pts).')) return;
+      try {
+        await fetch('/api/voice/persona', { method: 'DELETE' });
+        window.loadVoiceStatus();
+      } catch (e) { alert('Error removing voice. Please try again.'); }
+    };
+
+    // Step 1: Clone voice
+    window.createVoicePersona = async function() {
+      var btn    = document.getElementById('voice-clone-btn');
+      var urlIn  = document.getElementById('voice-url-input');
+      var labIn  = document.getElementById('voice-label-input');
+      var msg    = document.getElementById('voice-clone-msg');
+      var url    = (urlIn ? urlIn.value.trim() : '');
+      var label  = (labIn ? labIn.value.trim() : '');
+
+      if (!url) { showVoiceMsg(msg, 'error', 'Please enter a voice audio URL.'); return; }
+
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="margin-right:6px"></i>Cloning voice…';
+      msg.style.display = 'none';
+
+      try {
+        var res  = await fetch('/api/voice/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audio_url: url, label: label })
+        });
+        var data = await res.json();
+        if (data.ok) {
+          showVoiceMsg(msg, 'success', '✅ Voice cloned! You can now generate songs in your voice.');
+          if (urlIn) urlIn.value = '';
+          if (labIn) labIn.value = '';
+          setTimeout(function() { window.loadVoiceStatus(); }, 800);
+        } else {
+          showVoiceMsg(msg, 'error', data.error || 'Voice clone failed. Please try again.');
+        }
+      } catch (e) {
+        showVoiceMsg(msg, 'error', 'Network error. Please try again.');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice — 5 pts';
+      }
+    };
+
+    // Step 2: Generate with voice
+    window.generateVoiceSong = async function() {
+      var btn         = document.getElementById('voice-gen-btn');
+      var titleIn     = document.getElementById('voice-gen-title');
+      var lyricsIn    = document.getElementById('voice-gen-lyrics');
+      var tagsIn      = document.getElementById('voice-gen-tags');
+      var instrToggle = document.getElementById('voice-gen-instrumental');
+      var msg         = document.getElementById('voice-gen-msg');
+      var prog        = document.getElementById('voice-gen-progress');
+      var progText    = document.getElementById('voice-gen-progress-text');
+      var result      = document.getElementById('voice-gen-result');
+      var audio       = document.getElementById('voice-gen-audio');
+      var dlLink      = document.getElementById('voice-gen-download');
+
+      msg.style.display = 'none';
+      result.style.display = 'none';
+      prog.style.display   = 'block';
+      progText.textContent = 'Submitting to AI…';
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="margin-right:6px"></i>Generating…';
+
+      try {
+        var res = await fetch('/api/voice/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title:            titleIn ? titleIn.value.trim() : '',
+            lyrics:           lyricsIn ? lyricsIn.value.trim() : '',
+            style_tags:       tagsIn ? tagsIn.value.trim() : '',
+            make_instrumental: instrToggle ? instrToggle.checked : false
+          })
+        });
+        var data = await res.json();
+        if (!data.ok) {
+          prog.style.display = 'none';
+          showVoiceMsg(msg, 'error', data.error || 'Generation failed. Please try again.');
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+          return;
+        }
+        // Start polling
+        _voiceCurrentJobId = data.job_id;
+        progText.textContent = 'Generating your voice song… this takes 1–3 minutes';
+        _pollVoiceJob(data.job_id, btn, prog, progText, result, audio, dlLink, msg);
+      } catch (e) {
+        prog.style.display = 'none';
+        showVoiceMsg(msg, 'error', 'Network error. Please try again.');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+      }
+    };
+
+    function _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg) {
+      if (_voicePollTimer) clearTimeout(_voicePollTimer);
+      _voicePollTimer = setTimeout(async function() {
+        try {
+          var res  = await fetch('/api/voice/poll/' + jobId);
+          var data = await res.json();
+          if (data.status === 'succeeded') {
+            prog.style.display = 'none';
+            result.style.display = 'block';
+            audio.src = data.audio_url;
+            dlLink.href = data.audio_url;
+            dlLink.download = (data.title || 'voice-song') + '.mp3';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+          } else if (data.status === 'failed') {
+            prog.style.display = 'none';
+            showVoiceMsg(msg, 'error', 'Generation failed: ' + (data.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+          } else {
+            // Still running — poll again in 15s
+            _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg);
+          }
+        } catch (e) {
+          // Network blip — retry
+          _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg);
+        }
+      }, 15000);
+    }
+
+    function showVoiceMsg(el, type, text) {
+      if (!el) return;
+      el.style.display = 'block';
+      el.textContent = text;
+      if (type === 'success') {
+        el.style.background = 'rgba(16,185,129,.12)';
+        el.style.border = '1px solid rgba(16,185,129,.3)';
+        el.style.color = '#34d399';
+      } else {
+        el.style.background = 'rgba(239,68,68,.12)';
+        el.style.border = '1px solid rgba(239,68,68,.3)';
+        el.style.color = '#f87171';
+      }
+    }
+  })();
+  // ── END Voice Clone ────────────────────────────────────────────────────────
+
   var _hashTab = (window.location.hash || '').replace('#', '');
   var _validTabs = ['beats','covers','remixes','extended','oneshots','uploads','trash'];
   if (_hashTab && _validTabs.indexOf(_hashTab) !== -1) {

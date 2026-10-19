@@ -894,6 +894,24 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
   )`).run()
 
+  // ── Voice Clone — persona_id stored on user + async voice generation jobs ──
+  // persona_id is the MusicAPI persona created from a user's uploaded voice sample
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_id TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_label TEXT`).run() } catch {}
+  await db.prepare(`CREATE TABLE IF NOT EXISTS voice_jobs (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT 'generate', -- 'create' (clone) or 'generate'
+    task_id     TEXT,               -- MusicAPI task_id (after submission)
+    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | running | succeeded | failed
+    title       TEXT,
+    audio_url   TEXT,               -- result audio URL (when succeeded)
+    error       TEXT,
+    cost_pts    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+  )`).run()
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_voice_jobs_user_id ON voice_jobs (user_id)`).run() } catch {}
+
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -8641,6 +8659,257 @@ app.delete('/api/admin/vault/:key', async (c) => {
   return c.json({ ok: true })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  VOICE CLONE ROUTES  (Sonic persona_music)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/voice/create — clone a voice from an audio URL
+// Calls MusicAPI POST /api/v1/sonic/create-voice → stores persona_id on the user
+// Cost: 5 pts (one-time per clone)
+app.post('/api/voice/create', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'AI service not configured' }, 500)
+
+  const { audio_url, label } = await c.req.json<{ audio_url: string; label?: string }>()
+  if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
+  // Basic URL validation — MusicAPI requires pathname ending in .mp3 or .wav
+  const urlPath = (() => { try { return new URL(audio_url).pathname.toLowerCase() } catch { return '' } })()
+  if (!urlPath.endsWith('.mp3') && !urlPath.endsWith('.wav')) {
+    return c.json({ error: 'audio_url must point to an .mp3 or .wav file (the URL path must end in .mp3 or .wav)' }, 400)
+  }
+
+  const CLONE_COST = 5
+  const freshUser = await c.env.DB.prepare(
+    `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
+  if (!freshUser) return c.json({ error: 'User not found' }, 404)
+  const available = (freshUser.gens_limit - freshUser.gens_used) + (freshUser.bonus_credits || 0)
+  if (available < CLONE_COST) return c.json({ error: `Not enough points (need ${CLONE_COST}, have ${available})` }, 402)
+
+  // Deduct from bonus_credits first, then gens_used
+  const cloneBonus = Math.min(freshUser.bonus_credits || 0, CLONE_COST)
+  const cloneMain = CLONE_COST - cloneBonus
+  if (cloneBonus > 0 && cloneMain > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ?, gens_used = gens_used + ? WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
+  } else if (cloneBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(cloneBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(CLONE_COST, user.id).run()
+  }
+
+  // Call MusicAPI create-voice
+  let personaId: string | null = null
+  try {
+    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create-voice', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url })
+    })
+    const apiData: any = await apiRes.json()
+    if (!apiRes.ok || !apiData?.data?.persona_id) {
+      // Refund on failure
+      if (cloneBonus > 0 && cloneMain > 0) {
+        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
+      } else if (cloneBonus > 0) {
+        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cloneBonus, user.id).run()
+      } else {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
+      }
+      const errMsg = apiData?.error || apiData?.message || 'Voice creation failed'
+      return c.json({ error: errMsg }, 502)
+    }
+    personaId = apiData.data.persona_id
+  } catch (e: any) {
+    // Refund on network error
+    if (cloneBonus > 0 && cloneMain > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
+    } else if (cloneBonus > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cloneBonus, user.id).run()
+    } else {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
+    }
+    return c.json({ error: 'Network error contacting voice service' }, 502)
+  }
+
+  // Store persona_id + label on the user
+  const personaLabel = (label || '').trim() || 'My Voice'
+  await c.env.DB.prepare(`UPDATE users SET persona_id = ?, persona_label = ? WHERE id = ?`).bind(personaId, personaLabel, user.id).run()
+  await logTx(c.env.DB, user.id, 'deduct', 'Voice Clone — create persona', CLONE_COST, null)
+
+  return c.json({ ok: true, persona_id: personaId, label: personaLabel })
+})
+
+// GET /api/voice/status — return current user's saved persona info
+app.get('/api/voice/status', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label FROM users WHERE id = ?`).bind(user.id).first<{ persona_id: string | null; persona_label: string | null }>()
+  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null })
+})
+
+// DELETE /api/voice/persona — remove saved persona from user
+app.delete('/api/voice/persona', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  await c.env.DB.prepare(`UPDATE users SET persona_id = NULL, persona_label = NULL WHERE id = ?`).bind(user.id).run()
+  return c.json({ ok: true })
+})
+
+// POST /api/voice/generate — generate a song using the saved voice persona
+// Uses MusicAPI POST /api/v1/sonic/create with task_type: persona_music
+// Cost: 25 pts (same as a beat)
+app.post('/api/voice/generate', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'AI service not configured' }, 500)
+
+  // Check plan — voice generation available to Creator and Pro
+  if (user.plan === 'free') return c.json({ error: 'Voice generation requires a Creator or Pro plan.', upgrade_url: '/pricing', locked: true }, 402)
+
+  const { title, lyrics, style_tags, make_instrumental } = await c.req.json<{
+    title?: string; lyrics?: string; style_tags?: string; make_instrumental?: boolean
+  }>()
+
+  // Get persona_id from DB
+  const userRow = await c.env.DB.prepare(`SELECT persona_id, persona_label, gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`).bind(user.id).first<any>()
+  if (!userRow) return c.json({ error: 'User not found' }, 404)
+  if (!userRow.persona_id) return c.json({ error: 'No voice persona found. Create your voice first.' }, 400)
+
+  const GEN_COST = 25
+  const available = (userRow.gens_limit - userRow.gens_used) + (userRow.bonus_credits || 0)
+  if (available < GEN_COST) return c.json({ error: `Not enough points (need ${GEN_COST}, have ${available})` }, 402)
+
+  // Deduct from bonus_credits first, then gens_used
+  const genBonus = Math.min(userRow.bonus_credits || 0, GEN_COST)
+  const genMain = GEN_COST - genBonus
+  if (genBonus > 0 && genMain > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ?, gens_used = gens_used + ? WHERE id = ?`).bind(genBonus, genMain, user.id).run()
+  } else if (genBonus > 0) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(genBonus, user.id).run()
+  } else {
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(GEN_COST, user.id).run()
+  }
+
+  // Build MusicAPI request body for persona_music
+  const hasLyrics = !!(lyrics && lyrics.trim()) && !make_instrumental
+  const genBody: Record<string, any> = {
+    task_type:        'persona_music',
+    persona_id:       userRow.persona_id,
+    mv:               'sonic-v6',
+    custom_mode:      hasLyrics,
+    title:            title || 'Voice Song',
+    make_instrumental: !!make_instrumental,
+  }
+  if (hasLyrics) {
+    genBody.prompt = lyrics!.trim()
+    genBody.tags   = style_tags || ''
+  } else if (!make_instrumental) {
+    // AI description mode — need gpt_description_prompt
+    genBody.gpt_description_prompt = (style_tags || '').slice(0, 400) || 'An original song'
+  } else {
+    // Instrumental
+    genBody.custom_mode = false
+    genBody.gpt_description_prompt = style_tags || 'Instrumental music'
+  }
+
+  // Call MusicAPI — returns task_id immediately
+  let taskId: string | null = null
+  try {
+    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(genBody)
+    })
+    const apiData: any = await apiRes.json()
+    if (!apiRes.ok || !apiData?.task_id) {
+      // Refund
+      if (genBonus > 0 && genMain > 0) {
+        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(genBonus, genMain, user.id).run()
+      } else if (genBonus > 0) {
+        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(genBonus, user.id).run()
+      } else {
+        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(GEN_COST, user.id).run()
+      }
+      const errMsg = apiData?.error || apiData?.message || 'Generation failed'
+      return c.json({ error: errMsg }, 502)
+    }
+    taskId = apiData.task_id
+  } catch (e: any) {
+    // Refund on network error
+    if (genBonus > 0 && genMain > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(genBonus, genMain, user.id).run()
+    } else if (genBonus > 0) {
+      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(genBonus, user.id).run()
+    } else {
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(GEN_COST, user.id).run()
+    }
+    return c.json({ error: 'Network error contacting AI service' }, 502)
+  }
+
+  // Store voice_job record
+  const jobId = crypto.randomUUID()
+  const now = Date.now()
+  await c.env.DB.prepare(
+    `INSERT INTO voice_jobs (id, user_id, type, task_id, status, title, cost_pts, created_at) VALUES (?, ?, 'generate', ?, 'running', ?, ?, ?)`
+  ).bind(jobId, user.id, taskId, title || 'Voice Song', GEN_COST, now).run()
+
+  await logTx(c.env.DB, user.id, 'deduct', `Voice Song — ${title || 'Voice Song'}`, GEN_COST, jobId)
+  await emitBalanceEvent(c.env.DB, user.id)
+
+  return c.json({ ok: true, job_id: jobId, task_id: taskId })
+})
+
+// GET /api/voice/poll/:jobId — poll a voice generation job
+app.get('/api/voice/poll/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'AI service not configured' }, 500)
+
+  const jobId = c.req.param('jobId')
+  const job = await c.env.DB.prepare(`SELECT * FROM voice_jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
+  if (!job) return c.json({ error: 'Job not found' }, 404)
+
+  if (job.status === 'succeeded') return c.json({ status: 'succeeded', audio_url: job.audio_url, title: job.title })
+  if (job.status === 'failed') return c.json({ status: 'failed', error: job.error })
+  if (!job.task_id) return c.json({ status: 'pending' })
+
+  // Poll MusicAPI for the task status
+  const pollRes = await fetch(`https://api.musicapi.ai/api/v1/sonic/task/${job.task_id}`, {
+    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+  })
+  const pollData: any = await pollRes.json()
+  const state = pollData?.data?.[0]?.state || pollData?.data?.state || 'running'
+  const clips: any[] = Array.isArray(pollData?.data) ? pollData.data : (pollData?.data ? [pollData.data] : [])
+  const clip = clips.find((d: any) => d.state === 'succeeded') || clips[0]
+
+  if (state === 'succeeded' || clip?.state === 'succeeded') {
+    const audioUrl = clip?.audio_url || ''
+    await c.env.DB.prepare(`UPDATE voice_jobs SET status = 'succeeded', audio_url = ? WHERE id = ?`).bind(audioUrl, jobId).run()
+    return c.json({ status: 'succeeded', audio_url: audioUrl, title: job.title })
+  }
+  if (state === 'failed' || clip?.state === 'failed') {
+    const errMsg = clip?.error_message || 'Generation failed'
+    await c.env.DB.prepare(`UPDATE voice_jobs SET status = 'failed', error = ? WHERE id = ?`).bind(errMsg, jobId).run()
+    // Refund
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(job.cost_pts, user.id).run()
+    await logTx(c.env.DB, user.id, 'refund', `Refund — voice generation failed (${job.title || jobId})`, job.cost_pts, jobId)
+    return c.json({ status: 'failed', error: errMsg })
+  }
+
+  return c.json({ status: 'running' })
+})
+
 // GET /api/admin/ping — zero-DB health check, confirms Worker is alive and auth cookie works
 // POST /api/admin/security/change-password — admin changes their own login password
 app.post('/api/admin/security/change-password', async (c) => {
@@ -10934,7 +11203,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-121'
+const ASSET_VER = '20261019-122'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12168,6 +12437,114 @@ function generatorPage() {
         data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
         <i class="fas fa-microphone-alt"></i> Cover Song
       </button>
+      <button class="creator-tab-btn" id="ctab-voice" onclick="openVoicePanel()"
+        data-tooltip="Clone your voice and generate songs in your own voice — Creator &amp; Pro plans.">
+        <i class="fas fa-fingerprint"></i> Voice Clone
+      </button>
+    </div>
+
+    <!-- ── Voice Clone inline panel ──────────────────────────────── -->
+    <div id="voice-inline-panel" style="display:none;margin-top:16px">
+      <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
+        <div class="suno-card__header" style="padding-bottom:10px">
+          <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
+          <span class="suno-card__title" style="color:#34d399">Voice Clone</span>
+          <button onclick="closeVoicePanel()" style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
+
+          <!-- Step 1: Current voice status -->
+          <div id="voice-status-bar" style="padding:10px 12px;border-radius:8px;border:1px solid rgba(16,185,129,.25);background:rgba(16,185,129,.04);display:flex;align-items:center;gap:10px">
+            <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:.9rem" id="voice-status-icon"></i>
+            <span id="voice-status-text" style="font-size:.83rem;color:var(--muted)">Loading voice status…</span>
+            <button id="voice-delete-btn" onclick="deleteVoicePersona()" style="display:none;margin-left:auto;background:none;border:1px solid rgba(239,68,68,.4);color:#f87171;cursor:pointer;font-size:.75rem;padding:3px 9px;border-radius:6px">Remove</button>
+          </div>
+
+          <!-- Step 2: Create voice (hidden once persona exists) -->
+          <div id="voice-create-section">
+            <div style="margin-bottom:8px">
+              <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — CLONE YOUR VOICE</span>
+              <span style="font-size:.75rem;color:var(--muted);margin-left:8px">5 pts · one-time</span>
+            </div>
+            <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
+              Provide a public URL to a clean MP3 or WAV file of your voice (10–30 seconds, solo vocals, no music). The URL must end in <code style="color:#34d399">.mp3</code> or <code style="color:#34d399">.wav</code>.
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <input type="text" id="voice-url-input" placeholder="https://example.com/my-voice.mp3"
+                style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(16,185,129,.3);border-radius:8px;color:#e2e8f0;font-size:.85rem;box-sizing:border-box;outline:none"
+                onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.3)'"/>
+              <input type="text" id="voice-label-input" placeholder="Voice name (optional, e.g. My Voice)"
+                style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(16,185,129,.2);border-radius:8px;color:#e2e8f0;font-size:.85rem;box-sizing:border-box;outline:none"
+                onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
+              <button id="voice-clone-btn" onclick="createVoicePersona()"
+                style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
+                <i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice — 5 pts
+              </button>
+              <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
+            </div>
+          </div>
+
+          <!-- Divider -->
+          <div style="border-top:1px solid rgba(255,255,255,.07)"></div>
+
+          <!-- Step 3: Generate with voice (locked until persona exists) -->
+          <div id="voice-gen-section">
+            <div style="margin-bottom:8px">
+              <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 2 — GENERATE IN YOUR VOICE</span>
+              <span style="font-size:.75rem;color:var(--muted);margin-left:8px">25 pts per song</span>
+            </div>
+
+            <!-- Locked overlay when no persona -->
+            <div id="voice-gen-locked" style="padding:16px;text-align:center;color:var(--muted);font-size:.83rem;border:1px dashed rgba(255,255,255,.1);border-radius:8px">
+              <i class="fas fa-lock" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:.4"></i>
+              Complete Step 1 to unlock voice generation
+            </div>
+
+            <!-- Generation form (hidden until persona exists) -->
+            <div id="voice-gen-form" style="display:none;flex-direction:column;gap:10px">
+              <input type="text" id="voice-gen-title" placeholder="Song title (optional)"
+                style="width:100%;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;box-sizing:border-box;outline:none"
+                onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"/>
+              <textarea id="voice-gen-lyrics" placeholder="Your lyrics here… (leave blank for AI-generated)"
+                rows="5"
+                style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;font-family:inherit;resize:vertical;box-sizing:border-box;outline:none"
+                onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"></textarea>
+              <input type="text" id="voice-gen-tags" placeholder="Style tags: pop, r&amp;b, smooth (optional)"
+                style="width:100%;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;box-sizing:border-box;outline:none"
+                onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"/>
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.08);border-radius:8px">
+                <i class="fas fa-drum" style="color:#10b981;font-size:.9rem;flex-shrink:0"></i>
+                <span style="font-size:.84rem;font-weight:600;flex:1">Instrumental only</span>
+                <label class="suno-switch">
+                  <input type="checkbox" id="voice-gen-instrumental"/>
+                  <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
+                </label>
+              </div>
+              <button id="voice-gen-btn" onclick="generateVoiceSong()"
+                style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
+                <i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts
+              </button>
+              <div id="voice-gen-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
+
+              <!-- Progress / result area -->
+              <div id="voice-gen-progress" style="display:none;padding:14px;border:1px solid rgba(16,185,129,.2);border-radius:10px;text-align:center">
+                <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:1.4rem;margin-bottom:8px;display:block"></i>
+                <p id="voice-gen-progress-text" style="font-size:.83rem;color:var(--muted);margin:0">Generating your voice song… this takes 1–3 minutes</p>
+              </div>
+
+              <!-- Result -->
+              <div id="voice-gen-result" style="display:none;padding:14px;border:1px solid rgba(16,185,129,.35);border-radius:10px;background:rgba(16,185,129,.05)">
+                <p style="font-size:.8rem;font-weight:700;color:#34d399;margin:0 0 10px;letter-spacing:.04em">VOICE SONG READY</p>
+                <audio id="voice-gen-audio" controls style="width:100%;border-radius:8px;accent-color:#10b981"></audio>
+                <a id="voice-gen-download" href="#" download style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:.82rem;color:#34d399;text-decoration:none;font-weight:600">
+                  <i class="fas fa-download"></i> Download
+                </a>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
     </div>
 
     <!-- ── Cover Song inline panel ─────────────────────────────── -->
