@@ -11043,7 +11043,7 @@ window.toggleRefDropdown = function() {
     };
 
     window.deleteVoicePersona = async function() {
-      if (!confirm('Remove your saved voice? You can re-clone anytime (5 pts).')) return;
+      if (!confirm('Remove your saved voice? You can re-clone anytime.')) return;
       try {
         await fetch('/api/voice/persona', { method: 'DELETE' });
         window.loadVoiceStatus();
@@ -11084,7 +11084,7 @@ window.toggleRefDropdown = function() {
         showVoiceMsg(msg, 'error', 'Network error. Please try again.');
       } finally {
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice — 5 pts';
+        btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice';
       }
     };
 
@@ -11125,7 +11125,7 @@ window.toggleRefDropdown = function() {
           prog.style.display = 'none';
           showVoiceMsg(msg, 'error', data.error || 'Generation failed. Please try again.');
           btn.disabled = false;
-          btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+          btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
           return;
         }
         // Start polling
@@ -11136,7 +11136,7 @@ window.toggleRefDropdown = function() {
         prog.style.display = 'none';
         showVoiceMsg(msg, 'error', 'Network error. Please try again.');
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+        btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
       }
     };
 
@@ -11153,12 +11153,12 @@ window.toggleRefDropdown = function() {
             dlLink.href = data.audio_url;
             dlLink.download = (data.title || 'voice-song') + '.mp3';
             btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+            btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
           } else if (data.status === 'failed') {
             prog.style.display = 'none';
             showVoiceMsg(msg, 'error', 'Generation failed: ' + (data.error || 'Unknown error'));
             btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts';
+            btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
           } else {
             // Still running — poll again in 15s
             _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg);

@@ -11250,7 +11250,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-125'
+const ASSET_VER = '20261019-126'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12512,7 +12512,7 @@ function generatorPage() {
           <div id="voice-create-section">
             <div style="margin-bottom:8px">
               <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — CLONE YOUR VOICE</span>
-              <span style="font-size:.75rem;color:var(--muted);margin-left:8px">5 pts · one-time</span>
+
             </div>
             <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
               Provide a public URL to a clean MP3 or WAV file of your voice (10–30 seconds, solo vocals, no music). The URL must end in <code style="color:#34d399">.mp3</code> or <code style="color:#34d399">.wav</code>.
@@ -12526,7 +12526,7 @@ function generatorPage() {
                 onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
               <button id="voice-clone-btn" onclick="createVoicePersona()"
                 style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                <i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice — 5 pts
+                <i class="fas fa-fingerprint" style="margin-right:6px"></i>Clone My Voice
               </button>
               <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
             </div>
@@ -12539,7 +12539,7 @@ function generatorPage() {
           <div id="voice-gen-section">
             <div style="margin-bottom:8px">
               <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 2 — GENERATE IN YOUR VOICE</span>
-              <span style="font-size:.75rem;color:var(--muted);margin-left:8px">25 pts per song</span>
+
             </div>
 
             <!-- Locked overlay when no persona -->
@@ -12570,7 +12570,7 @@ function generatorPage() {
               </div>
               <button id="voice-gen-btn" onclick="generateVoiceSong()"
                 style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                <i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice — 25 pts
+                <i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice
               </button>
               <div id="voice-gen-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
 
