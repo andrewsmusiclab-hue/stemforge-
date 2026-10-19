@@ -11510,7 +11510,7 @@ window.toggleRefDropdown = function() {
 (async function() {
   const { WebGLRenderer, Scene, PerspectiveCamera, Clock,
           AmbientLight, DirectionalLight, PointLight,
-          BoxGeometry, CylinderGeometry, SphereGeometry, EdgesGeometry, BufferGeometry,
+          BoxGeometry, PlaneGeometry, CylinderGeometry, SphereGeometry, EdgesGeometry, BufferGeometry,
           Mesh, LineSegments, Line, Group,
           MeshPhysicalMaterial, MeshStandardMaterial, MeshBasicMaterial, LineBasicMaterial,
           CanvasTexture, Color, Vector3, Vector2,
@@ -11740,7 +11740,7 @@ window.toggleRefDropdown = function() {
 
   // Front/back/side planes with waveform textures (layered quads on cube faces)
   // We overlay flat PlaneGeometry quads just in front of each face
-  const { PlaneGeometry } = await import('three');
+  // Face overlay planes parented to cube so rotation is inherited automatically
   const faceOffset = SIZE/2 + 0.005;
   const faceDefs = [
     { pos:[0,0, faceOffset], rot:[0,0,0],         wave:0 },  // front
@@ -11755,9 +11755,7 @@ window.toggleRefDropdown = function() {
     );
     plane.position.set(...fd.pos);
     plane.rotation.set(...fd.rot);
-    scene.add(plane);  // world space so they follow cube rotation
-    cube._faces = cube._faces || [];
-    cube._faces.push(plane);
+    cube.add(plane);  // child of cube — inherits rotation automatically
   });
 
   // Edge glow
@@ -11864,12 +11862,11 @@ window.toggleRefDropdown = function() {
 
     const bob = Math.sin(t*0.65)*0.07;
 
-    // rotate cube body + face planes together
+    // rotate cube (face planes are children — they follow automatically)
     cube.rotation.x = rotX; cube.rotation.y = rotY;
     cube.position.y  = -0.1+bob;
     shell.rotation.x = rotX; shell.rotation.y = rotY;
     shell.position.y = -0.1+bob;
-    if (cube._faces) cube._faces.forEach(f=>{ f.rotation.set(cube.rotation.x,cube.rotation.y,0); f.position.y=-0.1+bob; });
 
     // hammer + splash follow bob but stay in world orientation
     hammerG.position.y = 2.08+bob;
