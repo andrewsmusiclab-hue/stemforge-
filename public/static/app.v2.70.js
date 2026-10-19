@@ -10967,15 +10967,12 @@ window.toggleRefDropdown = function() {
 
   // Handle any library tab hash on load (/dashboard#beats, /dashboard#covers, etc.)
   // This makes the "Go to Library" banner link land on the correct tab automatically.
-  // ── Voice Clone — open/close panel + load status ──────────────────────────
-  (function() {
-    'use strict';
 
-    var _voicePollTimer = null;
-    var _voiceCurrentJobId = null;
+  // ── Voice Clone functions ─────────────────────────────────────────────────
+  var _voicePollTimer = null;
+  var _voiceCurrentJobId = null;
 
-    // Load persona status from server and update UI
-    window.loadVoiceStatus = async function() {
+  window.loadVoiceStatus = async function() {
       var statusIcon = document.getElementById('voice-status-icon');
       var statusText = document.getElementById('voice-status-text');
       var statusBar  = document.getElementById('voice-status-bar');
@@ -11187,8 +11184,7 @@ window.toggleRefDropdown = function() {
         el.style.color = '#f87171';
       }
     }
-  })();
-  // ── END Voice Clone ────────────────────────────────────────────────────────
+  // ── END Voice Clone inline functions ──────────────────────────────────────
 
   var _hashTab = (window.location.hash || '').replace('#', '');
   var _validTabs = ['beats','covers','remixes','extended','oneshots','uploads','trash'];
