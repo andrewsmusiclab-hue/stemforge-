@@ -3181,6 +3181,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // API key / auth errors — never expose internal key details to users
+    if (msg && (msg.indexOf('Incorrect API key') !== -1 || msg.indexOf('API key provided') !== -1 || msg.indexOf('Invalid API key') !== -1 || msg.indexOf('platform.openai.com') !== -1)) {
+      if (genError) genError.style.display = 'block';
+      if (genErrorMsg) genErrorMsg.textContent = 'Something went wrong on our end — your points have been refunded. Please try again!';
+      return;
+    }
+
     if (genError) genError.style.display = 'block';
     if (genErrorMsg) genErrorMsg.textContent = msg || 'Something went wrong. Please try again.';
   }
