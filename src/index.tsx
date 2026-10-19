@@ -8858,7 +8858,8 @@ app.get('/api/admin/user-renewal/:userId', async (c) => {
   const dbUser = await c.env.DB.prepare(`SELECT stripe_subscription_id FROM users WHERE id=?`).bind(userId).first<{stripe_subscription_id:string|null}>()
   if (!dbUser?.stripe_subscription_id) return c.json({ renewal_date: null })
   try {
-    const sub = await stripeRequest('GET', `/subscriptions/${dbUser.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const sub = await stripeGetSubscription(dbUser.stripe_subscription_id!, c.env.STRIPE_SECRET_KEY, c.env.DB, userId)
+    if (!sub) return c.json({ renewal_date: null })
     const item0 = sub.items?.data?.[0]
     const periodEnd: number = item0?.current_period_end ?? sub.current_period_end
     if (!periodEnd) return c.json({ renewal_date: null })
@@ -10864,7 +10865,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-115'
+const ASSET_VER = '20261018-116'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
