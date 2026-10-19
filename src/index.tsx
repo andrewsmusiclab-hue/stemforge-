@@ -10934,7 +10934,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-119'
+const ASSET_VER = '20261018-120'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15709,7 +15709,7 @@ function adminPage(user: User) {
 
           <!-- Existing entries list -->
           <div id="vault-list" style="display:flex;flex-direction:column;gap:6px">
-            <div style="color:var(--muted);font-size:.8rem;text-align:center;padding:10px 0">Loading vault…</div>
+            <div style="color:var(--muted);font-size:.8rem;text-align:center;padding:10px 0">No entries yet — add your first key above.</div>
           </div>
         </div>
 
@@ -15981,7 +15981,21 @@ function adminPage(user: User) {
         vaultLoad();
       }
 
-      // vaultLoad() is triggered by adminTab('security') in admin.v2.js — not on page load
+      // Auto-load vault when security tab becomes visible
+      (function() {
+        var tab = document.getElementById('admin-tab-security');
+        if (!tab) return;
+        var obs = new MutationObserver(function(mutations) {
+          mutations.forEach(function(m) {
+            if (m.attributeName === 'style' && tab.style.display !== 'none') {
+              window.vaultLoad();
+            }
+          });
+        });
+        obs.observe(tab, { attributes: true });
+        // Also load immediately if already visible
+        if (tab.style.display !== 'none') window.vaultLoad();
+      })();
       </script>
     </div>
     <!-- ── /SECURITY TAB ────────────────────────────────────────────────────── -->
