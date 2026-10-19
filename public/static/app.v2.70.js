@@ -11500,20 +11500,30 @@ window.toggleRefDropdown = function() {
       BASE128 + 'examples/js/postprocessing/UnrealBloomPass.js',
     ];
 
+    // On-screen debug badge so we can see what fails even on mobile
+    var badge = document.getElementById('sf-cube-badge');
+    function sfLog(msg, col) {
+      console.log('[SFCube]', msg);
+      if (badge) badge.innerHTML += '<br><span style="color:'+(col||'#0f0')+';font-size:10px">'+msg+'</span>';
+    }
+    sfLog('init started');
+
     function loadNext(i, done) {
       if (i >= scripts.length) { done(); return; }
+      var name = scripts[i].split('/').pop();
       var s = document.createElement('script');
       s.src = scripts[i];
-      s.onload  = function() { loadNext(i+1, done); };
-      s.onerror = function() { console.error('[SFCube] failed to load', scripts[i]); loadNext(i+1, done); };
+      s.onload  = function() { sfLog('✓ '+name); loadNext(i+1, done); };
+      s.onerror = function() { sfLog('✗ FAIL: '+name, '#f66'); loadNext(i+1, done); };
       document.head.appendChild(s);
     }
 
-    loadNext(0, function() { _sfRunCube(); });
+    loadNext(0, function() { sfLog('all loaded — running cube'); _sfRunCube(); });
 
     function _sfRunCube() {
       var T = window.THREE;
-      if (!T) { console.error('[SFCube] THREE not found'); return; }
+      if (!T) { sfLog('THREE missing!', '#f66'); return; }
+      sfLog('THREE ok, PMREMGenerator='+typeof T.PMREMGenerator+' RoundedBox='+typeof T.RoundedBoxGeometry+' Bloom='+typeof T.UnrealBloomPass);
 
       var W = (wrap.clientWidth || 420);
       var H = 400;
@@ -11521,11 +11531,15 @@ window.toggleRefDropdown = function() {
       canvas.height = H;
 
       // ── Renderer ──────────────────────────────────────────────────────────
-      var renderer = new T.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
-      renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-      renderer.setSize(W,H);
-      renderer.toneMapping         = T.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.4;
+      var renderer;
+      try {
+        renderer = new T.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
+        renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+        renderer.setSize(W,H);
+        renderer.toneMapping         = T.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.4;
+        sfLog('renderer ok W='+W+' H='+H);
+      } catch(e) { sfLog('renderer FAIL: '+e.message, '#f66'); return; }
 
       // ── Scene / Camera ─────────────────────────────────────────────────────
       var scene  = new T.Scene();
@@ -11709,10 +11723,14 @@ window.toggleRefDropdown = function() {
       cubeGroup.add(splashG);
 
       // ── Post-processing ────────────────────────────────────────────────────
-      var composer=new T.EffectComposer(renderer);
-      composer.addPass(new T.RenderPass(scene,camera));
-      var bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.65,0.4,0.70);
-      composer.addPass(bloom);
+      var composer, bloom;
+      try {
+        composer=new T.EffectComposer(renderer);
+        composer.addPass(new T.RenderPass(scene,camera));
+        bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.65,0.4,0.70);
+        composer.addPass(bloom);
+        sfLog('composer+bloom ok');
+      } catch(e) { sfLog('composer FAIL: '+e.message,'#f66'); return; }
 
       // ── Interaction ────────────────────────────────────────────────────────
       var rotX=-0.20,rotY=0.55,velX=0,velY=0,dragging=false,lastMX=0,lastMY=0;
