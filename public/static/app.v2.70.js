@@ -328,7 +328,7 @@ window._sfInitCube = function(user) {
     scene.environment = envMap;
 
     // ── Lights ─────────────────────────────────────────────────────────────
-    scene.add(new T.AmbientLight(0xffffff, 0.5));
+    scene.add(new T.AmbientLight(0xffffff, 1.2));
     var key = new T.DirectionalLight(0xffffff, 3.0); key.position.set(4,7,5); scene.add(key);
     var fill = new T.PointLight(0x00d2ff, 6.0, 30); fill.position.set(-4,3,4); scene.add(fill);
     var rim  = new T.PointLight(0xff8c20, 3.5, 22); rim.position.set(1,6,-4); scene.add(rim);
@@ -444,13 +444,20 @@ window._sfInitCube = function(user) {
       {pos:[ FO,0,0],  rotY:-Math.PI/2, wave:2, impact:false},
       {pos:[-FO,0,0],  rotY: Math.PI/2, wave:3, impact:false},
     ];
-    faceDefs.forEach(function(fd){
-      var tex=new T.CanvasTexture(makeDAWStemFace(fd.wave,fd.impact));
+    faceDefs.forEach(function(fd,fi){
+      var cvs=makeDAWStemFace(fd.wave,fd.impact);
+      sfLog('face'+fi+' canvas='+(cvs?cvs.width+'x'+cvs.height:'NULL'),'#0ef');
+      var tex=new T.CanvasTexture(cvs);
       tex.needsUpdate=true;
-      var mat=new T.MeshPhysicalMaterial({
-        map:tex, emissiveMap:tex, emissive:new T.Color(0x003366),
-        emissiveIntensity:0.85, metalness:0.4, roughness:0.35,
-        envMap:envMap, envMapIntensity:0.7
+      var mat=new T.MeshStandardMaterial({
+        map:tex,
+        emissiveMap:tex,
+        emissive:new T.Color(0xffffff),
+        emissiveIntensity:2.8,
+        roughness:0.5,
+        metalness:0.0,
+        side:T.DoubleSide,
+        transparent:false
       });
       var plane=new T.Mesh(new T.PlaneGeometry(PS,PS),mat);
       plane.position.set(fd.pos[0],fd.pos[1],fd.pos[2]);
@@ -458,6 +465,7 @@ window._sfInitCube = function(user) {
       cubeGroup.add(plane);
     });
 
+    sfLog('faces added to cubeGroup, children='+cubeGroup.children.length);
     // ── 3D Hammer (child of cubeGroup) ────────────────────────────────────
     var hammerG=new T.Group();
     var steel=new T.MeshPhysicalMaterial({color:0xb0c8e0,metalness:0.96,roughness:0.08,clearcoat:0.9,clearcoatRoughness:0.04,envMap:envMap,envMapIntensity:3.0});
