@@ -886,6 +886,14 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`ALTER TABLE user_notices ADD COLUMN viewed_at INTEGER`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_notices_user_id ON user_notices (user_id)`).run() } catch {}
 
+  // ── Dev Vault — admin-only encrypted key/value store readable by the AI agent ──
+  await db.prepare(`CREATE TABLE IF NOT EXISTS dev_vault (
+    key   TEXT PRIMARY KEY,   -- e.g. 'GITHUB_TOKEN', 'MY_CUSTOM_KEY'
+    value TEXT NOT NULL,      -- stored as-is; only accessible via admin-auth routes
+    label TEXT,               -- optional friendly description
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+  )`).run()
+
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -8573,6 +8581,66 @@ app.get('/api/admin/revenue', async (c) => {
   })
 })
 
+// ── Dev Vault endpoints (admin-only key/value store readable by AI agent) ──────
+
+// GET /api/admin/vault — list all vault keys (values masked)
+app.get('/api/admin/vault', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const rows = await c.env.DB.prepare(
+    `SELECT key, label, updated_at FROM dev_vault ORDER BY key ASC`
+  ).all<{ key: string; label: string | null; updated_at: number }>()
+  return c.json({ entries: rows.results || [] })
+})
+
+// GET /api/admin/vault/:key — retrieve a single vault value (admin only)
+app.get('/api/admin/vault/:key', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const key = c.req.param('key')
+  const row = await c.env.DB.prepare(
+    `SELECT key, value, label, updated_at FROM dev_vault WHERE key=?`
+  ).bind(key).first<{ key: string; value: string; label: string | null; updated_at: number }>()
+  if (!row) return c.json({ error: 'Not found' }, 404)
+  return c.json(row)
+})
+
+// POST /api/admin/vault — upsert one or more vault entries
+app.post('/api/admin/vault', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const body = await c.req.json<{ entries: { key: string; value: string; label?: string }[] }>()
+  if (!body?.entries?.length) return c.json({ error: 'No entries provided' }, 400)
+  const now = Date.now()
+  const saved: string[] = []
+  for (const entry of body.entries) {
+    if (!entry.key?.trim() || !entry.value?.trim()) continue
+    await c.env.DB.prepare(
+      `INSERT INTO dev_vault (key, value, label, updated_at) VALUES (?,?,?,?)
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value, label=excluded.label, updated_at=excluded.updated_at`
+    ).bind(entry.key.trim(), entry.value.trim(), entry.label?.trim() || null, now).run()
+    saved.push(entry.key.trim())
+  }
+  return c.json({ ok: true, saved })
+})
+
+// DELETE /api/admin/vault/:key — remove a vault entry
+app.delete('/api/admin/vault/:key', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'No DB' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  const key = c.req.param('key')
+  await c.env.DB.prepare(`DELETE FROM dev_vault WHERE key=?`).bind(key).run()
+  return c.json({ ok: true })
+})
+
 // GET /api/admin/ping — zero-DB health check, confirms Worker is alive and auth cookie works
 // POST /api/admin/security/change-password — admin changes their own login password
 app.post('/api/admin/security/change-password', async (c) => {
@@ -10866,7 +10934,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-116'
+const ASSET_VER = '20261018-117'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15582,6 +15650,11 @@ function adminPage(user: User) {
               <input type="password" id="sec_CRON_SECRET" placeholder="sf_cron_…" autocomplete="off"
                 style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
             </div>
+            <div style="display:grid;grid-template-columns:180px 1fr;gap:8px;align-items:center">
+              <label style="font-size:.8rem;color:var(--muted);font-weight:600">GITHUB_TOKEN</label>
+              <input type="password" id="sec_GITHUB_TOKEN" placeholder="ghp_…" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;width:100%;box-sizing:border-box"/>
+            </div>
           </div>
 
           <button type="button" onclick="secToggleAllSecrets()"
@@ -15605,6 +15678,39 @@ function adminPage(user: User) {
             style="margin-top:16px;padding:10px 24px;background:linear-gradient(135deg,#ef4444,#b91c1c);border:none;border-radius:10px;color:#fff;font-size:.9rem;font-weight:700;cursor:pointer">
             <i class="fas fa-cloud-upload-alt" style="margin-right:7px"></i>Push to Cloudflare
           </button>
+        </div>
+
+        <!-- Dev Vault -->
+        <div style="background:var(--surface);border:1px solid rgba(16,185,129,.3);border-radius:14px;padding:24px">
+          <h3 style="margin:0 0 6px;font-size:.97rem;display:flex;align-items:center;gap:8px">
+            <i class="fas fa-vault" style="color:#10b981"></i> Dev Vault
+            <span style="font-size:.72rem;font-weight:600;background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3);border-radius:99px;padding:2px 8px;margin-left:4px">AI-readable</span>
+          </h3>
+          <p style="color:var(--muted);font-size:.82rem;margin:0 0 16px;line-height:1.5">
+            Store any token or secret here so the AI agent can retrieve it securely from D1 — no need to paste sensitive values in chat. Only you can read or write these values.
+          </p>
+
+          <!-- Add new entry form -->
+          <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px">
+            <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:center">
+              <input type="text" id="vault-new-key" placeholder="Key name e.g. GITHUB_TOKEN" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;box-sizing:border-box"/>
+              <input type="password" id="vault-new-value" placeholder="Value (token / secret)" autocomplete="off"
+                style="padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.85rem;box-sizing:border-box"/>
+              <button onclick="vaultSave()" style="padding:8px 14px;background:rgba(16,185,129,.15);border:1px solid rgba(16,185,129,.4);border-radius:8px;color:#10b981;font-size:.85rem;font-weight:700;cursor:pointer;white-space:nowrap">
+                <i class="fas fa-save"></i> Save
+              </button>
+            </div>
+            <input type="text" id="vault-new-label" placeholder="Optional label e.g. GitHub PAT for Publish button" autocomplete="off"
+              style="padding:7px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.8rem;box-sizing:border-box"/>
+          </div>
+
+          <div id="vault-msg" style="display:none;margin-bottom:10px;font-size:.82rem;padding:8px 12px;border-radius:8px"></div>
+
+          <!-- Existing entries list -->
+          <div id="vault-list" style="display:flex;flex-direction:column;gap:6px">
+            <div style="color:var(--muted);font-size:.8rem;text-align:center;padding:10px 0">Loading vault…</div>
+          </div>
         </div>
 
         <!-- Info box -->
@@ -15809,6 +15915,74 @@ function adminPage(user: User) {
           if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-cloud-upload-alt" style="margin-right:7px"></i>Push to Cloudflare'; }
         }
       }
+
+      // ── Dev Vault JS ────────────────────────────────────────────────────────
+      async function vaultLoad() {
+        var list = document.getElementById('vault-list');
+        if (!list) return;
+        try {
+          var r = await fetch('/api/admin/vault', { credentials: 'include' });
+          var d = await r.json();
+          var entries = d.entries || [];
+          if (!entries.length) {
+            list.innerHTML = '<div style="color:var(--muted);font-size:.8rem;text-align:center;padding:10px 0">No entries yet — add your first key above.</div>';
+            return;
+          }
+          list.innerHTML = entries.map(function(e) {
+            var ago = e.updated_at ? new Date(e.updated_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+            return '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px">' +
+              '<i class="fas fa-key" style="color:#10b981;font-size:.8rem;flex-shrink:0"></i>' +
+              '<div style="flex:1;min-width:0">' +
+                '<div style="font-size:.85rem;font-weight:700;color:var(--text)">' + e.key + '</div>' +
+                (e.label ? '<div style="font-size:.75rem;color:var(--muted)">' + e.label + '</div>' : '') +
+              '</div>' +
+              '<div style="font-size:.72rem;color:var(--muted);flex-shrink:0">' + ago + '</div>' +
+              '<button onclick="vaultDelete(\'' + e.key + '\')" title="Delete" style="background:none;border:none;color:#ef4444;cursor:pointer;padding:2px 6px;font-size:.85rem"><i class="fas fa-trash"></i></button>' +
+            '</div>';
+          }).join('');
+        } catch(err) {
+          if (list) list.innerHTML = '<div style="color:#fca5a5;font-size:.8rem">Failed to load vault.</div>';
+        }
+      }
+
+      async function vaultSave() {
+        var key   = (document.getElementById('vault-new-key') as HTMLInputElement)?.value?.trim();
+        var value = (document.getElementById('vault-new-value') as HTMLInputElement)?.value?.trim();
+        var label = (document.getElementById('vault-new-label') as HTMLInputElement)?.value?.trim();
+        var msg   = document.getElementById('vault-msg');
+        if (!key || !value) {
+          if (msg) { msg.style.display='block'; msg.style.background='rgba(239,68,68,.1)'; msg.style.color='#fca5a5'; msg.textContent='Key and value are both required.'; }
+          return;
+        }
+        try {
+          var r = await fetch('/api/admin/vault', {
+            method:'POST', credentials:'include',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ entries: [{ key, value, label: label || undefined }] })
+          });
+          var d = await r.json();
+          if (d.ok) {
+            (document.getElementById('vault-new-key') as HTMLInputElement).value = '';
+            (document.getElementById('vault-new-value') as HTMLInputElement).value = '';
+            (document.getElementById('vault-new-label') as HTMLInputElement).value = '';
+            if (msg) { msg.style.display='block'; msg.style.background='rgba(16,185,129,.1)'; msg.style.color='#6ee7b7'; msg.textContent='✅ Saved: ' + key; }
+            vaultLoad();
+          } else {
+            if (msg) { msg.style.display='block'; msg.style.background='rgba(239,68,68,.1)'; msg.style.color='#fca5a5'; msg.textContent=d.error || 'Save failed.'; }
+          }
+        } catch(e) {
+          if (msg) { msg.style.display='block'; msg.style.background='rgba(239,68,68,.1)'; msg.style.color='#fca5a5'; msg.textContent='Network error.'; }
+        }
+      }
+
+      async function vaultDelete(key) {
+        if (!confirm('Delete vault entry "' + key + '"?')) return;
+        await fetch('/api/admin/vault/' + encodeURIComponent(key), { method:'DELETE', credentials:'include' });
+        vaultLoad();
+      }
+
+      // Load vault when security tab opens
+      vaultLoad();
       </script>
     </div>
     <!-- ── /SECURITY TAB ────────────────────────────────────────────────────── -->
