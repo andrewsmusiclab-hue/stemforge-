@@ -24,6 +24,7 @@ type Bindings = {
   STAGING_URL?: string              // Set by wrangler.staging.jsonc — shown in admin Publish tab
   CRON_SECRET?: string              // Secret token for /api/cron/free-reset endpoint
   CLOUDCONVERT_KEY?: string         // CloudConvert API key for MP3→WAV conversion (large files)
+  GITHUB_TOKEN?: string             // GitHub PAT for admin Publish button (repo + workflow scopes)
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -8050,7 +8051,7 @@ const GH_REPO = 'andrewsmusiclab-hue/stemforge-'
 
 // Helper: trigger a GitHub Actions workflow via repository_dispatch
 async function triggerGitHubWorkflow(env: Bindings, eventType: string, payload: Record<string,string> = {}): Promise<{ok:boolean, error?:string}> {
-  const token = (env as any).GITHUB_TOKEN
+  const token = env.GITHUB_TOKEN
   if (!token) return { ok: false, error: 'GITHUB_TOKEN secret not configured' }
   const res = await fetch(`https://api.github.com/repos/${GH_REPO}/dispatches`, {
     method: 'POST',
@@ -8075,7 +8076,7 @@ app.get('/api/admin/deploy/status', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
 
-  const ghToken = (c.env as any).GITHUB_TOKEN
+  const ghToken = c.env.GITHUB_TOKEN
   if (!ghToken) return c.json({ staging: null, production: null, error: 'GITHUB_TOKEN not set' })
 
   // Fetch latest runs for both workflows
@@ -8135,7 +8136,7 @@ app.post('/api/admin/deploy/live', async (c) => {
   const { reason } = await c.req.json<{ reason?: string }>().catch(() => ({ reason: '' }))
 
   // 1. Fast-forward main to match staging via GitHub Merge API
-  const ghToken = (c.env as any).GITHUB_TOKEN
+  const ghToken = c.env.GITHUB_TOKEN
   if (!ghToken) return c.json({ ok: false, error: 'GITHUB_TOKEN secret not configured — add it in Cloudflare Pages secrets' }, 500)
 
   // Get staging branch SHA
