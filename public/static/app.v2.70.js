@@ -11486,10 +11486,7 @@ window.toggleRefDropdown = function() {
     if (window._sfCubeActive) return;
     window._sfCubeActive = true;
 
-    var mod = document.createElement('script');
-    mod.type = 'module';
-    mod.setAttribute('data-sf-cube','1');
-    mod.textContent = `
+    var _sfCubeCode = `
 (async function() {
   const THREE_CDN  = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
   const ADDONS     = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/';
@@ -11935,6 +11932,14 @@ window.toggleRefDropdown = function() {
     .observe(document.body,{childList:true,subtree:true});
 })();
 `;
+    // Use Blob URL — textContent on injected module scripts is blocked by Chrome/Safari
+    var _sfBlob = new Blob([_sfCubeCode], {type:'text/javascript'});
+    var _sfBlobUrl = URL.createObjectURL(_sfBlob);
+    var mod = document.createElement('script');
+    mod.type = 'module';
+    mod.setAttribute('data-sf-cube','1');
+    mod.src = _sfBlobUrl;
+    mod.onload = function(){ URL.revokeObjectURL(_sfBlobUrl); };
     document.head.appendChild(mod);
   };
   // ── END StemForge 3D Logo Cube ────────────────────────────────────────
