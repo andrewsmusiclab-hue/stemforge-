@@ -11475,140 +11475,400 @@ window.toggleRefDropdown = function() {
   }
   // ── END VoiceForge inline functions ──────────────────────────────────────
 
-  // ── StemForge 3D Logo Cube ─────────────────────────────────────────────
-  // Admin-only interactive cube on the Create/Generator page.
-  // Called from the auth/me block once _sfUser is resolved.
+  // ── StemForge 3D Logo Cube — Three.js WebGL ─────────────────────────────
+  // Resend-quality: RoundedBox, MeshPhysicalMaterial, bloom glow, waveform
+  // face textures drawn on canvas, hammer + sparks on top, inertia rotation.
+  // Called from auth/me block once _sfUser is resolved.
   window._sfInitCube = function(user) {
     var wrap   = document.getElementById('sf-cube-wrap');
-    var scene  = document.getElementById('sf-cube-scene');
-    var cube   = document.getElementById('sf-cube-3d');
-    if (!wrap || !cube) return;
-
-    // ── Admin gate: show only for admin users ──
+    var canvas = document.getElementById('sf-cube-canvas');
+    if (!wrap || !canvas) return;
     if (!user || !user.is_admin) { wrap.style.display = 'none'; return; }
     wrap.style.display = 'flex';
 
-    // ── Rotation state ──
-    var rotX = -22, rotY = 35;
-    var velX = 0,   velY = 0;
-    var dragging = false;
-    var lastX = 0, lastY = 0;
-    var autoSpin = true; // idle auto-rotation
-    var idleTimer = null;
-
-    function applyTransform() {
-      cube.style.transform = 'rotateX(' + rotX + 'deg) rotateY(' + rotY + 'deg)';
+    // ── Load Three.js from CDN then bootstrap ──────────────────────────
+    function loadScript(src, cb) {
+      if (document.querySelector('script[src="'+src+'"]')) { cb(); return; }
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = cb;
+      s.onerror = function(){ console.warn('[SFCube] failed to load', src); };
+      document.head.appendChild(s);
     }
 
-    // ── Auto-rotation RAF loop ──
-    var rafId = null;
-    function autoRotate() {
-      if (!dragging) {
-        if (autoSpin) {
-          rotY += 0.18;
-          applyTransform();
-        } else {
-          // momentum decay after drag
-          if (Math.abs(velX) > 0.01 || Math.abs(velY) > 0.01) {
-            rotX += velX;
-            rotY += velY;
-            velX *= 0.94;
-            velY *= 0.94;
-            applyTransform();
+    var THREE_CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+    // We need importmap-free builds — use the UMD bundle
+    var THREE_UMD = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js';
+
+    loadScript(THREE_UMD, function() {
+      if (typeof THREE === 'undefined') {
+        console.warn('[SFCube] THREE not available'); return;
+      }
+      bootstrapCube();
+    });
+
+    function bootstrapCube() {
+      var T = THREE;
+
+      // ── Waveform face texture ────────────────────────────────────────
+      function makeWaveCanvas(variant) {
+        var sz = 512;
+        var c  = document.createElement('canvas');
+        c.width = sz; c.height = sz;
+        var ctx = c.getContext('2d');
+
+        // Dark metallic background
+        var bg = ctx.createLinearGradient(0, 0, sz, sz);
+        bg.addColorStop(0, '#060e1c');
+        bg.addColorStop(1, '#0a1828');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, sz, sz);
+
+        // subtle grid
+        ctx.strokeStyle = 'rgba(0,229,255,0.05)';
+        ctx.lineWidth = 1;
+        for (var g = 0; g < sz; g += 64) {
+          ctx.beginPath(); ctx.moveTo(g,0); ctx.lineTo(g,sz); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0,g); ctx.lineTo(sz,g); ctx.stroke();
+        }
+
+        // 4 waveform tiers
+        var tiers = [
+          { y: sz*0.15, amp: 28, freq: 7.5,  lw: 2.2, style: 'spike'  },
+          { y: sz*0.38, amp: 22, freq: 2.5,  lw: 2.8, style: 'sine'   },
+          { y: sz*0.62, amp: 16, freq: 14,   lw: 1.8, style: 'dense'  },
+          { y: sz*0.82, amp: 12, freq: 1.8,  lw: 3.0, style: 'gentle' }
+        ];
+
+        tiers.forEach(function(t, ti) {
+          var offset = variant * 1.1 + ti * 0.7;
+          ctx.save();
+          // glow
+          ctx.shadowColor = '#00e5ff';
+          ctx.shadowBlur  = 10;
+          ctx.strokeStyle = 'rgba(0,229,255,' + (0.85 - ti*0.08) + ')';
+          ctx.lineWidth   = t.lw;
+          ctx.beginPath();
+          for (var x = 0; x <= sz; x += 2) {
+            var nx = x / sz; // 0..1
+            var y;
+            if (t.style === 'spike') {
+              y = t.y + Math.sin(nx * Math.PI * t.freq + offset) * t.amp
+                      * (0.5 + 0.5*Math.abs(Math.sin(nx*Math.PI*3)));
+            } else if (t.style === 'dense') {
+              y = t.y + Math.sin(nx * Math.PI * t.freq + offset) * t.amp
+                      * Math.sign(Math.sin(nx*Math.PI*t.freq*0.5));
+            } else {
+              y = t.y + Math.sin(nx * Math.PI * t.freq + offset) * t.amp;
+            }
+            x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+          ctx.restore();
+        });
+
+        // faint "STEMFORGE" watermark text on face
+        ctx.save();
+        ctx.font = 'bold 22px monospace';
+        ctx.fillStyle = 'rgba(0,229,255,0.07)';
+        ctx.textAlign = 'center';
+        ctx.fillText('STEMFORGE', sz/2, sz - 18);
+        ctx.restore();
+
+        return c;
+      }
+
+      // ── Hammer face texture ──────────────────────────────────────────
+      function makeHammerCanvas() {
+        var sz = 512;
+        var c  = document.createElement('canvas');
+        c.width = sz; c.height = sz;
+        var ctx = c.getContext('2d');
+
+        // Background
+        var bg = ctx.createRadialGradient(sz/2,sz/2,30,sz/2,sz/2,sz*0.7);
+        bg.addColorStop(0, '#0f1e38');
+        bg.addColorStop(1, '#050d1a');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, sz, sz);
+
+        // Hammer head (simplified geometric)
+        ctx.save();
+        ctx.translate(sz/2, sz*0.48);
+        ctx.rotate(-Math.PI / 5.5);
+
+        // handle
+        ctx.fillStyle = '#8B6914';
+        ctx.beginPath();
+        ctx.roundRect(14, -8, 140, 22, 4);
+        ctx.fill();
+
+        // head
+        var hg = ctx.createLinearGradient(-60,-46,60,46);
+        hg.addColorStop(0, '#d0d8e8');
+        hg.addColorStop(0.4, '#a8b4c8');
+        hg.addColorStop(1, '#6a7888');
+        ctx.fillStyle = hg;
+        ctx.beginPath();
+        ctx.roundRect(-62, -46, 88, 88, 8);
+        ctx.fill();
+
+        // shine on hammer head
+        ctx.fillStyle = 'rgba(255,255,255,0.18)';
+        ctx.beginPath();
+        ctx.ellipse(-28, -22, 22, 10, -0.5, 0, Math.PI*2);
+        ctx.fill();
+
+        ctx.restore();
+
+        // Sparks radiating from impact point
+        var sparkColors = ['#ff9500','#ffcc00','#ffffff','#ff6a00','#ffe066'];
+        var sparkDefs = [
+          {ax:-1.0, ay:-1.0, len:80}, {ax:0.2,  ay:-1.3, len:95},
+          {ax:1.1,  ay:-0.9, len:70}, {ax:-0.7, ay:-1.4, len:60},
+          {ax:1.3,  ay:-0.4, len:85}, {ax:-1.3, ay:-0.5, len:65},
+          {ax:0.5,  ay:-1.5, len:55}, {ax:-0.3, ay:-1.6, len:72}
+        ];
+        var cx = sz*0.48, cy = sz*0.52;
+        sparkDefs.forEach(function(sp, i) {
+          ctx.save();
+          ctx.strokeStyle = sparkColors[i % sparkColors.length];
+          ctx.lineWidth   = 2.5 + Math.random()*1.5;
+          ctx.shadowColor = sparkColors[i % sparkColors.length];
+          ctx.shadowBlur  = 8;
+          ctx.globalAlpha = 0.85;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + sp.ax * sp.len, cy + sp.ay * sp.len);
+          ctx.stroke();
+          // spark dot at tip
+          ctx.beginPath();
+          ctx.arc(cx + sp.ax*sp.len, cy + sp.ay*sp.len, 3, 0, Math.PI*2);
+          ctx.fillStyle = '#fff';
+          ctx.fill();
+          ctx.restore();
+        });
+
+        // central impact glow
+        var glow = ctx.createRadialGradient(cx,cy,0,cx,cy,50);
+        glow.addColorStop(0, 'rgba(255,200,80,0.7)');
+        glow.addColorStop(0.4,'rgba(255,120,0,0.3)');
+        glow.addColorStop(1, 'rgba(255,100,0,0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 50, 0, Math.PI*2);
+        ctx.fill();
+
+        return c;
+      }
+
+      // ── Bottom face — subtle grid ────────────────────────────────────
+      function makeBottomCanvas() {
+        var sz = 512;
+        var c  = document.createElement('canvas');
+        c.width = sz; c.height = sz;
+        var ctx = c.getContext('2d');
+        ctx.fillStyle = '#05090f';
+        ctx.fillRect(0,0,sz,sz);
+        ctx.strokeStyle = 'rgba(0,229,255,0.06)';
+        ctx.lineWidth = 1;
+        for (var g = 0; g < sz; g += 64) {
+          ctx.beginPath(); ctx.moveTo(g,0); ctx.lineTo(g,sz); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(0,g); ctx.lineTo(sz,g); ctx.stroke();
+        }
+        return c;
+      }
+
+      // ── Build scene ──────────────────────────────────────────────────
+      var W = canvas.parentElement.clientWidth || 400;
+      var H = 340;
+      canvas.width  = W;
+      canvas.height = H;
+
+      var renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(W, H);
+      renderer.toneMapping = T.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.4;
+
+      var scene  = new T.Scene();
+      var camera = new T.PerspectiveCamera(38, W/H, 0.1, 100);
+      camera.position.set(0, 0.3, 5.2);
+
+      // ── Environment — fake studio IBL via a simple env map ──────────
+      var pmrem = new T.PMREMGenerator(renderer);
+      pmrem.compileEquirectangularShader();
+      // Procedural studio env (no HDR file needed)
+      var envScene = new T.Scene();
+      var ambLight = new T.AmbientLight(0xffffff, 0.4);
+      envScene.add(ambLight);
+      // top key light (white)
+      var keyL = new T.DirectionalLight(0xffffff, 3.5);
+      keyL.position.set(2, 4, 3);
+      envScene.add(keyL);
+      // cyan fill (matches waveform color)
+      var fillL = new T.PointLight(0x00e5ff, 4, 20);
+      fillL.position.set(-3, 2, 2);
+      scene.add(fillL);
+      // warm back rim
+      var rimL = new T.PointLight(0xff8c00, 1.5, 15);
+      rimL.position.set(0, -3, -4);
+      scene.add(rimL);
+      // key light in scene
+      var keyLight = new T.DirectionalLight(0xffffff, 2.5);
+      keyLight.position.set(3, 5, 3);
+      scene.add(keyLight);
+      var ambLight2 = new T.AmbientLight(0x0a0f1e, 1.0);
+      scene.add(ambLight2);
+
+      // ── Cube geometry — standard BoxGeometry (wide compat) ──────────
+      var geo = new T.BoxGeometry(2.2, 2.2, 2.2);
+
+      // ── 6 face materials ─────────────────────────────────────────────
+      // Order: +X(right), -X(left), +Y(top/hammer), -Y(bottom), +Z(front), -Z(back)
+      function makeTex(cvs) {
+        var t = new T.CanvasTexture(cvs);
+        t.needsUpdate = true;
+        return t;
+      }
+
+      var matBase = {
+        metalness:  0.82,
+        roughness:  0.18,
+        envMapIntensity: 1.2
+      };
+
+      var materials = [
+        new T.MeshStandardMaterial(Object.assign({}, matBase, { map: makeTex(makeWaveCanvas(0)) })), // +X right
+        new T.MeshStandardMaterial(Object.assign({}, matBase, { map: makeTex(makeWaveCanvas(1)) })), // -X left
+        new T.MeshStandardMaterial(Object.assign({}, matBase, { map: makeTex(makeHammerCanvas()), metalness:0.6, roughness:0.3 })), // +Y top
+        new T.MeshStandardMaterial(Object.assign({}, matBase, { map: makeTex(makeBottomCanvas()), roughness:0.5 })), // -Y bottom
+        new T.MeshStandardMaterial(Object.assign({}, matBase, { map: makeTex(makeWaveCanvas(2)) })), // +Z front
+        new T.MeshStandardMaterial(Object.assign({}, matBase, { map: makeTex(makeWaveCanvas(3)) })), // -Z back
+      ];
+
+      var cube = new T.Mesh(geo, materials);
+      scene.add(cube);
+
+      // ── Edge glow lines ──────────────────────────────────────────────
+      var edgeGeo  = new T.EdgesGeometry(geo);
+      var edgeMat  = new T.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.55 });
+      var edgeMesh = new T.LineSegments(edgeGeo, edgeMat);
+      cube.add(edgeMesh);
+
+      // ── Post-processing bloom (manual pass — no EffectComposer needed) ──
+      // We fake bloom by rendering a second slightly-scaled translucent cube
+      var glowMat = new T.MeshBasicMaterial({
+        color: 0x00e5ff,
+        transparent: true,
+        opacity: 0.04,
+        side: T.BackSide
+      });
+      var glowMesh = new T.Mesh(new T.BoxGeometry(2.35, 2.35, 2.35), glowMat);
+      scene.add(glowMesh);
+
+      // ── Rotation state ───────────────────────────────────────────────
+      var rotX = -0.3, rotY = 0.6;
+      var velX = 0,    velY = 0;
+      var isDragging = false;
+      var lastMX = 0, lastMY = 0;
+      var autoSpin = true;
+      var idleTimer = null;
+
+      function resetIdle() {
+        autoSpin = false;
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(function(){ autoSpin = true; velX=0; velY=0; }, 3500);
+      }
+
+      // ── Mouse drag ───────────────────────────────────────────────────
+      canvas.addEventListener('mousedown', function(e){
+        isDragging=true; autoSpin=false; velX=0; velY=0;
+        lastMX=e.clientX; lastMY=e.clientY; e.preventDefault();
+      });
+      window.addEventListener('mousemove', function(e){
+        if(!isDragging) return;
+        velY = (e.clientX-lastMX)*0.008;
+        velX = (e.clientY-lastMY)*0.008;
+        rotY += velY; rotX += velX;
+        rotX = Math.max(-1.1, Math.min(1.1, rotX));
+        lastMX=e.clientX; lastMY=e.clientY;
+      });
+      window.addEventListener('mouseup', function(){ if(isDragging){isDragging=false; resetIdle();} });
+
+      // ── Touch drag ───────────────────────────────────────────────────
+      canvas.addEventListener('touchstart', function(e){
+        if(e.touches.length!==1) return;
+        isDragging=true; autoSpin=false; velX=0; velY=0;
+        lastMX=e.touches[0].clientX; lastMY=e.touches[0].clientY;
+        e.preventDefault();
+      },{passive:false});
+      canvas.addEventListener('touchmove', function(e){
+        if(!isDragging||e.touches.length!==1) return;
+        velY=(e.touches[0].clientX-lastMX)*0.008;
+        velX=(e.touches[0].clientY-lastMY)*0.008;
+        rotY+=velY; rotX+=velX;
+        rotX=Math.max(-1.1,Math.min(1.1,rotX));
+        lastMX=e.touches[0].clientX; lastMY=e.touches[0].clientY;
+        e.preventDefault();
+      },{passive:false});
+      canvas.addEventListener('touchend', function(){ isDragging=false; resetIdle(); });
+
+      // ── Resize handler ───────────────────────────────────────────────
+      window.addEventListener('resize', function(){
+        var nw = canvas.parentElement.clientWidth || 400;
+        camera.aspect = nw/H;
+        camera.updateProjectionMatrix();
+        renderer.setSize(nw, H);
+      });
+
+      // ── Floating Y bob ───────────────────────────────────────────────
+      var clock = new T.Clock();
+
+      // ── RAF render loop ──────────────────────────────────────────────
+      var rafId = null;
+      function render() {
+        rafId = requestAnimationFrame(render);
+        var t = clock.getElapsedTime();
+
+        if (!isDragging) {
+          if (autoSpin) {
+            rotY += 0.004;
+          } else {
+            // inertia decay
+            velX *= 0.92; velY *= 0.92;
+            rotX += velX;  rotY += velY;
+            rotX = Math.max(-1.1, Math.min(1.1, rotX));
           }
         }
+
+        // gentle float
+        cube.position.y     = Math.sin(t * 0.6) * 0.08;
+        glowMesh.position.y = cube.position.y;
+
+        cube.rotation.x     = rotX;
+        cube.rotation.y     = rotY;
+        glowMesh.rotation.x = rotX;
+        glowMesh.rotation.y = rotY;
+        edgeMesh.rotation.x = 0; // edges are child of cube, auto-rotate
+
+        // pulse edge glow
+        edgeMat.opacity = 0.45 + 0.15 * Math.sin(t * 1.8);
+        fillL.intensity = 3.5 + 1.5 * Math.sin(t * 2.2);
+
+        renderer.render(scene, camera);
       }
-      rafId = requestAnimationFrame(autoRotate);
-    }
-    rafId = requestAnimationFrame(autoRotate);
+      render();
 
-    function resetIdleTimer() {
-      autoSpin = false;
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(function() { autoSpin = true; velX = 0; velY = 0; }, 3500);
-    }
-
-    // ── Mouse drag ──
-    scene.addEventListener('mousedown', function(e) {
-      dragging = true;
-      autoSpin = false;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      velX = 0; velY = 0;
-      e.preventDefault();
-    });
-    window.addEventListener('mousemove', function(e) {
-      if (!dragging) return;
-      var dx = e.clientX - lastX;
-      var dy = e.clientY - lastY;
-      velY = dx * 0.4;
-      velX = -dy * 0.4;
-      rotY += velY;
-      rotX += velX;
-      // clamp X tilt so cube doesn't flip fully
-      rotX = Math.max(-60, Math.min(60, rotX));
-      lastX = e.clientX;
-      lastY = e.clientY;
-      applyTransform();
-    });
-    window.addEventListener('mouseup', function() {
-      if (!dragging) return;
-      dragging = false;
-      resetIdleTimer();
-    });
-
-    // ── Touch drag ──
-    scene.addEventListener('touchstart', function(e) {
-      if (e.touches.length !== 1) return;
-      dragging = true;
-      autoSpin = false;
-      lastX = e.touches[0].clientX;
-      lastY = e.touches[0].clientY;
-      velX = 0; velY = 0;
-      e.preventDefault();
-    }, { passive: false });
-    scene.addEventListener('touchmove', function(e) {
-      if (!dragging || e.touches.length !== 1) return;
-      var dx = e.touches[0].clientX - lastX;
-      var dy = e.touches[0].clientY - lastY;
-      velY = dx * 0.4;
-      velX = -dy * 0.4;
-      rotY += velY;
-      rotX += velX;
-      rotX = Math.max(-60, Math.min(60, rotX));
-      lastX = e.touches[0].clientX;
-      lastY = e.touches[0].clientY;
-      applyTransform();
-      e.preventDefault();
-    }, { passive: false });
-    scene.addEventListener('touchend', function() {
-      dragging = false;
-      resetIdleTimer();
-    });
-
-    // ── Sparks animation ──
-    var sparksWrap = document.getElementById('sf-sparks');
-    if (sparksWrap) {
-      var SPARK_COLORS = ['#ff9800','#ffcc00','#ffffff','#ff6a00','#ffe082'];
-      var SPARK_ANGLES = [  // end positions for each spark
-        'translate(-28px,-32px)','translate(28px,-32px)',
-        'translate(-18px,-40px)','translate(18px,-40px)',
-        'translate(-38px,-20px)','translate(38px,-20px)',
-        'translate(-8px,-44px)', 'translate(8px,-44px)'
-      ];
-      for (var si = 0; si < SPARK_ANGLES.length; si++) {
-        var sp = document.createElement('div');
-        sp.className = 'sf-spark';
-        sp.style.cssText = [
-          'background:' + SPARK_COLORS[si % SPARK_COLORS.length],
-          'left:50%',
-          'top:50%',
-          'animation-delay:' + (si * 0.22) + 's',
-          'animation-duration:' + (1.4 + si * 0.12) + 's',
-          '--sf-spark-end:' + SPARK_ANGLES[si]
-        ].join(';');
-        sparksWrap.appendChild(sp);
-      }
+      // cleanup if element removed
+      var obs = new MutationObserver(function(){
+        if (!document.getElementById('sf-cube-canvas')) {
+          cancelAnimationFrame(rafId);
+          obs.disconnect();
+        }
+      });
+      obs.observe(document.body, { childList:true, subtree:true });
     }
   };
   // ── END StemForge 3D Logo Cube ────────────────────────────────────────
