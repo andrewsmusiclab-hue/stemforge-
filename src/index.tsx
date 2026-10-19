@@ -1309,8 +1309,30 @@ async function stripeRequest(method: string, path: string, body: Record<string,s
     body: method !== 'GET' ? new URLSearchParams(body).toString() : undefined,
   })
   const data = await res.json() as any
-  if (!res.ok) throw new Error(data?.error?.message || `Stripe error ${res.status}`)
+  if (!res.ok) {
+    const err: any = new Error(data?.error?.message || `Stripe error ${res.status}`)
+    err.stripeStatus = res.status
+    err.stripeCode  = data?.error?.code
+    throw err
+  }
   return data
+}
+
+// Fetch a Stripe subscription by ID — if Stripe returns 404 (resource_missing),
+// automatically clears the stale sub ID from the DB so we don't keep hitting it.
+async function stripeGetSubscription(subId: string, key: string, db: D1Database, userId: string): Promise<any | null> {
+  try {
+    return await stripeRequest('GET', `/subscriptions/${subId}`, {}, key)
+  } catch (e: any) {
+    if (e.stripeStatus === 404 || e.stripeCode === 'resource_missing') {
+      // Sub no longer exists in Stripe — clear it from DB so user shows as free
+      await db.prepare(
+        `UPDATE users SET stripe_subscription_id = NULL, pending_downgrade = NULL WHERE id = ?`
+      ).bind(userId).run().catch(() => {})
+      return null
+    }
+    throw e
+  }
 }
 
 async function createStripeCheckoutSession(
@@ -4814,6 +4836,38 @@ app.post('/api/stripe/webhook', async (c) => {
       }
     }
 
+    // ── Payment failed — warn the user before Stripe cancels their sub ──────
+    if (event.type === 'invoice.payment_failed') {
+      const invoice = event.data.object
+      const customerId = invoice.customer
+      if (customerId) {
+        const dbUser = await c.env.DB.prepare(
+          `SELECT id FROM users WHERE stripe_customer_id=?`
+        ).bind(customerId).first<{ id: string }>()
+        if (dbUser) {
+          const attemptCount = invoice.attempt_count ?? 1
+          const noticeKey = `payment-failed-${invoice.id}`
+          await c.env.DB.prepare(`
+            INSERT OR IGNORE INTO user_notices
+              (user_id, notice_key, title, body, icon, icon_gradient, cta_text, cta_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            dbUser.id,
+            noticeKey,
+            'Payment failed — action needed',
+            attemptCount >= 3
+              ? 'We weren\'t able to process your payment after multiple attempts. Your subscription may be cancelled soon — please update your billing details to keep your plan active.'
+              : 'We weren\'t able to process your latest payment. Please update your payment method to avoid losing access to your plan.',
+            'fas fa-credit-card',
+            'linear-gradient(135deg,#ef4444,#f97316)',
+            'Update billing',
+            '/subscription',
+            Date.now()
+          ).run()
+        }
+      }
+    }
+
     return c.json({ received: true })
   } catch (err: any) {
     return c.json({ error: err?.message }, 400)
@@ -5097,9 +5151,10 @@ app.get('/subscription', async (c) => {
   let realNextBillingDate: string | null = null  // e.g. "Jul 14, 2026"
   if (user.stripe_subscription_id && stripeConfigured(c.env)) {
     try {
-      const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+      const sub = await stripeGetSubscription(user.stripe_subscription_id, c.env.STRIPE_SECRET_KEY, c.env.DB, user.id)
+      if (!sub) { /* stale sub ID — cleared from DB, treat as free */ }
       // ── Extract real period_end (Stripe API ≥2025-03-31 moved it to items) ──
-      const item0 = sub.items?.data?.[0]
+      const item0 = sub?.items?.data?.[0]
       const periodEnd: number = item0?.current_period_end ?? sub.current_period_end
       if (periodEnd && !isNaN(Number(periodEnd))) {
         realNextBillingDate = new Date(periodEnd * 1000).toLocaleDateString('en-US', {
@@ -5107,12 +5162,12 @@ app.get('/subscription', async (c) => {
         })
       }
       // cancel_at_period_end = true means downgrading to free (cancellation) — sync to D1 if not set
-      if (sub.cancel_at_period_end && !pendingDowngrade) {
+      if (sub?.cancel_at_period_end && !pendingDowngrade) {
         pendingDowngrade = 'free'
         if (c.env.DB) await c.env.DB.prepare(`UPDATE users SET pending_downgrade = 'free' WHERE id = ?`).bind(user.id).run().catch(() => {})
       }
       // Check for subscription schedules (downgrade to creator / upgrade) — Stripe-schedule fallback
-      if (!pendingDowngrade) {
+      if (sub && !pendingDowngrade) {
         const schedules = await stripeRequest('GET', `/subscription_schedules?customer=${user.stripe_customer_id}&limit=5`, {}, c.env.STRIPE_SECRET_KEY)
         const active = schedules?.data?.find((s: any) => s.status === 'active' && s.subscription === user.stripe_subscription_id)
         if (active && active.phases?.length >= 2) {
@@ -7030,7 +7085,8 @@ app.post('/api/subscription/downgrade', async (c) => {
       const newPriceId = target_plan === 'creator' ? c.env.STRIPE_CREATOR_PRICE_ID : ''
       if (!newPriceId) return c.json({ error: 'Price not configured' }, 500)
       // Get current subscription to find the item ID
-      const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+      const sub = await stripeGetSubscription(user.stripe_subscription_id, c.env.STRIPE_SECRET_KEY, c.env.DB, user.id)
+      if (!sub) return c.json({ error: 'No active subscription found. Your account may have already been updated.' }, 400)
       const itemId = sub.items?.data?.[0]?.id
       if (!itemId) return c.json({ error: 'Could not find subscription item' }, 500)
       // Schedule the price change at period end (no proration, takes effect next cycle)
@@ -7067,7 +7123,8 @@ app.post('/api/subscription/cancel', async (c) => {
 
   try {
     // Check if already scheduled to cancel
-    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const sub = await stripeGetSubscription(user.stripe_subscription_id, c.env.STRIPE_SECRET_KEY, c.env.DB, user.id)
+    if (!sub) return c.json({ error: 'No active subscription found. Your account may have already been updated.' }, 400)
     if (sub.cancel_at_period_end) {
       return c.json({ ok: false, error: 'Your subscription is already scheduled to cancel.' })
     }
@@ -7105,7 +7162,8 @@ app.post('/api/subscription/cancel-downgrade', async (c) => {
 
   try {
     // Check current subscription state
-    const sub = await stripeRequest('GET', `/subscriptions/${user.stripe_subscription_id}`, {}, c.env.STRIPE_SECRET_KEY)
+    const sub = await stripeGetSubscription(user.stripe_subscription_id, c.env.STRIPE_SECRET_KEY, c.env.DB, user.id)
+    if (!sub) return c.json({ error: 'No active subscription found. Your account may have already been updated.' }, 400)
 
     if (sub.cancel_at_period_end) {
       // Was scheduled to cancel — remove cancellation
@@ -10806,7 +10864,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-114'
+const ASSET_VER = '20261018-115'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
