@@ -11250,7 +11250,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-123'
+const ASSET_VER = '20261019-124'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12485,7 +12485,8 @@ function generatorPage() {
         <i class="fas fa-microphone-alt"></i> Cover Song
       </button>
       <button class="creator-tab-btn" id="ctab-voice" onclick="openVoicePanel()"
-        data-tooltip="Clone your voice and generate songs in your own voice — Creator &amp; Pro plans.">
+        data-tooltip="Clone your voice and generate songs in your own voice — Creator &amp; Pro plans."
+        style="display:none">
         <i class="fas fa-fingerprint"></i> Voice Clone
       </button>
     </div>

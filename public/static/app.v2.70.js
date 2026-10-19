@@ -851,6 +851,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!user) return;
       window._sfUser = user;
 
+      // ── Voice Clone button — beta, admin-only visibility ─────────
+      // The button is hidden by default (display:none in the HTML).
+      // Only reveal it for the admin account used for testing.
+      (function() {
+        var voiceBtn = document.getElementById('ctab-voice');
+        if (voiceBtn && user.is_admin) {
+          voiceBtn.style.display = '';
+        }
+      })();
+
       // ── TikTok identify — link this session to the known user ─
       if (window.ttq && user.email) {
         try {
