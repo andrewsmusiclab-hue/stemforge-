@@ -11476,28 +11476,14 @@ window.toggleRefDropdown = function() {
   // ── END VoiceForge inline functions ──────────────────────────────────────
 
   // ── StemForge 3D Logo Cube — Three.js WebGL v3 (Resend quality) ──────────
-  // Uses: ES module importmap, RoundedBoxGeometry, MeshPhysicalMaterial,
-  //       UnrealBloomPass, EffectComposer, PMREMGenerator IBL, SMAA
+  // Uses: full CDN URLs in dynamic import() — no importmap needed (importmap
+  // cannot be injected dynamically; browsers ignore late importmaps)
   window._sfInitCube = function(user) {
     var wrap   = document.getElementById('sf-cube-wrap');
     var canvas = document.getElementById('sf-cube-canvas');
     if (!wrap || !canvas) return;
     if (!user || !user.is_admin) { wrap.style.display='none'; return; }
     wrap.style.display = 'flex';
-
-    // Inject importmap once, then bootstrap via inline module script
-    if (!document.querySelector('script[data-sf-importmap]')) {
-      var im = document.createElement('script');
-      im.type = 'importmap';
-      im.setAttribute('data-sf-importmap','1');
-      im.textContent = JSON.stringify({
-        imports: {
-          'three': 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js',
-          'three/addons/': 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/'
-        }
-      });
-      document.head.appendChild(im);
-    }
 
     // Guard: only init once
     if (window._sfCubeActive) return;
@@ -11508,6 +11494,9 @@ window.toggleRefDropdown = function() {
     mod.setAttribute('data-sf-cube','1');
     mod.textContent = /* js */`
 (async function() {
+  const THREE_CDN  = 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+  const ADDONS_CDN = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/';
+
   const { WebGLRenderer, Scene, PerspectiveCamera, Clock,
           AmbientLight, DirectionalLight, PointLight,
           BoxGeometry, PlaneGeometry, CylinderGeometry, SphereGeometry, EdgesGeometry, BufferGeometry,
@@ -11515,13 +11504,13 @@ window.toggleRefDropdown = function() {
           MeshPhysicalMaterial, MeshStandardMaterial, MeshBasicMaterial, LineBasicMaterial,
           CanvasTexture, Color, Vector3, Vector2,
           ACESFilmicToneMapping, BackSide, PMREMGenerator,
-          RGBAFormat, FloatType, WebGLRenderTarget } = await import('three');
+          RGBAFormat, FloatType, WebGLRenderTarget } = await import(THREE_CDN);
 
-  const { EffectComposer }   = await import('three/addons/postprocessing/EffectComposer.js');
-  const { RenderPass }       = await import('three/addons/postprocessing/RenderPass.js');
-  const { UnrealBloomPass }  = await import('three/addons/postprocessing/UnrealBloomPass.js');
-  const { RoundedBoxGeometry } = await import('three/addons/geometries/RoundedBoxGeometry.js');
-  const { OutputPass }       = await import('three/addons/postprocessing/OutputPass.js');
+  const { EffectComposer }     = await import(ADDONS_CDN + 'postprocessing/EffectComposer.js');
+  const { RenderPass }         = await import(ADDONS_CDN + 'postprocessing/RenderPass.js');
+  const { UnrealBloomPass }    = await import(ADDONS_CDN + 'postprocessing/UnrealBloomPass.js');
+  const { RoundedBoxGeometry } = await import(ADDONS_CDN + 'geometries/RoundedBoxGeometry.js');
+  const { OutputPass }         = await import(ADDONS_CDN + 'postprocessing/OutputPass.js');
 
   const canvas = document.getElementById('sf-cube-canvas');
   if (!canvas) return;
