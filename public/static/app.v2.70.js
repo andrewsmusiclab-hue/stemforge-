@@ -328,7 +328,7 @@ window._sfInitCube = function(user) {
     scene.environment = envMap;
 
     // ── Lights ─────────────────────────────────────────────────────────────
-    scene.add(new T.AmbientLight(0xffffff, 1.2));
+    scene.add(new T.AmbientLight(0xffffff, 0.6));
     var key = new T.DirectionalLight(0xffffff, 3.0); key.position.set(4,7,5); scene.add(key);
     var fill = new T.PointLight(0x00d2ff, 6.0, 30); fill.position.set(-4,3,4); scene.add(fill);
     var rim  = new T.PointLight(0xff8c20, 3.5, 22); rim.position.set(1,6,-4); scene.add(rim);
@@ -453,8 +453,8 @@ window._sfInitCube = function(user) {
         map:tex,
         emissiveMap:tex,
         emissive:new T.Color(0xffffff),
-        emissiveIntensity:2.8,
-        roughness:0.5,
+        emissiveIntensity:0.7,
+        roughness:0.55,
         metalness:0.0,
         side:T.DoubleSide,
         transparent:false
@@ -475,13 +475,15 @@ window._sfInitCube = function(user) {
     [-0.38,0.38].forEach(function(x){var fm=new T.Mesh(new T.BoxGeometry(0.06,0.38,0.30),dsteel);fm.position.x=x;hammerG.add(fm);});
     var handleM=new T.Mesh(new T.CylinderGeometry(0.058,0.048,1.5,16),wood); handleM.position.set(0.58,-0.65,0); handleM.rotation.z=0.5; hammerG.add(handleM);
     var collarM=new T.Mesh(new T.CylinderGeometry(0.09,0.09,0.10,16),steel); collarM.position.set(0.24,-0.20,0); collarM.rotation.z=0.5; hammerG.add(collarM);
-    hammerG.rotation.set(0.08,-0.18,-0.50);
-    hammerG.position.set(0.48, SIZE/2+0.62, 0.35);
+    // Hammer above cube, head angled down as if mid-strike
+    // rotation.z=-0.75 tilts it ~43° so head faces cube top; x tilt gives depth
+    hammerG.rotation.set(0.25, -0.18, -0.75);
+    hammerG.position.set(0.55, SIZE/2+1.30, 0.20);
     cubeGroup.add(hammerG);
 
     // ── 3D Splash (child of cubeGroup) ────────────────────────────────────
     var splashG=new T.Group();
-    splashG.position.set(0.28, SIZE/2+0.02, 0.28);
+    splashG.position.set(0.40, SIZE/2+0.08, 0.20);
     var RAYS=[[-0.7,0.9,0.20,0.55,0xffffff],[0.15,0.95,-0.10,0.62,0xffe066],[-0.42,0.78,0.55,0.48,0xff9800],[0.75,0.65,0.18,0.58,0xffffff],[-0.55,1.05,-0.28,0.44,0xff6600],[0.38,1.10,0.42,0.50,0xffd700],[-0.22,0.55,-0.65,0.40,0x80e5ff],[0.82,0.48,0.38,0.46,0xffffff],[-0.90,0.40,0.10,0.37,0xff8c00],[0.10,0.72,-0.72,0.42,0xffe0a0],[0.48,0.80,0.68,0.35,0xffff80],[-0.30,0.90,-0.48,0.39,0xffa040]];
     RAYS.forEach(function(r){
       var d=new T.Vector3(r[0],r[1],r[2]).normalize(),len=r[3],col=r[4];
