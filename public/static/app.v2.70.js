@@ -851,6 +851,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!user) return;
       window._sfUser = user;
 
+      // ── 3D Logo Cube — admin-only, generator page ────────────────
+      if (typeof window._sfInitCube === 'function') window._sfInitCube(user);
+
       // ── VoiceForge button — beta, admin-only visibility ─────────
       // The button is hidden by default (display:none in the HTML).
       // Only reveal it for the admin account used for testing.
@@ -11471,6 +11474,144 @@ window.toggleRefDropdown = function() {
     }, 15000);
   }
   // ── END VoiceForge inline functions ──────────────────────────────────────
+
+  // ── StemForge 3D Logo Cube ─────────────────────────────────────────────
+  // Admin-only interactive cube on the Create/Generator page.
+  // Called from the auth/me block once _sfUser is resolved.
+  window._sfInitCube = function(user) {
+    var wrap   = document.getElementById('sf-cube-wrap');
+    var scene  = document.getElementById('sf-cube-scene');
+    var cube   = document.getElementById('sf-cube-3d');
+    if (!wrap || !cube) return;
+
+    // ── Admin gate: show only for admin users ──
+    if (!user || !user.is_admin) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'flex';
+
+    // ── Rotation state ──
+    var rotX = -22, rotY = 35;
+    var velX = 0,   velY = 0;
+    var dragging = false;
+    var lastX = 0, lastY = 0;
+    var autoSpin = true; // idle auto-rotation
+    var idleTimer = null;
+
+    function applyTransform() {
+      cube.style.transform = 'rotateX(' + rotX + 'deg) rotateY(' + rotY + 'deg)';
+    }
+
+    // ── Auto-rotation RAF loop ──
+    var rafId = null;
+    function autoRotate() {
+      if (!dragging) {
+        if (autoSpin) {
+          rotY += 0.18;
+          applyTransform();
+        } else {
+          // momentum decay after drag
+          if (Math.abs(velX) > 0.01 || Math.abs(velY) > 0.01) {
+            rotX += velX;
+            rotY += velY;
+            velX *= 0.94;
+            velY *= 0.94;
+            applyTransform();
+          }
+        }
+      }
+      rafId = requestAnimationFrame(autoRotate);
+    }
+    rafId = requestAnimationFrame(autoRotate);
+
+    function resetIdleTimer() {
+      autoSpin = false;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(function() { autoSpin = true; velX = 0; velY = 0; }, 3500);
+    }
+
+    // ── Mouse drag ──
+    scene.addEventListener('mousedown', function(e) {
+      dragging = true;
+      autoSpin = false;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      velX = 0; velY = 0;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', function(e) {
+      if (!dragging) return;
+      var dx = e.clientX - lastX;
+      var dy = e.clientY - lastY;
+      velY = dx * 0.4;
+      velX = -dy * 0.4;
+      rotY += velY;
+      rotX += velX;
+      // clamp X tilt so cube doesn't flip fully
+      rotX = Math.max(-60, Math.min(60, rotX));
+      lastX = e.clientX;
+      lastY = e.clientY;
+      applyTransform();
+    });
+    window.addEventListener('mouseup', function() {
+      if (!dragging) return;
+      dragging = false;
+      resetIdleTimer();
+    });
+
+    // ── Touch drag ──
+    scene.addEventListener('touchstart', function(e) {
+      if (e.touches.length !== 1) return;
+      dragging = true;
+      autoSpin = false;
+      lastX = e.touches[0].clientX;
+      lastY = e.touches[0].clientY;
+      velX = 0; velY = 0;
+      e.preventDefault();
+    }, { passive: false });
+    scene.addEventListener('touchmove', function(e) {
+      if (!dragging || e.touches.length !== 1) return;
+      var dx = e.touches[0].clientX - lastX;
+      var dy = e.touches[0].clientY - lastY;
+      velY = dx * 0.4;
+      velX = -dy * 0.4;
+      rotY += velY;
+      rotX += velX;
+      rotX = Math.max(-60, Math.min(60, rotX));
+      lastX = e.touches[0].clientX;
+      lastY = e.touches[0].clientY;
+      applyTransform();
+      e.preventDefault();
+    }, { passive: false });
+    scene.addEventListener('touchend', function() {
+      dragging = false;
+      resetIdleTimer();
+    });
+
+    // ── Sparks animation ──
+    var sparksWrap = document.getElementById('sf-sparks');
+    if (sparksWrap) {
+      var SPARK_COLORS = ['#ff9800','#ffcc00','#ffffff','#ff6a00','#ffe082'];
+      var SPARK_ANGLES = [  // end positions for each spark
+        'translate(-28px,-32px)','translate(28px,-32px)',
+        'translate(-18px,-40px)','translate(18px,-40px)',
+        'translate(-38px,-20px)','translate(38px,-20px)',
+        'translate(-8px,-44px)', 'translate(8px,-44px)'
+      ];
+      for (var si = 0; si < SPARK_ANGLES.length; si++) {
+        var sp = document.createElement('div');
+        sp.className = 'sf-spark';
+        sp.style.cssText = [
+          'background:' + SPARK_COLORS[si % SPARK_COLORS.length],
+          'left:50%',
+          'top:50%',
+          'animation-delay:' + (si * 0.22) + 's',
+          'animation-duration:' + (1.4 + si * 0.12) + 's',
+          '--sf-spark-end:' + SPARK_ANGLES[si]
+        ].join(';');
+        sparksWrap.appendChild(sp);
+      }
+    }
+  };
+  // ── END StemForge 3D Logo Cube ────────────────────────────────────────
 
   var _hashTab = (window.location.hash || '').replace('#', '');
   var _validTabs = ['beats','covers','remixes','extended','oneshots','uploads','trash'];

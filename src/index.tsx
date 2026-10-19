@@ -11330,7 +11330,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-128'
+const ASSET_VER = '20261019-129'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13063,6 +13063,250 @@ function generatorPage() {
 
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
   <div class="suno-right">
+
+    <!-- ── StemForge 3D Logo Cube — admin-only preview ──────── -->
+    <div id="sf-cube-wrap" style="display:none">
+      <style>
+        #sf-cube-wrap {
+          width:100%;
+          display:flex;
+          flex-direction:column;
+          align-items:center;
+          justify-content:center;
+          padding:32px 0 28px;
+          user-select:none;
+        }
+        #sf-cube-scene {
+          width:220px;
+          height:220px;
+          perspective:600px;
+          cursor:grab;
+        }
+        #sf-cube-scene:active { cursor:grabbing; }
+        #sf-cube-3d {
+          width:220px;
+          height:220px;
+          position:relative;
+          transform-style:preserve-3d;
+          transform:rotateX(-22deg) rotateY(35deg);
+          transition:none;
+        }
+        /* ── shared face styles ── */
+        .sf-face {
+          position:absolute;
+          width:220px;
+          height:220px;
+          box-sizing:border-box;
+          overflow:hidden;
+          border:1px solid rgba(0,229,255,.22);
+          background:#0a1628;
+          border-radius:4px;
+        }
+        /* face positions */
+        .sf-face--front  { transform:translateZ(110px); }
+        .sf-face--back   { transform:rotateY(180deg) translateZ(110px); }
+        .sf-face--right  { transform:rotateY(90deg)  translateZ(110px); }
+        .sf-face--left   { transform:rotateY(-90deg) translateZ(110px); }
+        .sf-face--top    { transform:rotateX(90deg)  translateZ(110px); }
+        .sf-face--bottom { transform:rotateX(-90deg) translateZ(110px); }
+
+        /* ── waveform SVG on side faces ── */
+        .sf-face svg { width:100%; height:100%; }
+
+        /* ── edge glow ── */
+        .sf-face { box-shadow:inset 0 0 18px rgba(0,229,255,.07), 0 0 6px rgba(0,229,255,.12); }
+        .sf-face--front,
+        .sf-face--right { border-color:rgba(0,229,255,.35); }
+
+        /* ── top face: hammer scene ── */
+        .sf-face--top {
+          background:linear-gradient(145deg,#0d1e35 60%,#112240);
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          font-size:88px;
+          line-height:1;
+          border-color:rgba(0,229,255,.5);
+        }
+        .sf-hammer-wrap {
+          position:relative;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          width:100%;
+          height:100%;
+        }
+        .sf-hammer-emoji {
+          font-size:72px;
+          filter:drop-shadow(0 0 12px rgba(255,180,0,.7));
+          transform:rotate(-30deg) translateY(-6px);
+          animation:sf-hammer-bob 2.4s ease-in-out infinite;
+        }
+        @keyframes sf-hammer-bob {
+          0%,100%{ transform:rotate(-30deg) translateY(-6px); }
+          50%    { transform:rotate(-22deg) translateY(-14px); }
+        }
+        /* sparks */
+        .sf-sparks {
+          position:absolute;
+          top:18%;
+          left:50%;
+          transform:translateX(-50%);
+          width:70px;
+          height:70px;
+          pointer-events:none;
+        }
+        .sf-spark {
+          position:absolute;
+          width:4px;
+          height:4px;
+          border-radius:50%;
+          animation:sf-spark-fly 1.8s ease-out infinite;
+          opacity:0;
+        }
+        @keyframes sf-spark-fly {
+          0%  { opacity:1; transform:translate(0,0) scale(1); }
+          100%{ opacity:0; transform:var(--sf-spark-end) scale(0.3); }
+        }
+        /* ── label ── */
+        #sf-cube-label {
+          margin-top:22px;
+          font-size:1.3rem;
+          font-weight:800;
+          letter-spacing:.06em;
+          color:#fff;
+        }
+        #sf-cube-label span { color:#00e5ff; font-style:italic; }
+        #sf-cube-badge {
+          margin-top:6px;
+          font-size:.68rem;
+          color:rgba(0,229,255,.5);
+          letter-spacing:.12em;
+          font-weight:600;
+        }
+      </style>
+
+      <div id="sf-cube-scene">
+        <div id="sf-cube-3d">
+
+          <!-- FRONT face — waveform 4 tiers -->
+          <div class="sf-face sf-face--front">
+            <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+              <defs>
+                <filter id="glow-f"><feGaussianBlur stdDeviation="1.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              <!-- tier 1 — thin spiky peaks -->
+              <g filter="url(#glow-f)" stroke="#00e5ff" stroke-width="1.5" fill="none" opacity="0.95">
+                <polyline points="0,44 10,44 18,20 26,44 34,44 40,30 48,44 58,44 64,15 72,44 80,44 88,28 96,44 106,44 112,22 120,44 128,44 136,32 144,44 154,44 160,18 168,44 176,44 184,30 192,44 200,44 210,26 220,44"/>
+              </g>
+              <!-- tier 2 — smooth wide waves -->
+              <g filter="url(#glow-f)" stroke="#00e5ff" stroke-width="1.8" fill="none" opacity="0.85">
+                <path d="M0,88 C18,72 36,104 54,88 C72,72 90,104 108,88 C126,72 144,104 162,88 C180,72 198,104 220,88"/>
+              </g>
+              <!-- tier 3 — dense rapid oscillation -->
+              <g filter="url(#glow-f)" stroke="#00e5ff" stroke-width="1.2" fill="none" opacity="0.9">
+                <polyline points="0,132 6,122 12,142 18,124 24,140 30,120 36,144 42,126 48,138 54,118 60,144 66,128 72,136 78,118 84,142 90,126 96,138 102,120 108,144 114,128 120,136 126,118 132,142 138,128 144,136 150,120 156,144 162,126 168,140 174,122 180,142 186,124 192,138 198,120 204,144 210,128 216,136 220,132"/>
+              </g>
+              <!-- tier 4 — low gentle undulation -->
+              <g filter="url(#glow-f)" stroke="#00e5ff" stroke-width="2" fill="none" opacity="0.75">
+                <path d="M0,182 C28,172 56,192 84,182 C112,172 140,192 168,182 C196,172 210,188 220,182"/>
+              </g>
+            </svg>
+          </div>
+
+          <!-- BACK face — waveform (mirrored) -->
+          <div class="sf-face sf-face--back">
+            <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+              <defs>
+                <filter id="glow-b"><feGaussianBlur stdDeviation="1.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              <g filter="url(#glow-b)" stroke="#00e5ff" stroke-width="1.5" fill="none" opacity="0.95">
+                <polyline points="0,44 10,44 18,20 26,44 34,44 40,30 48,44 58,44 64,15 72,44 80,44 88,28 96,44 106,44 112,22 120,44 128,44 136,32 144,44 154,44 160,18 168,44 176,44 184,30 192,44 200,44 210,26 220,44"/>
+              </g>
+              <g filter="url(#glow-b)" stroke="#00e5ff" stroke-width="1.8" fill="none" opacity="0.85">
+                <path d="M0,88 C18,104 36,72 54,88 C72,104 90,72 108,88 C126,104 144,72 162,88 C180,104 198,72 220,88"/>
+              </g>
+              <g filter="url(#glow-b)" stroke="#00e5ff" stroke-width="1.2" fill="none" opacity="0.9">
+                <polyline points="0,132 6,142 12,122 18,140 24,124 30,144 36,120 42,138 48,126 54,144 60,118 66,136 72,128 78,144 84,118 90,138 96,126 102,142 108,120 114,136 120,128 126,144 132,120 138,136 144,128 150,142 156,118 162,138 168,128 174,140 180,122 186,138 192,126 198,142 204,118 210,136 216,128 220,132"/>
+              </g>
+              <g filter="url(#glow-b)" stroke="#00e5ff" stroke-width="2" fill="none" opacity="0.75">
+                <path d="M0,182 C28,192 56,172 84,182 C112,192 140,172 168,182 C196,192 210,176 220,182"/>
+              </g>
+            </svg>
+          </div>
+
+          <!-- RIGHT face — waveform -->
+          <div class="sf-face sf-face--right">
+            <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+              <defs>
+                <filter id="glow-r"><feGaussianBlur stdDeviation="1.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              <g filter="url(#glow-r)" stroke="#00e5ff" stroke-width="1.5" fill="none" opacity="0.95">
+                <polyline points="0,44 14,44 22,16 30,44 42,44 50,24 58,44 70,44 78,18 86,44 96,44 104,28 112,44 124,44 132,14 140,44 150,44 158,26 166,44 180,44 188,20 196,44 210,44 220,44"/>
+              </g>
+              <g filter="url(#glow-r)" stroke="#00e5ff" stroke-width="1.8" fill="none" opacity="0.85">
+                <path d="M0,88 C22,68 44,108 66,88 C88,68 110,108 132,88 C154,68 176,108 198,88 C210,80 216,84 220,88"/>
+              </g>
+              <g filter="url(#glow-r)" stroke="#00e5ff" stroke-width="1.2" fill="none" opacity="0.9">
+                <polyline points="0,132 8,118 16,146 24,122 32,140 40,116 48,144 56,124 64,138 72,116 80,146 88,124 96,136 104,114 112,148 120,124 128,138 136,116 144,146 152,122 160,138 168,116 176,144 184,124 192,138 200,118 208,144 216,126 220,132"/>
+              </g>
+              <g filter="url(#glow-r)" stroke="#00e5ff" stroke-width="2" fill="none" opacity="0.75">
+                <path d="M0,182 C36,168 72,196 108,182 C144,168 180,196 220,182"/>
+              </g>
+            </svg>
+          </div>
+
+          <!-- LEFT face — waveform -->
+          <div class="sf-face sf-face--left">
+            <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+              <defs>
+                <filter id="glow-l"><feGaussianBlur stdDeviation="1.8" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              <g filter="url(#glow-l)" stroke="#00e5ff" stroke-width="1.5" fill="none" opacity="0.95">
+                <polyline points="0,44 14,44 22,16 30,44 42,44 50,24 58,44 70,44 78,18 86,44 96,44 104,28 112,44 124,44 132,14 140,44 150,44 158,26 166,44 180,44 188,20 196,44 210,44 220,44"/>
+              </g>
+              <g filter="url(#glow-l)" stroke="#00e5ff" stroke-width="1.8" fill="none" opacity="0.85">
+                <path d="M0,88 C22,108 44,68 66,88 C88,108 110,68 132,88 C154,108 176,68 198,88 C210,96 216,92 220,88"/>
+              </g>
+              <g filter="url(#glow-l)" stroke="#00e5ff" stroke-width="1.2" fill="none" opacity="0.9">
+                <polyline points="0,132 8,146 16,118 24,140 32,122 40,144 48,118 56,138 64,124 72,144 80,118 88,138 96,124 104,146 112,116 120,140 128,126 136,144 144,118 152,138 160,124 168,142 176,118 184,138 192,124 200,144 208,122 216,140 220,132"/>
+              </g>
+              <g filter="url(#glow-l)" stroke="#00e5ff" stroke-width="2" fill="none" opacity="0.75">
+                <path d="M0,182 C36,196 72,168 108,182 C144,196 180,168 220,182"/>
+              </g>
+            </svg>
+          </div>
+
+          <!-- TOP face — hammer + sparks -->
+          <div class="sf-face sf-face--top">
+            <div class="sf-hammer-wrap">
+              <div class="sf-sparks" id="sf-sparks"></div>
+              <div class="sf-hammer-emoji">🔨</div>
+            </div>
+          </div>
+
+          <!-- BOTTOM face — subtle grid -->
+          <div class="sf-face sf-face--bottom" style="background:linear-gradient(135deg,#050d1a,#091525);border-color:rgba(0,229,255,.1)">
+            <svg viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+              <g stroke="rgba(0,229,255,.08)" stroke-width="1" fill="none">
+                <line x1="0" y1="44"  x2="220" y2="44"/>
+                <line x1="0" y1="88"  x2="220" y2="88"/>
+                <line x1="0" y1="132" x2="220" y2="132"/>
+                <line x1="0" y1="176" x2="220" y2="176"/>
+                <line x1="44"  y1="0" x2="44"  y2="220"/>
+                <line x1="88"  y1="0" x2="88"  y2="220"/>
+                <line x1="132" y1="0" x2="132" y2="220"/>
+                <line x1="176" y1="0" x2="176" y2="220"/>
+              </g>
+            </svg>
+          </div>
+
+        </div><!-- /sf-cube-3d -->
+      </div><!-- /sf-cube-scene -->
+
+      <div id="sf-cube-label">Stem<span>FORGE</span></div>
+      <div id="sf-cube-badge">ADMIN PREVIEW</div>
+    </div><!-- /sf-cube-wrap -->
 
     <!-- Pipeline status - dual project-card style beat cards -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
