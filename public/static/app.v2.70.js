@@ -328,11 +328,12 @@ window._sfInitCube = function(user) {
     scene.environment = envMap;
 
     // ── Lights ─────────────────────────────────────────────────────────────
-    scene.add(new T.AmbientLight(0xffffff, 0.6));
-    var key = new T.DirectionalLight(0xffffff, 3.0); key.position.set(4,7,5); scene.add(key);
-    var fill = new T.PointLight(0x00d2ff, 6.0, 30); fill.position.set(-4,3,4); scene.add(fill);
-    var rim  = new T.PointLight(0xff8c20, 3.5, 22); rim.position.set(1,6,-4); scene.add(rim);
-    var bot  = new T.PointLight(0x0040ff, 1.5, 14); bot.position.set(0,-5,3); scene.add(bot);
+    // Low ambient — let emissiveMap carry the face color, not external lights
+    scene.add(new T.AmbientLight(0xffffff, 0.25));
+    var key = new T.DirectionalLight(0xffffff, 0.8); key.position.set(4,7,5); scene.add(key);
+    var fill = new T.PointLight(0x00d2ff, 0.8, 30); fill.position.set(-4,3,4); scene.add(fill);
+    var rim  = new T.PointLight(0xff8c20, 0.6, 22); rim.position.set(1,6,-4); scene.add(rim);
+    var bot  = new T.PointLight(0x0040ff, 0.4, 14); bot.position.set(0,-5,3); scene.add(bot);
 
     // ── DAW stem waveform texture ──────────────────────────────────────────
     function makeDAWStemFace(variant, isImpact) {
@@ -453,7 +454,7 @@ window._sfInitCube = function(user) {
         map:tex,
         emissiveMap:tex,
         emissive:new T.Color(0xffffff),
-        emissiveIntensity:0.35,
+        emissiveIntensity:1.2,
         roughness:0.55,
         metalness:0.0,
         side:T.DoubleSide,
@@ -514,7 +515,7 @@ window._sfInitCube = function(user) {
     try {
       composer=new T.EffectComposer(renderer);
       composer.addPass(new T.RenderPass(scene,camera));
-      bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.30,0.35,0.80);
+      bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.18,0.25,0.90);
       composer.addPass(bloom);
       sfLog('composer+bloom ok');
     } catch(e) { sfLog('composer FAIL: '+e.message,'#f66'); return; }
@@ -542,9 +543,9 @@ window._sfInitCube = function(user) {
       edgeMat.opacity=0.55+0.22*Math.sin(t*2.0);
       flashM.material.opacity=0.80+0.18*Math.sin(t*3.8);
       haloM.material.opacity=0.20+0.12*Math.sin(t*2.9);
-      fill.intensity=5.0+2.0*Math.sin(t*2.2);
-      rim.intensity=3.0+1.0*Math.sin(t*1.6+1.1);
-      bloom.strength=0.28+0.08*Math.sin(t*1.4);
+      fill.intensity=0.7+0.2*Math.sin(t*2.2);
+      rim.intensity=0.5+0.15*Math.sin(t*1.6+1.1);
+      bloom.strength=0.16+0.05*Math.sin(t*1.4);
       composer.render();
     })();
 
