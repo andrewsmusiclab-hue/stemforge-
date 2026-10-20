@@ -13066,19 +13066,23 @@ function generatorPage() {
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
     <style>
+      /* ── Cube stage: cube behind, text on top ── */
       #sf-cube-stage {
         position: relative;
         width: 100%;
-        min-height: 360px;
+        min-height: 400px;
         display: flex;
         align-items: center;
         justify-content: center;
+        overflow: hidden;
+        border-radius: 12px;
       }
       @media (max-width: 768px) {
-        #sf-cube-stage { min-height: 300px; }
+        #sf-cube-stage { min-height: 340px; }
       }
+      /* Cube fills entire stage as background */
       #sf-cube-wrap {
-        display: none;
+        display: none;          /* shown by JS when admin */
         position: absolute;
         inset: 0;
         z-index: 0;
@@ -13090,13 +13094,24 @@ function generatorPage() {
         cursor: grab;
       }
       #sf-cube-canvas:active { cursor: grabbing; }
+      /* Text floats above cube, centred */
       #gen-empty {
         position: relative;
-        z-index: 1;
+        z-index: 2;
         background: transparent;
+        text-align: center;
+        padding: 24px 16px;
       }
-      #gen-empty h3, #gen-empty p {
-        text-shadow: 0 2px 16px rgba(0,0,0,1), 0 0 40px rgba(0,0,0,0.85);
+      #gen-empty h3 {
+        font-size: 1.25rem;
+        color: #fff;
+        margin-bottom: 8px;
+        text-shadow: 0 2px 20px rgba(0,0,0,1), 0 0 60px rgba(0,0,0,0.95);
+      }
+      #gen-empty p {
+        color: rgba(255,255,255,0.75);
+        font-size: 0.9rem;
+        text-shadow: 0 2px 12px rgba(0,0,0,1), 0 0 30px rgba(0,0,0,0.9);
       }
     </style>
 

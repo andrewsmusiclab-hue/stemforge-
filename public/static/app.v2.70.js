@@ -287,7 +287,7 @@ window._sfInitCube = function(user) {
 
     var stage = document.getElementById('sf-cube-stage');
     var W = (stage ? stage.clientWidth : wrap.clientWidth) || 420;
-    var H = (stage ? stage.clientHeight : 0) || 360;
+    var H = (stage ? stage.clientHeight : 0) || 400;
     canvas.width  = W;
     canvas.height = H;
 
@@ -530,7 +530,14 @@ window._sfInitCube = function(user) {
     canvas.addEventListener('touchstart',function(e){if(e.touches.length!==1)return;dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
     canvas.addEventListener('touchmove',function(e){if(!dragging||e.touches.length!==1)return;velY=(e.touches[0].clientX-lastMX)*0.007;velX=(e.touches[0].clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
     canvas.addEventListener('touchend',function(){dragging=false;resetIdle();});
-    window.addEventListener('resize',function(){var st=document.getElementById('sf-cube-stage');var nw=(st?st.clientWidth:wrap.clientWidth)||420;var nh=(st?st.clientHeight:H)||360;camera.aspect=nw/nh;camera.updateProjectionMatrix();renderer.setSize(nw,nh);composer.setSize(nw,nh);});
+    window.addEventListener('resize',function(){
+      var st=document.getElementById('sf-cube-stage');
+      var nw=(st?st.clientWidth:wrap.clientWidth)||420;
+      var nh=(st?st.clientHeight:H)||400;
+      canvas.width=nw; canvas.height=nh;
+      camera.aspect=nw/nh; camera.updateProjectionMatrix();
+      renderer.setSize(nw,nh); composer.setSize(nw,nh);
+    });
 
     // ── Render loop ────────────────────────────────────────────────────────
     var clock=new T.Clock(), rafId;
