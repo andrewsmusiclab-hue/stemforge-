@@ -241,23 +241,17 @@ function sfShowNoticeModal(notice, onDismiss) {
 
 // ── StemForge 3D Logo Cube v5 — UMD script chain, no ES modules ──────────
 window._sfInitCube = function(user) {
-  // ── DIAGNOSTIC: write to body immediately so we can see it on any page ──
-  var _dbg = document.createElement('div');
-  _dbg.id = 'sf-cube-dbg';
-  _dbg.style.cssText = 'position:fixed;bottom:60px;left:0;right:0;z-index:99999;background:rgba(0,0,0,0.85);color:#0f0;font:11px monospace;padding:6px 10px;max-height:180px;overflow-y:auto';
-  document.body.appendChild(_dbg);
-  function D(msg,col){ _dbg.innerHTML+='<div style="color:'+(col||'#0f0')+'">'+msg+'</div>'; console.log('[SFCube]',msg); }
+  function D(msg){ console.log('[SFCube]', msg); }
 
-  D('_sfInitCube called. user='+(user?user.email:'null')+' is_admin='+(user&&user.is_admin));
+  D('_sfInitCube called user='+(user?user.email:'null')+' is_admin='+(user&&user.is_admin));
   var wrap   = document.getElementById('sf-cube-wrap');
   var canvas = document.getElementById('sf-cube-canvas');
-  D('wrap='+(wrap?'FOUND':'MISSING')+' canvas='+(canvas?'FOUND':'MISSING'));
-  if (!wrap || !canvas) { D('ABORT: elements missing','#f66'); return; }
-  if (!user || !user.is_admin) { D('ABORT: not admin','#fa0'); wrap.style.display='none'; return; }
-  wrap.style.display = 'flex';
-  if (window._sfCubeActive) { D('ABORT: already active','#fa0'); return; }
+  if (!wrap || !canvas) { D('ABORT: elements missing'); return; }
+  if (!user || !user.is_admin) { wrap.style.display='none'; return; }
+  wrap.style.display = 'block';
+  if (window._sfCubeActive) { return; }
   window._sfCubeActive = true;
-  D('proceeding with script load...');
+  D('proceeding...');
 
   // Load UMD scripts in order, then run cube init
   var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
@@ -272,7 +266,7 @@ window._sfInitCube = function(user) {
     BASE128 + 'examples/js/postprocessing/UnrealBloomPass.js',
   ];
 
-  var sfLog = D; // reuse the fixed overlay logger
+  var sfLog = function(msg){ console.log('[SFCube]', msg); };
 
   function loadNext(i, done) {
     if (i >= scripts.length) { done(); return; }
@@ -291,8 +285,9 @@ window._sfInitCube = function(user) {
     if (!T) { sfLog('THREE missing!', '#f66'); return; }
     sfLog('THREE ok, PMREMGenerator='+typeof T.PMREMGenerator+' RoundedBox='+typeof T.RoundedBoxGeometry+' Bloom='+typeof T.UnrealBloomPass);
 
-    var W = (wrap.clientWidth || 420);
-    var H = 400;
+    var stage = document.getElementById('sf-cube-stage');
+    var W = (stage ? stage.clientWidth : wrap.clientWidth) || 420;
+    var H = (stage ? stage.clientHeight : 0) || 360;
     canvas.width  = W;
     canvas.height = H;
 
@@ -535,7 +530,7 @@ window._sfInitCube = function(user) {
     canvas.addEventListener('touchstart',function(e){if(e.touches.length!==1)return;dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
     canvas.addEventListener('touchmove',function(e){if(!dragging||e.touches.length!==1)return;velY=(e.touches[0].clientX-lastMX)*0.007;velX=(e.touches[0].clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
     canvas.addEventListener('touchend',function(){dragging=false;resetIdle();});
-    window.addEventListener('resize',function(){var nw=wrap.clientWidth||420;camera.aspect=nw/H;camera.updateProjectionMatrix();renderer.setSize(nw,H);composer.setSize(nw,H);});
+    window.addEventListener('resize',function(){var st=document.getElementById('sf-cube-stage');var nw=(st?st.clientWidth:wrap.clientWidth)||420;var nh=(st?st.clientHeight:H)||360;camera.aspect=nw/nh;camera.updateProjectionMatrix();renderer.setSize(nw,nh);composer.setSize(nw,nh);});
 
     // ── Render loop ────────────────────────────────────────────────────────
     var clock=new T.Clock(), rafId;

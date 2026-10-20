@@ -11330,7 +11330,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-140'
+const ASSET_VER = '20261019-141'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13065,36 +13065,40 @@ function generatorPage() {
   <div class="suno-right">
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
-    <div id="sf-cube-wrap" style="display:none;width:100%;position:relative">
-      <style>
-        #sf-cube-wrap {
-          width:100%;
-          display:flex;
-          flex-direction:column;
-          align-items:center;
-          justify-content:center;
-          padding:0 0 8px;
-          position:relative;
-        }
-        #sf-cube-canvas {
-          width:100% !important;
-          height:400px !important;
-          display:block;
-          cursor:grab;
-        }
-        #sf-cube-canvas:active { cursor:grabbing; }
-        #sf-cube-badge {
-          font-size:.65rem;
-          color:rgba(0,229,255,.4);
-          letter-spacing:.14em;
-          font-weight:700;
-          margin-top:2px;
-          margin-bottom:8px;
-        }
-      </style>
-      <canvas id="sf-cube-canvas"></canvas>
-      <div id="sf-cube-badge">ADMIN PREVIEW</div>
-    </div><!-- /sf-cube-wrap -->
+    <style>
+      #sf-cube-stage {
+        position: relative;
+        width: 100%;
+        min-height: 360px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      @media (max-width: 768px) {
+        #sf-cube-stage { min-height: 300px; }
+      }
+      #sf-cube-wrap {
+        display: none;
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+      }
+      #sf-cube-canvas {
+        width: 100% !important;
+        height: 100% !important;
+        display: block;
+        cursor: grab;
+      }
+      #sf-cube-canvas:active { cursor: grabbing; }
+      #gen-empty {
+        position: relative;
+        z-index: 1;
+        background: transparent;
+      }
+      #gen-empty h3, #gen-empty p {
+        text-shadow: 0 2px 16px rgba(0,0,0,1), 0 0 40px rgba(0,0,0,0.85);
+      }
+    </style>
 
     <!-- Pipeline status - dual project-card style beat cards -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
@@ -13205,12 +13209,19 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- Empty state -->
-    <div class="gen-empty" id="gen-empty">
-      <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
-      <h3>Your beat will appear here.</h3>
-      <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
-    </div>
+    <!-- Empty state + cube background stage -->
+    <div id="sf-cube-stage">
+      <!-- Cube canvas — absolute background, z-index 0 -->
+      <div id="sf-cube-wrap">
+        <canvas id="sf-cube-canvas"></canvas>
+      </div>
+      <!-- Text overlay — z-index 1, floats above cube -->
+      <div class="gen-empty" id="gen-empty">
+        <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
+        <h3>Your beat will appear here.</h3>
+        <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
+      </div>
+    </div><!-- /sf-cube-stage -->
 
     <!-- Error state -->
     <div class="gen-error" id="gen-error" style="display:none">
