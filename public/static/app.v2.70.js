@@ -1901,24 +1901,44 @@ document.addEventListener('DOMContentLoaded', () => {
   // ── 3-Tab Create Page System ────────────────────────────────────
   window.switchCreateTab = function(tab) {
     var tabs = ['mix','create','voices'];
+
+    // Step 1: hide all panels immediately
     tabs.forEach(function(t) {
       var btn   = document.getElementById('cptab-' + t);
       var panel = document.getElementById('create-tab-' + t);
       if (btn)   btn.classList.toggle('active', t === tab);
-      if (panel) {
-        // Use explicit 'block' (not '') to guarantee layout recalculation
-        panel.style.display = (t === tab) ? 'block' : 'none';
+      if (panel) panel.style.display = 'none';
+    });
+
+    // Step 2: show target panel on next frame — guarantees layout recalc & animation
+    requestAnimationFrame(function() {
+      var targetPanel = document.getElementById('create-tab-' + tab);
+      if (targetPanel) {
+        targetPanel.style.display = 'block';
+        // Force a reflow on the panel to restart ctabIn animation
+        void targetPanel.offsetHeight;
+        // Remove and re-add animation class to retrigger
+        targetPanel.style.animation = 'none';
+        void targetPanel.offsetHeight;
+        targetPanel.style.animation = '';
       }
     });
-    // Update content wrapper border-glow class to match active tab
+
+    // Step 3: update content wrapper border-glow class
     var content = document.getElementById('create-tabs-content');
     if (content) {
       content.classList.remove('tab-mix-active','tab-create-active','tab-voices-active');
       content.classList.add('tab-' + tab + '-active');
-      // Force reflow so animation re-triggers on every tab switch
-      void content.offsetHeight;
+      void content.offsetHeight; // force reflow
     }
-    // When switching to Voices tab, load voice status
+
+    // Step 4: scroll tab into view on mobile (smooth)
+    var tabBar = document.getElementById('create-page-tabs');
+    if (tabBar && window.innerWidth < 900) {
+      tabBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // Step 5: when switching to Voices tab, load voice status
     if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {
       window.loadVoiceStatus();
     }

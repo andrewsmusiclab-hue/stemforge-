@@ -1884,21 +1884,11 @@ p  { color: var(--sub); }
 .suno-left {
   display: flex;
   flex-direction: column;
-  gap: 0;                    /* gaps managed per-section */
-  padding: 20px 0 20px 0;   /* no horizontal padding — tab system fills full width */
+  gap: 0;
+  padding: 16px 0 16px 0;   /* zero horizontal — tabs bleed edge-to-edge */
   border-right: 1px solid var(--border);
   background: var(--surface);
   min-height: 100vh;
-}
-/* Tab bar + content sit flush to suno-left edges */
-.create-page-tabs,
-.create-tabs-content {
-  margin: 0;
-}
-/* Anything ABOVE the tab bar or BELOW the content box gets padding back */
-.suno-left > *:not(.create-page-tabs):not(.create-tabs-content) {
-  padding-left: 20px;
-  padding-right: 16px;
 }
 
 /* ── Right column: results / empty state */
@@ -2337,7 +2327,7 @@ p  { color: var(--sub); }
   }
   .suno-right {
     padding: 20px 16px;
-    order: -1; /* results above controls on mobile */
+    order: 2; /* inputs (order:1) always come first, result below */
   }
   .suno-tab { padding: 5px 8px; font-size: .72rem; }
   .suno-create-btn { border-radius: 12px; }
@@ -4344,8 +4334,10 @@ body {
   border-radius: 0 0 16px 16px;
   border-top: 2px solid rgba(255,255,255,.13);
   background: rgba(8,14,26,.97);
-  padding: 20px 16px 8px;
+  padding: 20px 16px 12px;
   transition: border-color .2s ease, box-shadow .2s ease;
+  overflow: visible;           /* never clip tab panel content */
+  min-height: 80px;            /* always has some height — never collapses */
 }
 .create-tabs-content.tab-mix-active {
   border-color: rgba(20,184,166,.4);
@@ -4368,6 +4360,9 @@ body {
 
 /* ── Tab panels — slide-in animation when switching ── */
 .create-tab-panel {
+  display: block;              /* explicit block — never inherits wrong display */
+  width: 100%;
+  overflow: visible;
   animation: ctabIn .2s ease;
 }
 @keyframes ctabIn {
@@ -4877,15 +4872,35 @@ html, body {
     grid-template-columns: 1fr;
     width: 100%;
     overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
   }
+  /* On mobile: tabs/inputs FIRST (top), result box SECOND (below) */
   .suno-left {
-    padding: 12px 12px;
-    gap: 10px;
+    order: 1;                  /* inputs first on mobile */
+    padding: 0;                /* no outer padding — tab system is edge-to-edge */
+    gap: 0;
     width: 100%;
     min-width: 0;
     overflow-x: hidden;
+    min-height: unset;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  /* Tab content wrapper: inner padding on mobile */
+  .create-tabs-content {
+    padding: 14px 12px 12px;
+    border-radius: 0 0 10px 10px;
+    overflow: visible !important;  /* never clip content */
+  }
+  /* Tab panels must be visible when active */
+  .create-tab-panel {
+    display: block !important;
+    width: 100%;
+    overflow: visible;
   }
   .suno-right {
+    order: 2;                  /* result below on mobile */
     padding: 12px 12px;
     width: 100%;
     min-width: 0;
@@ -4896,7 +4911,8 @@ html, body {
   .suno-card, .suno-card--slim {
     width: 100%;
     min-width: 0;
-    overflow: hidden;
+    overflow-x: hidden;        /* clip horizontal only — never clip vertical content */
+    overflow-y: visible;
   }
   .suno-card__header {
     padding: 12px 12px 12px 10px;
@@ -5169,8 +5185,14 @@ html, body {
 
 /* ── Extra-small screens (≤ 390px — iPhone SE, etc.) ────────── */
 @media (max-width: 390px) {
-  .suno-left, .suno-right {
+  .suno-left {
+    padding: 0; /* keep edge-to-edge for tabs */
+  }
+  .suno-right {
     padding: 10px 10px;
+  }
+  .create-tabs-content {
+    padding: 12px 10px 10px;
   }
   .creator-tab-btn {
     font-size: .65rem;
