@@ -1322,6 +1322,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (voiceBtn && user.is_admin) {
           voiceBtn.style.display = '';
         }
+        // VoiceForge library tab — also admin-only
+        var voiceLibTab = document.getElementById('lib-tab-voice');
+        if (voiceLibTab && user.is_admin) {
+          voiceLibTab.style.display = '';
+        }
       })();
 
       // ── TikTok identify — link this session to the known user ─
@@ -1643,11 +1648,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════
 
   // Track which tabs have been fetched so we only fetch once per session
-  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false, covers: false };
+  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false, covers: false, voice: false };
   // Expose on window so external code (generator, extend) can invalidate cache
   window._libLoaded = _libLoaded;
   // Cached project arrays per tab (for client-side search)
-  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [], covers: [] };
+  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [], covers: [], voice: [] };
   let   _libActive  = 'beats';
 
   // ── Stable unique hue from any ID string ───────────────────
@@ -2170,6 +2175,7 @@ document.addEventListener('DOMContentLoaded', () => {
         oneshots: '<i class="fas fa-bolt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No one shots yet. Head to the <a href="/generator">Generator</a> to create some!</p>',
         trash:    '<i class="fas fa-trash-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>Trash is empty.</p>',
         remixes:  '<i class="fas fa-wand-magic-sparkles" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#a855f7"></i><p>No remixes yet. Upload a track on the Create page to remix it!</p>',
+        voice:    '<i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the VoiceForge panel!</p>',
       };
       gridEl.innerHTML = `<div class="project-grid-empty">${emptyMsgs[tab]||''}</div>`;
       return;
@@ -2253,14 +2259,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
     });
     // Show/hide panels
-    ['beats','extended','oneshots','uploads','trash','remixes','covers'].forEach(t => {
+    ['beats','extended','oneshots','uploads','trash','remixes','covers','voice'].forEach(t => {
       const panel = document.getElementById('lib-panel-' + t);
       if (panel) panel.style.display = t === tab ? '' : 'none';
     });
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…', voice: 'Search VoiceForge songs…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -2280,6 +2286,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } else if (tab === 'covers') {
       if (window.fetchCoversTab) window.fetchCoversTab();
+    } else if (tab === 'voice') {
+      fetchVoiceTab();
     } else {
       fetchLibTab(tab);
     }
@@ -2344,6 +2352,64 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Expose so override + retry button can call it
   window.fetchUploadsTab = fetchUploadsTab;
+
+  // ── Fetch VoiceForge tab ────────────────────────────────────
+  async function fetchVoiceTab() {
+    var gridEl = document.getElementById('project-grid-voice');
+    if (!gridEl) return;
+    if (_libLoaded.voice) { renderVoiceGrid(gridEl, _libData.voice); return; }
+    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading\u2026</div>';
+    try {
+      var res = await fetch('/api/projects?tab=voice');
+      if (!res.ok) {
+        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
+        return;
+      }
+      var data = await res.json();
+      _libData.voice = data.projects || [];
+      _libLoaded.voice = true;
+      updateTabCount('voice', _libData.voice.length);
+      renderVoiceGrid(gridEl, _libData.voice);
+    } catch(e) {
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
+    }
+  }
+  window.fetchVoiceTab = fetchVoiceTab;
+
+  // ── Render VoiceForge cards ─────────────────────────────────
+  function renderVoiceGrid(gridEl, songs) {
+    if (!gridEl) return;
+    if (!songs || songs.length === 0) {
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the VoiceForge panel!</p></div>';
+      return;
+    }
+    var html = '';
+    songs.forEach(function(s) {
+      var hue = s.thumbnail_seed || 28; // orange-ish default
+      var title = s.title || 'Voice Song';
+      var audioUrl = s.audio_url || s.stereo_url || '';
+      var created = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
+      html += '<div class="project-card" style="--card-hue:' + hue + '">' +
+        '<div class="project-card__art project-card__art--' + ((hue % 8) + 1) + '" style="background:linear-gradient(135deg,hsl(' + hue + ',70%,35%),hsl(' + ((hue+40)%360) + ',60%,20%))">' +
+          '<i class="fas fa-microphone" style="font-size:28px;color:rgba(255,255,255,.7)"></i>' +
+        '</div>' +
+        '<div class="project-card__body">' +
+          '<div class="project-card__title">' + title + '</div>' +
+          '<div class="project-card__meta" style="color:var(--muted);font-size:.78rem">' + created + '</div>' +
+        '</div>' +
+        (audioUrl ? '<div class="project-card__actions">' +
+          '<a href="' + audioUrl + '" target="_blank" download class="btn btn--ghost btn--xs" title="Download"><i class="fas fa-download"></i></a>' +
+          '<button class="btn btn--ghost btn--xs" title="Play" onclick="(function(el,u){' +
+            'var a=el.closest(\'.project-card\').querySelector(\'.vc-audio-el\');' +
+            'if(!a){a=document.createElement(\'audio\');a.className=\'vc-audio-el\';a.src=u;a.controls=false;a.style.display=\'none\';el.closest(\'.project-card\').appendChild(a);}' +
+            'if(a.paused){a.play();el.innerHTML=\'<i class=\\\"fas fa-pause\\\"></i>\';}else{a.pause();a.currentTime=0;el.innerHTML=\'<i class=\\\"fas fa-play\\\"></i>\';}' +
+            'a.onended=function(){el.innerHTML=\'<i class=\\\"fas fa-play\\\"></i>\';};' +
+          '})(this,\'' + audioUrl.replace(/'/g, "\\'") + '\')"><i class="fas fa-play"></i></button>' +
+        '</div>' : '') +
+      '</div>';
+    });
+    gridEl.innerHTML = html;
+  }
 
   // ── Render uploads grid ─────────────────────────────────────
   function renderUploadsGrid(gridEl, uploads) {

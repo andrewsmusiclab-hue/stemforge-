@@ -5524,6 +5524,36 @@ app.get('/api/projects', async (c) => {
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
+    } else if (tab === 'voice') {
+      // VoiceForge songs — from voice_jobs table (admin-only check happens on client)
+      const vRes = await c.env.DB.prepare(
+        `SELECT id, user_id, title, audio_url, status, created_at FROM voice_jobs
+         WHERE user_id = ? AND type = 'generate' AND status = 'succeeded'
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      const voiceRows = vRes.results || []
+      const voiceProjects = voiceRows.map((r: any) => ({
+        id: r.id,
+        title: r.title || 'Voice Song',
+        prompt: r.title || 'Voice Song',
+        is_voice: true,
+        audio_url: r.audio_url || null,
+        stereo_url: r.audio_url || null,
+        created_at: r.created_at,
+        status: 'ready',
+        thumbnail_seed: r.id.split('').reduce((a: number, ch: string) => a + ch.charCodeAt(0), 0) % 360,
+        image_url: null,
+        blueprint: null,
+        is_oneshot: false,
+        deleted_at: null,
+        days_until_purge: null,
+        sound_type: null,
+        user_lyrics: null,
+        extend_task_type: null,
+        source_job_id: null,
+        continue_at_ms: null,
+      }))
+      return c.json({ projects: voiceProjects })
     } else {
       // beats tab: regular beats (not one-shots, not extended, not remixes, not covers), not deleted
       // Note: song_generate ext_type is a relic of the old two-song feature — those are valid beats
@@ -11408,7 +11438,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-150'
+const ASSET_VER = '20261020-151'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14186,6 +14216,10 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
+    <!-- VoiceForge tab — hidden by default, JS reveals for admin only -->
+    <button class="lib-tab lib-tab--voice" data-tab="voice" id="lib-tab-voice" onclick="switchLibTab('voice')" style="display:none">
+      <i class="fas fa-microphone" style="color:#f97316"></i> <span style="color:#fb923c">VoiceForge</span>
+    </button>
   </div>
 
   <!-- Search bar (shared, updates with active tab) -->
@@ -14238,6 +14272,16 @@ function dashboardPage() {
       <i class="fas fa-info-circle"></i> Items are permanently deleted after 60 days in Trash.
     </div>
     <div class="project-grid" id="project-grid-trash">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <!-- VoiceForge tab panel — admin-only -->
+  <div id="lib-panel-voice" style="display:none">
+    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-microphone" style="color:#f97316"></i>
+      <span style="color:#fb923c">Songs generated with your VoiceForge voice.</span>
+    </div>
+    <div class="project-grid" id="project-grid-voice">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
