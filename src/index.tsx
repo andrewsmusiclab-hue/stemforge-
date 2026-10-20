@@ -11438,7 +11438,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-158'
+const ASSET_VER = '20261020-159'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12866,6 +12866,8 @@ function generatorPage() {
         </div>
       </div>
       <p style="font-size:.78rem;color:rgba(255,255,255,.35);margin:0">Cover generation usually takes 1–3 minutes</p>
+
+    </div><!-- /cover-processing-overlay -->
 
     </div><!-- /create-tab-mix -->
 
