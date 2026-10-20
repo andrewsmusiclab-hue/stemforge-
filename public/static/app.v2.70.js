@@ -453,7 +453,7 @@ window._sfInitCube = function(user) {
         map:tex,
         emissiveMap:tex,
         emissive:new T.Color(0xffffff),
-        emissiveIntensity:0.7,
+        emissiveIntensity:0.35,
         roughness:0.55,
         metalness:0.0,
         side:T.DoubleSide,
@@ -471,14 +471,25 @@ window._sfInitCube = function(user) {
     var steel=new T.MeshPhysicalMaterial({color:0xb0c8e0,metalness:0.96,roughness:0.08,clearcoat:0.9,clearcoatRoughness:0.04,envMap:envMap,envMapIntensity:3.0});
     var dsteel=new T.MeshPhysicalMaterial({color:0x2a3a4a,metalness:0.9,roughness:0.2,envMap:envMap,envMapIntensity:1.2});
     var wood=new T.MeshStandardMaterial({color:0x5a3010,metalness:0.0,roughness:0.85});
+    // Head centred at hammerG local origin
     var headM=new T.Mesh(new T.RoundedBoxGeometry(0.82,0.46,0.38,4,0.05),steel); hammerG.add(headM);
+    // Face bands on head ends
     [-0.38,0.38].forEach(function(x){var fm=new T.Mesh(new T.BoxGeometry(0.06,0.38,0.30),dsteel);fm.position.x=x;hammerG.add(fm);});
-    var handleM=new T.Mesh(new T.CylinderGeometry(0.058,0.048,1.5,16),wood); handleM.position.set(0.58,-0.65,0); handleM.rotation.z=0.5; hammerG.add(handleM);
-    var collarM=new T.Mesh(new T.CylinderGeometry(0.09,0.09,0.10,16),steel); collarM.position.set(0.24,-0.20,0); collarM.rotation.z=0.5; hammerG.add(collarM);
-    // Hammer above cube, head angled down as if mid-strike
-    // rotation.z=-0.75 tilts it ~43° so head faces cube top; x tilt gives depth
-    hammerG.rotation.set(0.25, -0.18, -0.75);
-    hammerG.position.set(0.55, SIZE/2+1.30, 0.20);
+    // Handle extends UP-RIGHT from head (upper-right = handle top, lower-left = head striking down)
+    // local offset: handle goes above and to the right of head center
+    var handleM=new T.Mesh(new T.CylinderGeometry(0.058,0.048,1.6,16),wood);
+    handleM.position.set(0.50, 0.90, 0);   // up-right of head in local space
+    handleM.rotation.z=-0.52;               // tilt to align with strike angle
+    hammerG.add(handleM);
+    var collarM=new T.Mesh(new T.CylinderGeometry(0.09,0.09,0.10,16),steel);
+    collarM.position.set(0.22, 0.38, 0);
+    collarM.rotation.z=-0.52;
+    hammerG.add(collarM);
+    // Group rotation: slight tilt into scene, minimal y-spin so strike reads correctly
+    // z=0 keeps handle up-right / head down-left as logo shows
+    hammerG.rotation.set(0.20, -0.30, 0.0);
+    // Position: head just above cube top-right corner, handle reaching up off-screen-right
+    hammerG.position.set(0.55, SIZE/2+0.52, 0.18);
     cubeGroup.add(hammerG);
 
     // ── 3D Splash (child of cubeGroup) ────────────────────────────────────
@@ -503,7 +514,7 @@ window._sfInitCube = function(user) {
     try {
       composer=new T.EffectComposer(renderer);
       composer.addPass(new T.RenderPass(scene,camera));
-      bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.65,0.4,0.70);
+      bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.30,0.35,0.80);
       composer.addPass(bloom);
       sfLog('composer+bloom ok');
     } catch(e) { sfLog('composer FAIL: '+e.message,'#f66'); return; }
@@ -533,7 +544,7 @@ window._sfInitCube = function(user) {
       haloM.material.opacity=0.20+0.12*Math.sin(t*2.9);
       fill.intensity=5.0+2.0*Math.sin(t*2.2);
       rim.intensity=3.0+1.0*Math.sin(t*1.6+1.1);
-      bloom.strength=0.60+0.15*Math.sin(t*1.4);
+      bloom.strength=0.28+0.08*Math.sin(t*1.4);
       composer.render();
     })();
 
