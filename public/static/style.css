@@ -4181,7 +4181,7 @@ body {
 .create-page-tabs {
   display: flex;
   gap: 0;
-  margin-bottom: -2px;       /* overlap content box by 1 border-width so bridge lands ON the border-top */
+  margin-bottom: 0;
   position: relative;
   z-index: 10;
   align-items: flex-end;
@@ -4189,6 +4189,30 @@ body {
   overflow: visible;
   scroll-margin-top: 72px;
 }
+/*
+  The hue top-line trick:
+  A ::before on the tab bar draws a 2px colored line across the FULL width
+  at the very bottom of the tab bar. The active tab (z-index 6) sits above it
+  and its opaque background covers the portion directly under the tab head.
+  Left and right of the tab head the line shows through → looks like the
+  content box border-top connecting to the sides on both ends.
+  The color is set per active-tab state via .tab-*-active class on the bar.
+*/
+.create-page-tabs::before {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(255,255,255,.13);   /* default — overridden per tab */
+  z-index: 4;   /* below tabs (z-index 6) so active tab background covers it */
+  pointer-events: none;
+  transition: background .2s ease;
+}
+.create-page-tabs.tab-mix-active::before    { background: rgba(20,184,166,.55); }
+.create-page-tabs.tab-create-active::before { background: rgba(139,92,246,.6); }
+.create-page-tabs.tab-voices-active::before { background: rgba(245,158,11,.55); }
 
 /* ── Base tab button — folder shape ── */
 .create-page-tab {
@@ -4279,28 +4303,21 @@ body {
   padding-bottom: 20px;
 }
 /*
-  Bridge: erases ONLY the border-top of the content box that runs directly
-  under the active tab head. The hue line still shows left and right of the tab.
-
-  Math:
-    translateY(-4px)  → tab layout-bottom is 4px BELOW visual-bottom
-    margin-bottom: -2px on .create-page-tabs → tab layout-bottom overlaps content top by 2px
-    So: visual-bottom of active tab = content-box top + 4px - 2px = content-box top + 2px
-    Bridge must reach from tab layout-bottom down to cover the 2px border-top:
-      bottom: -6px (from tab layout-bottom) → enough to sit on border-top
-      height: 8px → covers 2px border + 4px translate gap + 2px safety
-    left/right: 0 → full tab width so NO hue shows under the tab head
-    z-index: 8 → above content border (z-index 5) but below tab itself (z-index 6)
+  Bridge: fills the visual gap between the active tab's raised bottom
+  (translateY -4px means layout-bottom is 4px below visual bottom) and
+  the content box top, so there is no dark sliver between them.
+  left/right: 0 — full tab width.
+  z-index: 5 — same as content box, above the ::before hue line (z-index 4).
 */
 .create-page-tab.active::after {
   content: '';
   position: absolute;
   bottom: -6px;
-  left: 0;             /* full tab width — erase border-top under entire tab head */
+  left: 0;
   right: 0;
   height: 8px;
   background: inherit;
-  z-index: 8;
+  z-index: 5;
 }
 
 /* Active MIX */
@@ -4345,17 +4362,17 @@ body {
 }
 
 /* ── Content box ──────────────────────────────────────────────────────────────
-   border-top is RESTORED — the hue line runs all 4 sides.
-   The active tab's ::after bridge covers the portion of border-top that sits
-   directly under the tab head, creating a seamless open junction there.
-   Left and right of the tab head, the top hue line remains visible,
-   connecting to the side borders → full outlined folder shape.
+   border-top: none — the top hue line is drawn by .create-page-tabs::before
+   which sits at the bottom of the tab bar across the full width. The active
+   tab's opaque background covers the ::before line under the tab head only,
+   leaving the hue visible left and right of the tab → folder shape.
+   Left/right/bottom borders provide the rest of the outline.
 */
 .create-tabs-content {
   position: relative;
   z-index: 5;
   border: 2px solid rgba(255,255,255,.13);
-  /* border-top is PRESENT — hue color shows left+right of tab; bridge hides it under tab only */
+  border-top: none;   /* top line comes from .create-page-tabs::before instead */
   border-radius: 0 0 16px 16px;
   background: rgba(8,14,26,.97);
   padding: 16px 16px 12px;
@@ -4363,8 +4380,7 @@ body {
   overflow: visible;
   min-height: 80px;
 }
-/* Per-tab hue: ALL 4 sides get the hue color.
-   The bridge (::after) erases only the portion under the active tab head. */
+/* Per-tab hue: left + right + bottom. Top hue comes from ::before on tab bar. */
 .create-tabs-content.tab-mix-active {
   border-color: rgba(20,184,166,.55);
   box-shadow:

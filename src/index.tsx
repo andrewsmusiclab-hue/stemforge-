@@ -11438,7 +11438,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-165b'
+const ASSET_VER = '20261020-166'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12655,7 +12655,7 @@ function generatorPage() {
   <div class="suno-left" id="suno-left">
 
     <!-- ── CREATE PAGE: 3-Tab Layout (Mix | Create | Voices) ─── -->
-    <div class="create-page-tabs" id="create-page-tabs">
+    <div class="create-page-tabs tab-mix-active" id="create-page-tabs">
       <button class="create-page-tab active" id="cptab-mix" onclick="switchCreateTab('mix')">
         <i class="fas fa-layer-group"></i> Mix
       </button>

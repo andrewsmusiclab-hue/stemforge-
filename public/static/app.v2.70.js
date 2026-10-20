@@ -1929,16 +1929,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    // Step 3: update content wrapper border-glow class
+    // Step 3: update content wrapper AND tab bar border-glow class
+    // (tab bar needs it too for the ::before hue top-line)
     var content = document.getElementById('create-tabs-content');
-    if (content) {
-      content.classList.remove('tab-mix-active','tab-create-active','tab-voices-active');
-      content.classList.add('tab-' + tab + '-active');
-      void content.offsetHeight; // force reflow
-    }
+    var tabBar = document.getElementById('create-page-tabs');
+    ['tab-mix-active','tab-create-active','tab-voices-active'].forEach(function(cls) {
+      if (content) content.classList.remove(cls);
+      if (tabBar)  tabBar.classList.remove(cls);
+    });
+    if (content) content.classList.add('tab-' + tab + '-active');
+    if (tabBar)  tabBar.classList.add('tab-' + tab + '-active');
 
     // Step 4: scroll tab into view on mobile (smooth)
-    var tabBar = document.getElementById('create-page-tabs');
     if (tabBar && window.innerWidth < 900) {
       tabBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
