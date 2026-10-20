@@ -4425,29 +4425,28 @@ body {
   pointer-events: none;
   z-index: 6;   /* above content, above inset glows */
 }
-/* Content box per-tab hue — side glow only, NOT bottom (metal floor covers bottom) */
+/* Content box per-tab hue — LEFT and RIGHT edge glow ONLY.
+   No top/bottom inset shadows — they bleed into the interior as coloured light.
+   The metallic ::after floor covers the bottom. The tab head glow covers the top. */
 .create-tabs-content.tab-mix-active {
   border-color: rgba(20,184,166,.65);
   box-shadow:
-    inset  6px 0 50px rgba(20,184,166,.12),
-    inset -6px 0 50px rgba(20,184,166,.12),
-    inset  0  6px 30px rgba(20,184,166,.10),
+    inset  8px 0 40px rgba(20,184,166,.14),
+    inset -8px 0 40px rgba(20,184,166,.14),
     0 4px 24px rgba(0,0,0,.45);
 }
 .create-tabs-content.tab-create-active {
   border-color: rgba(139,92,246,.75);
   box-shadow:
-    inset  6px 0 50px rgba(124,58,237,.15),
-    inset -6px 0 50px rgba(124,58,237,.15),
-    inset  0  6px 30px rgba(139,92,246,.12),
+    inset  8px 0 40px rgba(124,58,237,.16),
+    inset -8px 0 40px rgba(124,58,237,.16),
     0 4px 24px rgba(0,0,0,.45);
 }
 .create-tabs-content.tab-voices-active {
   border-color: rgba(245,158,11,.65);
   box-shadow:
-    inset  6px 0 50px rgba(245,158,11,.12),
-    inset -6px 0 50px rgba(245,158,11,.12),
-    inset  0  6px 30px rgba(245,158,11,.10),
+    inset  8px 0 40px rgba(245,158,11,.14),
+    inset -8px 0 40px rgba(245,158,11,.14),
     0 4px 24px rgba(0,0,0,.45);
 }
 
