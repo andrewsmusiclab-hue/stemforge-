@@ -4181,7 +4181,7 @@ body {
 .create-page-tabs {
   display: flex;
   gap: 0;
-  margin-bottom: 0;          /* tab bottom sits exactly flush on top of content box */
+  margin-bottom: -2px;       /* overlap content box by 1 border-width so bridge lands ON the border-top */
   position: relative;
   z-index: 10;
   align-items: flex-end;
@@ -4279,18 +4279,26 @@ body {
   padding-bottom: 20px;
 }
 /*
-  Bridge: a solid fill strip that covers the content-box border-top
-  directly under the active tab, so the tab interior flows seamlessly into the body.
-  The translateY(-4px) means layout-bottom is 4px below visual bottom.
-  We need to reach: 4px (translate gap) + 2px (content border) = 6px → use 8px for safety.
+  Bridge: erases ONLY the border-top of the content box that runs directly
+  under the active tab head. The hue line still shows left and right of the tab.
+
+  Math:
+    translateY(-4px)  → tab layout-bottom is 4px BELOW visual-bottom
+    margin-bottom: -2px on .create-page-tabs → tab layout-bottom overlaps content top by 2px
+    So: visual-bottom of active tab = content-box top + 4px - 2px = content-box top + 2px
+    Bridge must reach from tab layout-bottom down to cover the 2px border-top:
+      bottom: -6px (from tab layout-bottom) → enough to sit on border-top
+      height: 8px → covers 2px border + 4px translate gap + 2px safety
+    left/right: 0 → full tab width so NO hue shows under the tab head
+    z-index: 8 → above content border (z-index 5) but below tab itself (z-index 6)
 */
 .create-page-tab.active::after {
   content: '';
   position: absolute;
-  bottom: -8px;
-  left: 2px;           /* inset by border-width so tab side borders stay visible */
-  right: 2px;          /* same on right */
-  height: 10px;
+  bottom: -6px;
+  left: 0;             /* full tab width — erase border-top under entire tab head */
+  right: 0;
+  height: 8px;
   background: inherit;
   z-index: 8;
 }
@@ -4306,7 +4314,8 @@ body {
     inset  0  2px 18px rgba(20,184,166,.22),
     0 -4px 16px rgba(20,184,166,.15);
 }
-/* Bridge for each tab must use the exact same opaque background as the tab itself */
+/* Bridge: each active tab's ::after must use the EXACT same opaque background as that tab.
+   This paints over the border-top of the content box directly under the tab head only. */
 #cptab-mix.active::after    { background: rgba(4,24,22,.97); }
 #cptab-create.active::after { background: rgba(10,4,36,.97); }
 #cptab-voices.active::after { background: rgba(28,16,2,.97); }
@@ -4336,16 +4345,17 @@ body {
 }
 
 /* ── Content box ──────────────────────────────────────────────────────────────
-   border-top: NONE — the active tab's open bottom + bridge creates the junction.
-   The hue color comes from left + right + bottom borders only.
-   The top-left and top-right corners are square (0) so the tab side borders
-   flow straight down into the content box side borders with no gap.
+   border-top is RESTORED — the hue line runs all 4 sides.
+   The active tab's ::after bridge covers the portion of border-top that sits
+   directly under the tab head, creating a seamless open junction there.
+   Left and right of the tab head, the top hue line remains visible,
+   connecting to the side borders → full outlined folder shape.
 */
 .create-tabs-content {
   position: relative;
   z-index: 5;
   border: 2px solid rgba(255,255,255,.13);
-  border-top: none;            /* NO top border — tab head open bottom IS the top edge */
+  /* border-top is PRESENT — hue color shows left+right of tab; bridge hides it under tab only */
   border-radius: 0 0 16px 16px;
   background: rgba(8,14,26,.97);
   padding: 16px 16px 12px;
@@ -4353,8 +4363,8 @@ body {
   overflow: visible;
   min-height: 80px;
 }
-/* Per-tab hue: left + right + bottom borders glow with the tab color.
-   No border-top — that edge is the open junction with the tab head. */
+/* Per-tab hue: ALL 4 sides get the hue color.
+   The bridge (::after) erases only the portion under the active tab head. */
 .create-tabs-content.tab-mix-active {
   border-color: rgba(20,184,166,.55);
   box-shadow:
