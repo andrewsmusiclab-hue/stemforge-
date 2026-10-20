@@ -1905,13 +1905,18 @@ document.addEventListener('DOMContentLoaded', () => {
       var btn   = document.getElementById('cptab-' + t);
       var panel = document.getElementById('create-tab-' + t);
       if (btn)   btn.classList.toggle('active', t === tab);
-      if (panel) panel.style.display = (t === tab) ? '' : 'none';
+      if (panel) {
+        // Use explicit 'block' (not '') to guarantee layout recalculation
+        panel.style.display = (t === tab) ? 'block' : 'none';
+      }
     });
     // Update content wrapper border-glow class to match active tab
     var content = document.getElementById('create-tabs-content');
     if (content) {
       content.classList.remove('tab-mix-active','tab-create-active','tab-voices-active');
       content.classList.add('tab-' + tab + '-active');
+      // Force reflow so animation re-triggers on every tab switch
+      void content.offsetHeight;
     }
     // When switching to Voices tab, load voice status
     if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {

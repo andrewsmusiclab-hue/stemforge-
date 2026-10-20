@@ -1884,11 +1884,21 @@ p  { color: var(--sub); }
 .suno-left {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 20px 16px 20px 20px;
+  gap: 0;                    /* gaps managed per-section */
+  padding: 20px 0 20px 0;   /* no horizontal padding — tab system fills full width */
   border-right: 1px solid var(--border);
   background: var(--surface);
   min-height: 100vh;
+}
+/* Tab bar + content sit flush to suno-left edges */
+.create-page-tabs,
+.create-tabs-content {
+  margin: 0;
+}
+/* Anything ABOVE the tab bar or BELOW the content box gets padding back */
+.suno-left > *:not(.create-page-tabs):not(.create-tabs-content) {
+  padding-left: 20px;
+  padding-right: 16px;
 }
 
 /* ── Right column: results / empty state */
@@ -4165,167 +4175,203 @@ body {
   box-shadow: 0 4px 20px rgba(124,58,237,.6), 0 0 0 2px rgba(139,92,246,.4);
 }
 
-/* ══ CREATE PAGE 3-TAB SYSTEM ══════════════════════════════════ */
-
+/* ══ CREATE PAGE 3-TAB FOLDER SYSTEM ═══════════════════════════ */
 /*
-  Layout concept (from wireframe):
-  - CREATE tab is visually "on top" — no bottom border, content flows down
-  - MIX and VOICES sit slightly behind CREATE — they have a visible lower
-    capsule boundary line, like browser back-tabs
-  - Each tab has its own color hue on the INNER border glow (pic 2 reference)
-  - Inactive tabs are dimmed + blurred so active tab is clearly in focus
+  Visual: Stacked folder tabs — like physical file folders in a drawer.
+  - Active tab POPS UP (translateY(-4px)) above the others
+  - Inactive tabs are pushed back (translateY(4px)) and dimmed
+  - Each tab has a FULL-HEIGHT colored border on left + right + top sides
+  - Active tab's bottom border is removed so it bleeds into the content box
+  - Content box border matches the active tab's hue
+  - Folder effect: tab 1 (Mix) is leftmost/front of stack visually,
+    tabs overlap slightly (negative margin) to create stacked depth
 */
 
-/* Tab row wrapper — no background, just positions the 3 tabs */
+/* ── Tab row wrapper ── */
 .create-page-tabs {
   display: flex;
   gap: 0;
-  margin-bottom: 0;          /* NO gap — active tab flows into content */
+  margin-bottom: -1px;       /* overlap the content box top border */
   position: relative;
   z-index: 10;
-  align-items: flex-end;     /* tabs sit at bottom of the row */
-  padding: 0 2px;
+  align-items: flex-end;
+  padding: 0;
 }
 
-/* ── Base tab button ── */
+/* ── Base tab button — folder shape ── */
 .create-page-tab {
-  flex: 1;
   position: relative;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 12px 8px 14px;   /* extra bottom pad so active tab overlaps border */
-  border: 1px solid rgba(255,255,255,.12);
-  border-bottom: none;       /* bottom removed — tab "opens" into content */
-  border-radius: 14px 14px 0 0;
-  background: rgba(12,20,40,.6);
-  color: rgba(255,255,255,.35);
-  font-size: .88rem;
+  gap: 8px;
+  padding: 13px 10px 15px;
+  border: 2px solid rgba(255,255,255,.13);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  background: rgba(10,16,34,.72);
+  color: rgba(255,255,255,.3);
+  font-size: .85rem;
   font-weight: 700;
   cursor: pointer;
-  transition: color .2s ease, background .2s ease, filter .2s ease,
-              box-shadow .2s ease, transform .15s ease;
-  letter-spacing: .02em;
-  filter: blur(0.5px) brightness(0.65);
+  letter-spacing: .03em;
+  /* Default: pushed back, dimmed — inactive "folder behind" */
+  transform: translateY(4px);
+  filter: brightness(0.6) blur(0.4px);
+  transition:
+    transform .2s cubic-bezier(.34,1.56,.64,1),
+    filter .2s ease,
+    color .2s ease,
+    background .2s ease,
+    border-color .2s ease,
+    box-shadow .2s ease;
   z-index: 1;
-  /* Inner color glow via box-shadow inset — default (no hue) */
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+  margin-right: -1px;        /* folder overlap — tabs share edge */
 }
-.create-page-tab i { font-size: .88rem; }
+.create-page-tab:last-child { margin-right: 0; }
+.create-page-tab i { font-size: .9rem; flex-shrink: 0; }
 
-/* Side tabs (Mix + Voices) sit slightly shorter — behind effect */
-#cptab-mix,
-#cptab-voices {
-  padding-bottom: 10px;
-  transform: translateY(3px); /* pushed down — Create sits higher */
-  z-index: 1;
-}
-
-/* ── MIX tab: teal/cyan inner glow ── */
+/* ── MIX: teal full-border glow ── */
 #cptab-mix {
-  border-color: rgba(20,184,166,.22);
+  border-color: rgba(20,184,166,.28);
+  /* Full-height inner glow on left + right + top */
   box-shadow:
-    inset 0 0 18px rgba(20,184,166,.10),
-    inset 0 1px 0 rgba(20,184,166,.18);
+    inset  2px 0 14px rgba(20,184,166,.10),
+    inset -2px 0 14px rgba(20,184,166,.10),
+    inset  0  2px 12px rgba(20,184,166,.12);
 }
-#cptab-mix.active,
-#cptab-mix:hover {
-  border-color: rgba(20,184,166,.55);
-  box-shadow:
-    inset 0 0 28px rgba(20,184,166,.22),
-    inset 0 1px 0 rgba(20,184,166,.4),
-    inset 0 -2px 12px rgba(20,184,166,.12);
-  color: #5eead4;
+#cptab-mix:hover:not(.active) {
+  filter: brightness(0.8);
+  border-color: rgba(20,184,166,.45);
+  color: rgba(94,234,212,.6);
 }
 
-/* ── CREATE tab: purple/blue inner glow — sits on top ── */
+/* ── CREATE: purple full-border glow ── */
 #cptab-create {
-  border-color: rgba(124,58,237,.3);
+  border-color: rgba(124,58,237,.32);
   box-shadow:
-    inset 0 0 24px rgba(124,58,237,.14),
-    inset 0 1px 0 rgba(139,92,246,.28);
-  z-index: 3;                /* above Mix and Voices */
-  padding-bottom: 16px;      /* tallest tab */
-  transform: translateY(0);  /* sits highest */
-  background: rgba(18,10,50,.75);
+    inset  2px 0 14px rgba(124,58,237,.12),
+    inset -2px 0 14px rgba(124,58,237,.12),
+    inset  0  2px 12px rgba(139,92,246,.14);
+  background: rgba(14,8,38,.78);
 }
-#cptab-create.active,
-#cptab-create:hover {
-  border-color: rgba(139,92,246,.65);
-  box-shadow:
-    inset 0 0 36px rgba(124,58,237,.28),
-    inset 0 1px 0 rgba(168,85,247,.5),
-    inset 0 -2px 16px rgba(124,58,237,.18);
-  color: #c4b5fd;
+#cptab-create:hover:not(.active) {
+  filter: brightness(0.8);
+  border-color: rgba(139,92,246,.5);
+  color: rgba(196,181,253,.6);
 }
 
-/* ── VOICES tab: amber/orange inner glow ── */
+/* ── VOICES: amber full-border glow ── */
 #cptab-voices {
-  border-color: rgba(245,158,11,.22);
+  border-color: rgba(245,158,11,.28);
   box-shadow:
-    inset 0 0 18px rgba(245,158,11,.10),
-    inset 0 1px 0 rgba(245,158,11,.18);
+    inset  2px 0 14px rgba(245,158,11,.10),
+    inset -2px 0 14px rgba(245,158,11,.10),
+    inset  0  2px 12px rgba(245,158,11,.12);
 }
-#cptab-voices.active,
-#cptab-voices:hover {
-  border-color: rgba(245,158,11,.55);
-  box-shadow:
-    inset 0 0 28px rgba(245,158,11,.22),
-    inset 0 1px 0 rgba(251,191,36,.4),
-    inset 0 -2px 12px rgba(245,158,11,.12);
-  color: #fcd34d;
+#cptab-voices:hover:not(.active) {
+  filter: brightness(0.8);
+  border-color: rgba(245,158,11,.45);
+  color: rgba(252,211,77,.6);
 }
 
-/* ── ACTIVE state for ALL tabs: unblur, full brightness, elevated ── */
+/* ── ACTIVE state: tab POPS UP to front ── */
 .create-page-tab.active {
+  transform: translateY(-4px);   /* POP: lifts above the others */
   filter: none;
   color: #fff;
-  background: rgba(8,14,26,.95);
-  z-index: 5;
+  z-index: 6;
   cursor: default;
+  border-bottom: 2px solid transparent; /* hides bottom so it merges with content */
+  padding-bottom: 17px; /* compensate for removed border bottom */
+}
+/* Active tab bottom must exactly cover the content box top border line */
+.create-page-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: inherit; /* same bg as tab — erases the content-box top border underneath */
 }
 
-/* Mix active */
-#cptab-mix.active { color: #5eead4; background: rgba(4,22,20,.92); }
-/* Create active */
-#cptab-create.active { color: #c4b5fd; background: rgba(14,6,44,.95); }
-/* Voices active */
-#cptab-voices.active { color: #fcd34d; background: rgba(28,18,4,.92); }
+/* Active MIX */
+#cptab-mix.active {
+  background: rgba(4,24,22,.97);
+  border-color: rgba(20,184,166,.65);
+  color: #5eead4;
+  box-shadow:
+    inset  2px 0 22px rgba(20,184,166,.2),
+    inset -2px 0 22px rgba(20,184,166,.2),
+    inset  0  2px 18px rgba(20,184,166,.22),
+    0 -4px 16px rgba(20,184,166,.15);
+}
+#cptab-mix.active::after { background: rgba(4,24,22,.97); }
 
-/* ── Content area — sits directly below the tabs, connected ── */
+/* Active CREATE */
+#cptab-create.active {
+  background: rgba(10,4,36,.97);
+  border-color: rgba(139,92,246,.72);
+  color: #c4b5fd;
+  box-shadow:
+    inset  2px 0 22px rgba(124,58,237,.25),
+    inset -2px 0 22px rgba(124,58,237,.25),
+    inset  0  2px 18px rgba(139,92,246,.28),
+    0 -4px 18px rgba(124,58,237,.2);
+}
+#cptab-create.active::after { background: rgba(10,4,36,.97); }
+
+/* Active VOICES */
+#cptab-voices.active {
+  background: rgba(28,16,2,.97);
+  border-color: rgba(245,158,11,.65);
+  color: #fcd34d;
+  box-shadow:
+    inset  2px 0 22px rgba(245,158,11,.2),
+    inset -2px 0 22px rgba(245,158,11,.2),
+    inset  0  2px 18px rgba(245,158,11,.22),
+    0 -4px 16px rgba(245,158,11,.15);
+}
+#cptab-voices.active::after { background: rgba(28,16,2,.97); }
+
+/* ── Content box: connected to active tab ── */
 .create-tabs-content {
   position: relative;
-  z-index: 4;
-  border: 1px solid rgba(255,255,255,.12);
-  border-radius: 0 0 14px 14px;
-  border-top: none;
-  background: rgba(8,14,26,.95);
-  padding: 18px 0 4px;
-  /* Inner glow changes per active tab — driven by JS class on this element */
+  z-index: 5;
+  border: 2px solid rgba(255,255,255,.13);
+  border-radius: 0 0 16px 16px;
+  border-top: 2px solid rgba(255,255,255,.13);
+  background: rgba(8,14,26,.97);
+  padding: 20px 16px 8px;
+  transition: border-color .2s ease, box-shadow .2s ease;
 }
-/* Teal left edge when Mix is active */
 .create-tabs-content.tab-mix-active {
-  border-color: rgba(20,184,166,.28);
-  box-shadow: inset 0 0 32px rgba(20,184,166,.06);
+  border-color: rgba(20,184,166,.4);
+  box-shadow:
+    inset 0 0 40px rgba(20,184,166,.05),
+    0 4px 24px rgba(0,0,0,.4);
 }
-/* Purple edge when Create is active */
 .create-tabs-content.tab-create-active {
-  border-color: rgba(124,58,237,.32);
-  box-shadow: inset 0 0 32px rgba(124,58,237,.07);
+  border-color: rgba(139,92,246,.45);
+  box-shadow:
+    inset 0 0 40px rgba(124,58,237,.06),
+    0 4px 24px rgba(0,0,0,.4);
 }
-/* Amber edge when Voices is active */
 .create-tabs-content.tab-voices-active {
-  border-color: rgba(245,158,11,.28);
-  box-shadow: inset 0 0 32px rgba(245,158,11,.06);
+  border-color: rgba(245,158,11,.4);
+  box-shadow:
+    inset 0 0 40px rgba(245,158,11,.05),
+    0 4px 24px rgba(0,0,0,.4);
 }
 
-/* ── Tab panels — full width inside the content box ── */
+/* ── Tab panels — slide-in animation when switching ── */
 .create-tab-panel {
-  animation: ctabIn .22s ease;
+  animation: ctabIn .2s ease;
 }
 @keyframes ctabIn {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
