@@ -9010,21 +9010,19 @@ app.post('/api/voice/upload-audio', async (c) => {
   return c.json({ ok: true, url: publicUrl })
 })
 
-// GET /api/voice/sample/:key — stream a voice sample from R2 (auth required, owner or admin)
+// GET /api/voice/sample/:key — stream a voice sample from R2
+// PUBLIC (no session required) — the key is an unguessable secret token
+// (voice-samples/u_xxx-timestamp.ext), so obscurity is the access control.
+// This is required so the external voice AI can fetch the audio file.
 app.get('/api/voice/sample/:key', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user  = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Unauthorised' }, 401)
+  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
 
   const key = decodeURIComponent(c.req.param('key'))
-  // Only allow access to own samples (or admin)
-  const ownerPrefix = `voice-samples/${user.id}-`
-  if (!key.startsWith(ownerPrefix) && !isAdmin(user, c.env)) {
-    return c.json({ error: 'Forbidden' }, 403)
+  // Safety: only serve files inside the voice-samples/ prefix
+  if (!key.startsWith('voice-samples/')) {
+    return c.json({ error: 'Not found' }, 404)
   }
 
-  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
   const obj = await c.env.IMAGES.get(key)
   if (!obj) return c.json({ error: 'Not found' }, 404)
 
@@ -9032,7 +9030,8 @@ app.get('/api/voice/sample/:key', async (c) => {
   return new Response(obj.body, {
     headers: {
       'Content-Type': ct,
-      'Cache-Control': 'private, max-age=3600',
+      'Cache-Control': 'public, max-age=3600',
+      'Access-Control-Allow-Origin': '*',
     },
   })
 })
@@ -11330,7 +11329,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-145'
+const ASSET_VER = '20261019-146'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
