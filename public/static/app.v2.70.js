@@ -418,7 +418,7 @@ window._sfInitCube = function(user) {
     scene.add(cubeGroup);
 
     // ── Cube body ──────────────────────────────────────────────────────────
-    var SIZE=2.3, RADIUS=0.055;
+    var SIZE=1.2, RADIUS=0.032;
     var geo = new T.RoundedBoxGeometry(SIZE,SIZE,SIZE,4,RADIUS);
     var cubeMat = new T.MeshPhysicalMaterial({
       metalness:0.9, roughness:0.12, clearcoat:0.7, clearcoatRoughness:0.07,
@@ -645,9 +645,19 @@ window._sfInitCube = function(user) {
     // ── Post-processing ────────────────────────────────────────────────────
     var composer, bloom;
     try {
-      composer=new T.EffectComposer(renderer);
-      composer.addPass(new T.RenderPass(scene,camera));
-      bloom=new T.UnrealBloomPass(new T.Vector2(W,H),0.18,0.25,0.90);
+      // Use alpha-aware render target so composer doesn't fill with opaque black
+      var rtParams = {
+        minFilter: T.LinearFilter, magFilter: T.LinearFilter,
+        format: T.RGBAFormat, stencilBuffer: false
+      };
+      var rt = new T.WebGLRenderTarget(W, H, rtParams);
+      composer = new T.EffectComposer(renderer, rt);
+      // RenderPass: clear to transparent each frame
+      var rp = new T.RenderPass(scene, camera);
+      rp.clearColor = new T.Color(0,0,0);
+      rp.clearAlpha = 0;
+      composer.addPass(rp);
+      bloom = new T.UnrealBloomPass(new T.Vector2(W,H), 0.22, 0.28, 0.88);
       composer.addPass(bloom);
       sfLog('composer+bloom ok');
     } catch(e) { sfLog('composer FAIL: '+e.message,'#f66'); return; }
@@ -668,7 +678,7 @@ window._sfInitCube = function(user) {
       var nh=(st?st.clientHeight:H)||400;
       canvas.width=nw; canvas.height=nh;
       camera.aspect=nw/nh; camera.updateProjectionMatrix();
-      renderer.setSize(nw,nh); composer.setSize(nw,nh);
+      renderer.setSize(nw,nh); composer.setSize(nw,nh); rt.setSize(nw,nh);
     });
 
     // ── Render loop ────────────────────────────────────────────────────────
@@ -693,6 +703,8 @@ window._sfInitCube = function(user) {
       fill.intensity=0.7+0.2*Math.sin(t*2.2);
       rim.intensity=0.5+0.15*Math.sin(t*1.6+1.1);
       bloom.strength=0.22+0.08*Math.sin(t*1.4);
+      renderer.setClearColor(0x000000, 0);
+      renderer.clearColor();
       composer.render();
     })();
 
