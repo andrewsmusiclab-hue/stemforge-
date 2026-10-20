@@ -255,15 +255,10 @@ window._sfInitCube = function(user) {
 
   // Load UMD scripts in order, then run cube init
   var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
+  // Only load Three.js core + RoundedBoxGeometry — no postprocessing (direct render, transparent bg)
   var scripts = [
     BASE128 + 'build/three.min.js',
     BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js',
-    BASE128 + 'examples/js/shaders/CopyShader.js',
-    BASE128 + 'examples/js/shaders/LuminosityHighPassShader.js',
-    BASE128 + 'examples/js/postprocessing/EffectComposer.js',
-    BASE128 + 'examples/js/postprocessing/RenderPass.js',
-    BASE128 + 'examples/js/postprocessing/ShaderPass.js',
-    BASE128 + 'examples/js/postprocessing/UnrealBloomPass.js',
   ];
 
   var sfLog = function(msg){ console.log('[SFCube]', msg); };
@@ -290,18 +285,21 @@ window._sfInitCube = function(user) {
     // H is FIXED — never reads clientHeight which changes when textarea expands
     var FIXED_H = window.innerWidth <= 768 ? 320 : 420;
     var H = FIXED_H;
-    canvas.width  = W;
-    canvas.height = H;
 
     // ── Renderer ──────────────────────────────────────────────────────────
     var renderer;
     try {
-      renderer = new T.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
-      renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-      renderer.setSize(W,H);
+      renderer = new T.WebGLRenderer({
+        canvas: canvas, antialias: true, alpha: true,
+        premultipliedAlpha: false,
+        powerPreference: 'high-performance'
+      });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      renderer.setSize(W, H, false);  // false = don't touch canvas CSS
       renderer.setClearColor(0x000000, 0);   // fully transparent — site bg shows through
       renderer.toneMapping         = T.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.4;
+      renderer.autoClear = false;  // clear manually each frame for transparency
       sfLog('renderer ok W='+W+' H='+H);
     } catch(e) { sfLog('renderer FAIL: '+e.message, '#f66'); return; }
 
@@ -644,25 +642,10 @@ window._sfInitCube = function(user) {
 
     cubeGroup.add(splashG);
 
-    // ── Post-processing ────────────────────────────────────────────────────
-    var composer, bloom;
-    try {
-      // Use alpha-aware render target so composer doesn't fill with opaque black
-      var rtParams = {
-        minFilter: T.LinearFilter, magFilter: T.LinearFilter,
-        format: T.RGBAFormat, stencilBuffer: false
-      };
-      var rt = new T.WebGLRenderTarget(W, H, rtParams);
-      composer = new T.EffectComposer(renderer, rt);
-      // RenderPass: clear to transparent each frame
-      var rp = new T.RenderPass(scene, camera);
-      rp.clearColor = new T.Color(0,0,0);
-      rp.clearAlpha = 0;
-      composer.addPass(rp);
-      bloom = new T.UnrealBloomPass(new T.Vector2(W,H), 0.22, 0.28, 0.88);
-      composer.addPass(bloom);
-      sfLog('composer+bloom ok');
-    } catch(e) { sfLog('composer FAIL: '+e.message,'#f66'); return; }
+    // ── No EffectComposer — direct render preserves alpha transparency ────
+    // UnrealBloomPass destroys the canvas alpha channel (writes opaque black).
+    // Emissive materials + point lights provide sufficient glow without bloom.
+    sfLog('using direct renderer (no composer) — transparent bg');
 
     // ── Interaction ────────────────────────────────────────────────────────
     var rotX=-0.20,rotY=0.55,velX=0,velY=0,dragging=false,lastMX=0,lastMY=0;
@@ -679,9 +662,8 @@ window._sfInitCube = function(user) {
       var nw=(st?st.clientWidth:wrap.clientWidth)||420;
       // Height stays fixed — never reads stage height
       var nh=window.innerWidth<=768?320:420;
-      canvas.width=nw; canvas.height=nh;
       camera.aspect=nw/nh; camera.updateProjectionMatrix();
-      renderer.setSize(nw,nh); composer.setSize(nw,nh); rt.setSize(nw,nh);
+      renderer.setSize(nw, nh, false);  // false = don't override canvas CSS
     });
 
     // ── Render loop ────────────────────────────────────────────────────────
@@ -705,10 +687,10 @@ window._sfInitCube = function(user) {
       }
       fill.intensity=0.7+0.2*Math.sin(t*2.2);
       rim.intensity=0.5+0.15*Math.sin(t*1.6+1.1);
-      bloom.strength=0.22+0.08*Math.sin(t*1.4);
+      // Direct render — fully transparent canvas, no black-box artifact
       renderer.setClearColor(0x000000, 0);
-      renderer.clearColor();
-      composer.render();
+      renderer.clear();       // clear color + depth to transparent
+      renderer.render(scene, camera);
     })();
 
     (new MutationObserver(function(){if(!document.getElementById('sf-cube-canvas'))cancelAnimationFrame(rafId);})).observe(document.body,{childList:true,subtree:true});

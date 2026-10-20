@@ -8741,17 +8741,9 @@ app.post('/api/voice/create', async (c) => {
     await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(CLONE_COST, user.id).run()
   }
 
-  // Call MusicAPI create-voice
-  let personaId: string | null = null
-  try {
-    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create-voice', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url })
-    })
-    const apiData: any = await apiRes.json()
-    if (!apiRes.ok || !apiData?.data?.persona_id) {
-      // Refund on failure
+  // Helper to refund credits on failure
+  const refundCredits = async () => {
+    try {
       if (cloneBonus > 0 && cloneMain > 0) {
         await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
       } else if (cloneBonus > 0) {
@@ -8759,22 +8751,62 @@ app.post('/api/voice/create', async (c) => {
       } else {
         await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
       }
+    } catch {}
+  }
+
+  // Step 1: Call MusicAPI create-voice → returns task_id (async job)
+  let taskId: string | null = null
+  try {
+    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create-voice', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url })
+    })
+    const apiData: any = await apiRes.json()
+    if (!apiRes.ok || !apiData?.task_id) {
+      await refundCredits()
       const rawErr = apiData?.error || apiData?.message || ''
-      console.warn('[voice/create] upstream error:', rawErr)
+      console.warn('[voice/create] upstream error:', rawErr, 'status:', apiRes.status)
       return c.json({ error: sanitiseVoiceError(rawErr, 'clone') }, 502)
     }
-    personaId = apiData.data.persona_id
+    taskId = apiData.task_id
+    console.log('[voice/create] task_id=', taskId)
   } catch (e: any) {
-    // Refund on network error
-    if (cloneBonus > 0 && cloneMain > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
-    } else if (cloneBonus > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cloneBonus, user.id).run()
-    } else {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
-    }
+    await refundCredits()
     console.warn('[voice/create] network error:', (e as any)?.message)
     return c.json({ error: 'StemForge couldn\'t reach the voice AI right now. Please try again in a moment.' }, 502)
+  }
+
+  // Step 2: Poll /sonic/task/:taskId until persona_id appears (up to 25s, 5 attempts)
+  let personaId: string | null = null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    // Wait before polling (2s first, then 5s intervals)
+    await new Promise(r => setTimeout(r, attempt === 0 ? 2000 : 5000))
+    try {
+      const pollRes = await fetch(`https://api.musicapi.ai/api/v1/sonic/task/${taskId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      const pollData: any = await pollRes.json()
+      console.log('[voice/create] poll attempt', attempt+1, 'state=', pollData?.state, 'persona_id=', pollData?.data?.persona_id || pollData?.persona_id)
+      // Check various response shapes for persona_id
+      const pid = pollData?.data?.persona_id || pollData?.persona_id || pollData?.data?.id
+      if (pid) { personaId = pid; break }
+      // If state is failed/error, stop polling
+      const st = (pollData?.state || pollData?.status || '').toLowerCase()
+      if (st === 'failed' || st === 'error' || st === 'cancelled') {
+        const rawErr = pollData?.error || pollData?.message || 'Voice cloning failed'
+        await refundCredits()
+        return c.json({ error: sanitiseVoiceError(rawErr, 'clone') }, 502)
+      }
+    } catch (e: any) {
+      console.warn('[voice/create] poll error attempt', attempt+1, ':', (e as any)?.message)
+    }
+  }
+
+  if (!personaId) {
+    // Timed out — store the task_id so user can retry or we can async-complete
+    await refundCredits()
+    return c.json({ error: 'Voice cloning is taking longer than expected. Please try again in a moment.' }, 504)
   }
 
   // Store persona_id + label on the user
@@ -9162,6 +9194,49 @@ app.get('/api/admin/ping', async (c) => {
   return c.json({ ok: true, admin: isAdmin(user, c.env), email: user?.email || null, plan: user?.plan || null, ts: Date.now() })
 })
 
+
+// POST /api/admin/voice-test — admin-only: test MusicAPI create-voice with a given audio URL
+// Also polls /sonic/task/:id to reveal the final persona_id
+app.post('/api/admin/voice-test', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user  = token ? await getSessionUser(c.env.DB, token) : null
+  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
+  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not set' }, 500)
+
+  const { audio_url, task_id: pollTaskId } = await c.req.json<{ audio_url?: string; task_id?: string }>()
+
+  // If task_id provided, just poll the task
+  if (pollTaskId) {
+    try {
+      const pollRes = await fetch(`https://api.musicapi.ai/api/v1/sonic/task/${pollTaskId}`, {
+        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
+      })
+      const rawText = await pollRes.text()
+      let parsed: any = null
+      try { parsed = JSON.parse(rawText) } catch {}
+      return c.json({ poll: true, status: pollRes.status, raw: rawText, parsed })
+    } catch (e: any) {
+      return c.json({ error: 'poll failed', message: e?.message || String(e) }, 502)
+    }
+  }
+
+  if (!audio_url) return c.json({ error: 'audio_url or task_id required' }, 400)
+
+  try {
+    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create-voice', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audio_url })
+    })
+    const rawText = await apiRes.text()
+    let parsed: any = null
+    try { parsed = JSON.parse(rawText) } catch {}
+    return c.json({ status: apiRes.status, ok: apiRes.ok, raw: rawText, parsed })
+  } catch (e: any) {
+    return c.json({ error: 'fetch failed', message: e?.message || String(e) }, 502)
+  }
+})
 
 // GET /api/admin/key-check — test all API keys are present and reachable
 app.get('/api/admin/key-check', async (c) => {
@@ -11333,7 +11408,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-148'
+const ASSET_VER = '20261020-150'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13093,24 +13168,23 @@ function generatorPage() {
         #sf-cube-stage { height: 320px; }
         .suno-right { min-height: auto !important; }
       }
-      /* Canvas wrapper — fixed, absolute inside stage */
+      /* Canvas wrapper — absolute, fills stage, transparent */
       #sf-cube-wrap {
-        display: none;            /* JS sets to flex for admin */
+        display: none;            /* JS sets to block for admin */
         position: absolute;
         inset: 0;
         z-index: 0;
         background: transparent !important;
+        overflow: hidden;
       }
-      /* Canvas fixed size — never inherits dynamic height */
+      /* Canvas: fills wrap div via CSS; renderer uses setSize(W,H,false)
+         so Three.js does NOT override these CSS values. */
       #sf-cube-canvas {
-        width: 100% !important;
-        height: 420px !important; /* matches stage fixed height */
         display: block;
+        width: 100% !important;
+        height: 100% !important;
         cursor: grab;
         background: transparent !important;
-      }
-      @media (max-width: 768px) {
-        #sf-cube-canvas { height: 320px !important; }
       }
       #sf-cube-canvas:active { cursor: grabbing; }
       /* Text centred above cube */
