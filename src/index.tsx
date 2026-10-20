@@ -898,6 +898,11 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // persona_id is the MusicAPI persona created from a user's uploaded voice sample
   try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_id TEXT`).run() } catch {}
   try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_label TEXT`).run() } catch {}
+  // VoiceForge profile: display name and avatar image URL
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_name TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_avatar TEXT`).run() } catch {}
+  // Jobs: which voiceforge persona was used to generate this track
+  try { await db.prepare(`ALTER TABLE jobs ADD COLUMN voice_forge_id TEXT`).run() } catch {}
   await db.prepare(`CREATE TABLE IF NOT EXISTS voice_jobs (
     id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL,
@@ -5616,6 +5621,8 @@ app.get('/api/projects', async (c) => {
         audio_url: d.audio_url || null,
         // Lyrics — user-typed or AI-generated, used by library lyrics panel
         user_lyrics: d.user_lyrics || null,
+        // VoiceForge linkage — set when this track was generated using a voice persona
+        voice_forge_id: d.voice_forge_id || null,
       }
     })
     return c.json({ projects })
@@ -8853,8 +8860,8 @@ app.get('/api/voice/status', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label FROM users WHERE id = ?`).bind(user.id).first<{ persona_id: string | null; persona_label: string | null }>()
-  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null })
+  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`).bind(user.id).first<any>()
+  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null, voice_name: row?.voice_name || null, voice_avatar: row?.voice_avatar || null })
 })
 
 // DELETE /api/voice/persona — remove saved persona from user
@@ -8864,6 +8871,79 @@ app.delete('/api/voice/persona', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
   await c.env.DB.prepare(`UPDATE users SET persona_id = NULL, persona_label = NULL WHERE id = ?`).bind(user.id).run()
+  return c.json({ ok: true })
+})
+
+// GET /api/voice/profile — get voice name, avatar, and tracks using this voice
+app.get('/api/voice/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const row = await c.env.DB.prepare(
+    `SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`
+  ).bind(user.id).first<any>()
+  // Get all tracks that were generated with this user's voice (voice_forge_id set)
+  const tracksRes = await c.env.DB.prepare(
+    `SELECT id, data, created_at FROM jobs
+     WHERE user_id = ? AND voice_forge_id IS NOT NULL AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT 50`
+  ).bind(user.id).all<any>()
+  const tracks = (tracksRes.results || []).map((r: any) => {
+    try {
+      const d = JSON.parse(r.data)
+      return {
+        id: r.id,
+        title: d.title || d.blueprint?.genre || 'Untitled',
+        created_at: r.created_at,
+        voice_forge_id: d.voice_forge_id,
+        audio_url: d.stereo_url || d.audio_url || null,
+      }
+    } catch { return null }
+  }).filter(Boolean)
+  return c.json({
+    persona_id: row?.persona_id || null,
+    persona_label: row?.persona_label || null,
+    voice_name: row?.voice_name || null,
+    voice_avatar: row?.voice_avatar || null,
+    tracks,
+  })
+})
+
+// PUT /api/voice/profile — save voice name and/or avatar URL
+app.put('/api/voice/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { voice_name, voice_avatar } = await c.req.json<{ voice_name?: string; voice_avatar?: string }>()
+  if (voice_name !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET voice_name = ? WHERE id = ?`).bind(voice_name.trim().slice(0,60) || null, user.id).run()
+  }
+  if (voice_avatar !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET voice_avatar = ? WHERE id = ?`).bind(voice_avatar || null, user.id).run()
+  }
+  return c.json({ ok: true })
+})
+
+// DELETE /api/voice/detach/:jobId — remove voice link from a specific track
+app.delete('/api/voice/detach/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const jobId = c.req.param('jobId')
+  // Verify ownership
+  const row = await c.env.DB.prepare(`SELECT id, data FROM jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
+  if (!row) return c.json({ error: 'Track not found' }, 404)
+  // Clear voice_forge_id from DB column
+  await c.env.DB.prepare(`UPDATE jobs SET voice_forge_id = NULL WHERE id = ?`).bind(jobId).run()
+  // Also clear from JSON data blob
+  try {
+    const d = JSON.parse(row.data)
+    delete d.voice_forge_id
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(d), jobId).run()
+  } catch {}
   return c.json({ ok: true })
 })
 
@@ -11438,7 +11518,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-170'
+const ASSET_VER = '20261020-171'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14232,8 +14312,8 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
-    <!-- VoiceForge tab — hidden by default, JS reveals for admin only -->
-    <button class="lib-tab lib-tab--voice" data-tab="voice" id="lib-tab-voice" onclick="switchLibTab('voice')" style="display:none">
+    <!-- VoiceForge tab — visible to all logged-in users -->
+    <button class="lib-tab lib-tab--voice" data-tab="voice" id="lib-tab-voice" onclick="switchLibTab('voice')">
       <i class="fas fa-microphone" style="color:#f97316"></i> <span style="color:#fb923c">VoiceForge</span>
     </button>
   </div>
@@ -14291,11 +14371,61 @@ function dashboardPage() {
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
-  <!-- VoiceForge tab panel — admin-only -->
+  <!-- VoiceForge tab panel -->
   <div id="lib-panel-voice" style="display:none">
-    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
-      <i class="fas fa-microphone" style="color:#f97316"></i>
-      <span style="color:#fb923c">Songs generated with your VoiceForge voice.</span>
+
+    <!-- VoiceForge Profile Card -->
+    <div id="vf-profile-card" style="background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(251,146,60,.04));border:1px solid rgba(249,115,22,.25);border-radius:16px;padding:20px;margin-bottom:20px;display:none">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <!-- Avatar -->
+        <div style="position:relative;flex-shrink:0">
+          <div id="vf-avatar-wrap" style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#f97316,#fb923c);display:flex;align-items:center;justify-content:center;overflow:hidden;border:2px solid rgba(249,115,22,.4);cursor:pointer" onclick="vfPickAvatar()" title="Change avatar">
+            <img id="vf-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none"/>
+            <i id="vf-avatar-icon" class="fas fa-microphone" style="font-size:1.6rem;color:#fff"></i>
+          </div>
+          <button onclick="vfPickAvatar()" style="position:absolute;bottom:-2px;right:-2px;width:22px;height:22px;border-radius:50%;background:#f97316;border:none;color:#fff;font-size:.65rem;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="fas fa-camera"></i></button>
+          <input type="file" id="vf-avatar-file" accept="image/*" style="display:none" onchange="vfHandleAvatarFile(this)"/>
+        </div>
+        <!-- Name + label -->
+        <div style="flex:1;min-width:160px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <input id="vf-name-input" type="text" maxlength="60" placeholder="Name your voice…"
+              style="flex:1;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:8px 12px;color:#fff;font-size:.95rem;font-weight:600;min-width:0"
+              oninput="vfNameChanged()"/>
+            <button id="vf-name-save-btn" onclick="vfSaveProfile()" style="display:none;background:#f97316;border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap"><i class="fas fa-check"></i> Save</button>
+          </div>
+          <div id="vf-persona-label" style="font-size:.8rem;color:rgba(251,146,60,.8);display:flex;align-items:center;gap:6px">
+            <i class="fas fa-circle-check" style="color:#10b981"></i>
+            <span id="vf-persona-label-text">Voice ready</span>
+          </div>
+        </div>
+        <!-- Delete persona -->
+        <button onclick="deleteVoicePersona()" style="flex-shrink:0;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:600;cursor:pointer">
+          <i class="fas fa-trash-alt" style="margin-right:4px"></i>Delete Voice
+        </button>
+      </div>
+
+      <!-- Tracks using this voice -->
+      <div style="margin-top:18px;border-top:1px solid rgba(255,255,255,.08);padding-top:14px">
+        <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(251,146,60,.7);margin-bottom:10px">
+          <i class="fas fa-music" style="margin-right:5px"></i>Tracks using this voice
+        </div>
+        <div id="vf-tracks-list" style="display:flex;flex-direction:column;gap:6px">
+          <div style="color:var(--muted);font-size:.82rem">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- No voice state -->
+    <div id="vf-no-voice" style="display:none;text-align:center;padding:32px 16px">
+      <i class="fas fa-microphone-slash" style="font-size:2.5rem;color:var(--muted);margin-bottom:12px;display:block"></i>
+      <p style="color:var(--muted);margin:0 0 12px">No VoiceForge created yet.</p>
+      <a href="/generator" onclick="setTimeout(()=>{if(typeof switchCreateTab==='function')switchCreateTab('voices')},200)" class="btn btn--primary" style="font-size:.85rem">Create Your Voice</a>
+    </div>
+
+    <!-- VoiceForge generated songs grid -->
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(251,146,60,.7);margin-bottom:10px;display:flex;align-items:center;gap:6px" id="vf-songs-header" style="display:none">
+      <i class="fas fa-headphones"></i> Generated Songs
     </div>
     <div class="project-grid" id="project-grid-voice">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>

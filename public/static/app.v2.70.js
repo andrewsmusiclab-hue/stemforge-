@@ -1592,11 +1592,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (voiceBtn && user.is_admin) {
           voiceBtn.style.display = '';
         }
-        // VoiceForge library tab — also admin-only
-        var voiceLibTab = document.getElementById('lib-tab-voice');
-        if (voiceLibTab && user.is_admin) {
-          voiceLibTab.style.display = '';
-        }
+        // VoiceForge library tab — visible to all logged-in users (tab already shown in HTML)
       })();
 
       // ── TikTok identify — link this session to the known user ─
@@ -2444,6 +2440,18 @@ document.addEventListener('DOMContentLoaded', () => {
         '<div class="project-card__tags">' +
           (bpm ? '<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">' + bpm + '</span>' : '') +
         '</div>' +
+        (p.voice_forge_id ?
+          '<div class="vf-card-badge-row" data-job-id="' + p.id + '">' +
+            '<span class="vf-card-badge">' +
+              '<i class="fas fa-microphone" style="font-size:.63rem"></i> VoiceForge' +
+            '</span>' +
+            '<button class="vf-card-detach-btn" ' +
+              'onclick="event.stopPropagation();vfDetachFromCard(\'' + p.id + '\',this)" ' +
+              'title="Remove VoiceForge from this track">' +
+              '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
+            '</button>' +
+          '</div>'
+        : '') +
       '</div>' +
     '</div>';
   }
@@ -2710,12 +2718,21 @@ document.addEventListener('DOMContentLoaded', () => {
   window.fetchUploadsTab = fetchUploadsTab;
 
   // ── Fetch VoiceForge tab ────────────────────────────────────
+  // ── VoiceForge library tab — full profile + songs ──────────────────────────
+  var _vfProfile = null; // cached profile data
+
   async function fetchVoiceTab() {
     var gridEl = document.getElementById('project-grid-voice');
     if (!gridEl) return;
-    if (_libLoaded.voice) { renderVoiceGrid(gridEl, _libData.voice); return; }
     gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading\u2026</div>';
     try {
+      // Load profile (voice name, avatar, tracks using voice)
+      var profRes = await fetch('/api/voice/profile');
+      var profData = profRes.ok ? await profRes.json() : {};
+      _vfProfile = profData;
+      renderVoiceProfileCard(profData);
+
+      // Load generated songs
       var res = await fetch('/api/projects?tab=voice');
       if (!res.ok) {
         gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
@@ -2732,36 +2749,218 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   window.fetchVoiceTab = fetchVoiceTab;
 
-  // ── Render VoiceForge cards ─────────────────────────────────
-  function renderVoiceGrid(gridEl, songs) {
-    if (!gridEl) return;
-    if (!songs || songs.length === 0) {
-      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the VoiceForge panel!</p></div>';
+  // ── Render the VoiceForge profile card at top of voice tab ──
+  function renderVoiceProfileCard(prof) {
+    var card    = document.getElementById('vf-profile-card');
+    var noVoice = document.getElementById('vf-no-voice');
+    var header  = document.getElementById('vf-songs-header');
+    if (!card) return;
+
+    if (!prof || !prof.persona_id) {
+      card.style.display = 'none';
+      if (noVoice) noVoice.style.display = '';
+      if (header)  header.style.display  = 'none';
+      return;
+    }
+
+    card.style.display = '';
+    if (noVoice) noVoice.style.display = 'none';
+    if (header)  header.style.display  = '';
+
+    // Avatar
+    var avatarImg  = document.getElementById('vf-avatar-img');
+    var avatarIcon = document.getElementById('vf-avatar-icon');
+    if (prof.voice_avatar) {
+      avatarImg.src = prof.voice_avatar;
+      avatarImg.style.display = '';
+      if (avatarIcon) avatarIcon.style.display = 'none';
+    } else {
+      if (avatarImg)  avatarImg.style.display  = 'none';
+      if (avatarIcon) avatarIcon.style.display = '';
+    }
+
+    // Name
+    var nameInput = document.getElementById('vf-name-input');
+    if (nameInput) nameInput.value = prof.voice_name || prof.persona_label || '';
+
+    // Persona label
+    var labelText = document.getElementById('vf-persona-label-text');
+    if (labelText) labelText.textContent = (prof.persona_label || 'Voice') + ' — ready';
+
+    // Tracks list
+    renderVfTracksList(prof.tracks || []);
+  }
+
+  function renderVfTracksList(tracks) {
+    var listEl = document.getElementById('vf-tracks-list');
+    if (!listEl) return;
+    if (!tracks || tracks.length === 0) {
+      listEl.innerHTML = '<div style="color:var(--muted);font-size:.82rem;font-style:italic">No tracks using this voice yet. Generate one!</div>';
       return;
     }
     var html = '';
-    songs.forEach(function(s) {
-      var hue = s.thumbnail_seed || 28; // orange-ish default
-      var title = s.title || 'Voice Song';
+    tracks.forEach(function(t) {
+      var title = (t.title || 'Untitled').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      var date  = t.created_at ? new Date(t.created_at).toLocaleDateString() : '';
+      html += '<div class="vf-track-row" data-job-id="' + t.id + '" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(255,255,255,.07)">' +
+        '<i class="fas fa-music" style="color:#fb923c;font-size:.85rem;flex-shrink:0"></i>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + title + '</div>' +
+          (date ? '<div style="font-size:.72rem;color:var(--muted)">' + date + '</div>' : '') +
+        '</div>' +
+        '<button onclick="vfDetachFromTrack(\'' + t.id + '\',this)" style="flex-shrink:0;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:600;cursor:pointer" title="Remove voice from this track">' +
+          '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
+        '</button>' +
+      '</div>';
+    });
+    listEl.innerHTML = html;
+  }
+
+  // ── VoiceForge profile actions ──────────────────────────────
+  window.vfNameChanged = function() {
+    var btn = document.getElementById('vf-name-save-btn');
+    if (btn) btn.style.display = '';
+  };
+
+  window.vfSaveProfile = async function() {
+    var nameInput = document.getElementById('vf-name-input');
+    var btn       = document.getElementById('vf-name-save-btn');
+    var name = nameInput ? nameInput.value.trim() : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>'; }
+    try {
+      await fetch('/api/voice/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_name: name })
+      });
+      if (btn) { btn.style.display = 'none'; btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save'; }
+    } catch(e) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save'; }
+    }
+  };
+
+  window.vfPickAvatar = function() {
+    var fi = document.getElementById('vf-avatar-file');
+    if (fi) fi.click();
+  };
+
+  window.vfHandleAvatarFile = async function(input) {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    var avatarImg  = document.getElementById('vf-avatar-img');
+    var avatarIcon = document.getElementById('vf-avatar-icon');
+    // Preview immediately
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      if (avatarImg) { avatarImg.src = e.target.result; avatarImg.style.display = ''; }
+      if (avatarIcon) avatarIcon.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+    // Upload to R2 via existing upload endpoint then save URL
+    try {
+      var fd = new FormData();
+      fd.append('file', file);
+      var res = await fetch('/api/voice/upload-audio', { method: 'POST', body: fd });
+      var data = res.ok ? await res.json() : null;
+      if (data && data.url) {
+        await fetch('/api/voice/profile', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice_avatar: data.url })
+        });
+      }
+    } catch(e) { /* silent — preview still shows */ }
+  };
+
+  window.vfDetachFromTrack = async function(jobId, btn) {
+    if (!confirm('Remove this voice from the track? The track stays in your library but will no longer be linked to your VoiceForge.')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
+    try {
+      var res = await fetch('/api/voice/detach/' + jobId, { method: 'DELETE' });
+      if (res.ok) {
+        // Remove row from the voice profile tracks list
+        var row = btn.closest('.vf-track-row') || btn.closest('div[style]');
+        if (row) row.remove();
+        // Remove badge from beat/remix card if it exists in DOM
+        var cardBadge = document.querySelector('.vf-card-badge-row[data-job-id="' + jobId + '"]');
+        if (cardBadge) cardBadge.remove();
+        // Invalidate beats cache so badge disappears on next load
+        _libLoaded.beats = false;
+        _libLoaded.remixes = false;
+        _libLoaded.voice = false;
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+      }
+    } catch(e) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+    }
+  };
+
+  // ── vfDetachFromCard — called from VoiceForge badge on beat/remix cards ──
+  window.vfDetachFromCard = async function(jobId, btn) {
+    if (!confirm('Remove this voice from the track? The track stays in your library.')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
+    try {
+      var res = await fetch('/api/voice/detach/' + jobId, { method: 'DELETE' });
+      if (res.ok) {
+        // Remove badge row from this card
+        var badgeRow = btn.closest('.vf-card-badge-row');
+        if (badgeRow) badgeRow.remove();
+        // Remove from voice profile tracks list if rendered
+        var trackRow = document.querySelector('.vf-track-row[data-job-id="' + jobId + '"]');
+        if (trackRow) trackRow.remove();
+        // Invalidate caches
+        _libLoaded.beats = false;
+        _libLoaded.remixes = false;
+        _libLoaded.voice = false;
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+      }
+    } catch(e) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+    }
+  };
+
+  // ── Render VoiceForge generated-songs grid ──────────────────
+  function renderVoiceGrid(gridEl, songs) {
+    if (!gridEl) return;
+    if (!songs || songs.length === 0) {
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the Create → Voices tab!</p></div>';
+      return;
+    }
+    var html = '';
+    songs.forEach(function(s, i) {
+      var hue = s.thumbnail_seed || 28;
+      var title = (s.title || 'Voice Song').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       var audioUrl = s.audio_url || s.stereo_url || '';
       var created = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
-      html += '<div class="project-card" style="--card-hue:' + hue + '">' +
-        '<div class="project-card__art project-card__art--' + ((hue % 8) + 1) + '" style="background:linear-gradient(135deg,hsl(' + hue + ',70%,35%),hsl(' + ((hue+40)%360) + ',60%,20%))">' +
-          '<i class="fas fa-microphone" style="font-size:28px;color:rgba(255,255,255,.7)"></i>' +
+      html += '<div class="project-card" data-id="' + s.id + '">' +
+        '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',70%,20%),hsl(' + ((hue+40)%360) + ',60%,12%));position:relative;overflow:hidden">' +
+          '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">' +
+            '<i class="fas fa-microphone" style="font-size:28px;color:rgba(249,115,22,.8)"></i>' +
+          '</div>' +
+          (audioUrl ? '<div class="project-card__play" onclick="playDashProject(this)" data-audio="' + audioUrl + '"><i class="fas fa-play"></i></div>' : '') +
         '</div>' +
         '<div class="project-card__body">' +
-          '<div class="project-card__title">' + title + '</div>' +
-          '<div class="project-card__meta" style="color:var(--muted);font-size:.78rem">' + created + '</div>' +
+          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+            '<h4 style="margin:0;flex:1">' + title + '</h4>' +
+          '</div>' +
+          '<p style="margin:2px 0 6px;font-size:.78rem;color:var(--muted)">' + created + '</p>' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+            '<span style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:700;color:#fb923c;background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.25);border-radius:20px;padding:2px 8px">' +
+              '<i class="fas fa-microphone" style="font-size:.65rem"></i> VoiceForge' +
+            '</span>' +
+            (audioUrl ? '<a href="' + audioUrl + '" download target="_blank" style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:600;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:2px 8px;text-decoration:none">' +
+              '<i class="fas fa-download" style="font-size:.65rem"></i> Download' +
+            '</a>' : '') +
+          '</div>' +
         '</div>' +
-        (audioUrl ? '<div class="project-card__actions">' +
-          '<a href="' + audioUrl + '" target="_blank" download class="btn btn--ghost btn--xs" title="Download"><i class="fas fa-download"></i></a>' +
-          '<button class="btn btn--ghost btn--xs" title="Play" onclick="(function(el,u){' +
-            'var a=el.closest(\'.project-card\').querySelector(\'.vc-audio-el\');' +
-            'if(!a){a=document.createElement(\'audio\');a.className=\'vc-audio-el\';a.src=u;a.controls=false;a.style.display=\'none\';el.closest(\'.project-card\').appendChild(a);}' +
-            'if(a.paused){a.play();el.innerHTML=\'<i class=\\\"fas fa-pause\\\"></i>\';}else{a.pause();a.currentTime=0;el.innerHTML=\'<i class=\\\"fas fa-play\\\"></i>\';}' +
-            'a.onended=function(){el.innerHTML=\'<i class=\\\"fas fa-play\\\"></i>\';};' +
-          '})(this,\'' + audioUrl.replace(/'/g, "\\'") + '\')"><i class="fas fa-play"></i></button>' +
-        '</div>' : '') +
       '</div>';
     });
     gridEl.innerHTML = html;
