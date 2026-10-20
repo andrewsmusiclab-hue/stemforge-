@@ -1914,13 +1914,18 @@ document.addEventListener('DOMContentLoaded', () => {
     requestAnimationFrame(function() {
       var targetPanel = document.getElementById('create-tab-' + tab);
       if (targetPanel) {
+        // Remove entering class first (stops any running animation)
+        targetPanel.classList.remove('create-tab-panel--entering');
+        // Force display:block — must happen BEFORE reflow
         targetPanel.style.display = 'block';
-        // Force a reflow on the panel to restart ctabIn animation
+        // Force a reflow so the browser registers display:block before animation starts
         void targetPanel.offsetHeight;
-        // Remove and re-add animation class to retrigger
-        targetPanel.style.animation = 'none';
-        void targetPanel.offsetHeight;
-        targetPanel.style.animation = '';
+        // Now add entering class to trigger slide-in animation
+        targetPanel.classList.add('create-tab-panel--entering');
+        // Remove entering class after animation completes so it can retrigger next time
+        setTimeout(function() {
+          targetPanel.classList.remove('create-tab-panel--entering');
+        }, 220);
       }
     });
 

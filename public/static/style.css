@@ -4358,11 +4358,14 @@ body {
     0 4px 24px rgba(0,0,0,.4);
 }
 
-/* ── Tab panels — slide-in animation when switching ── */
+/* ── Tab panels — NO animation on base rule (animation triggers display:none override on mobile Webkit) ── */
 .create-tab-panel {
   /* NO display rule here — visibility is controlled by JS inline style only */
+  /* NO animation here — applied via .create-tab-panel--entering class added by JS */
   width: 100%;
   overflow: visible;
+}
+.create-tab-panel--entering {
   animation: ctabIn .2s ease;
 }
 @keyframes ctabIn {
