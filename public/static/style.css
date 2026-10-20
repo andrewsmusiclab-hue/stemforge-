@@ -4360,7 +4360,7 @@ body {
 
 /* ── Tab panels — slide-in animation when switching ── */
 .create-tab-panel {
-  display: block;              /* explicit block — never inherits wrong display */
+  /* NO display rule here — visibility is controlled by JS inline style only */
   width: 100%;
   overflow: visible;
   animation: ctabIn .2s ease;
@@ -4891,11 +4891,10 @@ html, body {
   .create-tabs-content {
     padding: 14px 12px 12px;
     border-radius: 0 0 10px 10px;
-    overflow: visible !important;  /* never clip content */
+    overflow: visible;
   }
-  /* Tab panels must be visible when active */
+  /* Tab panel sizing on mobile — NO display override, JS controls show/hide */
   .create-tab-panel {
-    display: block !important;
     width: 100%;
     overflow: visible;
   }
