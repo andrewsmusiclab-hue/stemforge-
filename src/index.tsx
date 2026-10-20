@@ -11438,7 +11438,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-155'
+const ASSET_VER = '20261020-156'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12667,6 +12667,9 @@ function generatorPage() {
       </button>
     </div>
 
+    <!-- ══ TAB CONTENT WRAPPER ══════════════════════════════════════ -->
+    <div class="create-tabs-content tab-mix-active" id="create-tabs-content">
+
     <!-- ══ MIX TAB ══════════════════════════════════════════════════ -->
     <div id="create-tab-mix" class="create-tab-panel">
 
@@ -13240,6 +13243,8 @@ function generatorPage() {
       </div>
 
     </div><!-- /create-tab-voices -->
+
+    </div><!-- /create-tabs-content -->
 
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
   <div class="suno-right">

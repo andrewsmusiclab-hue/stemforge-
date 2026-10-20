@@ -1907,6 +1907,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btn)   btn.classList.toggle('active', t === tab);
       if (panel) panel.style.display = (t === tab) ? '' : 'none';
     });
+    // Update content wrapper border-glow class to match active tab
+    var content = document.getElementById('create-tabs-content');
+    if (content) {
+      content.classList.remove('tab-mix-active','tab-create-active','tab-voices-active');
+      content.classList.add('tab-' + tab + '-active');
+    }
     // When switching to Voices tab, load voice status
     if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {
       window.loadVoiceStatus();
