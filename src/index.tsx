@@ -8996,7 +8996,10 @@ app.post('/api/voice/upload-audio', async (c) => {
 
   const ext   = isWav ? 'wav' : 'mp3'
   const ct    = isWav ? 'audio/wav' : 'audio/mpeg'
-  const key   = `voice-samples/${user.id}-${Date.now()}.${ext}`
+  // Key uses a flat structure (no subdirectory slash) to avoid %2F routing issues.
+  // Format: voice-samples--{userId}--{timestamp}.{ext}
+  const safeId = user.id.replace(/[^a-zA-Z0-9_-]/g, '_')
+  const key    = `voice-samples--${safeId}--${Date.now()}.${ext}`
 
   try {
     await c.env.IMAGES.put(key, buf, { httpMetadata: { contentType: ct } })
@@ -9006,20 +9009,21 @@ app.post('/api/voice/upload-audio', async (c) => {
   }
 
   const siteUrl = (c.env.SITE_URL || 'https://stemforge.studio').replace(/\/$/, '')
-  const publicUrl = `${siteUrl}/api/voice/sample/${encodeURIComponent(key)}`
+  // No encodeURIComponent needed — key has no slashes, safe as a URL segment.
+  const publicUrl = `${siteUrl}/api/voice/sample/${key}`
   return c.json({ ok: true, url: publicUrl })
 })
 
 // GET /api/voice/sample/:key — stream a voice sample from R2
 // PUBLIC (no session required) — the key is an unguessable secret token
-// (voice-samples/u_xxx-timestamp.ext), so obscurity is the access control.
-// This is required so the external voice AI can fetch the audio file.
+// (voice-samples--userId--timestamp.ext), so obscurity is the access control.
+// Key uses double-dash separator (no slashes) to avoid %2F Hono routing issues.
 app.get('/api/voice/sample/:key', async (c) => {
   if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
 
-  const key = decodeURIComponent(c.req.param('key'))
-  // Safety: only serve files inside the voice-samples/ prefix
-  if (!key.startsWith('voice-samples/')) {
+  const key = c.req.param('key')
+  // Safety: only serve voice sample files (double-dash format, no slashes)
+  if (!key.startsWith('voice-samples--') || key.includes('/') || key.includes('..')) {
     return c.json({ error: 'Not found' }, 404)
   }
 
@@ -11329,7 +11333,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-147'
+const ASSET_VER = '20261020-148'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13065,10 +13069,17 @@ function generatorPage() {
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
     <style>
+      /* ── Right column: vertically centre the cube + text when empty ── */
+      .suno-right {
+        justify-content: center !important;
+        align-items: center !important;
+        min-height: 100vh !important;
+      }
       /* ── Cube stage: FIXED size — never stretches with page content ── */
       #sf-cube-stage {
         position: relative;
         width: 100%;
+        max-width: 520px;
         height: 420px;            /* fixed — never grows */
         flex: none;               /* ignore flex parent sizing */
         flex-shrink: 0;
@@ -13080,6 +13091,7 @@ function generatorPage() {
       }
       @media (max-width: 768px) {
         #sf-cube-stage { height: 320px; }
+        .suno-right { min-height: auto !important; }
       }
       /* Canvas wrapper — fixed, absolute inside stage */
       #sf-cube-wrap {
