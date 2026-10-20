@@ -11329,7 +11329,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-146'
+const ASSET_VER = '20261019-147'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13065,22 +13065,23 @@ function generatorPage() {
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
     <style>
-      /* ── Cube stage: stretches to fill right column ── */
+      /* ── Cube stage: FIXED size — never stretches with page content ── */
       #sf-cube-stage {
         position: relative;
         width: 100%;
-        flex: 1;                  /* fill remaining height of suno-right */
-        min-height: 480px;
+        height: 420px;            /* fixed — never grows */
+        flex: none;               /* ignore flex parent sizing */
+        flex-shrink: 0;
         display: flex;
         align-items: center;
         justify-content: center;
         background: transparent !important;
-        overflow: visible;        /* no dark clip */
+        overflow: visible;
       }
       @media (max-width: 768px) {
-        #sf-cube-stage { min-height: 360px; flex: none; }
+        #sf-cube-stage { height: 320px; }
       }
-      /* Canvas covers full stage — no background */
+      /* Canvas wrapper — fixed, absolute inside stage */
       #sf-cube-wrap {
         display: none;            /* JS sets to flex for admin */
         position: absolute;
@@ -13088,12 +13089,16 @@ function generatorPage() {
         z-index: 0;
         background: transparent !important;
       }
+      /* Canvas fixed size — never inherits dynamic height */
       #sf-cube-canvas {
         width: 100% !important;
-        height: 100% !important;
+        height: 420px !important; /* matches stage fixed height */
         display: block;
         cursor: grab;
         background: transparent !important;
+      }
+      @media (max-width: 768px) {
+        #sf-cube-canvas { height: 320px !important; }
       }
       #sf-cube-canvas:active { cursor: grabbing; }
       /* Text centred above cube */

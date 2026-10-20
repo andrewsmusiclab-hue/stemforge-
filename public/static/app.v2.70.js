@@ -287,7 +287,9 @@ window._sfInitCube = function(user) {
 
     var stage = document.getElementById('sf-cube-stage');
     var W = (stage ? stage.clientWidth : wrap.clientWidth) || 420;
-    var H = (stage ? stage.clientHeight : 0) || 400;
+    // H is FIXED — never reads clientHeight which changes when textarea expands
+    var FIXED_H = window.innerWidth <= 768 ? 320 : 420;
+    var H = FIXED_H;
     canvas.width  = W;
     canvas.height = H;
 
@@ -675,7 +677,8 @@ window._sfInitCube = function(user) {
     window.addEventListener('resize',function(){
       var st=document.getElementById('sf-cube-stage');
       var nw=(st?st.clientWidth:wrap.clientWidth)||420;
-      var nh=(st?st.clientHeight:H)||400;
+      // Height stays fixed — never reads stage height
+      var nh=window.innerWidth<=768?320:420;
       canvas.width=nw; canvas.height=nh;
       camera.aspect=nw/nh; camera.updateProjectionMatrix();
       renderer.setSize(nw,nh); composer.setSize(nw,nh); rt.setSize(nw,nh);
