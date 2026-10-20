@@ -671,110 +671,198 @@ window._sfInitCube = function(user) {
     cubeGroup.add(hammerG);
 
     // ══════════════════════════════════════════════════════════════════════
-    // ── SPARKS — 60 volumetric forge streaks with additive blending ───────
-    // Reference: long arcing streaks, white-hot core → gold → deep orange
-    // Dense burst above impact, sparser wrap-around, animated flicker
     // ══════════════════════════════════════════════════════════════════════
+    // ── SPARKS — billboard PlaneGeometry quads, canvas-gradient textures ──
+    // Each spark = a flat quad always facing the camera (manually billboarded
+    // in the render loop). Canvas bakes white-hot root → gold → orange tip
+    // gradient WITH soft glowing feathered edges — any thickness possible,
+    // no bloom pass needed, transparent background preserved.
+    // ══════════════════════════════════════════════════════════════════════
+
     var splashG = new T.Group();
     splashG.position.copy(IMPACT);
 
-    // ── Central impact flash — blinding white overexposed core ────────────
+    // ── Pre-bake spark streak textures (3 tier sizes) ─────────────────────
+    // Each canvas: streak along Y axis, X = thickness with soft feathered edges
+    // White-hot at base (bottom), gold mid, deep orange at tip (top)
+    function makeSparkTex(thickPx, lenPx, colRoot, colMid, colTip) {
+      var c = document.createElement('canvas');
+      c.width = thickPx; c.height = lenPx;
+      var ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, thickPx, lenPx);
+      // Longitudinal color gradient: root (bottom) → mid → tip (top)
+      var lg = ctx.createLinearGradient(0, lenPx, 0, 0);
+      lg.addColorStop(0.00, colRoot);   // base: blazing white
+      lg.addColorStop(0.25, colRoot);   // keep white for first quarter
+      lg.addColorStop(0.55, colMid);    // gold transition
+      lg.addColorStop(0.85, colTip);    // orange
+      lg.addColorStop(1.00, 'rgba(255,60,0,0)'); // tip fades to transparent
+      // Radial feather on X axis — bright center, soft edges (the key trick)
+      var cx2 = thickPx / 2;
+      for(var py=0; py<lenPx; py++){
+        // Feather width narrows toward the tip
+        var progress = py / lenPx; // 0=base, 1=tip
+        var halfW = cx2 * (1.0 - progress*0.55); // tapers toward tip
+        var rg = ctx.createLinearGradient(cx2-halfW, py, cx2+halfW, py);
+        rg.addColorStop(0,   'rgba(0,0,0,0)');
+        rg.addColorStop(0.25,'rgba(0,0,0,0)');
+        rg.addColorStop(0.5, 'rgba(255,255,255,1)');
+        rg.addColorStop(0.75,'rgba(0,0,0,0)');
+        rg.addColorStop(1,   'rgba(0,0,0,0)');
+        ctx.fillStyle = rg;
+        ctx.fillRect(0, py, thickPx, 1);
+      }
+      // Apply the longitudinal gradient as a multiply pass
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = lg;
+      ctx.fillRect(0, 0, thickPx, lenPx);
+      // Restore and add inner bright core stripe down the center
+      ctx.globalCompositeOperation = 'source-over';
+      var coreW = Math.max(1, thickPx*0.18);
+      var coreLg = ctx.createLinearGradient(0, lenPx*0.05, 0, lenPx*0.7);
+      coreLg.addColorStop(0,   'rgba(255,255,255,0.95)');
+      coreLg.addColorStop(0.4, 'rgba(255,240,180,0.70)');
+      coreLg.addColorStop(1.0, 'rgba(255,140,0,0)');
+      ctx.fillStyle = coreLg;
+      ctx.fillRect(cx2-coreW/2, 0, coreW, lenPx*0.72);
+      return c;
+    }
+
+    // Three tier textures: primary (thick+long), mid, short
+    var texPrimary = new T.CanvasTexture(makeSparkTex(
+      28, 256,
+      'rgba(255,255,255,1)', 'rgba(255,210,40,1)', 'rgba(255,100,0,1)'
+    ));
+    var texMid = new T.CanvasTexture(makeSparkTex(
+      18, 180,
+      'rgba(255,255,200,1)', 'rgba(255,180,20,1)', 'rgba(255,70,0,1)'
+    ));
+    var texShort = new T.CanvasTexture(makeSparkTex(
+      12, 110,
+      'rgba(255,240,180,1)', 'rgba(255,140,10,1)', 'rgba(220,50,0,1)'
+    ));
+
+    // ── Central impact flash ───────────────────────────────────────────────
+    var flashCvs = (function(){
+      var sz=128, c=document.createElement('canvas'); c.width=c.height=sz;
+      var ctx=c.getContext('2d');
+      var g=ctx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      g.addColorStop(0,  'rgba(255,255,255,1)');
+      g.addColorStop(0.2,'rgba(255,250,200,0.9)');
+      g.addColorStop(0.5,'rgba(255,200,50,0.5)');
+      g.addColorStop(0.8,'rgba(255,100,0,0.2)');
+      g.addColorStop(1,  'rgba(255,60,0,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,sz,sz);
+      return c;
+    })();
+    var flashTex = new T.CanvasTexture(flashCvs);
     var flashM = new T.Mesh(
-      new T.SphereGeometry(0.07, 20, 20),
-      new T.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.98})
+      new T.PlaneGeometry(0.55, 0.55),
+      new T.MeshBasicMaterial({map:flashTex, transparent:true, opacity:1.0, depthWrite:false, side:T.DoubleSide})
     );
     splashG.add(flashM);
 
-    // ── Hot inner glow ring — yellow-gold ─────────────────────────────────
+    // ── Inner hot glow disc ────────────────────────────────────────────────
+    var haloCvs = (function(){
+      var sz=128, c=document.createElement('canvas'); c.width=c.height=sz;
+      var ctx=c.getContext('2d');
+      var g=ctx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      g.addColorStop(0,  'rgba(255,230,80,0.8)');
+      g.addColorStop(0.4,'rgba(255,140,20,0.4)');
+      g.addColorStop(0.75,'rgba(255,80,0,0.15)');
+      g.addColorStop(1,  'rgba(255,40,0,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,sz,sz);
+      return c;
+    })();
+    var haloTex = new T.CanvasTexture(haloCvs);
     var haloM = new T.Mesh(
-      new T.SphereGeometry(0.18, 20, 20),
-      new T.MeshBasicMaterial({color:0xffdd00, transparent:true, opacity:0.42, side:T.BackSide})
+      new T.PlaneGeometry(1.1, 1.1),
+      new T.MeshBasicMaterial({map:haloTex, transparent:true, opacity:0.75, depthWrite:false, side:T.DoubleSide})
     );
     splashG.add(haloM);
 
-    // ── Mid orange bloom ──────────────────────────────────────────────────
+    // ── Outer ambient forge glow disc ─────────────────────────────────────
+    var outerHaloCvs = (function(){
+      var sz=128, c=document.createElement('canvas'); c.width=c.height=sz;
+      var ctx=c.getContext('2d');
+      var g=ctx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      g.addColorStop(0,  'rgba(255,100,0,0.25)');
+      g.addColorStop(0.5,'rgba(255,50,0,0.10)');
+      g.addColorStop(1,  'rgba(200,20,0,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,sz,sz);
+      return c;
+    })();
+    var outerHaloTex = new T.CanvasTexture(outerHaloCvs);
     var outerHalo = new T.Mesh(
-      new T.SphereGeometry(0.38, 20, 20),
-      new T.MeshBasicMaterial({color:0xff6600, transparent:true, opacity:0.16, side:T.BackSide})
+      new T.PlaneGeometry(2.2, 2.2),
+      new T.MeshBasicMaterial({map:outerHaloTex, transparent:true, opacity:0.55, depthWrite:false, side:T.DoubleSide})
     );
     splashG.add(outerHalo);
+    // Keep reference for animation — treated same as before
+    var ambientGlow = outerHalo;
 
-    // ── Wide ambient forge glow ───────────────────────────────────────────
-    var ambientGlow = new T.Mesh(
-      new T.SphereGeometry(0.65, 16, 16),
-      new T.MeshBasicMaterial({color:0xff3300, transparent:true, opacity:0.06, side:T.BackSide})
-    );
-    splashG.add(ambientGlow);
-
-    // ── Spark streak system ───────────────────────────────────────────────
-    // 60 streaks: 20 long primary, 20 medium secondary, 20 short tertiary
-    // Each group has its own flicker phase and color palette
+    // ── Build 55 billboard spark quads ────────────────────────────────────
+    // Each spark mesh is a PlaneGeometry textured with gradient canvas above.
+    // In the render loop we billboard it to face the camera AND rotate it
+    // along its own streak axis so the texture aligns with travel direction.
     var sparkData = [];
-    var NSPARKS = 60;
+    var NSPARKS = 55;
     for(var si=0; si<NSPARKS; si++){
-      var tier = si < 20 ? 0 : si < 40 ? 1 : 2; // 0=primary 1=mid 2=short
-      // Angle: full 360° with strong upward bias (sparks go mostly up+sides)
-      var baseAngle = (si/NSPARKS)*Math.PI*2;
-      // Upward bias: shift more angles into upper hemisphere
-      var upBias = 0.55; // 0=none, 1=full hemisphere
+      var tier = si < 18 ? 0 : si < 38 ? 1 : 2;
+
+      // Direction: full 360° with strong upward bias
+      var baseAngle = (si / NSPARKS) * Math.PI * 2;
       var dx = Math.cos(baseAngle);
-      var dy = Math.sin(baseAngle)*0.75 + upBias;
-      // Z spread: 3D depth so sparks come toward/away from camera
-      var dz = Math.sin(si*2.39+1.3)*0.65 + Math.cos(si*3.71)*0.3;
+      var dy = Math.sin(baseAngle) * 0.72 + 0.60; // upward bias
+      var dz = Math.sin(si * 2.39 + 1.1) * 0.55 + Math.cos(si * 3.71) * 0.28;
       var dir = new T.Vector3(dx, dy, dz).normalize();
 
-      // Length by tier + per-spark variation
-      var lenBase = tier===0 ? 1.05 : tier===1 ? 0.58 : 0.28;
-      var lenVar  = Math.abs(Math.sin(si*2.71+0.9)) * (tier===0?0.55:tier===1?0.32:0.16);
-      var len = lenBase + lenVar;
+      // Length scale (world units) — long primaries like reference
+      var lenScale = tier===0
+        ? 0.95 + Math.abs(Math.sin(si*2.71+0.9))*0.65
+        : tier===1
+          ? 0.50 + Math.abs(Math.sin(si*3.1+0.4))*0.35
+          : 0.22 + Math.abs(Math.sin(si*4.3+1.2))*0.16;
 
-      // Color: pure white root → brilliant gold center → deep amber/orange tip
-      // Primary sparks are brighter/longer and white-to-gold
-      var rootCol = 0xffffff;
-      var midCol  = tier===0 ? 0xffee88 : tier===1 ? 0xffbb22 : 0xff8800;
-      var tipCol  = tier===0 ? 0xffaa00 : tier===1 ? 0xff6600 : 0xff3300;
+      // Width scale — thick primaries, thinner secondaries
+      var wScale = tier===0 ? 0.055 : tier===1 ? 0.038 : 0.024;
 
-      // Build multi-segment spark line for color gradient effect
-      // Segment 1: root→mid (bright white-gold), Segment 2: mid→tip (gold-orange)
-      var seg1End = dir.clone().multiplyScalar(len*0.38);
-      var seg2End = dir.clone().multiplyScalar(len);
-      var startPt = dir.clone().multiplyScalar(0.04);
+      var tex = tier===0 ? texPrimary : tier===1 ? texMid : texShort;
 
-      // White root segment
-      var geo1 = new T.BufferGeometry().setFromPoints([startPt, seg1End]);
-      var mat1 = new T.LineBasicMaterial({color:rootCol, transparent:true, opacity:tier===0?0.97:tier===1?0.82:0.65});
-      splashG.add(new T.Line(geo1, mat1));
-
-      // Gold→orange outer segment
-      var geo2 = new T.BufferGeometry().setFromPoints([seg1End, seg2End]);
-      var mat2 = new T.LineBasicMaterial({color:midCol, transparent:true, opacity:tier===0?0.88:tier===1?0.72:0.52});
-      splashG.add(new T.Line(geo2, mat2));
-
-      // Bright glowing tip dot (sphere) — larger for primaries
-      var dotR = tier===0 ? 0.020 : tier===1 ? 0.013 : 0.008;
-      var dot = new T.Mesh(
-        new T.SphereGeometry(dotR, 8, 8),
-        new T.MeshBasicMaterial({color:tipCol, transparent:true, opacity:0.92})
-      );
-      dot.position.copy(seg2End);
-      splashG.add(dot);
-
-      // Extra: secondary hot-white short root burst (2nd overlapping line near base)
-      if(tier === 0){
-        var rootBurst = new T.BufferGeometry().setFromPoints([
-          dir.clone().multiplyScalar(0.0),
-          dir.clone().multiplyScalar(0.14)
-        ]);
-        var rootBurstMat = new T.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.90});
-        splashG.add(new T.Line(rootBurst, rootBurstMat));
-        sparkData.push({mat:mat1, mat2:mat2, dotMat:dot.material, rootMat:rootBurstMat, tier:tier, phase:si*0.37+0.1});
-      } else {
-        sparkData.push({mat:mat1, mat2:mat2, dotMat:dot.material, rootMat:null, tier:tier, phase:si*0.37+0.1});
+      // PlaneGeometry: width=wScale, height=lenScale
+      // Default plane lies in XY plane; bottom edge at Y=-lenScale/2
+      var sparkGeo = new T.PlaneGeometry(wScale, lenScale);
+      // Shift geometry so the BASE (root) is at local Y=0, tip at Y=lenScale
+      // This lets us position the mesh at the impact point and have it extend outward
+      var pos = sparkGeo.attributes.position;
+      for(var pi=0; pi<pos.count; pi++){
+        pos.setY(pi, pos.getY(pi) + lenScale/2);
       }
+      pos.needsUpdate = true;
+
+      var sparkMat = new T.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        side: T.DoubleSide
+      });
+      var sparkMesh = new T.Mesh(sparkGeo, sparkMat);
+
+      // Store direction for billboard alignment in render loop
+      sparkData.push({
+        mesh: sparkMesh,
+        dir: dir,
+        mat: sparkMat,
+        tier: tier,
+        phase: si * 0.41 + 0.1,
+        lenScale: lenScale
+      });
+      splashG.add(sparkMesh);
     }
 
-    // ── Forge point light at impact — illuminates hammer underside ─────────
-    var forgeLight = new T.PointLight(0xff9900, 2.5, 3.5);
+    // ── Forge point light ─────────────────────────────────────────────────
+    var forgeLight = new T.PointLight(0xff9900, 3.0, 4.0);
     forgeLight.position.copy(IMPACT);
     cubeGroup.add(forgeLight);
 
@@ -813,29 +901,58 @@ window._sfInitCube = function(user) {
       var bob=Math.sin(t*0.65)*0.06;
       cubeGroup.rotation.x=rotX; cubeGroup.rotation.y=rotY; cubeGroup.position.y=-0.3+bob;
       edgeMat.opacity=0.55+0.22*Math.sin(t*2.0);
-      // ── Impact flash — blinding strobe at strike frequency ──────────────
-      var strikePhase = (t*1.4) % 1.0; // repeating strike cycle
-      var strikeFlare = strikePhase < 0.18 ? Math.exp(-strikePhase*22)*0.95 : 0.0;
-      flashM.material.opacity = 0.72 + 0.26*Math.abs(Math.sin(t*6.1)) + strikeFlare*0.5;
-      haloM.material.opacity  = 0.30 + 0.18*Math.sin(t*3.8+0.5) + strikeFlare*0.35;
-      outerHalo.material.opacity = 0.12 + 0.07*Math.sin(t*2.5+1.2) + strikeFlare*0.18;
-      ambientGlow.material.opacity = 0.05 + 0.04*Math.sin(t*1.8+0.8);
-      // ── Forge light pulses with strike ──────────────────────────────────
-      forgeLight.intensity = 2.0 + 1.8*Math.abs(Math.sin(t*5.8+0.3)) + strikeFlare*3.5;
-      // ── Per-spark flicker — each spark has its own rapid phase ──────────
-      for(var _si=0;_si<sparkData.length;_si++){
-        var _sd=sparkData[_si];
-        // Primary sparks: fast strobe + slow drift; mid: medium; short: rapid random
-        var spd = _sd.tier===0 ? 9.5 : _sd.tier===1 ? 12.0 : 16.0;
-        var flicker = 0.45 + 0.55*Math.abs(Math.sin(t*spd+_sd.phase));
-        // Additional burst sync with strike cycle
-        var burstBoost = strikeFlare * (_sd.tier===0 ? 0.8 : _sd.tier===1 ? 0.5 : 0.3);
-        var op1base = _sd.tier===0?0.97:_sd.tier===1?0.82:0.65;
-        var op2base = _sd.tier===0?0.88:_sd.tier===1?0.72:0.52;
-        _sd.mat.opacity  = Math.min(1.0, op1base*flicker + burstBoost);
-        _sd.mat2.opacity = Math.min(1.0, op2base*flicker + burstBoost*0.7);
-        _sd.dotMat.opacity = Math.min(1.0, 0.92*flicker + burstBoost);
-        if(_sd.rootMat) _sd.rootMat.opacity = Math.min(1.0, 0.90*flicker + burstBoost);
+      // ── Strike cycle — repeating forge hit every ~0.7s ──────────────────
+      var strikePhase = (t * 1.42) % 1.0;
+      var strikeFlare = strikePhase < 0.20 ? Math.exp(-strikePhase * 18) * 1.0 : 0.0;
+      // ── Flash + halos (billboard planes facing camera) ───────────────────
+      flashM.lookAt(camera.position);
+      haloM.lookAt(camera.position);
+      outerHalo.lookAt(camera.position);
+      flashM.material.opacity  = Math.min(1.0, 0.65 + 0.35*Math.abs(Math.sin(t*5.8)) + strikeFlare*0.85);
+      haloM.material.opacity   = Math.min(1.0, 0.45 + 0.20*Math.sin(t*3.2+0.5) + strikeFlare*0.55);
+      outerHalo.material.opacity = Math.min(1.0, 0.30 + 0.12*Math.sin(t*2.1+1.0) + strikeFlare*0.35);
+      // ── Forge light pulses ────────────────────────────────────────────────
+      forgeLight.intensity = 2.5 + 2.0*Math.abs(Math.sin(t*5.5+0.3)) + strikeFlare*5.0;
+      // ── Billboard sparks — face camera + align along travel direction ─────
+      // We need each spark quad to:
+      //   1. Face the camera (billboard)
+      //   2. Its local Y axis points along dir (so texture root→tip matches direction)
+      // Strategy: compute quaternion from default Y-up to dir, then apply camera-facing
+      var camPos = camera.position;
+      // splashG world position (in cubeGroup local space = IMPACT, rotated with cube)
+      for(var _si=0; _si<sparkData.length; _si++){
+        var _sd = sparkData[_si];
+        var _mesh = _sd.mesh;
+        var _dir  = _sd.dir;
+
+        // Flicker: each spark has unique rapid phase + burst sync
+        var spd = _sd.tier===0 ? 8.5 : _sd.tier===1 ? 11.5 : 15.0;
+        var flicker = 0.42 + 0.58 * Math.abs(Math.sin(t * spd + _sd.phase));
+        var boost   = strikeFlare * (_sd.tier===0 ? 1.0 : _sd.tier===1 ? 0.7 : 0.45);
+        var opBase  = _sd.tier===0 ? 0.95 : _sd.tier===1 ? 0.80 : 0.62;
+        _sd.mat.opacity = Math.min(1.0, opBase * flicker + boost);
+
+        // Position spark mesh at the impact point, offset halfway along dir
+        // so root sits at impact center and tip extends outward
+        _mesh.position.copy(_dir).multiplyScalar(_sd.lenScale * 0.5);
+
+        // Billboarding: point the mesh at camera in world space then counter-rotate
+        // Compute the world position of the spark mesh
+        // (splashG is child of cubeGroup which rotates — use world matrix)
+        _mesh.getWorldPosition(_mesh.userData._wp || (_mesh.userData._wp = new T.Vector3()));
+        // Build billboard quaternion: mesh faces camera
+        var _wp = _mesh.userData._wp;
+        var _toCamera = new T.Vector3().subVectors(camPos, _wp).normalize();
+        // We want local +Z to point to camera, local +Y to point along dir
+        // Compute right vector = cross(dir, toCamera), normalize
+        var _right = new T.Vector3().crossVectors(_dir, _toCamera);
+        if(_right.lengthSq() < 0.001) _right.set(1,0,0);
+        else _right.normalize();
+        // Recompute forward (toward camera) perpendicular to dir and right
+        var _fwd = new T.Vector3().crossVectors(_right, _dir).normalize();
+        // Build rotation matrix: cols = [right, dir, fwd]
+        var _rm = new T.Matrix4().makeBasis(_right, _dir, _fwd);
+        _mesh.quaternion.setFromRotationMatrix(_rm);
       }
       fill.intensity=0.7+0.2*Math.sin(t*2.2);
       rim.intensity=0.5+0.15*Math.sin(t*1.6+1.1);
