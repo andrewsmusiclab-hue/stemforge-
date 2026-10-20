@@ -297,6 +297,7 @@ window._sfInitCube = function(user) {
       renderer = new T.WebGLRenderer({ canvas:canvas, antialias:true, alpha:true, powerPreference:'high-performance' });
       renderer.setPixelRatio(Math.min(devicePixelRatio,2));
       renderer.setSize(W,H);
+      renderer.setClearColor(0x000000, 0);   // fully transparent — site bg shows through
       renderer.toneMapping         = T.ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.4;
       sfLog('renderer ok W='+W+' H='+H);
@@ -304,8 +305,8 @@ window._sfInitCube = function(user) {
 
     // ── Scene / Camera ─────────────────────────────────────────────────────
     var scene  = new T.Scene();
-    var camera = new T.PerspectiveCamera(34, W/H, 0.1, 100);
-    camera.position.set(0, 0.6, 6.2);
+    var camera = new T.PerspectiveCamera(38, W/H, 0.1, 100);
+    camera.position.set(0, 0.4, 5.8);   // pulled in slightly, centred vertically
 
     // ── IBL env (procedural) ───────────────────────────────────────────────
     var envCvs = document.createElement('canvas');
@@ -413,7 +414,7 @@ window._sfInitCube = function(user) {
 
     // ── Cube group (everything rotates together) ────────────────────────────
     var cubeGroup = new T.Group();
-    cubeGroup.position.y = -0.1;
+    cubeGroup.position.y = -0.3;   // shift cube down slightly so it sits in vertical center of taller stage
     scene.add(cubeGroup);
 
     // ── Cube body ──────────────────────────────────────────────────────────
@@ -677,7 +678,7 @@ window._sfInitCube = function(user) {
       var t=clock.getElapsedTime();
       if(!dragging){if(autoSpin){rotY+=0.0032;}else{velX*=0.93;velY*=0.93;rotX+=velX;rotY+=velY;rotX=Math.max(-1.1,Math.min(1.1,rotX));}}
       var bob=Math.sin(t*0.65)*0.06;
-      cubeGroup.rotation.x=rotX; cubeGroup.rotation.y=rotY; cubeGroup.position.y=-0.1+bob;
+      cubeGroup.rotation.x=rotX; cubeGroup.rotation.y=rotY; cubeGroup.position.y=-0.3+bob;
       edgeMat.opacity=0.55+0.22*Math.sin(t*2.0);
       // Flash + halos pulse like a real forge strike
       flashM.material.opacity=0.88+0.10*Math.sin(t*5.2);

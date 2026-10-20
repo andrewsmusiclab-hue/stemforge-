@@ -11330,7 +11330,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261019-142'
+const ASSET_VER = '20261019-143'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13066,52 +13066,70 @@ function generatorPage() {
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
     <style>
-      /* ── Cube stage: cube behind, text on top ── */
+      /* ── Cube stage: stretches to fill right column ── */
       #sf-cube-stage {
         position: relative;
         width: 100%;
-        min-height: 400px;
+        flex: 1;                  /* fill remaining height of suno-right */
+        min-height: 480px;
         display: flex;
         align-items: center;
         justify-content: center;
-        overflow: hidden;
-        border-radius: 12px;
+        background: transparent !important;
+        overflow: visible;        /* no dark clip */
       }
       @media (max-width: 768px) {
-        #sf-cube-stage { min-height: 340px; }
+        #sf-cube-stage { min-height: 360px; flex: none; }
       }
-      /* Cube fills entire stage as background */
+      /* Canvas covers full stage — no background */
       #sf-cube-wrap {
-        display: none;          /* shown by JS when admin */
+        display: none;            /* JS sets to flex for admin */
         position: absolute;
         inset: 0;
         z-index: 0;
+        background: transparent !important;
       }
       #sf-cube-canvas {
         width: 100% !important;
         height: 100% !important;
         display: block;
         cursor: grab;
+        background: transparent !important;
       }
       #sf-cube-canvas:active { cursor: grabbing; }
-      /* Text floats above cube, centred */
+      /* Text centred above cube */
       #gen-empty {
         position: relative;
         z-index: 2;
-        background: transparent;
+        background: transparent !important;
         text-align: center;
-        padding: 24px 16px;
+        padding: 20px 16px;
+        pointer-events: none;
       }
       #gen-empty h3 {
-        font-size: 1.25rem;
+        font-size: 1.3rem;
+        font-weight: 700;
         color: #fff;
         margin-bottom: 8px;
-        text-shadow: 0 2px 20px rgba(0,0,0,1), 0 0 60px rgba(0,0,0,0.95);
+        /* Bold multi-layer outline so text pops over any cube colour */
+        text-shadow:
+          0 0 0 #000,
+          -2px -2px 0 #000,
+           2px -2px 0 #000,
+          -2px  2px 0 #000,
+           2px  2px 0 #000,
+           0 3px 12px #000,
+           0 0 32px rgba(0,0,0,0.98);
       }
       #gen-empty p {
-        color: rgba(255,255,255,0.75);
-        font-size: 0.9rem;
-        text-shadow: 0 2px 12px rgba(0,0,0,1), 0 0 30px rgba(0,0,0,0.9);
+        color: rgba(255,255,255,0.88);
+        font-size: 0.92rem;
+        text-shadow:
+          -1px -1px 0 #000,
+           1px -1px 0 #000,
+          -1px  1px 0 #000,
+           1px  1px 0 #000,
+           0 2px 8px #000;
       }
     </style>
 
