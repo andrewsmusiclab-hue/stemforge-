@@ -470,175 +470,313 @@ window._sfInitCube = function(user) {
     sfLog('faces added, children='+cubeGroup.children.length);
 
     // ── IMPACT POINT: top-center of cube ─────────────────────────────────
-    // Cube top is at Y = SIZE/2 = 1.15 in cubeGroup local space
-    // Impact at (0, SIZE/2, 0) — dead center top
     var IMPACT = new T.Vector3(0, SIZE/2, 0);
 
-    // ── 3D Hammer ─────────────────────────────────────────────────────────
-    // Reference: handle points to ~2:00 (upper-right, 30° from horizontal)
-    // Head strikes straight down onto cube top-center.
-    // We build the hammer in LOCAL space:
-    //   - Head is a horizontal block centred at origin of hammerG
-    //   - Handle extends from head toward upper-right at 30° from horizontal
-    // Then position hammerG so head is just above IMPACT point.
-
+    // ══════════════════════════════════════════════════════════════════════
+    // ── HAMMER — Mjolnir-style, full detail ───────────────────────────────
+    // Chrome head | chamfered edges | Norse waveform engraving | leather
+    // handle wrap with silver ring separators | leather strap at pommel
+    // ══════════════════════════════════════════════════════════════════════
     var hammerG = new T.Group();
 
-    // Materials — dark polished steel
-    var steelMat = new T.MeshPhysicalMaterial({
-      color:0x8aabbf, metalness:0.97, roughness:0.06,
-      clearcoat:1.0, clearcoatRoughness:0.04,
-      envMap:envMap, envMapIntensity:4.0
+    // ── Materials ──────────────────────────────────────────────────────────
+    // Mirror-chrome silver (head striking faces)
+    var chromeMat = new T.MeshPhysicalMaterial({
+      color:0xd4e0ea, metalness:1.0, roughness:0.04,
+      clearcoat:1.0, clearcoatRoughness:0.02,
+      envMap:envMap, envMapIntensity:6.0
     });
-    var darkSteelMat = new T.MeshPhysicalMaterial({
-      color:0x1a2a38, metalness:0.92, roughness:0.18,
-      envMap:envMap, envMapIntensity:1.5
+    // Slightly darker chamfer chrome
+    var chamferMat = new T.MeshPhysicalMaterial({
+      color:0xa8bfc8, metalness:1.0, roughness:0.08,
+      clearcoat:0.9, clearcoatRoughness:0.05,
+      envMap:envMap, envMapIntensity:4.5
     });
-    var handleMat = new T.MeshPhysicalMaterial({
-      color:0x2a3040, metalness:0.88, roughness:0.22,
-      envMap:envMap, envMapIntensity:1.2
+    // Engraved side face — dark steel with Norse knotwork canvas texture
+    var engravingCvs = (function(){
+      var sz=256, c=document.createElement('canvas');
+      c.width=sz; c.height=sz*0.55;
+      var ctx=c.getContext('2d');
+      // Dark steel base
+      var bg=ctx.createLinearGradient(0,0,sz,c.height);
+      bg.addColorStop(0,'#1c2a35'); bg.addColorStop(0.5,'#243040'); bg.addColorStop(1,'#1c2a35');
+      ctx.fillStyle=bg; ctx.fillRect(0,0,sz,c.height);
+      // Norse knotwork — interlaced waveform lines (simulate engraving)
+      ctx.strokeStyle='rgba(180,200,215,0.55)'; ctx.lineWidth=1.5;
+      // Horizontal sinusoidal waves layered — resembles audio waveform knotwork
+      for(var row=0;row<5;row++){
+        var ry=c.height*0.15+row*(c.height*0.16);
+        ctx.beginPath();
+        for(var px=0;px<sz;px++){
+          var y=ry+Math.sin(px*0.09+row*1.1)*8+Math.sin(px*0.22+row*0.7)*4;
+          if(px===0) ctx.moveTo(px,y); else ctx.lineTo(px,y);
+        }
+        ctx.stroke();
+      }
+      // Vertical interlace cross-strokes
+      ctx.strokeStyle='rgba(150,175,195,0.30)'; ctx.lineWidth=1;
+      for(var col=0;col<8;col++){
+        var cx2=sz*0.07+col*(sz*0.13);
+        ctx.beginPath(); ctx.moveTo(cx2,c.height*0.1); ctx.lineTo(cx2+12,c.height*0.9); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx2+6,c.height*0.1); ctx.lineTo(cx2-6,c.height*0.9); ctx.stroke();
+      }
+      // Border groove
+      ctx.strokeStyle='rgba(100,140,165,0.6)'; ctx.lineWidth=2;
+      ctx.strokeRect(4,4,sz-8,c.height-8);
+      // Hot glow at right edge (forge heat)
+      var hg=ctx.createLinearGradient(sz-40,0,sz,0);
+      hg.addColorStop(0,'rgba(255,160,40,0)'); hg.addColorStop(1,'rgba(255,140,20,0.25)');
+      ctx.fillStyle=hg; ctx.fillRect(0,0,sz,c.height);
+      return c;
+    })();
+    var engravingTex = new T.CanvasTexture(engravingCvs);
+    var engraveMat = new T.MeshPhysicalMaterial({
+      map:engravingTex, color:0x8ea8bb, metalness:0.95, roughness:0.22,
+      clearcoat:0.6, clearcoatRoughness:0.1,
+      envMap:envMap, envMapIntensity:2.0
+    });
+    // Groove notch material (darker inset)
+    var grooveMat = new T.MeshPhysicalMaterial({
+      color:0x2c3f4e, metalness:0.9, roughness:0.3,
+      envMap:envMap, envMapIntensity:1.0
+    });
+    // Rich saddle-brown leather
+    var leatherMat = new T.MeshPhysicalMaterial({
+      color:0x7a3d18, roughness:0.82, metalness:0.0,
+      clearcoat:0.15, clearcoatRoughness:0.6
+    });
+    // Silver ring separators on handle
+    var ringMat = new T.MeshPhysicalMaterial({
+      color:0xc8d8e0, metalness:1.0, roughness:0.06,
+      clearcoat:1.0, clearcoatRoughness:0.03,
+      envMap:envMap, envMapIntensity:5.0
+    });
+    // Pommel end-cap
+    var pommelMat = new T.MeshPhysicalMaterial({
+      color:0xb0c4d0, metalness:1.0, roughness:0.05,
+      clearcoat:1.0, clearcoatRoughness:0.02,
+      envMap:envMap, envMapIntensity:5.5
     });
 
-    // Head — blocky forging hammer, wider than tall, oriented along X axis
-    // (wide face = striking face on bottom when group is rotated)
-    var headGeo = new T.RoundedBoxGeometry(0.36, 0.21, 0.18, 4, 0.02);
-    var headM = new T.Mesh(headGeo, steelMat);
-    headM.position.set(0, 0, 0);
-    hammerG.add(headM);
+    // ── Hammer head — wide blocky Mjolnir shape ────────────────────────────
+    // Head is 0.50 wide (X), 0.28 tall (Y), 0.22 deep (Z)
+    var HW=0.50, HH=0.28, HD=0.22;
+    // Main head body — 6-face BoxGeometry for clean chamfer control
+    var headMesh = new T.Mesh(new T.BoxGeometry(HW,HH,HD), chromeMat);
+    hammerG.add(headMesh);
 
-    // Dark face plates on left/right ends of head
-    [-0.17, 0.17].forEach(function(x) {
-      var fp = new T.Mesh(new T.BoxGeometry(0.025, 0.18, 0.15), darkSteelMat);
-      fp.position.set(x, 0, 0);
-      hammerG.add(fp);
+    // ── Chamfer strips on all 12 edges ─────────────────────────────────────
+    // Top/bottom edge chamfers (4 long strips along X)
+    var chW=HW+0.01, chT=0.018, chD=0.018;
+    [ [0, HH/2+chT/2,  HD/2+chD/2], [0, HH/2+chT/2, -HD/2-chD/2],
+      [0,-HH/2-chT/2,  HD/2+chD/2], [0,-HH/2-chT/2, -HD/2-chD/2]
+    ].forEach(function(p){ var m=new T.Mesh(new T.BoxGeometry(chW,chT,chD),chamferMat); m.position.set(p[0],p[1],p[2]); hammerG.add(m); });
+    // Side vertical chamfers (4 strips along Y)
+    var chH2=HH+0.01;
+    [ [ HW/2+chD/2, 0,  HD/2+chD/2], [ HW/2+chD/2, 0, -HD/2-chD/2],
+      [-HW/2-chD/2, 0,  HD/2+chD/2], [-HW/2-chD/2, 0, -HD/2-chD/2]
+    ].forEach(function(p){ var m=new T.Mesh(new T.BoxGeometry(chD,chH2,chD),chamferMat); m.position.set(p[0],p[1],p[2]); hammerG.add(m); });
+
+    // ── Horizontal groove notch across front striking face ─────────────────
+    // Two thin inset slots running across the full width, near top of head
+    [-0.04, 0.04].forEach(function(yo){
+      var gv=new T.Mesh(new T.BoxGeometry(HW+0.002, 0.014, 0.012), grooveMat);
+      gv.position.set(0, yo, HD/2+0.001);
+      hammerG.add(gv);
     });
 
-    // Collar where handle meets head
-    var collarGeo = new T.CylinderGeometry(0.042, 0.042, 0.06, 16);
-    var collarM = new T.Mesh(collarGeo, steelMat);
-    // Collar sits on top of head, slightly back — handle exits here
-    // Handle angle: 30° from horizontal → in local Z-Y plane
-    // sin(30°)=0.5, cos(30°)=0.866
-    var ANG = 30 * Math.PI/180; // 30° from horizontal = handle direction
-    collarM.position.set(0, 0.105+0.03, 0);
-    collarM.rotation.z = ANG; // tilt collar to match handle
-    hammerG.add(collarM);
+    // ── Engraved side panel — left face of head ─────────────────────────────
+    // Slightly inset rectangular plaque on the -X face
+    var sidePanel = new T.Mesh(new T.PlaneGeometry(HD*0.88, HH*0.72), engraveMat);
+    sidePanel.rotation.y = -Math.PI/2;
+    sidePanel.position.set(-HW/2-0.001, -0.01, 0);
+    hammerG.add(sidePanel);
+    // Same on right face
+    var sidePanelR = new T.Mesh(new T.PlaneGeometry(HD*0.88, HH*0.72), engraveMat);
+    sidePanelR.rotation.y = Math.PI/2;
+    sidePanelR.position.set(HW/2+0.001, -0.01, 0);
+    hammerG.add(sidePanelR);
 
-    // Handle — cylinder, extends upper-right from head top
-    // Length 1.8, tilted 30° from horizontal (60° from vertical)
-    // In local space: handle runs from near head top toward upper-right
-    var handleLen = 0.92;
-    var handleGeo = new T.CylinderGeometry(0.028, 0.021, handleLen, 16);
-    var handleMesh = new T.Mesh(handleGeo, handleMat);
-    // Rotate cylinder: default cylinder axis is Y. We want it along the
-    // direction (sin30, cos30, 0) = (0.5, 0.866, 0) in local space.
-    // That means rotating Z axis by -ANG from vertical → rotation.z = -ANG
-    handleMesh.rotation.z = -ANG;
-    // Position: cylinder center is handleLen/2 along the handle direction from collar
-    var hDir = new T.Vector3(Math.sin(ANG), Math.cos(ANG), 0); // handle direction unit vector
-    var collarPos = new T.Vector3(0, 0.135, 0);
-    handleMesh.position.copy(collarPos.clone().add(hDir.clone().multiplyScalar(handleLen*0.5)));
-    hammerG.add(handleMesh);
+    // ── Handle socket collar — where handle enters top of head ────────────
+    var collarR=0.055, collarH=0.10;
+    var collarMesh = new T.Mesh(new T.CylinderGeometry(collarR, collarR*0.9, collarH, 20), chamferMat);
+    collarMesh.position.set(0, HH/2+collarH/2-0.01, 0);
+    hammerG.add(collarMesh);
 
-    // Handle grip end cap (slightly wider knob)
-    var gripGeo = new T.CylinderGeometry(0.029, 0.024, 0.06, 16);
-    var gripM = new T.Mesh(gripGeo, steelMat);
-    gripM.rotation.z = -ANG;
-    gripM.position.copy(collarPos.clone().add(hDir.clone().multiplyScalar(handleLen)));
-    hammerG.add(gripM);
+    // ── Handle — leather-wrapped cylinder ─────────────────────────────────
+    // Handle angle: 35° from horizontal so it reads "upper-right" visually
+    var HANG = 35 * Math.PI/180;
+    var hDir = new T.Vector3(Math.sin(HANG), Math.cos(HANG), 0);
+    var handleLen = 1.05;
+    var handleBase = new T.Vector3(0, HH/2+collarH-0.01, 0);
 
-    // Position the whole hammer group:
-    // Head sits just ABOVE the cube top-center, head bottom ~0.05 above cube top
-    // Head half-height = 0.21, so group Y = SIZE/2 + 0.21 + 0.10 clearance
-    hammerG.position.set(0, SIZE/2 + 0.16, 0.03);
+    // Core cylinder (wood-dark under leather)
+    var coreMesh = new T.Mesh(new T.CylinderGeometry(0.038, 0.030, handleLen, 18), leatherMat);
+    coreMesh.rotation.z = -HANG;
+    coreMesh.position.copy(handleBase.clone().add(hDir.clone().multiplyScalar(handleLen*0.5)));
+    hammerG.add(coreMesh);
 
-    // Slight forward tilt (X) and y-rotation to show 3D depth like reference
-    hammerG.rotation.set(0.18, -0.22, 0);
+    // ── Leather wrap strips — 10 individual segments ───────────────────────
+    var NWRAPS = 10;
+    for(var wi=0; wi<NWRAPS; wi++){
+      var wt = wi/NWRAPS;
+      var wpos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen*(wt+0.04)));
+      // Slightly varying strip thickness for realism
+      var sw = 0.062 + (wi%2)*0.004;
+      var strip = new T.Mesh(new T.CylinderGeometry(0.040, 0.040, sw, 18), leatherMat);
+      strip.rotation.z = -HANG;
+      strip.position.copy(wpos);
+      hammerG.add(strip);
+      // Silver ring between every strip
+      if(wi < NWRAPS-1){
+        var rpos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen*(wt+0.08)));
+        var ring = new T.Mesh(new T.CylinderGeometry(0.043, 0.043, 0.016, 18), ringMat);
+        ring.rotation.z = -HANG;
+        ring.position.copy(rpos);
+        hammerG.add(ring);
+      }
+    }
 
+    // ── Pommel end-cap ─────────────────────────────────────────────────────
+    var pommelPos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen+0.035));
+    var pommel = new T.Mesh(new T.CylinderGeometry(0.038, 0.044, 0.055, 20), pommelMat);
+    pommel.rotation.z = -HANG;
+    pommel.position.copy(pommelPos);
+    hammerG.add(pommel);
+
+    // ── Leather wrist strap — looped from pommel ───────────────────────────
+    // Strap is a flat curved ribbon (TubeGeometry along a custom curve)
+    var strapPts = [];
+    var strapBase = pommelPos.clone().add(hDir.clone().multiplyScalar(0.04));
+    var strapPerp = new T.Vector3(-hDir.y, hDir.x, 0).normalize(); // perpendicular to handle
+    for(var sp=0; sp<=16; sp++){
+      var sa = (sp/16) * Math.PI * 1.35; // 3/4 loop
+      var sr = 0.16; // loop radius
+      var sx = strapBase.x + Math.cos(sa)*sr*strapPerp.x - Math.sin(sa)*0.06;
+      var sy = strapBase.y + Math.cos(sa)*sr*strapPerp.y + Math.sin(sa)*0.12;
+      var sz2= strapBase.z + Math.sin(sa)*0.03;
+      strapPts.push(new T.Vector3(sx, sy, sz2));
+    }
+    var strapCurve = new T.CatmullRomCurve3(strapPts);
+    var strapMesh = new T.Mesh(
+      new T.TubeGeometry(strapCurve, 20, 0.010, 6, false),
+      leatherMat
+    );
+    hammerG.add(strapMesh);
+
+    // ── Position hammer group: head just above cube top-center ────────────
+    // head bottom = HH/2 below head center; clear cube top by 0.08
+    hammerG.position.set(0.04, SIZE/2 + HH/2 + 0.08, 0.02);
+    hammerG.rotation.set(0.14, -0.28, -0.06); // slight tilt for 3D depth
     cubeGroup.add(hammerG);
 
-    // ── SPARKS (child of cubeGroup, at impact point) ──────────────────────
-    // 35 elongated streak sparks radiating 360° from cube top-center
-    // Colors: white core → gold → amber/orange at tips (forging sparks)
+    // ══════════════════════════════════════════════════════════════════════
+    // ── SPARKS — 60 volumetric forge streaks with additive blending ───────
+    // Reference: long arcing streaks, white-hot core → gold → deep orange
+    // Dense burst above impact, sparser wrap-around, animated flicker
+    // ══════════════════════════════════════════════════════════════════════
     var splashG = new T.Group();
     splashG.position.copy(IMPACT);
 
-    // Bright starburst flash at impact center
+    // ── Central impact flash — blinding white overexposed core ────────────
     var flashM = new T.Mesh(
-      new T.SphereGeometry(0.05, 16, 16),
+      new T.SphereGeometry(0.07, 20, 20),
       new T.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.98})
     );
     splashG.add(flashM);
 
-    // Inner hot glow halo
+    // ── Hot inner glow ring — yellow-gold ─────────────────────────────────
     var haloM = new T.Mesh(
-      new T.SphereGeometry(0.14, 16, 16),
-      new T.MeshBasicMaterial({color:0xffcc00, transparent:true, opacity:0.35, side:T.BackSide})
+      new T.SphereGeometry(0.18, 20, 20),
+      new T.MeshBasicMaterial({color:0xffdd00, transparent:true, opacity:0.42, side:T.BackSide})
     );
     splashG.add(haloM);
 
-    // Outer orange glow
+    // ── Mid orange bloom ──────────────────────────────────────────────────
     var outerHalo = new T.Mesh(
-      new T.SphereGeometry(0.28, 16, 16),
-      new T.MeshBasicMaterial({color:0xff6600, transparent:true, opacity:0.12, side:T.BackSide})
+      new T.SphereGeometry(0.38, 20, 20),
+      new T.MeshBasicMaterial({color:0xff6600, transparent:true, opacity:0.16, side:T.BackSide})
     );
     splashG.add(outerHalo);
 
-    // Generate 36 spark streaks radially — elongated lines like grinding sparks
-    // Each spark: a line from near-origin outward, with a bright tip dot
+    // ── Wide ambient forge glow ───────────────────────────────────────────
+    var ambientGlow = new T.Mesh(
+      new T.SphereGeometry(0.65, 16, 16),
+      new T.MeshBasicMaterial({color:0xff3300, transparent:true, opacity:0.06, side:T.BackSide})
+    );
+    splashG.add(ambientGlow);
+
+    // ── Spark streak system ───────────────────────────────────────────────
+    // 60 streaks: 20 long primary, 20 medium secondary, 20 short tertiary
+    // Each group has its own flicker phase and color palette
     var sparkData = [];
-    var sparkMats = [];
-    for(var si=0; si<36; si++) {
-      // Angle spread: full 360° in XY plane, with Y bias (more sparks go upward)
-      var baseAngle = (si/36)*Math.PI*2;
-      // Add slight random spread in Z for 3D feel
-      var zSpread  = (Math.sin(si*7.3)*0.38);
-      // Length varies: longer for primary streaks, shorter for secondary
-      var isPrimary = (si % 3 === 0);
-      var len = isPrimary ? (0.60 + Math.abs(Math.sin(si*2.1))*0.70)
-                          : (0.25 + Math.abs(Math.sin(si*3.7))*0.45);
-      // Direction — mostly radial, slight upward bias (more sparks go up like reference)
-      var dx = Math.cos(baseAngle) * 0.85;
-      var dy = Math.sin(baseAngle) * 0.85 + 0.3; // +0.3 bias upward
-      var dz = zSpread;
+    var NSPARKS = 60;
+    for(var si=0; si<NSPARKS; si++){
+      var tier = si < 20 ? 0 : si < 40 ? 1 : 2; // 0=primary 1=mid 2=short
+      // Angle: full 360° with strong upward bias (sparks go mostly up+sides)
+      var baseAngle = (si/NSPARKS)*Math.PI*2;
+      // Upward bias: shift more angles into upper hemisphere
+      var upBias = 0.55; // 0=none, 1=full hemisphere
+      var dx = Math.cos(baseAngle);
+      var dy = Math.sin(baseAngle)*0.75 + upBias;
+      // Z spread: 3D depth so sparks come toward/away from camera
+      var dz = Math.sin(si*2.39+1.3)*0.65 + Math.cos(si*3.71)*0.3;
       var dir = new T.Vector3(dx, dy, dz).normalize();
 
-      // Color: white near origin, gold mid, amber/orange at tip
-      var col = isPrimary ? 0xffffff :
-                (si%3===1) ? 0xffcc00 : 0xff8800;
-      var tipCol = (si%4===0) ? 0xffffff :
-                   (si%4===1) ? 0xffaa00 :
-                   (si%4===2) ? 0xff6600 : 0xffdd00;
+      // Length by tier + per-spark variation
+      var lenBase = tier===0 ? 1.05 : tier===1 ? 0.58 : 0.28;
+      var lenVar  = Math.abs(Math.sin(si*2.71+0.9)) * (tier===0?0.55:tier===1?0.32:0.16);
+      var len = lenBase + lenVar;
 
-      // Line from small offset (don't start at exact center) to tip
-      var startPt = dir.clone().multiplyScalar(0.05);
-      var endPt   = dir.clone().multiplyScalar(len);
+      // Color: pure white root → brilliant gold center → deep amber/orange tip
+      // Primary sparks are brighter/longer and white-to-gold
+      var rootCol = 0xffffff;
+      var midCol  = tier===0 ? 0xffee88 : tier===1 ? 0xffbb22 : 0xff8800;
+      var tipCol  = tier===0 ? 0xffaa00 : tier===1 ? 0xff6600 : 0xff3300;
 
-      var linePts = [startPt, endPt];
-      var lineGeo = new T.BufferGeometry().setFromPoints(linePts);
-      var lineMat = new T.LineBasicMaterial({color:col, transparent:true, opacity: isPrimary?0.95:0.75});
-      var line = new T.Line(lineGeo, lineMat);
-      splashG.add(line);
-      sparkMats.push(lineMat);
+      // Build multi-segment spark line for color gradient effect
+      // Segment 1: root→mid (bright white-gold), Segment 2: mid→tip (gold-orange)
+      var seg1End = dir.clone().multiplyScalar(len*0.38);
+      var seg2End = dir.clone().multiplyScalar(len);
+      var startPt = dir.clone().multiplyScalar(0.04);
 
-      // Glowing tip dot
-      var dotSize = isPrimary ? 0.015 : 0.008;
+      // White root segment
+      var geo1 = new T.BufferGeometry().setFromPoints([startPt, seg1End]);
+      var mat1 = new T.LineBasicMaterial({color:rootCol, transparent:true, opacity:tier===0?0.97:tier===1?0.82:0.65});
+      splashG.add(new T.Line(geo1, mat1));
+
+      // Gold→orange outer segment
+      var geo2 = new T.BufferGeometry().setFromPoints([seg1End, seg2End]);
+      var mat2 = new T.LineBasicMaterial({color:midCol, transparent:true, opacity:tier===0?0.88:tier===1?0.72:0.52});
+      splashG.add(new T.Line(geo2, mat2));
+
+      // Bright glowing tip dot (sphere) — larger for primaries
+      var dotR = tier===0 ? 0.020 : tier===1 ? 0.013 : 0.008;
       var dot = new T.Mesh(
-        new T.SphereGeometry(dotSize, 6, 6),
-        new T.MeshBasicMaterial({color:tipCol})
+        new T.SphereGeometry(dotR, 8, 8),
+        new T.MeshBasicMaterial({color:tipCol, transparent:true, opacity:0.92})
       );
-      dot.position.copy(endPt);
+      dot.position.copy(seg2End);
       splashG.add(dot);
 
-      // Short bright segment near origin (the hot root of the spark)
-      var rootEnd = dir.clone().multiplyScalar(0.09);
-      var rootGeo = new T.BufferGeometry().setFromPoints([new T.Vector3(0,0,0), rootEnd]);
-      var rootMat = new T.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.85});
-      splashG.add(new T.Line(rootGeo, rootMat));
-      sparkMats.push(rootMat);
-
-      sparkData.push({mat:lineMat, isPrimary:isPrimary, phase:si*0.41});
+      // Extra: secondary hot-white short root burst (2nd overlapping line near base)
+      if(tier === 0){
+        var rootBurst = new T.BufferGeometry().setFromPoints([
+          dir.clone().multiplyScalar(0.0),
+          dir.clone().multiplyScalar(0.14)
+        ]);
+        var rootBurstMat = new T.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.90});
+        splashG.add(new T.Line(rootBurst, rootBurstMat));
+        sparkData.push({mat:mat1, mat2:mat2, dotMat:dot.material, rootMat:rootBurstMat, tier:tier, phase:si*0.37+0.1});
+      } else {
+        sparkData.push({mat:mat1, mat2:mat2, dotMat:dot.material, rootMat:null, tier:tier, phase:si*0.37+0.1});
+      }
     }
+
+    // ── Forge point light at impact — illuminates hammer underside ─────────
+    var forgeLight = new T.PointLight(0xff9900, 2.5, 3.5);
+    forgeLight.position.copy(IMPACT);
+    cubeGroup.add(forgeLight);
 
     cubeGroup.add(splashG);
 
@@ -675,15 +813,29 @@ window._sfInitCube = function(user) {
       var bob=Math.sin(t*0.65)*0.06;
       cubeGroup.rotation.x=rotX; cubeGroup.rotation.y=rotY; cubeGroup.position.y=-0.3+bob;
       edgeMat.opacity=0.55+0.22*Math.sin(t*2.0);
-      // Flash + halos pulse like a real forge strike
-      flashM.material.opacity=0.88+0.10*Math.sin(t*5.2);
-      haloM.material.opacity=0.28+0.14*Math.sin(t*3.1);
-      outerHalo.material.opacity=0.10+0.06*Math.sin(t*2.3+1.0);
-      // Sparks flicker individually
+      // ── Impact flash — blinding strobe at strike frequency ──────────────
+      var strikePhase = (t*1.4) % 1.0; // repeating strike cycle
+      var strikeFlare = strikePhase < 0.18 ? Math.exp(-strikePhase*22)*0.95 : 0.0;
+      flashM.material.opacity = 0.72 + 0.26*Math.abs(Math.sin(t*6.1)) + strikeFlare*0.5;
+      haloM.material.opacity  = 0.30 + 0.18*Math.sin(t*3.8+0.5) + strikeFlare*0.35;
+      outerHalo.material.opacity = 0.12 + 0.07*Math.sin(t*2.5+1.2) + strikeFlare*0.18;
+      ambientGlow.material.opacity = 0.05 + 0.04*Math.sin(t*1.8+0.8);
+      // ── Forge light pulses with strike ──────────────────────────────────
+      forgeLight.intensity = 2.0 + 1.8*Math.abs(Math.sin(t*5.8+0.3)) + strikeFlare*3.5;
+      // ── Per-spark flicker — each spark has its own rapid phase ──────────
       for(var _si=0;_si<sparkData.length;_si++){
         var _sd=sparkData[_si];
-        var flicker=0.5+0.5*Math.abs(Math.sin(t*8.0+_sd.phase));
-        _sd.mat.opacity=(_sd.isPrimary?0.95:0.75)*flicker;
+        // Primary sparks: fast strobe + slow drift; mid: medium; short: rapid random
+        var spd = _sd.tier===0 ? 9.5 : _sd.tier===1 ? 12.0 : 16.0;
+        var flicker = 0.45 + 0.55*Math.abs(Math.sin(t*spd+_sd.phase));
+        // Additional burst sync with strike cycle
+        var burstBoost = strikeFlare * (_sd.tier===0 ? 0.8 : _sd.tier===1 ? 0.5 : 0.3);
+        var op1base = _sd.tier===0?0.97:_sd.tier===1?0.82:0.65;
+        var op2base = _sd.tier===0?0.88:_sd.tier===1?0.72:0.52;
+        _sd.mat.opacity  = Math.min(1.0, op1base*flicker + burstBoost);
+        _sd.mat2.opacity = Math.min(1.0, op2base*flicker + burstBoost*0.7);
+        _sd.dotMat.opacity = Math.min(1.0, 0.92*flicker + burstBoost);
+        if(_sd.rootMat) _sd.rootMat.opacity = Math.min(1.0, 0.90*flicker + burstBoost);
       }
       fill.intensity=0.7+0.2*Math.sin(t*2.2);
       rim.intensity=0.5+0.15*Math.sin(t*1.6+1.1);
