@@ -4165,6 +4165,105 @@ body {
   box-shadow: 0 4px 20px rgba(124,58,237,.6), 0 0 0 2px rgba(139,92,246,.4);
 }
 
+/* ══ CREATE PAGE 3-TAB SYSTEM ══════════════════════════════════ */
+.create-page-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 14px;
+  padding: 4px;
+}
+.create-page-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 11px 8px;
+  border: none;
+  border-radius: 11px;
+  background: transparent;
+  color: rgba(255,255,255,.45);
+  font-size: .88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+  letter-spacing: .02em;
+}
+.create-page-tab i { font-size: .85rem; }
+.create-page-tab:hover {
+  background: rgba(255,255,255,.07);
+  color: rgba(255,255,255,.75);
+}
+.create-page-tab.active {
+  background: linear-gradient(135deg,#3d1d8a,#1e3a7a);
+  color: #e9d5ff;
+  box-shadow: 0 2px 12px rgba(124,58,237,.45);
+}
+
+/* Tab panels */
+.create-tab-panel {
+  animation: ctabIn .18s ease;
+}
+@keyframes ctabIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Mix tab: action row (Remix, Extend, Cover buttons) ── */
+.mix-action-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.mix-action-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 6px;
+  border: 1px solid rgba(255,255,255,.1);
+  border-radius: 12px;
+  background: rgba(255,255,255,.04);
+  color: rgba(255,255,255,.55);
+  font-size: .8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+  letter-spacing: .01em;
+}
+.mix-action-btn i { font-size: 1.15rem; }
+.mix-action-btn:hover {
+  background: rgba(139,92,246,.15);
+  border-color: rgba(139,92,246,.5);
+  color: #e9d5ff;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(124,58,237,.3);
+}
+.mix-action-btn.mix-action-btn--active {
+  background: linear-gradient(135deg,rgba(124,58,237,.25),rgba(30,58,122,.2));
+  border-color: rgba(168,85,247,.55);
+  color: #c084fc;
+  box-shadow: 0 2px 12px rgba(124,58,237,.3);
+}
+
+/* ── One Shot inline toggle row ── */
+.oneshot-inline-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(245,158,11,.2);
+  border-radius: 10px;
+  background: rgba(245,158,11,.04);
+}
+
 /* ── Reference Track inline dropdown panel ──────────────────── */
 #ref-inline-panel {
   border: 1px solid rgba(78,159,255,.25);

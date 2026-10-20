@@ -1875,7 +1875,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof window.openRemixUploadModal === 'function') window.openRemixUploadModal();
   };
 
-  // openOneShotGated — checks plan before opening the One Shot popup
+  // openOneShotGated — now shows One Shot inline in Create tab (plan gate still applies)
   window.openOneShotGated = function() {
     const plan = (window._sfUser && window._sfUser.plan) || 'free';
     if (plan === 'free') {
@@ -1888,7 +1888,55 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       return;
     }
-    if (typeof window.openCreatorPopup === 'function') window.openCreatorPopup('oneshot');
+    // Switch to Create tab and enable One Shot toggle
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('create');
+    var chk = document.getElementById('oneshot-inline-toggle-chk');
+    if (chk && !chk.checked) {
+      chk.checked = true;
+      var panel = document.getElementById('oneshot-inline-panel');
+      if (panel) panel.style.display = 'block';
+    }
+  };
+
+  // ── 3-Tab Create Page System ────────────────────────────────────
+  window.switchCreateTab = function(tab) {
+    var tabs = ['mix','create','voices'];
+    tabs.forEach(function(t) {
+      var btn   = document.getElementById('cptab-' + t);
+      var panel = document.getElementById('create-tab-' + t);
+      if (btn)   btn.classList.toggle('active', t === tab);
+      if (panel) panel.style.display = (t === tab) ? '' : 'none';
+    });
+    // When switching to Voices tab, load voice status
+    if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {
+      window.loadVoiceStatus();
+    }
+  };
+
+  // ── Mix sub-panel switcher (Cover active by default) ────────────
+  window.switchMixSub = function(sub) {
+    // Currently only Cover is a sub-panel; Remix and Extend open modals/popups
+    var mixBtns = document.querySelectorAll('.mix-action-btn');
+    mixBtns.forEach(function(b) { b.classList.remove('mix-action-btn--active'); });
+    var activeBtn = document.getElementById('mixbtn-' + sub);
+    if (activeBtn) activeBtn.classList.add('mix-action-btn--active');
+  };
+
+  // ── One Shot inline toggle ──────────────────────────────────────
+  window.toggleOneshotInline = function(e) {
+    // Plan gate
+    var plan = (window._sfUser && window._sfUser.plan) || 'free';
+    if (plan === 'free') {
+      e.preventDefault();
+      if (typeof showUpgradeModal === 'function') showUpgradeModal('One Shot Creator');
+      return;
+    }
+    // Let the checkbox toggle naturally, then show/hide panel
+    setTimeout(function() {
+      var chk   = document.getElementById('oneshot-inline-toggle-chk');
+      var panel = document.getElementById('oneshot-inline-panel');
+      if (panel) panel.style.display = (chk && chk.checked) ? 'block' : 'none';
+    }, 0);
   };
 
   // ── Subscription page: Manage dropdown ─────────────────────────
@@ -11094,13 +11142,9 @@ window.toggleRefDropdown = function() {
   let _coverPollTimer = null;
 
   function _setCoverMode(active) {
-    // Show/hide the generator main sections (Prompt, Lyrics, Vocals, Styles)
-    var mainSections = document.getElementById('generator-main-sections');
-    if (mainSections) mainSections.style.display = active ? 'none' : '';
-    // Hide the original Create button row entirely when cover panel is open
-    // (Cover panel has its own Create Cover button)
-    var createRow = document.getElementById('generator-create-row');
-    if (createRow) createRow.style.display = active ? 'none' : '';
+    // In the new 3-tab layout, Cover Song is in the Mix tab while the generator
+    // form (Prompt, Lyrics, Styles) is in the Create tab — they are already
+    // separated by tabs, so no show/hide needed. No-op kept for compatibility.
   }
 
   window.openCoverPanel = function() {
@@ -11110,28 +11154,14 @@ window.toggleRefDropdown = function() {
       showUpgradeToast('Cover Song is a Pro Artist feature. Upgrade to unlock.');
       return;
     }
-    var panel  = document.getElementById('cover-inline-panel');
-    var btn    = document.getElementById('ctab-cover');
-    // Close ref-inline-panel if open
-    var refPanel = document.getElementById('ref-inline-panel');
-    if (refPanel && refPanel.style.display !== 'none') {
-      refPanel.style.display = 'none';
-      var refBtn = document.getElementById('ctab-reference');
-      if (refBtn) refBtn.classList.remove('active');
-    }
-    if (!panel) return;
-    var isOpen = panel.style.display !== 'none';
-    var nowOpen = !isOpen;
-    panel.style.display = nowOpen ? 'block' : 'none';
-    if (btn) btn.classList.toggle('active', nowOpen);
-    _setCoverMode(nowOpen);
+    // In the new layout, Cover Song panel is always visible in Mix tab
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('mix');
+    // Highlight the Cover button in the mix action row
+    if (typeof window.switchMixSub === 'function') window.switchMixSub('cover');
+    _setCoverMode(true);
   };
 
   window.closeCoverPanel = function() {
-    var panel = document.getElementById('cover-inline-panel');
-    var btn   = document.getElementById('ctab-cover');
-    if (panel) panel.style.display = 'none';
-    if (btn)   btn.classList.remove('active');
     _setCoverMode(false);
     // Clear uploaded file + auto-generated style text + badge
     if (typeof window.clearCoverUpload === 'function') window.clearCoverUpload();
@@ -12095,28 +12125,13 @@ window.toggleRefDropdown = function() {
   };
 
   window.openVoicePanel = function() {
-    var coverPanel = document.getElementById('cover-inline-panel');
-    if (coverPanel) coverPanel.style.display = 'none';
-    var panel = document.getElementById('voice-inline-panel');
-    if (!panel) return;
-    var isOpen = panel.style.display === 'block';
-    panel.style.display = isOpen ? 'none' : 'block';
-    if (!isOpen) {
-      var prog     = document.getElementById('voice-gen-progress');
-      var result   = document.getElementById('voice-gen-result');
-      var msg      = document.getElementById('voice-gen-msg');
-      var cloneMsg = document.getElementById('voice-clone-msg');
-      if (prog)     prog.style.display     = 'none';
-      if (result)   result.style.display   = 'none';
-      if (msg)      msg.style.display      = 'none';
-      if (cloneMsg) cloneMsg.style.display = 'none';
-      window.loadVoiceStatus();
-    }
+    // In the new layout, VoiceForge is always visible in Voices tab
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('voices');
+    window.loadVoiceStatus();
   };
 
   window.closeVoicePanel = function() {
-    var panel = document.getElementById('voice-inline-panel');
-    if (panel) panel.style.display = 'none';
+    // No-op — Voices tab panel is always visible when tab is active
   };
 
   window.deleteVoicePersona = async function() {
