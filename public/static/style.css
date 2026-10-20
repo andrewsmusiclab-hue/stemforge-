@@ -2844,7 +2844,7 @@ body.light .legal-body td {
   /* Credits bar: hidden from top bar, shown in-page instead */
   .gs-page-wrap {
     margin-left: 0;
-    padding-top: 58px; /* height of top nav bar */
+    padding-top: 64px; /* height of top nav bar — logo+icon+label stacks taller on mobile */
   }
   .gs-content {
     padding: 20px 16px;
@@ -4181,11 +4181,13 @@ body {
 .create-page-tabs {
   display: flex;
   gap: 0;
-  margin-bottom: -1px;       /* overlap the content box top border */
+  margin-bottom: -2px;       /* overlap content box top border by exactly its border-width */
   position: relative;
   z-index: 10;
   align-items: flex-end;
-  padding: 0;
+  padding: 4px 0 0;          /* top breathing room so active-tab translateY pop isn't clipped */
+  overflow: visible;         /* never clip the lifted active tab */
+  scroll-margin-top: 72px;   /* when JS scrollIntoView fires, land below the sticky nav */
 }
 
 /* ── Base tab button — folder shape ── */
@@ -4266,25 +4268,28 @@ body {
   color: rgba(252,211,77,.6);
 }
 
-/* ── ACTIVE state: tab POPS UP to front ── */
+/* ── ACTIVE state: tab POPS UP to front and merges with content box ── */
 .create-page-tab.active {
   transform: translateY(-4px);   /* POP: lifts above the others */
   filter: none;
   color: #fff;
   z-index: 6;
   cursor: default;
-  border-bottom: 2px solid transparent; /* hides bottom so it merges with content */
-  padding-bottom: 17px; /* compensate for removed border bottom */
+  /* Bottom: no border + extra padding so tab face reaches down to content box top */
+  border-bottom: none;
+  padding-bottom: 19px;
 }
-/* Active tab bottom must exactly cover the content box top border line */
+/* Bridge pseudo-element: fills the gap between tab bottom and content box top,
+   erasing the content box's top border under the active tab */
 .create-page-tab.active::after {
   content: '';
   position: absolute;
-  bottom: -2px;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: inherit; /* same bg as tab — erases the content-box top border underneath */
+  bottom: -4px;        /* extends 4px below tab bottom, past the 2px content border */
+  left: -1px;          /* inset 1px on each side so side borders appear continuous */
+  right: -1px;
+  height: 6px;         /* tall enough to cover both the gap and the content top border */
+  background: inherit; /* same fill as the active tab — seamlessly hides the seam */
+  z-index: 7;          /* above the content box border */
 }
 
 /* Active MIX */
@@ -4334,7 +4339,7 @@ body {
   border-radius: 0 0 16px 16px;
   border-top: 2px solid rgba(255,255,255,.13);
   background: rgba(8,14,26,.97);
-  padding: 20px 16px 12px;
+  padding: 22px 16px 12px;     /* slightly more top padding since tab bridge covers ~6px */
   transition: border-color .2s ease, box-shadow .2s ease;
   overflow: visible;           /* never clip tab panel content */
   min-height: 80px;            /* always has some height — never collapses */
@@ -4881,14 +4886,20 @@ html, body {
   /* On mobile: tabs/inputs FIRST (top), result box SECOND (below) */
   .suno-left {
     order: 1;                  /* inputs first on mobile */
-    padding: 0;                /* no outer padding — tab system is edge-to-edge */
+    padding: 8px 0 0;          /* 8px top: gives the lifted active-tab room to show fully */
     gap: 0;
     width: 100%;
     min-width: 0;
     overflow-x: hidden;
+    overflow-y: visible;       /* never clip the lifted active tab */
     min-height: unset;
     border-right: none;
     border-bottom: 1px solid var(--border);
+  }
+  /* Ensure create-page-tabs itself doesn't clip the lifted active tab */
+  .create-page-tabs {
+    overflow: visible;
+    padding-top: 6px;          /* slightly more on mobile so the pop-up isn't clipped */
   }
   /* Tab content wrapper: inner padding on mobile */
   .create-tabs-content {
