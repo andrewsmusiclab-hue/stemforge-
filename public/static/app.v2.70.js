@@ -501,34 +501,34 @@ window._sfInitCube = function(user) {
 
     // Head — blocky forging hammer, wider than tall, oriented along X axis
     // (wide face = striking face on bottom when group is rotated)
-    var headGeo = new T.RoundedBoxGeometry(0.72, 0.42, 0.36, 4, 0.04);
+    var headGeo = new T.RoundedBoxGeometry(0.36, 0.21, 0.18, 4, 0.02);
     var headM = new T.Mesh(headGeo, steelMat);
     headM.position.set(0, 0, 0);
     hammerG.add(headM);
 
     // Dark face plates on left/right ends of head
-    [-0.34, 0.34].forEach(function(x) {
-      var fp = new T.Mesh(new T.BoxGeometry(0.05, 0.36, 0.30), darkSteelMat);
+    [-0.17, 0.17].forEach(function(x) {
+      var fp = new T.Mesh(new T.BoxGeometry(0.025, 0.18, 0.15), darkSteelMat);
       fp.position.set(x, 0, 0);
       hammerG.add(fp);
     });
 
     // Collar where handle meets head
-    var collarGeo = new T.CylinderGeometry(0.085, 0.085, 0.12, 16);
+    var collarGeo = new T.CylinderGeometry(0.042, 0.042, 0.06, 16);
     var collarM = new T.Mesh(collarGeo, steelMat);
     // Collar sits on top of head, slightly back — handle exits here
     // Handle angle: 30° from horizontal → in local Z-Y plane
     // sin(30°)=0.5, cos(30°)=0.866
     var ANG = 30 * Math.PI/180; // 30° from horizontal = handle direction
-    collarM.position.set(0, 0.21+0.06, 0);
+    collarM.position.set(0, 0.105+0.03, 0);
     collarM.rotation.z = ANG; // tilt collar to match handle
     hammerG.add(collarM);
 
     // Handle — cylinder, extends upper-right from head top
     // Length 1.8, tilted 30° from horizontal (60° from vertical)
     // In local space: handle runs from near head top toward upper-right
-    var handleLen = 1.85;
-    var handleGeo = new T.CylinderGeometry(0.055, 0.042, handleLen, 16);
+    var handleLen = 0.92;
+    var handleGeo = new T.CylinderGeometry(0.028, 0.021, handleLen, 16);
     var handleMesh = new T.Mesh(handleGeo, handleMat);
     // Rotate cylinder: default cylinder axis is Y. We want it along the
     // direction (sin30, cos30, 0) = (0.5, 0.866, 0) in local space.
@@ -536,12 +536,12 @@ window._sfInitCube = function(user) {
     handleMesh.rotation.z = -ANG;
     // Position: cylinder center is handleLen/2 along the handle direction from collar
     var hDir = new T.Vector3(Math.sin(ANG), Math.cos(ANG), 0); // handle direction unit vector
-    var collarPos = new T.Vector3(0, 0.27, 0);
+    var collarPos = new T.Vector3(0, 0.135, 0);
     handleMesh.position.copy(collarPos.clone().add(hDir.clone().multiplyScalar(handleLen*0.5)));
     hammerG.add(handleMesh);
 
     // Handle grip end cap (slightly wider knob)
-    var gripGeo = new T.CylinderGeometry(0.058, 0.048, 0.12, 16);
+    var gripGeo = new T.CylinderGeometry(0.029, 0.024, 0.06, 16);
     var gripM = new T.Mesh(gripGeo, steelMat);
     gripM.rotation.z = -ANG;
     gripM.position.copy(collarPos.clone().add(hDir.clone().multiplyScalar(handleLen)));
@@ -550,7 +550,7 @@ window._sfInitCube = function(user) {
     // Position the whole hammer group:
     // Head sits just ABOVE the cube top-center, head bottom ~0.05 above cube top
     // Head half-height = 0.21, so group Y = SIZE/2 + 0.21 + 0.10 clearance
-    hammerG.position.set(0, SIZE/2 + 0.32, 0.05);
+    hammerG.position.set(0, SIZE/2 + 0.16, 0.03);
 
     // Slight forward tilt (X) and y-rotation to show 3D depth like reference
     hammerG.rotation.set(0.18, -0.22, 0);
@@ -565,21 +565,21 @@ window._sfInitCube = function(user) {
 
     // Bright starburst flash at impact center
     var flashM = new T.Mesh(
-      new T.SphereGeometry(0.10, 16, 16),
+      new T.SphereGeometry(0.05, 16, 16),
       new T.MeshBasicMaterial({color:0xffffff, transparent:true, opacity:0.98})
     );
     splashG.add(flashM);
 
     // Inner hot glow halo
     var haloM = new T.Mesh(
-      new T.SphereGeometry(0.28, 16, 16),
+      new T.SphereGeometry(0.14, 16, 16),
       new T.MeshBasicMaterial({color:0xffcc00, transparent:true, opacity:0.35, side:T.BackSide})
     );
     splashG.add(haloM);
 
     // Outer orange glow
     var outerHalo = new T.Mesh(
-      new T.SphereGeometry(0.55, 16, 16),
+      new T.SphereGeometry(0.28, 16, 16),
       new T.MeshBasicMaterial({color:0xff6600, transparent:true, opacity:0.12, side:T.BackSide})
     );
     splashG.add(outerHalo);
@@ -595,8 +595,8 @@ window._sfInitCube = function(user) {
       var zSpread  = (Math.sin(si*7.3)*0.38);
       // Length varies: longer for primary streaks, shorter for secondary
       var isPrimary = (si % 3 === 0);
-      var len = isPrimary ? (1.2 + Math.abs(Math.sin(si*2.1))*1.4)
-                          : (0.5 + Math.abs(Math.sin(si*3.7))*0.9);
+      var len = isPrimary ? (0.60 + Math.abs(Math.sin(si*2.1))*0.70)
+                          : (0.25 + Math.abs(Math.sin(si*3.7))*0.45);
       // Direction — mostly radial, slight upward bias (more sparks go up like reference)
       var dx = Math.cos(baseAngle) * 0.85;
       var dy = Math.sin(baseAngle) * 0.85 + 0.3; // +0.3 bias upward
@@ -622,7 +622,7 @@ window._sfInitCube = function(user) {
       sparkMats.push(lineMat);
 
       // Glowing tip dot
-      var dotSize = isPrimary ? 0.030 : 0.016;
+      var dotSize = isPrimary ? 0.015 : 0.008;
       var dot = new T.Mesh(
         new T.SphereGeometry(dotSize, 6, 6),
         new T.MeshBasicMaterial({color:tipCol})
@@ -631,7 +631,7 @@ window._sfInitCube = function(user) {
       splashG.add(dot);
 
       // Short bright segment near origin (the hot root of the spark)
-      var rootEnd = dir.clone().multiplyScalar(0.18);
+      var rootEnd = dir.clone().multiplyScalar(0.09);
       var rootGeo = new T.BufferGeometry().setFromPoints([new T.Vector3(0,0,0), rootEnd]);
       var rootMat = new T.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.85});
       splashG.add(new T.Line(rootGeo, rootMat));
