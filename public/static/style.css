@@ -4392,9 +4392,35 @@ body {
   border-radius: 0 0 16px 16px;
   background: rgba(8,14,26,.97);
   padding: 16px 16px 12px;
+  padding-bottom: 20px;   /* room for the metallic bottom strip */
   transition: border-color .2s ease, box-shadow .2s ease;
-  overflow: visible;
+  overflow: hidden;   /* clip the ::after strip to the rounded bottom corners */
   min-height: 80px;
+}
+/*
+  Metallic bottom strip — solid, non-transparent, brushed steel look.
+  Uses a linear-gradient simulating a horizontal metallic sheen:
+  dark steel edges → bright highlight center → dark steel edges.
+  Sits flush at the very bottom of the content box, clipped by border-radius.
+*/
+.create-tabs-content::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 10px;
+  background: linear-gradient(
+    to bottom,
+    rgba(40,48,72,.95) 0%,
+    rgba(72,84,110,1)  30%,
+    rgba(110,122,150,1) 50%,
+    rgba(72,84,110,1)  70%,
+    rgba(28,34,54,1)   100%
+  );
+  border-radius: 0 0 14px 14px;
+  pointer-events: none;
+  z-index: 2;
 }
 /* Content box per-tab hue — deeper backlit inner glow on all sides */
 .create-tabs-content.tab-mix-active {
