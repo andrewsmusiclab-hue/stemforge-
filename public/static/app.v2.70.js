@@ -341,10 +341,10 @@ window._sfInitCube = function(user) {
       var ctx=c.getContext('2d');
       ctx.fillStyle='#060d1c'; ctx.fillRect(0,0,SZ,SZ);
       var tiers=[
-        {bg:'#0d1a2e',wc:'#00f0ff',wc2:'#ffa040',amp:52,density:160},
-        {bg:'#081525',wc:'#00e5ff',wc2:'#80f0ff',amp:38,density:150},
-        {bg:'#060f1e',wc:'#00b4d8',wc2:'#4dd0e1',amp:28,density:140},
-        {bg:'#040c18',wc:'#0077b6',wc2:'#2a9fd6',amp:18,density:120},
+        {bg:'#1a0e00',wc:'#ffaa00',wc2:'#ff4400',amp:52,density:160}, // Tier 1 — orange-gold (forge/impact)
+        {bg:'#001a0e',wc:'#00ff88',wc2:'#00ffcc',amp:38,density:150}, // Tier 2 — electric green
+        {bg:'#12001a',wc:'#dd00ff',wc2:'#8800ff',amp:28,density:140}, // Tier 3 — vivid magenta/purple
+        {bg:'#001020',wc:'#00d4ff',wc2:'#0066ff',amp:18,density:120}, // Tier 4 — bright cyan-blue
       ];
       var tierH=Math.floor(SZ/4), divH=4, seed=variant*7919+1234;
       tiers.forEach(function(td,ti){
@@ -358,8 +358,9 @@ window._sfInitCube = function(user) {
           ig.addColorStop(0,'rgba(255,180,60,0.45)'); ig.addColorStop(0.4,'rgba(255,100,20,0.15)'); ig.addColorStop(1,'rgba(0,0,0,0)');
           ctx.fillStyle=ig; ctx.fillRect(0,y0,SZ,y1-y0);
         }
-        // Bevel top
-        var bev=ctx.createLinearGradient(0,y0,0,y0+6); bev.addColorStop(0,'rgba(0,230,255,0.7)'); bev.addColorStop(1,'rgba(0,230,255,0)');
+        // Bevel top — use tier colour
+        var bevRGB=td.wc; var bev=ctx.createLinearGradient(0,y0,0,y0+6);
+        bev.addColorStop(0,td.wc+'cc'); bev.addColorStop(1,td.wc+'00');
         ctx.fillStyle=bev; ctx.fillRect(0,y0,SZ,6);
         // Bottom shadow
         var bsh=ctx.createLinearGradient(0,y1-4,0,y1); bsh.addColorStop(0,'rgba(0,0,0,0)'); bsh.addColorStop(1,'rgba(0,0,0,0.6)');
@@ -389,24 +390,28 @@ window._sfInitCube = function(user) {
         for(var i=0;i<N;i++){
           var bh=smoothH[i]*halfH, bx=i*barW;
           var gc=ctx.createLinearGradient(bx,midY-bh,bx,midY+bh);
-          var topC=(ti===0&&isImpact&&i/N>0.4)?td.wc2:td.wc2;
-          gc.addColorStop(0,topC); gc.addColorStop(0.5,td.wc); gc.addColorStop(1,topC);
+          gc.addColorStop(0,td.wc2); gc.addColorStop(0.5,td.wc); gc.addColorStop(1,td.wc2);
           ctx.fillStyle=gc;
           ctx.fillRect(bx+0.5,midY-bh,Math.max(0.8,barW-1),bh);
           ctx.fillRect(bx+0.5,midY,Math.max(0.8,barW-1),bh);
         }
         ctx.restore();
-        // Center line
-        ctx.save(); ctx.strokeStyle='rgba(0,230,255,0.2)'; ctx.lineWidth=1;
+        // Center line — tier colour
+        ctx.save(); ctx.strokeStyle=td.wc+'44'; ctx.lineWidth=1;
         ctx.beginPath(); ctx.moveTo(0,midY); ctx.lineTo(SZ,midY); ctx.stroke(); ctx.restore();
         // Divider
-        if(ti<3){ ctx.fillStyle='rgba(0,0,0,0.85)'; ctx.fillRect(0,y1,SZ,divH); ctx.fillStyle='rgba(0,200,255,0.18)'; ctx.fillRect(0,y1,SZ,1); }
+        if(ti<3){ ctx.fillStyle='rgba(0,0,0,0.9)'; ctx.fillRect(0,y1,SZ,divH); ctx.fillStyle=td.wc+'30'; ctx.fillRect(0,y1,SZ,1); }
       });
-      // Edge rim glow
+      // Edge rim glow — per-tier colours blended vertically
+      var tierColors=['#ffaa00','#00ff88','#dd00ff','#00d4ff'];
       ['left','right'].forEach(function(side){
-        var rg=ctx.createLinearGradient(side==='left'?0:SZ,0,side==='left'?18:SZ-18,0);
-        rg.addColorStop(0,'rgba(0,230,255,0.5)'); rg.addColorStop(1,'rgba(0,230,255,0)');
-        ctx.fillStyle=rg; ctx.fillRect(side==='left'?0:SZ-18,0,18,SZ);
+        var x0=side==='left'?0:SZ-22, x1=side==='left'?22:SZ;
+        tierColors.forEach(function(tc,ti2){
+          var ty=ti2*(SZ/4);
+          var rg=ctx.createLinearGradient(x0,0,x1,0);
+          rg.addColorStop(0,tc+'99'); rg.addColorStop(1,tc+'00');
+          ctx.fillStyle=rg; ctx.fillRect(x0,ty,22,SZ/4);
+        });
       });
       return c;
     }
