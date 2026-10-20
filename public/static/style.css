@@ -4181,13 +4181,13 @@ body {
 .create-page-tabs {
   display: flex;
   gap: 0;
-  margin-bottom: -2px;       /* overlap content box top border by exactly its border-width */
+  margin-bottom: 0;          /* tab bottom sits exactly flush on top of content box */
   position: relative;
   z-index: 10;
   align-items: flex-end;
-  padding: 4px 0 0;          /* top breathing room so active-tab translateY pop isn't clipped */
-  overflow: visible;         /* never clip the lifted active tab */
-  scroll-margin-top: 72px;   /* when JS scrollIntoView fires, land below the sticky nav */
+  padding: 6px 0 0;          /* top breathing room so active-tab pop isn't clipped */
+  overflow: visible;
+  scroll-margin-top: 72px;
 }
 
 /* ── Base tab button — folder shape ── */
@@ -4268,38 +4268,31 @@ body {
   color: rgba(252,211,77,.6);
 }
 
-/* ── ACTIVE state: tab POPS UP to front and merges with content box ── */
+/* ── ACTIVE state: pops up, bottom open, merges with content box ── */
 .create-page-tab.active {
-  transform: translateY(-4px);   /* POP: lifts 4px above inactive tabs */
+  transform: translateY(-4px);   /* POP: lifts above inactive tabs */
   filter: none;
   color: #fff;
   z-index: 6;
   cursor: default;
-  border-bottom: none;           /* open bottom — tab face flows into content box */
-  padding-bottom: 22px;          /* extra height so tab reaches flush to content box top */
+  border-bottom: none;           /* open bottom — no line between tab and body */
+  padding-bottom: 20px;
 }
 /*
-  Bridge pseudo-element: solid fill that erases the content-box top border
-  directly beneath the active tab.
-
-  Layout math:
-    • tab is translateY(-4px)  → its layout bottom is 4px BELOW its visual bottom
-    • .create-page-tabs has margin-bottom: -2px  → content overlaps by 2px
-    • content box has border-top: 2px
-    • To erase the content border we need to reach: 4px (translate) + 2px (overlap) + 2px (border) = 8px below layout bottom
-    • Add 2px safety  → bottom: -10px, height: 12px
-    • Width: exactly flush with tab sides (0 / 0) so colored side-borders of the
-      content box remain fully visible on the left and right of the tab
+  Bridge: a solid fill strip that covers the content-box border-top
+  directly under the active tab, so the tab interior flows seamlessly into the body.
+  The translateY(-4px) means layout-bottom is 4px below visual bottom.
+  We need to reach: 4px (translate gap) + 2px (content border) = 6px → use 8px for safety.
 */
 .create-page-tab.active::after {
   content: '';
   position: absolute;
-  bottom: -10px;       /* reaches past translateY offset + margin-bottom + border-top */
-  left: 0;
-  right: 0;
-  height: 12px;        /* covers the gap + 2px content border with room to spare */
-  background: inherit; /* same fill color as the active tab — erases the seam */
-  z-index: 8;          /* above the content box border (z-index 5) */
+  bottom: -8px;
+  left: 2px;           /* inset by border-width so tab side borders stay visible */
+  right: 2px;          /* same on right */
+  height: 10px;
+  background: inherit;
+  z-index: 8;
 }
 
 /* Active MIX */
@@ -4342,37 +4335,34 @@ body {
     0 -4px 16px rgba(245,158,11,.15);
 }
 
-/* ── Content box: connected to active tab ──
-   border-radius: top corners are 0 so the tab's side borders run straight into the body.
-   border-top color is overridden per active-tab class to match the hue.
+/* ── Content box ──────────────────────────────────────────────────────────────
+   border-top: NONE — the active tab's open bottom + bridge creates the junction.
+   The hue color comes from left + right + bottom borders only.
+   The top-left and top-right corners are square (0) so the tab side borders
+   flow straight down into the content box side borders with no gap.
 */
 .create-tabs-content {
   position: relative;
   z-index: 5;
   border: 2px solid rgba(255,255,255,.13);
+  border-top: none;            /* NO top border — tab head open bottom IS the top edge */
   border-radius: 0 0 16px 16px;
-  border-top: 2px solid rgba(255,255,255,.13); /* overridden by tab-*-active classes */
   background: rgba(8,14,26,.97);
-  padding: 24px 16px 12px;     /* top padding clears the bridge pseudo-element */
+  padding: 16px 16px 12px;
   transition: border-color .2s ease, box-shadow .2s ease;
-  overflow: visible;           /* never clip tab panel content */
-  min-height: 80px;            /* always has some height — never collapses */
+  overflow: visible;
+  min-height: 80px;
 }
-/*
-  Per-tab content box: border-top matches the hue so the colored line runs
-  across the full top of the body, connecting to both side borders.
-  Left and right borders also pick up the hue.
-  The bridge ::after on the active tab erases the portion of border-top
-  that sits directly under the tab head.
-*/
+/* Per-tab hue: left + right + bottom borders glow with the tab color.
+   No border-top — that edge is the open junction with the tab head. */
 .create-tabs-content.tab-mix-active {
-  border-color: rgba(20,184,166,.55);       /* teal — all 4 sides */
+  border-color: rgba(20,184,166,.55);
   box-shadow:
     inset 0 0 40px rgba(20,184,166,.05),
     0 4px 24px rgba(0,0,0,.4);
 }
 .create-tabs-content.tab-create-active {
-  border-color: rgba(139,92,246,.6);        /* purple — all 4 sides */
+  border-color: rgba(139,92,246,.6);
   box-shadow:
     inset 0 0 40px rgba(124,58,237,.06),
     0 4px 24px rgba(0,0,0,.4);
