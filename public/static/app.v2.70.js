@@ -817,15 +817,16 @@ window._sfInitCube = function(user) {
       var dz = Math.sin(si * 2.39 + 1.1) * 0.55 + Math.cos(si * 3.71) * 0.28;
       var dir = new T.Vector3(dx, dy, dz).normalize();
 
-      // Length scale (world units) — long primaries like reference
+      // Length scale — capped so longest spark stays shorter than the hammer handle
+      // Primary max ~0.45, mid ~0.26, short ~0.13
       var lenScale = tier===0
-        ? 0.95 + Math.abs(Math.sin(si*2.71+0.9))*0.65
+        ? 0.28 + Math.abs(Math.sin(si*2.71+0.9))*0.17
         : tier===1
-          ? 0.50 + Math.abs(Math.sin(si*3.1+0.4))*0.35
-          : 0.22 + Math.abs(Math.sin(si*4.3+1.2))*0.16;
+          ? 0.16 + Math.abs(Math.sin(si*3.1+0.4))*0.10
+          : 0.07 + Math.abs(Math.sin(si*4.3+1.2))*0.06;
 
       // Width scale — thick primaries, thinner secondaries
-      var wScale = tier===0 ? 0.055 : tier===1 ? 0.038 : 0.024;
+      var wScale = tier===0 ? 0.042 : tier===1 ? 0.028 : 0.017;
 
       var tex = tier===0 ? texPrimary : tier===1 ? texMid : texShort;
 
