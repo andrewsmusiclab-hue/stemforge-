@@ -12203,7 +12203,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-175'
+const ASSET_VER = '20261020-176'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12453,7 +12453,7 @@ function globalSidebar() {
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
     <!-- Shop — admin only -->
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav gs-admin-only" data-page="shop" style="
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-admin-only" data-page="shop" style="
       display:none;
       background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08));
       border:1px solid rgba(139,92,246,.3);
@@ -12466,7 +12466,7 @@ function globalSidebar() {
       <span class="nav-label-short">Shop</span>
     </a>
     <!-- My Collection — admin only -->
-    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav gs-admin-only" data-page="collection" style="display:none">
+    <a href="/collection" class="gs-sidebar__nav-item gs-admin-only" data-page="collection" style="display:none">
       <i class="fas fa-gem" style="width:18px;text-align:center;flex-shrink:0"></i>
       <span class="nav-label-full">My Collection</span>
       <span class="nav-label-short">Collect</span>

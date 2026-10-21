@@ -1700,8 +1700,8 @@ document.addEventListener('DOMContentLoaded', () => {
       document.querySelectorAll('.gs-auth-nav').forEach(el => { el.style.display = 'flex'; });
       // Show admin-only items (Shop, Collection, Voices tab) only for admin account
       if (user.is_admin) {
-        document.querySelectorAll('.gs-admin-only').forEach(el => {
-          el.style.display = el.tagName === 'BUTTON' ? 'flex' : (el.classList.contains('profile-link-card') ? 'flex' : (el.style.display === 'none' ? 'flex' : el.style.display));
+        document.querySelectorAll('.gs-admin-only').forEach(function(el) {
+          el.style.display = 'flex';
         });
       }
 
