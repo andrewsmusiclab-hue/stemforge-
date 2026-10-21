@@ -238,6 +238,812 @@ function sfShowNoticeModal(notice, onDismiss) {
   modal.addEventListener('click', function(e) { if (e.target === modal) dismiss(); });
 }
 
+
+// ── Cube skin definitions ─────────────────────────────────────────────────
+window._CUBE_SKINS = {
+  cube_forge: {
+    cubeBody:   0x070e1c,  cubeEmissive: 0x001a33, emissiveInt: 0.12,
+    edgeGlow:   0x00e5ff,  edgeOpacity: 0.70,
+    shellColor: 0x00aaff,  shellOpacity: 0.03,
+    fillLight:  0x00d2ff,  fillInt: 0.80,
+    rimLight:   0xff8c20,  rimInt: 0.60,
+    botLight:   0x0040ff,  botInt: 0.40,
+    waveformTiers: [
+      {bg:'#1a0e00',wc:'#ffaa00',wc2:'#ff4400',amp:52,density:160},
+      {bg:'#001a0e',wc:'#00ff88',wc2:'#00ffcc',amp:38,density:150},
+      {bg:'#12001a',wc:'#dd00ff',wc2:'#8800ff',amp:28,density:140},
+      {bg:'#001020',wc:'#00d4ff',wc2:'#0066ff',amp:18,density:120},
+    ]
+  },
+  cube_obsidian: {
+    cubeBody:   0x0a0404,  cubeEmissive: 0x1a0000, emissiveInt: 0.18,
+    edgeGlow:   0xff2200,  edgeOpacity: 0.80,
+    shellColor: 0xff3300,  shellOpacity: 0.04,
+    fillLight:  0xcc1100,  fillInt: 0.90,
+    rimLight:   0xff6600,  rimInt: 0.70,
+    botLight:   0x660000,  botInt: 0.50,
+    waveformTiers: [
+      {bg:'#1a0000',wc:'#ff4400',wc2:'#ff2200',amp:52,density:160},
+      {bg:'#180000',wc:'#ff6600',wc2:'#ff3300',amp:38,density:150},
+      {bg:'#100000',wc:'#cc2200',wc2:'#881100',amp:28,density:140},
+      {bg:'#0e0000',wc:'#ff5500',wc2:'#cc3300',amp:18,density:120},
+    ]
+  },
+  cube_goldrush: {
+    cubeBody:   0x1a1000,  cubeEmissive: 0x1a0a00, emissiveInt: 0.15,
+    edgeGlow:   0xffd700,  edgeOpacity: 0.85,
+    shellColor: 0xffcc00,  shellOpacity: 0.04,
+    fillLight:  0xffaa00,  fillInt: 0.85,
+    rimLight:   0xff8800,  rimInt: 0.65,
+    botLight:   0xcc7700,  botInt: 0.45,
+    waveformTiers: [
+      {bg:'#1a0e00',wc:'#ffd700',wc2:'#ffaa00',amp:52,density:160},
+      {bg:'#160c00',wc:'#ffcc00',wc2:'#ff9900',amp:38,density:150},
+      {bg:'#120a00',wc:'#eebb00',wc2:'#cc8800',amp:28,density:140},
+      {bg:'#0e0800',wc:'#ffdd44',wc2:'#ffaa00',amp:18,density:120},
+    ]
+  },
+  cube_neon: {
+    cubeBody:   0x020d18,  cubeEmissive: 0x001a1a, emissiveInt: 0.20,
+    edgeGlow:   0x00ffff,  edgeOpacity: 0.85,
+    shellColor: 0x00ffee,  shellOpacity: 0.04,
+    fillLight:  0x00eeff,  fillInt: 0.90,
+    rimLight:   0x0088ff,  rimInt: 0.70,
+    botLight:   0x00aaff,  botInt: 0.50,
+    waveformTiers: [
+      {bg:'#001a1a',wc:'#00ffff',wc2:'#00eeff',amp:52,density:160},
+      {bg:'#001218',wc:'#00ccff',wc2:'#0088ff',amp:38,density:150},
+      {bg:'#001016',wc:'#00eedd',wc2:'#00bbcc',amp:28,density:140},
+      {bg:'#000e14',wc:'#44ffff',wc2:'#00ddff',amp:18,density:120},
+    ]
+  },
+  cube_diamond: {
+    cubeBody:   0x1a0008,  cubeEmissive: 0x1a0010, emissiveInt: 0.20,
+    edgeGlow:   0xff0055,  edgeOpacity: 0.90,
+    shellColor: 0xff0055,  shellOpacity: 0.05,
+    fillLight:  0xcc0044,  fillInt: 0.95,
+    rimLight:   0xff0077,  rimInt: 0.75,
+    botLight:   0x880033,  botInt: 0.55,
+    waveformTiers: [
+      {bg:'#1a0008',wc:'#ff0055',wc2:'#cc0033',amp:52,density:160},
+      {bg:'#150006',wc:'#ff3366',wc2:'#dd0044',amp:38,density:150},
+      {bg:'#100005',wc:'#ff0044',wc2:'#aa0033',amp:28,density:140},
+      {bg:'#0c0004',wc:'#ff2255',wc2:'#cc0033',amp:18,density:120},
+    ]
+  },
+};
+
+// ── StemForge 3D Logo Cube v5 — UMD script chain, no ES modules ──────────
+window._sfInitCube = function(user) {
+  function D(msg){ console.log('[SFCube]', msg); }
+
+  // Resolve active skin from user data
+  var skinId = (user && user.active_cube_id) ? user.active_cube_id : 'cube_forge';
+  var SKIN = (window._CUBE_SKINS && window._CUBE_SKINS[skinId]) ? window._CUBE_SKINS[skinId] : window._CUBE_SKINS['cube_forge'];
+
+  D('_sfInitCube called user='+(user?user.email:'null')+' is_admin='+(user&&user.is_admin)+' skin='+skinId);
+  var wrap   = document.getElementById('sf-cube-wrap');
+  var canvas = document.getElementById('sf-cube-canvas');
+  if (!wrap || !canvas) { D('ABORT: elements missing'); return; }
+  if (!user || !user.is_admin) { wrap.style.display='none'; return; }
+  wrap.style.display = 'block';
+  if (window._sfCubeActive) { return; }
+  window._sfCubeActive = true;
+  D('proceeding...');
+
+  // Load UMD scripts in order, then run cube init
+  var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
+  // Only load Three.js core + RoundedBoxGeometry — no postprocessing (direct render, transparent bg)
+  var scripts = [
+    BASE128 + 'build/three.min.js',
+    BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js',
+  ];
+
+  var sfLog = function(msg){ console.log('[SFCube]', msg); };
+
+  function loadNext(i, done) {
+    if (i >= scripts.length) { done(); return; }
+    var name = scripts[i].split('/').pop();
+    var s = document.createElement('script');
+    s.src = scripts[i];
+    s.onload  = function() { sfLog('✓ '+name); loadNext(i+1, done); };
+    s.onerror = function() { sfLog('✗ FAIL: '+name, '#f66'); loadNext(i+1, done); };
+    document.head.appendChild(s);
+  }
+
+  loadNext(0, function() { sfLog('all loaded — running cube'); _sfRunCube(); });
+
+  function _sfRunCube() {
+    var T = window.THREE;
+    if (!T) { sfLog('THREE missing!', '#f66'); return; }
+    sfLog('THREE ok, PMREMGenerator='+typeof T.PMREMGenerator+' RoundedBox='+typeof T.RoundedBoxGeometry+' Bloom='+typeof T.UnrealBloomPass);
+
+    var stage = document.getElementById('sf-cube-stage');
+    var W = (stage ? stage.clientWidth : wrap.clientWidth) || 420;
+    // H is FIXED — never reads clientHeight which changes when textarea expands
+    var FIXED_H = window.innerWidth <= 768 ? 320 : 420;
+    var H = FIXED_H;
+
+    // ── Renderer ──────────────────────────────────────────────────────────
+    var renderer;
+    try {
+      renderer = new T.WebGLRenderer({
+        canvas: canvas, antialias: true, alpha: true,
+        premultipliedAlpha: false,
+        powerPreference: 'high-performance'
+      });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      renderer.setSize(W, H, false);  // false = don't touch canvas CSS
+      renderer.setClearColor(0x000000, 0);   // fully transparent — site bg shows through
+      renderer.toneMapping         = T.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.4;
+      renderer.autoClear = false;  // clear manually each frame for transparency
+      sfLog('renderer ok W='+W+' H='+H);
+    } catch(e) { sfLog('renderer FAIL: '+e.message, '#f66'); return; }
+
+    // ── Scene / Camera ─────────────────────────────────────────────────────
+    var scene  = new T.Scene();
+    var camera = new T.PerspectiveCamera(38, W/H, 0.1, 100);
+    camera.position.set(0, 0.4, 5.8);   // pulled in slightly, centred vertically
+
+    // ── IBL env (procedural) ───────────────────────────────────────────────
+    var envCvs = document.createElement('canvas');
+    envCvs.width=512; envCvs.height=256;
+    var ec = envCvs.getContext('2d');
+    ec.fillStyle='#000'; ec.fillRect(0,0,512,256);
+    var kl=ec.createRadialGradient(400,25,0,400,25,200); kl.addColorStop(0,'rgba(255,255,255,0.9)'); kl.addColorStop(1,'rgba(0,0,0,0)'); ec.fillStyle=kl; ec.fillRect(0,0,512,256);
+    var cl=ec.createRadialGradient(0,128,0,0,128,220); cl.addColorStop(0,'rgba(0,210,255,0.5)'); cl.addColorStop(1,'rgba(0,0,0,0)'); ec.fillStyle=cl; ec.fillRect(0,0,512,256);
+    var rl=ec.createRadialGradient(256,256,0,256,256,220); rl.addColorStop(0,'rgba(255,120,20,0.4)'); rl.addColorStop(1,'rgba(0,0,0,0)'); ec.fillStyle=rl; ec.fillRect(0,0,512,256);
+    var envTex = new T.CanvasTexture(envCvs);
+    envTex.mapping = T.EquirectangularReflectionMapping;
+    var pmrem = new T.PMREMGenerator(renderer);
+    pmrem.compileEquirectangularShader();
+    var envMap = pmrem.fromEquirectangular(envTex).texture;
+    scene.environment = envMap;
+
+    // ── Lights ─────────────────────────────────────────────────────────────
+    // Low ambient — let emissiveMap carry the face color, not external lights
+    scene.add(new T.AmbientLight(0xffffff, 0.25));
+    var key = new T.DirectionalLight(0xffffff, 0.8); key.position.set(4,7,5); scene.add(key);
+    var fill = new T.PointLight(SKIN.fillLight, SKIN.fillInt, 30); fill.position.set(-4,3,4); scene.add(fill);
+    var rim  = new T.PointLight(SKIN.rimLight,  SKIN.rimInt,  22); rim.position.set(1,6,-4); scene.add(rim);
+    var bot  = new T.PointLight(SKIN.botLight,  SKIN.botInt,  14); bot.position.set(0,-5,3); scene.add(bot);
+
+    // ── DAW stem waveform texture ──────────────────────────────────────────
+    function makeDAWStemFace(variant, isImpact) {
+      var SZ=512, c=document.createElement('canvas'); c.width=c.height=SZ;
+      var ctx=c.getContext('2d');
+      ctx.fillStyle='#060d1c'; ctx.fillRect(0,0,SZ,SZ);
+      // Use active skin waveform tiers
+      var tiers = SKIN.waveformTiers.map(function(t,i){
+        return {bg:t.bg||'#060d1c',wc:t.wc,wc2:t.wc2,amp:[52,38,28,18][i]||30,density:[160,150,140,120][i]||140};
+      });
+      var tierH=Math.floor(SZ/4), divH=4, seed=variant*7919+1234;
+      tiers.forEach(function(td,ti){
+        var y0=ti*tierH, y1=y0+tierH-divH, midY=(y0+y1)/2, halfH=(y1-y0)/2-4;
+        var bg=ctx.createLinearGradient(0,y0,0,y1);
+        bg.addColorStop(0,td.bg); bg.addColorStop(0.5,'#0a1628'); bg.addColorStop(1,td.bg);
+        ctx.fillStyle=bg; ctx.fillRect(0,y0,SZ,y1-y0);
+        // Impact glow top tier
+        if(ti===0&&isImpact){
+          var ig=ctx.createRadialGradient(SZ*0.6,y0,0,SZ*0.6,y0,SZ*0.55);
+          ig.addColorStop(0,'rgba(255,180,60,0.45)'); ig.addColorStop(0.4,'rgba(255,100,20,0.15)'); ig.addColorStop(1,'rgba(0,0,0,0)');
+          ctx.fillStyle=ig; ctx.fillRect(0,y0,SZ,y1-y0);
+        }
+        // Bevel top — use tier colour
+        var bevRGB=td.wc; var bev=ctx.createLinearGradient(0,y0,0,y0+6);
+        bev.addColorStop(0,td.wc+'cc'); bev.addColorStop(1,td.wc+'00');
+        ctx.fillStyle=bev; ctx.fillRect(0,y0,SZ,6);
+        // Bottom shadow
+        var bsh=ctx.createLinearGradient(0,y1-4,0,y1); bsh.addColorStop(0,'rgba(0,0,0,0)'); bsh.addColorStop(1,'rgba(0,0,0,0.6)');
+        ctx.fillStyle=bsh; ctx.fillRect(0,y1-4,SZ,4);
+        // Build bar heights — seeded pseudo-random DAW stems
+        var N=td.density, barW=SZ/N, heights=[];
+        function rng(i){var x=Math.sin(seed+ti*1000+i*17.3)*43758.5453; return x-Math.floor(x);}
+        for(var i=0;i<N;i++){
+          var r1=rng(i),r2=rng(i+500),r3=rng(i+1000);
+          var env=Math.sin(i/N*Math.PI);
+          var spike=r1>0.88?(0.7+r2*0.3):(r1*0.6+r2*0.3);
+          heights.push(Math.max(0.03,spike*env*0.95+r3*0.08));
+        }
+        var smoothH=heights.map(function(h,i){return i===0?h:(h*0.7+heights[i-1]*0.3);});
+        // Outer glow
+        ctx.save(); ctx.shadowColor=td.wc; ctx.shadowBlur=10; ctx.globalAlpha=0.35;
+        for(var i=0;i<N;i++){
+          var bh=smoothH[i]*halfH, bx=i*barW;
+          var col=(ti===0&&isImpact&&i/N>0.45)?td.wc2:td.wc;
+          ctx.fillStyle=col;
+          ctx.fillRect(bx,midY-bh-1,Math.max(1,barW-1),bh+1);
+          ctx.fillRect(bx,midY,Math.max(1,barW-1),bh+1);
+        }
+        ctx.restore();
+        // Main bars with gradient
+        ctx.save(); ctx.shadowColor=td.wc; ctx.shadowBlur=6; ctx.globalAlpha=1.0;
+        for(var i=0;i<N;i++){
+          var bh=smoothH[i]*halfH, bx=i*barW;
+          var gc=ctx.createLinearGradient(bx,midY-bh,bx,midY+bh);
+          gc.addColorStop(0,td.wc2); gc.addColorStop(0.5,td.wc); gc.addColorStop(1,td.wc2);
+          ctx.fillStyle=gc;
+          ctx.fillRect(bx+0.5,midY-bh,Math.max(0.8,barW-1),bh);
+          ctx.fillRect(bx+0.5,midY,Math.max(0.8,barW-1),bh);
+        }
+        ctx.restore();
+        // Center line — tier colour
+        ctx.save(); ctx.strokeStyle=td.wc+'44'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(0,midY); ctx.lineTo(SZ,midY); ctx.stroke(); ctx.restore();
+        // Divider
+        if(ti<3){ ctx.fillStyle='rgba(0,0,0,0.9)'; ctx.fillRect(0,y1,SZ,divH); ctx.fillStyle=td.wc+'30'; ctx.fillRect(0,y1,SZ,1); }
+      });
+      // Edge rim glow — per-tier colours blended vertically (skin-driven)
+      var tierColors=SKIN.waveformTiers.map(function(t){return t.wc;});
+      ['left','right'].forEach(function(side){
+        var x0=side==='left'?0:SZ-22, x1=side==='left'?22:SZ;
+        tierColors.forEach(function(tc,ti2){
+          var ty=ti2*(SZ/4);
+          var rg=ctx.createLinearGradient(x0,0,x1,0);
+          rg.addColorStop(0,tc+'99'); rg.addColorStop(1,tc+'00');
+          ctx.fillStyle=rg; ctx.fillRect(x0,ty,22,SZ/4);
+        });
+      });
+      return c;
+    }
+
+    // ── Cube group (everything rotates together) ────────────────────────────
+    var cubeGroup = new T.Group();
+    cubeGroup.position.y = -0.3;   // shift cube down slightly so it sits in vertical center of taller stage
+    scene.add(cubeGroup);
+
+    // ── Cube body ──────────────────────────────────────────────────────────
+    var SIZE=1.2, RADIUS=0.032;
+    var geo = new T.RoundedBoxGeometry(SIZE,SIZE,SIZE,4,RADIUS);
+    var cubeMat = new T.MeshPhysicalMaterial({
+      metalness:0.9, roughness:0.12, clearcoat:0.7, clearcoatRoughness:0.07,
+      color:new T.Color(SKIN.cubeBody), emissive:new T.Color(SKIN.cubeEmissive), emissiveIntensity:SKIN.emissiveInt,
+      envMap:envMap, envMapIntensity:2.5
+    });
+    var cube = new T.Mesh(geo, cubeMat);
+    cubeGroup.add(cube);
+
+    // ── Edge glow ──────────────────────────────────────────────────────────
+    var edgeMat = new T.LineBasicMaterial({color:SKIN.edgeGlow,transparent:true,opacity:SKIN.edgeOpacity});
+    var edges   = new T.LineSegments(new T.EdgesGeometry(new T.BoxGeometry(SIZE,SIZE,SIZE)), edgeMat);
+    cubeGroup.add(edges);
+
+    // ── Bloom shell ────────────────────────────────────────────────────────
+    var shellMat = new T.MeshBasicMaterial({color:SKIN.shellColor,transparent:true,opacity:SKIN.shellOpacity,side:T.BackSide});
+    var shell    = new T.Mesh(new T.RoundedBoxGeometry(SIZE+0.2,SIZE+0.2,SIZE+0.2,4,RADIUS+0.05), shellMat);
+    cubeGroup.add(shell);
+
+    // ── Face overlay planes (local coords → auto-rotate with group) ─────────
+    var FO=SIZE/2+0.008, PS=SIZE-RADIUS*2;
+    var faceDefs=[
+      {pos:[0,0, FO],  rotY:0,          wave:0, impact:true },
+      {pos:[0,0,-FO],  rotY:Math.PI,    wave:1, impact:false},
+      {pos:[ FO,0,0],  rotY:-Math.PI/2, wave:2, impact:false},
+      {pos:[-FO,0,0],  rotY: Math.PI/2, wave:3, impact:false},
+    ];
+    faceDefs.forEach(function(fd,fi){
+      var cvs=makeDAWStemFace(fd.wave,fd.impact);
+      sfLog('face'+fi+' canvas='+(cvs?cvs.width+'x'+cvs.height:'NULL'),'#0ef');
+      var tex=new T.CanvasTexture(cvs);
+      tex.needsUpdate=true;
+      var mat=new T.MeshStandardMaterial({
+        map:tex,
+        emissiveMap:tex,
+        emissive:new T.Color(0xffffff),
+        emissiveIntensity:1.2,
+        roughness:0.55,
+        metalness:0.0,
+        side:T.DoubleSide,
+        transparent:false
+      });
+      var plane=new T.Mesh(new T.PlaneGeometry(PS,PS),mat);
+      plane.position.set(fd.pos[0],fd.pos[1],fd.pos[2]);
+      plane.rotation.y=fd.rotY;
+      cubeGroup.add(plane);
+    });
+
+    sfLog('faces added, children='+cubeGroup.children.length);
+
+    // ── IMPACT POINT: top-center of cube ─────────────────────────────────
+    var IMPACT = new T.Vector3(0, SIZE/2, 0);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ── HAMMER — Mjolnir-style, full detail ───────────────────────────────
+    // Chrome head | chamfered edges | Norse waveform engraving | leather
+    // handle wrap with silver ring separators | leather strap at pommel
+    // ══════════════════════════════════════════════════════════════════════
+    var hammerG = new T.Group();
+
+    // ── Materials ──────────────────────────────────────────────────────────
+    // Mirror-chrome silver (head striking faces)
+    var chromeMat = new T.MeshPhysicalMaterial({
+      color:0xd4e0ea, metalness:1.0, roughness:0.04,
+      clearcoat:1.0, clearcoatRoughness:0.02,
+      envMap:envMap, envMapIntensity:6.0
+    });
+    // Slightly darker chamfer chrome
+    var chamferMat = new T.MeshPhysicalMaterial({
+      color:0xa8bfc8, metalness:1.0, roughness:0.08,
+      clearcoat:0.9, clearcoatRoughness:0.05,
+      envMap:envMap, envMapIntensity:4.5
+    });
+    // Engraved side face — dark steel with Norse knotwork canvas texture
+    var engravingCvs = (function(){
+      var sz=256, c=document.createElement('canvas');
+      c.width=sz; c.height=sz*0.55;
+      var ctx=c.getContext('2d');
+      // Dark steel base
+      var bg=ctx.createLinearGradient(0,0,sz,c.height);
+      bg.addColorStop(0,'#1c2a35'); bg.addColorStop(0.5,'#243040'); bg.addColorStop(1,'#1c2a35');
+      ctx.fillStyle=bg; ctx.fillRect(0,0,sz,c.height);
+      // Norse knotwork — interlaced waveform lines (simulate engraving)
+      ctx.strokeStyle='rgba(180,200,215,0.55)'; ctx.lineWidth=1.5;
+      // Horizontal sinusoidal waves layered — resembles audio waveform knotwork
+      for(var row=0;row<5;row++){
+        var ry=c.height*0.15+row*(c.height*0.16);
+        ctx.beginPath();
+        for(var px=0;px<sz;px++){
+          var y=ry+Math.sin(px*0.09+row*1.1)*8+Math.sin(px*0.22+row*0.7)*4;
+          if(px===0) ctx.moveTo(px,y); else ctx.lineTo(px,y);
+        }
+        ctx.stroke();
+      }
+      // Vertical interlace cross-strokes
+      ctx.strokeStyle='rgba(150,175,195,0.30)'; ctx.lineWidth=1;
+      for(var col=0;col<8;col++){
+        var cx2=sz*0.07+col*(sz*0.13);
+        ctx.beginPath(); ctx.moveTo(cx2,c.height*0.1); ctx.lineTo(cx2+12,c.height*0.9); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx2+6,c.height*0.1); ctx.lineTo(cx2-6,c.height*0.9); ctx.stroke();
+      }
+      // Border groove
+      ctx.strokeStyle='rgba(100,140,165,0.6)'; ctx.lineWidth=2;
+      ctx.strokeRect(4,4,sz-8,c.height-8);
+      // Hot glow at right edge (forge heat)
+      var hg=ctx.createLinearGradient(sz-40,0,sz,0);
+      hg.addColorStop(0,'rgba(255,160,40,0)'); hg.addColorStop(1,'rgba(255,140,20,0.25)');
+      ctx.fillStyle=hg; ctx.fillRect(0,0,sz,c.height);
+      return c;
+    })();
+    var engravingTex = new T.CanvasTexture(engravingCvs);
+    var engraveMat = new T.MeshPhysicalMaterial({
+      map:engravingTex, color:0x8ea8bb, metalness:0.95, roughness:0.22,
+      clearcoat:0.6, clearcoatRoughness:0.1,
+      envMap:envMap, envMapIntensity:2.0
+    });
+    // Groove notch material (darker inset)
+    var grooveMat = new T.MeshPhysicalMaterial({
+      color:0x2c3f4e, metalness:0.9, roughness:0.3,
+      envMap:envMap, envMapIntensity:1.0
+    });
+    // Rich saddle-brown leather
+    var leatherMat = new T.MeshPhysicalMaterial({
+      color:0x7a3d18, roughness:0.82, metalness:0.0,
+      clearcoat:0.15, clearcoatRoughness:0.6
+    });
+    // Silver ring separators on handle
+    var ringMat = new T.MeshPhysicalMaterial({
+      color:0xc8d8e0, metalness:1.0, roughness:0.06,
+      clearcoat:1.0, clearcoatRoughness:0.03,
+      envMap:envMap, envMapIntensity:5.0
+    });
+    // Pommel end-cap
+    var pommelMat = new T.MeshPhysicalMaterial({
+      color:0xb0c4d0, metalness:1.0, roughness:0.05,
+      clearcoat:1.0, clearcoatRoughness:0.02,
+      envMap:envMap, envMapIntensity:5.5
+    });
+
+    // ── Hammer head — wide blocky Mjolnir shape ────────────────────────────
+    // Head is 0.50 wide (X), 0.28 tall (Y), 0.22 deep (Z)
+    var HW=0.50, HH=0.28, HD=0.22;
+    // Main head body — 6-face BoxGeometry for clean chamfer control
+    var headMesh = new T.Mesh(new T.BoxGeometry(HW,HH,HD), chromeMat);
+    hammerG.add(headMesh);
+
+    // ── Chamfer strips on all 12 edges ─────────────────────────────────────
+    // Top/bottom edge chamfers (4 long strips along X)
+    var chW=HW+0.01, chT=0.018, chD=0.018;
+    [ [0, HH/2+chT/2,  HD/2+chD/2], [0, HH/2+chT/2, -HD/2-chD/2],
+      [0,-HH/2-chT/2,  HD/2+chD/2], [0,-HH/2-chT/2, -HD/2-chD/2]
+    ].forEach(function(p){ var m=new T.Mesh(new T.BoxGeometry(chW,chT,chD),chamferMat); m.position.set(p[0],p[1],p[2]); hammerG.add(m); });
+    // Side vertical chamfers (4 strips along Y)
+    var chH2=HH+0.01;
+    [ [ HW/2+chD/2, 0,  HD/2+chD/2], [ HW/2+chD/2, 0, -HD/2-chD/2],
+      [-HW/2-chD/2, 0,  HD/2+chD/2], [-HW/2-chD/2, 0, -HD/2-chD/2]
+    ].forEach(function(p){ var m=new T.Mesh(new T.BoxGeometry(chD,chH2,chD),chamferMat); m.position.set(p[0],p[1],p[2]); hammerG.add(m); });
+
+    // ── Horizontal groove notch across front striking face ─────────────────
+    // Two thin inset slots running across the full width, near top of head
+    [-0.04, 0.04].forEach(function(yo){
+      var gv=new T.Mesh(new T.BoxGeometry(HW+0.002, 0.014, 0.012), grooveMat);
+      gv.position.set(0, yo, HD/2+0.001);
+      hammerG.add(gv);
+    });
+
+    // ── Engraved side panel — left face of head ─────────────────────────────
+    // Slightly inset rectangular plaque on the -X face
+    var sidePanel = new T.Mesh(new T.PlaneGeometry(HD*0.88, HH*0.72), engraveMat);
+    sidePanel.rotation.y = -Math.PI/2;
+    sidePanel.position.set(-HW/2-0.001, -0.01, 0);
+    hammerG.add(sidePanel);
+    // Same on right face
+    var sidePanelR = new T.Mesh(new T.PlaneGeometry(HD*0.88, HH*0.72), engraveMat);
+    sidePanelR.rotation.y = Math.PI/2;
+    sidePanelR.position.set(HW/2+0.001, -0.01, 0);
+    hammerG.add(sidePanelR);
+
+    // ── Handle socket collar — where handle enters top of head ────────────
+    var collarR=0.055, collarH=0.10;
+    var collarMesh = new T.Mesh(new T.CylinderGeometry(collarR, collarR*0.9, collarH, 20), chamferMat);
+    collarMesh.position.set(0, HH/2+collarH/2-0.01, 0);
+    hammerG.add(collarMesh);
+
+    // ── Handle — leather-wrapped cylinder ─────────────────────────────────
+    // Handle angle: 35° from horizontal so it reads "upper-right" visually
+    var HANG = 35 * Math.PI/180;
+    var hDir = new T.Vector3(Math.sin(HANG), Math.cos(HANG), 0);
+    var handleLen = 1.05;
+    var handleBase = new T.Vector3(0, HH/2+collarH-0.01, 0);
+
+    // Core cylinder (wood-dark under leather)
+    var coreMesh = new T.Mesh(new T.CylinderGeometry(0.038, 0.030, handleLen, 18), leatherMat);
+    coreMesh.rotation.z = -HANG;
+    coreMesh.position.copy(handleBase.clone().add(hDir.clone().multiplyScalar(handleLen*0.5)));
+    hammerG.add(coreMesh);
+
+    // ── Leather wrap strips — 10 individual segments ───────────────────────
+    var NWRAPS = 10;
+    for(var wi=0; wi<NWRAPS; wi++){
+      var wt = wi/NWRAPS;
+      var wpos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen*(wt+0.04)));
+      // Slightly varying strip thickness for realism
+      var sw = 0.062 + (wi%2)*0.004;
+      var strip = new T.Mesh(new T.CylinderGeometry(0.040, 0.040, sw, 18), leatherMat);
+      strip.rotation.z = -HANG;
+      strip.position.copy(wpos);
+      hammerG.add(strip);
+      // Silver ring between every strip
+      if(wi < NWRAPS-1){
+        var rpos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen*(wt+0.08)));
+        var ring = new T.Mesh(new T.CylinderGeometry(0.043, 0.043, 0.016, 18), ringMat);
+        ring.rotation.z = -HANG;
+        ring.position.copy(rpos);
+        hammerG.add(ring);
+      }
+    }
+
+    // ── Pommel end-cap ─────────────────────────────────────────────────────
+    var pommelPos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen+0.035));
+    var pommel = new T.Mesh(new T.CylinderGeometry(0.038, 0.044, 0.055, 20), pommelMat);
+    pommel.rotation.z = -HANG;
+    pommel.position.copy(pommelPos);
+    hammerG.add(pommel);
+
+    // ── Leather wrist strap — looped from pommel ───────────────────────────
+    // Strap is a flat curved ribbon (TubeGeometry along a custom curve)
+    var strapPts = [];
+    var strapBase = pommelPos.clone().add(hDir.clone().multiplyScalar(0.04));
+    var strapPerp = new T.Vector3(-hDir.y, hDir.x, 0).normalize(); // perpendicular to handle
+    for(var sp=0; sp<=16; sp++){
+      var sa = (sp/16) * Math.PI * 1.35; // 3/4 loop
+      var sr = 0.16; // loop radius
+      var sx = strapBase.x + Math.cos(sa)*sr*strapPerp.x - Math.sin(sa)*0.06;
+      var sy = strapBase.y + Math.cos(sa)*sr*strapPerp.y + Math.sin(sa)*0.12;
+      var sz2= strapBase.z + Math.sin(sa)*0.03;
+      strapPts.push(new T.Vector3(sx, sy, sz2));
+    }
+    var strapCurve = new T.CatmullRomCurve3(strapPts);
+    var strapMesh = new T.Mesh(
+      new T.TubeGeometry(strapCurve, 20, 0.010, 6, false),
+      leatherMat
+    );
+    hammerG.add(strapMesh);
+
+    // ── Position hammer group: head just above cube top-center ────────────
+    // head bottom = HH/2 below head center; clear cube top by 0.08
+    hammerG.position.set(0.04, SIZE/2 + HH/2 + 0.08, 0.02);
+    hammerG.rotation.set(0.14, -0.28, -0.06); // slight tilt for 3D depth
+    cubeGroup.add(hammerG);
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // ── SPARKS — billboard PlaneGeometry quads, canvas-gradient textures ──
+    // Each spark = a flat quad always facing the camera (manually billboarded
+    // in the render loop). Canvas bakes white-hot root → gold → orange tip
+    // gradient WITH soft glowing feathered edges — any thickness possible,
+    // no bloom pass needed, transparent background preserved.
+    // ══════════════════════════════════════════════════════════════════════
+
+    var splashG = new T.Group();
+    splashG.position.copy(IMPACT);
+
+    // ── Pre-bake spark streak textures (3 tier sizes) ─────────────────────
+    // Each canvas: streak along Y axis, X = thickness with soft feathered edges
+    // White-hot at base (bottom), gold mid, deep orange at tip (top)
+    function makeSparkTex(thickPx, lenPx, colRoot, colMid, colTip) {
+      var c = document.createElement('canvas');
+      c.width = thickPx; c.height = lenPx;
+      var ctx = c.getContext('2d');
+      ctx.clearRect(0, 0, thickPx, lenPx);
+      // Longitudinal color gradient: root (bottom) → mid → tip (top)
+      var lg = ctx.createLinearGradient(0, lenPx, 0, 0);
+      lg.addColorStop(0.00, colRoot);   // base: blazing white
+      lg.addColorStop(0.25, colRoot);   // keep white for first quarter
+      lg.addColorStop(0.55, colMid);    // gold transition
+      lg.addColorStop(0.85, colTip);    // orange
+      lg.addColorStop(1.00, 'rgba(255,60,0,0)'); // tip fades to transparent
+      // Radial feather on X axis — bright center, soft edges (the key trick)
+      var cx2 = thickPx / 2;
+      for(var py=0; py<lenPx; py++){
+        // Feather width narrows toward the tip
+        var progress = py / lenPx; // 0=base, 1=tip
+        var halfW = cx2 * (1.0 - progress*0.55); // tapers toward tip
+        var rg = ctx.createLinearGradient(cx2-halfW, py, cx2+halfW, py);
+        rg.addColorStop(0,   'rgba(0,0,0,0)');
+        rg.addColorStop(0.25,'rgba(0,0,0,0)');
+        rg.addColorStop(0.5, 'rgba(255,255,255,1)');
+        rg.addColorStop(0.75,'rgba(0,0,0,0)');
+        rg.addColorStop(1,   'rgba(0,0,0,0)');
+        ctx.fillStyle = rg;
+        ctx.fillRect(0, py, thickPx, 1);
+      }
+      // Apply the longitudinal gradient as a multiply pass
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = lg;
+      ctx.fillRect(0, 0, thickPx, lenPx);
+      // Restore and add inner bright core stripe down the center
+      ctx.globalCompositeOperation = 'source-over';
+      var coreW = Math.max(1, thickPx*0.18);
+      var coreLg = ctx.createLinearGradient(0, lenPx*0.05, 0, lenPx*0.7);
+      coreLg.addColorStop(0,   'rgba(255,255,255,0.95)');
+      coreLg.addColorStop(0.4, 'rgba(255,240,180,0.70)');
+      coreLg.addColorStop(1.0, 'rgba(255,140,0,0)');
+      ctx.fillStyle = coreLg;
+      ctx.fillRect(cx2-coreW/2, 0, coreW, lenPx*0.72);
+      return c;
+    }
+
+    // Three tier textures: primary (thick+long), mid, short
+    var texPrimary = new T.CanvasTexture(makeSparkTex(
+      28, 256,
+      'rgba(255,255,255,1)', 'rgba(255,210,40,1)', 'rgba(255,100,0,1)'
+    ));
+    var texMid = new T.CanvasTexture(makeSparkTex(
+      18, 180,
+      'rgba(255,255,200,1)', 'rgba(255,180,20,1)', 'rgba(255,70,0,1)'
+    ));
+    var texShort = new T.CanvasTexture(makeSparkTex(
+      12, 110,
+      'rgba(255,240,180,1)', 'rgba(255,140,10,1)', 'rgba(220,50,0,1)'
+    ));
+
+    // ── Central impact flash ───────────────────────────────────────────────
+    var flashCvs = (function(){
+      var sz=128, c=document.createElement('canvas'); c.width=c.height=sz;
+      var ctx=c.getContext('2d');
+      var g=ctx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      g.addColorStop(0,  'rgba(255,255,255,1)');
+      g.addColorStop(0.2,'rgba(255,250,200,0.9)');
+      g.addColorStop(0.5,'rgba(255,200,50,0.5)');
+      g.addColorStop(0.8,'rgba(255,100,0,0.2)');
+      g.addColorStop(1,  'rgba(255,60,0,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,sz,sz);
+      return c;
+    })();
+    var flashTex = new T.CanvasTexture(flashCvs);
+    var flashM = new T.Mesh(
+      new T.PlaneGeometry(0.55, 0.55),
+      new T.MeshBasicMaterial({map:flashTex, transparent:true, opacity:1.0, depthWrite:false, side:T.DoubleSide})
+    );
+    splashG.add(flashM);
+
+    // ── Inner hot glow disc ────────────────────────────────────────────────
+    var haloCvs = (function(){
+      var sz=128, c=document.createElement('canvas'); c.width=c.height=sz;
+      var ctx=c.getContext('2d');
+      var g=ctx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      g.addColorStop(0,  'rgba(255,230,80,0.8)');
+      g.addColorStop(0.4,'rgba(255,140,20,0.4)');
+      g.addColorStop(0.75,'rgba(255,80,0,0.15)');
+      g.addColorStop(1,  'rgba(255,40,0,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,sz,sz);
+      return c;
+    })();
+    var haloTex = new T.CanvasTexture(haloCvs);
+    var haloM = new T.Mesh(
+      new T.PlaneGeometry(1.1, 1.1),
+      new T.MeshBasicMaterial({map:haloTex, transparent:true, opacity:0.75, depthWrite:false, side:T.DoubleSide})
+    );
+    splashG.add(haloM);
+
+    // ── Outer ambient forge glow disc ─────────────────────────────────────
+    var outerHaloCvs = (function(){
+      var sz=128, c=document.createElement('canvas'); c.width=c.height=sz;
+      var ctx=c.getContext('2d');
+      var g=ctx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2);
+      g.addColorStop(0,  'rgba(255,100,0,0.25)');
+      g.addColorStop(0.5,'rgba(255,50,0,0.10)');
+      g.addColorStop(1,  'rgba(200,20,0,0)');
+      ctx.fillStyle=g; ctx.fillRect(0,0,sz,sz);
+      return c;
+    })();
+    var outerHaloTex = new T.CanvasTexture(outerHaloCvs);
+    var outerHalo = new T.Mesh(
+      new T.PlaneGeometry(2.2, 2.2),
+      new T.MeshBasicMaterial({map:outerHaloTex, transparent:true, opacity:0.55, depthWrite:false, side:T.DoubleSide})
+    );
+    splashG.add(outerHalo);
+    // Keep reference for animation — treated same as before
+    var ambientGlow = outerHalo;
+
+    // ── Build 55 billboard spark quads ────────────────────────────────────
+    // Each spark mesh is a PlaneGeometry textured with gradient canvas above.
+    // In the render loop we billboard it to face the camera AND rotate it
+    // along its own streak axis so the texture aligns with travel direction.
+    var sparkData = [];
+    var NSPARKS = 55;
+    for(var si=0; si<NSPARKS; si++){
+      var tier = si < 18 ? 0 : si < 38 ? 1 : 2;
+
+      // Direction: full 360° with strong upward bias
+      var baseAngle = (si / NSPARKS) * Math.PI * 2;
+      var dx = Math.cos(baseAngle);
+      var dy = Math.sin(baseAngle) * 0.72 + 0.60; // upward bias
+      var dz = Math.sin(si * 2.39 + 1.1) * 0.55 + Math.cos(si * 3.71) * 0.28;
+      var dir = new T.Vector3(dx, dy, dz).normalize();
+
+      // Length scale — capped so longest spark stays shorter than the hammer handle
+      // Primary max ~0.45, mid ~0.26, short ~0.13
+      var lenScale = tier===0
+        ? 0.28 + Math.abs(Math.sin(si*2.71+0.9))*0.17
+        : tier===1
+          ? 0.16 + Math.abs(Math.sin(si*3.1+0.4))*0.10
+          : 0.07 + Math.abs(Math.sin(si*4.3+1.2))*0.06;
+
+      // Width scale — thick primaries, thinner secondaries
+      var wScale = tier===0 ? 0.042 : tier===1 ? 0.028 : 0.017;
+
+      var tex = tier===0 ? texPrimary : tier===1 ? texMid : texShort;
+
+      // PlaneGeometry: width=wScale, height=lenScale
+      // Default plane lies in XY plane; bottom edge at Y=-lenScale/2
+      var sparkGeo = new T.PlaneGeometry(wScale, lenScale);
+      // Shift geometry so the BASE (root) is at local Y=0, tip at Y=lenScale
+      // This lets us position the mesh at the impact point and have it extend outward
+      var pos = sparkGeo.attributes.position;
+      for(var pi=0; pi<pos.count; pi++){
+        pos.setY(pi, pos.getY(pi) + lenScale/2);
+      }
+      pos.needsUpdate = true;
+
+      var sparkMat = new T.MeshBasicMaterial({
+        map: tex,
+        transparent: true,
+        opacity: 1.0,
+        depthWrite: false,
+        side: T.DoubleSide
+      });
+      var sparkMesh = new T.Mesh(sparkGeo, sparkMat);
+
+      // Store direction for billboard alignment in render loop
+      sparkData.push({
+        mesh: sparkMesh,
+        dir: dir,
+        mat: sparkMat,
+        tier: tier,
+        phase: si * 0.41 + 0.1,
+        lenScale: lenScale
+      });
+      splashG.add(sparkMesh);
+    }
+
+    // ── Forge point light ─────────────────────────────────────────────────
+    var forgeLight = new T.PointLight(0xff9900, 3.0, 4.0);
+    forgeLight.position.copy(IMPACT);
+    cubeGroup.add(forgeLight);
+
+    cubeGroup.add(splashG);
+
+    // ── No EffectComposer — direct render preserves alpha transparency ────
+    // UnrealBloomPass destroys the canvas alpha channel (writes opaque black).
+    // Emissive materials + point lights provide sufficient glow without bloom.
+    sfLog('using direct renderer (no composer) — transparent bg');
+
+    // ── Interaction ────────────────────────────────────────────────────────
+    var rotX=-0.20,rotY=0.55,velX=0,velY=0,dragging=false,lastMX=0,lastMY=0;
+    var autoSpin=true,idleTimer=null;
+    function resetIdle(){autoSpin=false;clearTimeout(idleTimer);idleTimer=setTimeout(function(){autoSpin=true;velX=0;velY=0;},3500);}
+    canvas.addEventListener('mousedown',function(e){dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.clientX;lastMY=e.clientY;e.preventDefault();});
+    window.addEventListener('mousemove',function(e){if(!dragging)return;velY=(e.clientX-lastMX)*0.007;velX=(e.clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.clientX;lastMY=e.clientY;});
+    window.addEventListener('mouseup',function(){if(dragging){dragging=false;resetIdle();}});
+    canvas.addEventListener('touchstart',function(e){if(e.touches.length!==1)return;dragging=true;autoSpin=false;velX=0;velY=0;lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
+    canvas.addEventListener('touchmove',function(e){if(!dragging||e.touches.length!==1)return;velY=(e.touches[0].clientX-lastMX)*0.007;velX=(e.touches[0].clientY-lastMY)*0.007;rotY+=velY;rotX+=velX;rotX=Math.max(-1.1,Math.min(1.1,rotX));lastMX=e.touches[0].clientX;lastMY=e.touches[0].clientY;e.preventDefault();},{passive:false});
+    canvas.addEventListener('touchend',function(){dragging=false;resetIdle();});
+    window.addEventListener('resize',function(){
+      var st=document.getElementById('sf-cube-stage');
+      var nw=(st?st.clientWidth:wrap.clientWidth)||420;
+      // Height stays fixed — never reads stage height
+      var nh=window.innerWidth<=768?320:420;
+      camera.aspect=nw/nh; camera.updateProjectionMatrix();
+      renderer.setSize(nw, nh, false);  // false = don't override canvas CSS
+    });
+
+    // ── Render loop ────────────────────────────────────────────────────────
+    var clock=new T.Clock(), rafId;
+    (function loop(){
+      rafId=requestAnimationFrame(loop);
+      var t=clock.getElapsedTime();
+      if(!dragging){if(autoSpin){rotY+=0.0032;}else{velX*=0.93;velY*=0.93;rotX+=velX;rotY+=velY;rotX=Math.max(-1.1,Math.min(1.1,rotX));}}
+      var bob=Math.sin(t*0.65)*0.06;
+      cubeGroup.rotation.x=rotX; cubeGroup.rotation.y=rotY; cubeGroup.position.y=-0.3+bob;
+      edgeMat.opacity=0.55+0.22*Math.sin(t*2.0);
+      // ── Strike cycle — repeating forge hit every ~0.7s ──────────────────
+      var strikePhase = (t * 1.42) % 1.0;
+      var strikeFlare = strikePhase < 0.20 ? Math.exp(-strikePhase * 18) * 1.0 : 0.0;
+      // ── Flash + halos (billboard planes facing camera) ───────────────────
+      flashM.lookAt(camera.position);
+      haloM.lookAt(camera.position);
+      outerHalo.lookAt(camera.position);
+      flashM.material.opacity  = Math.min(1.0, 0.65 + 0.35*Math.abs(Math.sin(t*5.8)) + strikeFlare*0.85);
+      haloM.material.opacity   = Math.min(1.0, 0.45 + 0.20*Math.sin(t*3.2+0.5) + strikeFlare*0.55);
+      outerHalo.material.opacity = Math.min(1.0, 0.30 + 0.12*Math.sin(t*2.1+1.0) + strikeFlare*0.35);
+      // ── Forge light pulses ────────────────────────────────────────────────
+      forgeLight.intensity = 2.5 + 2.0*Math.abs(Math.sin(t*5.5+0.3)) + strikeFlare*5.0;
+      // ── Billboard sparks — face camera + align along travel direction ─────
+      // We need each spark quad to:
+      //   1. Face the camera (billboard)
+      //   2. Its local Y axis points along dir (so texture root→tip matches direction)
+      // Strategy: compute quaternion from default Y-up to dir, then apply camera-facing
+      var camPos = camera.position;
+      // splashG world position (in cubeGroup local space = IMPACT, rotated with cube)
+      for(var _si=0; _si<sparkData.length; _si++){
+        var _sd = sparkData[_si];
+        var _mesh = _sd.mesh;
+        var _dir  = _sd.dir;
+
+        // Flicker: each spark has unique rapid phase + burst sync
+        var spd = _sd.tier===0 ? 8.5 : _sd.tier===1 ? 11.5 : 15.0;
+        var flicker = 0.42 + 0.58 * Math.abs(Math.sin(t * spd + _sd.phase));
+        var boost   = strikeFlare * (_sd.tier===0 ? 1.0 : _sd.tier===1 ? 0.7 : 0.45);
+        var opBase  = _sd.tier===0 ? 0.95 : _sd.tier===1 ? 0.80 : 0.62;
+        _sd.mat.opacity = Math.min(1.0, opBase * flicker + boost);
+
+        // Position spark mesh at the impact point, offset halfway along dir
+        // so root sits at impact center and tip extends outward
+        _mesh.position.copy(_dir).multiplyScalar(_sd.lenScale * 0.5);
+
+        // Billboarding: point the mesh at camera in world space then counter-rotate
+        // Compute the world position of the spark mesh
+        // (splashG is child of cubeGroup which rotates — use world matrix)
+        _mesh.getWorldPosition(_mesh.userData._wp || (_mesh.userData._wp = new T.Vector3()));
+        // Build billboard quaternion: mesh faces camera
+        var _wp = _mesh.userData._wp;
+        var _toCamera = new T.Vector3().subVectors(camPos, _wp).normalize();
+        // We want local +Z to point to camera, local +Y to point along dir
+        // Compute right vector = cross(dir, toCamera), normalize
+        var _right = new T.Vector3().crossVectors(_dir, _toCamera);
+        if(_right.lengthSq() < 0.001) _right.set(1,0,0);
+        else _right.normalize();
+        // Recompute forward (toward camera) perpendicular to dir and right
+        var _fwd = new T.Vector3().crossVectors(_right, _dir).normalize();
+        // Build rotation matrix: cols = [right, dir, fwd]
+        var _rm = new T.Matrix4().makeBasis(_right, _dir, _fwd);
+        _mesh.quaternion.setFromRotationMatrix(_rm);
+      }
+      fill.intensity=0.7+0.2*Math.sin(t*2.2);
+      rim.intensity=0.5+0.15*Math.sin(t*1.6+1.1);
+      // Direct render — fully transparent canvas, no black-box artifact
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear();       // clear color + depth to transparent
+      renderer.render(scene, camera);
+    })();
+
+    (new MutationObserver(function(){if(!document.getElementById('sf-cube-canvas'))cancelAnimationFrame(rafId);})).observe(document.body,{childList:true,subtree:true});
+  } // end _sfRunCube
+};
+// ── END StemForge 3D Logo Cube ────────────────────────────────────────
+
 document.addEventListener('DOMContentLoaded', () => {
 
   // ── Nav scroll ─────────────────────────────────────────────────
@@ -851,6 +1657,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!user) return;
       window._sfUser = user;
 
+      // ── 3D Logo Cube — admin-only, generator page ────────────────
+      if (typeof window._sfInitCube === 'function') window._sfInitCube(user);
+
+      // ── VoiceForge button — beta, admin-only visibility ─────────
+      // The button is hidden by default (display:none in the HTML).
+      // Only reveal it for the admin account used for testing.
+      (function() {
+        var voiceBtn = document.getElementById('ctab-voice');
+        if (voiceBtn && user.is_admin) {
+          voiceBtn.style.display = '';
+        }
+        // VoiceForge library tab — visible to all logged-in users (tab already shown in HTML)
+      })();
+
       // ── TikTok identify — link this session to the known user ─
       if (window.ttq && user.email) {
         try {
@@ -1127,7 +1947,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (typeof window.openRemixUploadModal === 'function') window.openRemixUploadModal();
   };
 
-  // openOneShotGated — checks plan before opening the One Shot popup
+  // openOneShotGated — now shows One Shot inline in Create tab (plan gate still applies)
   window.openOneShotGated = function() {
     const plan = (window._sfUser && window._sfUser.plan) || 'free';
     if (plan === 'free') {
@@ -1140,7 +1960,93 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       return;
     }
-    if (typeof window.openCreatorPopup === 'function') window.openCreatorPopup('oneshot');
+    // Switch to Create tab and enable One Shot toggle
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('create');
+    var chk = document.getElementById('oneshot-inline-toggle-chk');
+    if (chk && !chk.checked) {
+      chk.checked = true;
+      var panel = document.getElementById('oneshot-inline-panel');
+      if (panel) panel.style.display = 'block';
+    }
+  };
+
+  // ── 3-Tab Create Page System ────────────────────────────────────
+  window.switchCreateTab = function(tab) {
+    var tabs = ['mix','create','voices'];
+
+    // Step 1: hide all panels immediately
+    tabs.forEach(function(t) {
+      var btn   = document.getElementById('cptab-' + t);
+      var panel = document.getElementById('create-tab-' + t);
+      if (btn)   btn.classList.toggle('active', t === tab);
+      if (panel) panel.style.display = 'none';
+    });
+
+    // Step 2: show target panel on next frame — guarantees layout recalc & animation
+    requestAnimationFrame(function() {
+      var targetPanel = document.getElementById('create-tab-' + tab);
+      if (targetPanel) {
+        // Remove entering class first (stops any running animation)
+        targetPanel.classList.remove('create-tab-panel--entering');
+        // Force display:block — must happen BEFORE reflow
+        targetPanel.style.display = 'block';
+        // Force a reflow so the browser registers display:block before animation starts
+        void targetPanel.offsetHeight;
+        // Now add entering class to trigger slide-in animation
+        targetPanel.classList.add('create-tab-panel--entering');
+        // Remove entering class after animation completes so it can retrigger next time
+        setTimeout(function() {
+          targetPanel.classList.remove('create-tab-panel--entering');
+        }, 220);
+      }
+    });
+
+    // Step 3: update content wrapper AND tab bar border-glow class
+    // (tab bar needs it too for the ::before hue top-line)
+    var content = document.getElementById('create-tabs-content');
+    var tabBar = document.getElementById('create-page-tabs');
+    ['tab-mix-active','tab-create-active','tab-voices-active'].forEach(function(cls) {
+      if (content) content.classList.remove(cls);
+      if (tabBar)  tabBar.classList.remove(cls);
+    });
+    if (content) content.classList.add('tab-' + tab + '-active');
+    if (tabBar)  tabBar.classList.add('tab-' + tab + '-active');
+
+    // Step 4: scroll tab into view on mobile (smooth)
+    if (tabBar && window.innerWidth < 900) {
+      tabBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // Step 5: when switching to Voices tab, load voice status
+    if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {
+      window.loadVoiceStatus();
+    }
+  };
+
+  // ── Mix sub-panel switcher (Cover active by default) ────────────
+  window.switchMixSub = function(sub) {
+    // Currently only Cover is a sub-panel; Remix and Extend open modals/popups
+    var mixBtns = document.querySelectorAll('.mix-action-btn');
+    mixBtns.forEach(function(b) { b.classList.remove('mix-action-btn--active'); });
+    var activeBtn = document.getElementById('mixbtn-' + sub);
+    if (activeBtn) activeBtn.classList.add('mix-action-btn--active');
+  };
+
+  // ── One Shot inline toggle ──────────────────────────────────────
+  window.toggleOneshotInline = function(e) {
+    // Plan gate
+    var plan = (window._sfUser && window._sfUser.plan) || 'free';
+    if (plan === 'free') {
+      e.preventDefault();
+      if (typeof showUpgradeModal === 'function') showUpgradeModal('One Shot Creator');
+      return;
+    }
+    // Let the checkbox toggle naturally, then show/hide panel
+    setTimeout(function() {
+      var chk   = document.getElementById('oneshot-inline-toggle-chk');
+      var panel = document.getElementById('oneshot-inline-panel');
+      if (panel) panel.style.display = (chk && chk.checked) ? 'block' : 'none';
+    }, 0);
   };
 
   // ── Subscription page: Manage dropdown ─────────────────────────
@@ -1170,11 +2076,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════
 
   // Track which tabs have been fetched so we only fetch once per session
-  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false, covers: false };
+  const _libLoaded  = { beats: false, oneshots: false, trash: false, extended: false, uploads: false, remixes: false, covers: false, voice: false };
   // Expose on window so external code (generator, extend) can invalidate cache
   window._libLoaded = _libLoaded;
   // Cached project arrays per tab (for client-side search)
-  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [], covers: [] };
+  const _libData    = { beats: [], oneshots: [], trash: [], extended: [], uploads: [], remixes: [], covers: [], voice: [] };
   let   _libActive  = 'beats';
 
   // ── Stable unique hue from any ID string ───────────────────
@@ -1610,6 +2516,18 @@ document.addEventListener('DOMContentLoaded', () => {
         '<div class="project-card__tags">' +
           (bpm ? '<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">' + bpm + '</span>' : '') +
         '</div>' +
+        (p.voice_forge_id ?
+          '<div class="vf-card-badge-row" data-job-id="' + p.id + '">' +
+            '<span class="vf-card-badge">' +
+              '<i class="fas fa-microphone" style="font-size:.63rem"></i> VoiceForge' +
+            '</span>' +
+            '<button class="vf-card-detach-btn" ' +
+              'onclick="event.stopPropagation();vfDetachFromCard(\'' + p.id + '\',this)" ' +
+              'title="Remove VoiceForge from this track">' +
+              '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
+            '</button>' +
+          '</div>'
+        : '') +
       '</div>' +
     '</div>';
   }
@@ -1697,6 +2615,7 @@ document.addEventListener('DOMContentLoaded', () => {
         oneshots: '<i class="fas fa-bolt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No one shots yet. Head to the <a href="/generator">Generator</a> to create some!</p>',
         trash:    '<i class="fas fa-trash-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>Trash is empty.</p>',
         remixes:  '<i class="fas fa-wand-magic-sparkles" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#a855f7"></i><p>No remixes yet. Upload a track on the Create page to remix it!</p>',
+        voice:    '<i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the VoiceForge panel!</p>',
       };
       gridEl.innerHTML = `<div class="project-grid-empty">${emptyMsgs[tab]||''}</div>`;
       return;
@@ -1780,14 +2699,14 @@ document.addEventListener('DOMContentLoaded', () => {
       if (tab === 'trash') btn.classList.toggle('lib-tab--trash', btn.dataset.tab === tab);
     });
     // Show/hide panels
-    ['beats','extended','oneshots','uploads','trash','remixes','covers'].forEach(t => {
+    ['beats','extended','oneshots','uploads','trash','remixes','covers','voice'].forEach(t => {
       const panel = document.getElementById('lib-panel-' + t);
       if (panel) panel.style.display = t === tab ? '' : 'none';
     });
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…', voice: 'Search VoiceForge songs…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -1807,6 +2726,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } else if (tab === 'covers') {
       if (window.fetchCoversTab) window.fetchCoversTab();
+    } else if (tab === 'voice') {
+      fetchVoiceTab();
     } else {
       fetchLibTab(tab);
     }
@@ -1871,6 +2792,255 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // Expose so override + retry button can call it
   window.fetchUploadsTab = fetchUploadsTab;
+
+  // ── Fetch VoiceForge tab ────────────────────────────────────
+  // ── VoiceForge library tab — full profile + songs ──────────────────────────
+  var _vfProfile = null; // cached profile data
+
+  async function fetchVoiceTab() {
+    var gridEl = document.getElementById('project-grid-voice');
+    if (!gridEl) return;
+    gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading\u2026</div>';
+    try {
+      // Load profile (voice name, avatar, tracks using voice)
+      var profRes = await fetch('/api/voice/profile');
+      var profData = profRes.ok ? await profRes.json() : {};
+      _vfProfile = profData;
+      renderVoiceProfileCard(profData);
+
+      // Load generated songs
+      var res = await fetch('/api/projects?tab=voice');
+      if (!res.ok) {
+        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
+        return;
+      }
+      var data = await res.json();
+      _libData.voice = data.projects || [];
+      _libLoaded.voice = true;
+      updateTabCount('voice', _libData.voice.length);
+      renderVoiceGrid(gridEl, _libData.voice);
+    } catch(e) {
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
+    }
+  }
+  window.fetchVoiceTab = fetchVoiceTab;
+
+  // ── Render the VoiceForge profile card at top of voice tab ──
+  function renderVoiceProfileCard(prof) {
+    var card    = document.getElementById('vf-profile-card');
+    var noVoice = document.getElementById('vf-no-voice');
+    var header  = document.getElementById('vf-songs-header');
+    if (!card) return;
+
+    if (!prof || !prof.persona_id) {
+      card.style.display = 'none';
+      if (noVoice) noVoice.style.display = '';
+      if (header)  header.style.display  = 'none';
+      return;
+    }
+
+    card.style.display = '';
+    if (noVoice) noVoice.style.display = 'none';
+    if (header)  header.style.display  = '';
+
+    // Avatar
+    var avatarImg  = document.getElementById('vf-avatar-img');
+    var avatarIcon = document.getElementById('vf-avatar-icon');
+    if (prof.voice_avatar) {
+      avatarImg.src = prof.voice_avatar;
+      avatarImg.style.display = '';
+      if (avatarIcon) avatarIcon.style.display = 'none';
+    } else {
+      if (avatarImg)  avatarImg.style.display  = 'none';
+      if (avatarIcon) avatarIcon.style.display = '';
+    }
+
+    // Name
+    var nameInput = document.getElementById('vf-name-input');
+    if (nameInput) nameInput.value = prof.voice_name || prof.persona_label || '';
+
+    // Persona label
+    var labelText = document.getElementById('vf-persona-label-text');
+    if (labelText) labelText.textContent = (prof.persona_label || 'Voice') + ' — ready';
+
+    // Tracks list
+    renderVfTracksList(prof.tracks || []);
+  }
+
+  function renderVfTracksList(tracks) {
+    var listEl = document.getElementById('vf-tracks-list');
+    if (!listEl) return;
+    if (!tracks || tracks.length === 0) {
+      listEl.innerHTML = '<div style="color:var(--muted);font-size:.82rem;font-style:italic">No tracks using this voice yet. Generate one!</div>';
+      return;
+    }
+    var html = '';
+    tracks.forEach(function(t) {
+      var title = (t.title || 'Untitled').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      var date  = t.created_at ? new Date(t.created_at).toLocaleDateString() : '';
+      html += '<div class="vf-track-row" data-job-id="' + t.id + '" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(255,255,255,.07)">' +
+        '<i class="fas fa-music" style="color:#fb923c;font-size:.85rem;flex-shrink:0"></i>' +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + title + '</div>' +
+          (date ? '<div style="font-size:.72rem;color:var(--muted)">' + date + '</div>' : '') +
+        '</div>' +
+        '<button onclick="vfDetachFromTrack(\'' + t.id + '\',this)" style="flex-shrink:0;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:600;cursor:pointer" title="Remove voice from this track">' +
+          '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
+        '</button>' +
+      '</div>';
+    });
+    listEl.innerHTML = html;
+  }
+
+  // ── VoiceForge profile actions ──────────────────────────────
+  window.vfNameChanged = function() {
+    var btn = document.getElementById('vf-name-save-btn');
+    if (btn) btn.style.display = '';
+  };
+
+  window.vfSaveProfile = async function() {
+    var nameInput = document.getElementById('vf-name-input');
+    var btn       = document.getElementById('vf-name-save-btn');
+    var name = nameInput ? nameInput.value.trim() : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>'; }
+    try {
+      await fetch('/api/voice/profile', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice_name: name })
+      });
+      if (btn) { btn.style.display = 'none'; btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save'; }
+    } catch(e) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save'; }
+    }
+  };
+
+  window.vfPickAvatar = function() {
+    var fi = document.getElementById('vf-avatar-file');
+    if (fi) fi.click();
+  };
+
+  window.vfHandleAvatarFile = async function(input) {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    var avatarImg  = document.getElementById('vf-avatar-img');
+    var avatarIcon = document.getElementById('vf-avatar-icon');
+    // Preview immediately
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      if (avatarImg) { avatarImg.src = e.target.result; avatarImg.style.display = ''; }
+      if (avatarIcon) avatarIcon.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+    // Upload to R2 via existing upload endpoint then save URL
+    try {
+      var fd = new FormData();
+      fd.append('file', file);
+      var res = await fetch('/api/voice/upload-audio', { method: 'POST', body: fd });
+      var data = res.ok ? await res.json() : null;
+      if (data && data.url) {
+        await fetch('/api/voice/profile', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ voice_avatar: data.url })
+        });
+      }
+    } catch(e) { /* silent — preview still shows */ }
+  };
+
+  window.vfDetachFromTrack = async function(jobId, btn) {
+    if (!confirm('Remove this voice from the track? The track stays in your library but will no longer be linked to your VoiceForge.')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
+    try {
+      var res = await fetch('/api/voice/detach/' + jobId, { method: 'DELETE' });
+      if (res.ok) {
+        // Remove row from the voice profile tracks list
+        var row = btn.closest('.vf-track-row') || btn.closest('div[style]');
+        if (row) row.remove();
+        // Remove badge from beat/remix card if it exists in DOM
+        var cardBadge = document.querySelector('.vf-card-badge-row[data-job-id="' + jobId + '"]');
+        if (cardBadge) cardBadge.remove();
+        // Invalidate beats cache so badge disappears on next load
+        _libLoaded.beats = false;
+        _libLoaded.remixes = false;
+        _libLoaded.voice = false;
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+      }
+    } catch(e) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+    }
+  };
+
+  // ── vfDetachFromCard — called from VoiceForge badge on beat/remix cards ──
+  window.vfDetachFromCard = async function(jobId, btn) {
+    if (!confirm('Remove this voice from the track? The track stays in your library.')) return;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
+    try {
+      var res = await fetch('/api/voice/detach/' + jobId, { method: 'DELETE' });
+      if (res.ok) {
+        // Remove badge row from this card
+        var badgeRow = btn.closest('.vf-card-badge-row');
+        if (badgeRow) badgeRow.remove();
+        // Remove from voice profile tracks list if rendered
+        var trackRow = document.querySelector('.vf-track-row[data-job-id="' + jobId + '"]');
+        if (trackRow) trackRow.remove();
+        // Invalidate caches
+        _libLoaded.beats = false;
+        _libLoaded.remixes = false;
+        _libLoaded.voice = false;
+      } else {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+      }
+    } catch(e) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
+    }
+  };
+
+  // ── Render VoiceForge generated-songs grid ──────────────────
+  function renderVoiceGrid(gridEl, songs) {
+    if (!gridEl) return;
+    if (!songs || songs.length === 0) {
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the Create → Voices tab!</p></div>';
+      return;
+    }
+    var html = '';
+    songs.forEach(function(s, i) {
+      var hue = s.thumbnail_seed || 28;
+      var title = (s.title || 'Voice Song').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      var audioUrl = s.audio_url || s.stereo_url || '';
+      var created = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
+      html += '<div class="project-card" data-id="' + s.id + '">' +
+        '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',70%,20%),hsl(' + ((hue+40)%360) + ',60%,12%));position:relative;overflow:hidden">' +
+          '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">' +
+            '<i class="fas fa-microphone" style="font-size:28px;color:rgba(249,115,22,.8)"></i>' +
+          '</div>' +
+          (audioUrl ? '<div class="project-card__play" onclick="playDashProject(this)" data-audio="' + audioUrl + '"><i class="fas fa-play"></i></div>' : '') +
+        '</div>' +
+        '<div class="project-card__body">' +
+          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
+            '<h4 style="margin:0;flex:1">' + title + '</h4>' +
+          '</div>' +
+          '<p style="margin:2px 0 6px;font-size:.78rem;color:var(--muted)">' + created + '</p>' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
+            '<span style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:700;color:#fb923c;background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.25);border-radius:20px;padding:2px 8px">' +
+              '<i class="fas fa-microphone" style="font-size:.65rem"></i> VoiceForge' +
+            '</span>' +
+            (audioUrl ? '<a href="' + audioUrl + '" download target="_blank" style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:600;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:2px 8px;text-decoration:none">' +
+              '<i class="fas fa-download" style="font-size:.65rem"></i> Download' +
+            '</a>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    });
+    gridEl.innerHTML = html;
+  }
 
   // ── Render uploads grid ─────────────────────────────────────
   function renderUploadsGrid(gridEl, uploads) {
@@ -10285,13 +11455,9 @@ window.toggleRefDropdown = function() {
   let _coverPollTimer = null;
 
   function _setCoverMode(active) {
-    // Show/hide the generator main sections (Prompt, Lyrics, Vocals, Styles)
-    var mainSections = document.getElementById('generator-main-sections');
-    if (mainSections) mainSections.style.display = active ? 'none' : '';
-    // Hide the original Create button row entirely when cover panel is open
-    // (Cover panel has its own Create Cover button)
-    var createRow = document.getElementById('generator-create-row');
-    if (createRow) createRow.style.display = active ? 'none' : '';
+    // In the new 3-tab layout, Cover Song is in the Mix tab while the generator
+    // form (Prompt, Lyrics, Styles) is in the Create tab — they are already
+    // separated by tabs, so no show/hide needed. No-op kept for compatibility.
   }
 
   window.openCoverPanel = function() {
@@ -10301,28 +11467,14 @@ window.toggleRefDropdown = function() {
       showUpgradeToast('Cover Song is a Pro Artist feature. Upgrade to unlock.');
       return;
     }
-    var panel  = document.getElementById('cover-inline-panel');
-    var btn    = document.getElementById('ctab-cover');
-    // Close ref-inline-panel if open
-    var refPanel = document.getElementById('ref-inline-panel');
-    if (refPanel && refPanel.style.display !== 'none') {
-      refPanel.style.display = 'none';
-      var refBtn = document.getElementById('ctab-reference');
-      if (refBtn) refBtn.classList.remove('active');
-    }
-    if (!panel) return;
-    var isOpen = panel.style.display !== 'none';
-    var nowOpen = !isOpen;
-    panel.style.display = nowOpen ? 'block' : 'none';
-    if (btn) btn.classList.toggle('active', nowOpen);
-    _setCoverMode(nowOpen);
+    // In the new layout, Cover Song panel is always visible in Mix tab
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('mix');
+    // Highlight the Cover button in the mix action row
+    if (typeof window.switchMixSub === 'function') window.switchMixSub('cover');
+    _setCoverMode(true);
   };
 
   window.closeCoverPanel = function() {
-    var panel = document.getElementById('cover-inline-panel');
-    var btn   = document.getElementById('ctab-cover');
-    if (panel) panel.style.display = 'none';
-    if (btn)   btn.classList.remove('active');
     _setCoverMode(false);
     // Clear uploaded file + auto-generated style text + badge
     if (typeof window.clearCoverUpload === 'function') window.clearCoverUpload();
@@ -10957,6 +12109,499 @@ window.toggleRefDropdown = function() {
 
   // Handle any library tab hash on load (/dashboard#beats, /dashboard#covers, etc.)
   // This makes the "Go to Library" banner link land on the correct tab automatically.
+
+  // ── VoiceForge functions ─────────────────────────────────────────────────
+  var _voicePollTimer     = null;
+  var _voiceCurrentJobId  = null;
+  var _voiceAudioFile     = null;   // raw File object selected by user
+  var _voiceAudioBuffer   = null;   // decoded AudioBuffer (full original)
+  var _voiceAudioCtx      = null;   // shared AudioContext
+  var _voiceTrimStart     = 0;      // seconds
+  var _voiceTrimEnd       = 30;     // seconds
+  var _voiceFileDuration  = 0;      // seconds
+
+  // ── Utility ───────────────────────────────────────────────────────────────
+
+  function showVoiceMsg(el, type, text) {
+    if (!el) return;
+    el.style.display = 'block';
+    el.textContent = text;
+    if (type === 'success') {
+      el.style.background = 'rgba(16,185,129,.12)';
+      el.style.border = '1px solid rgba(16,185,129,.3)';
+      el.style.color = '#34d399';
+    } else {
+      el.style.background = 'rgba(239,68,68,.12)';
+      el.style.border = '1px solid rgba(239,68,68,.3)';
+      el.style.color = '#f87171';
+    }
+  }
+
+  function fmtSec(s) {
+    s = Math.max(0, s);
+    var m = Math.floor(s / 60);
+    var ss = (s % 60).toFixed(1);
+    return m > 0 ? m + ':' + (ss < 10 ? '0' : '') + ss : ss + ' s';
+  }
+
+  // ── File selection ────────────────────────────────────────────────────────
+
+  window.handleVoiceFileDrop = function(event) {
+    var files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length) _loadVoiceFile(files[0]);
+  };
+
+  window.handleVoiceFileSelect = function(input) {
+    if (input.files && input.files.length) _loadVoiceFile(input.files[0]);
+  };
+
+  window.clearVoiceFile = function() {
+    _voiceAudioFile    = null;
+    _voiceAudioBuffer  = null;
+    _voiceFileDuration = 0;
+    var fi = document.getElementById('voice-file-info');
+    var ts = document.getElementById('voice-trim-section');
+    var pa = document.getElementById('voice-trim-preview-audio');
+    var fi2 = document.getElementById('voice-file-input');
+    if (fi)  { fi.style.display  = 'none'; }
+    if (ts)  { ts.style.display  = 'none'; }
+    if (pa)  { pa.style.display  = 'none'; pa.src = ''; }
+    if (fi2) { fi2.value = ''; }
+  };
+
+  function _loadVoiceFile(file) {
+    var ext = (file.name || '').toLowerCase().split('.').pop();
+    if (ext !== 'mp3' && ext !== 'wav') {
+      alert('Please select an MP3 or WAV file.');
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      alert('File is too large (max 20 MB).');
+      return;
+    }
+    _voiceAudioFile = file;
+
+    // Show file info row immediately
+    var fi       = document.getElementById('voice-file-info');
+    var fnSpan   = document.getElementById('voice-file-name');
+    var durSpan  = document.getElementById('voice-file-dur');
+    if (fi)     fi.style.display = 'flex';
+    if (fnSpan) fnSpan.textContent = file.name;
+    if (durSpan) durSpan.textContent = '…';
+
+    // Decode with Web Audio API to get exact duration
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      if (!_voiceAudioCtx) {
+        _voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      _voiceAudioCtx.decodeAudioData(e.target.result, function(buf) {
+        _voiceAudioBuffer  = buf;
+        _voiceFileDuration = buf.duration;
+        if (durSpan) durSpan.textContent = fmtSec(buf.duration);
+
+        var trimSec = document.getElementById('voice-trim-section');
+        if (buf.duration > 30) {
+          // Show trim UI
+          _voiceTrimStart = 0;
+          _voiceTrimEnd   = Math.min(30, buf.duration);
+          _initVoiceTrimSliders(buf.duration);
+          if (trimSec) trimSec.style.display = 'block';
+        } else {
+          // No trim needed
+          _voiceTrimStart = 0;
+          _voiceTrimEnd   = buf.duration;
+          if (trimSec) trimSec.style.display = 'none';
+        }
+        _drawVoiceWaveform(buf);
+      }, function() {
+        alert('Could not decode that audio file. Please try another MP3 or WAV.');
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // ── Trim sliders ──────────────────────────────────────────────────────────
+
+  function _initVoiceTrimSliders(dur) {
+    var startEl = document.getElementById('voice-trim-start');
+    var endEl   = document.getElementById('voice-trim-end');
+    var startLbl = document.getElementById('voice-trim-start-lbl');
+    var endLbl   = document.getElementById('voice-trim-end-lbl');
+    if (!startEl || !endEl) return;
+
+    startEl.max   = (dur - 1).toFixed(1);
+    startEl.value = '0';
+    endEl.max     = dur.toFixed(1);
+    endEl.value   = Math.min(30, dur).toFixed(1);
+
+    _voiceTrimStart = 0;
+    _voiceTrimEnd   = Math.min(30, dur);
+    if (startLbl) startLbl.textContent = '0.0 s';
+    if (endLbl)   endLbl.textContent   = fmtSec(_voiceTrimEnd);
+    _updateTrimDurInfo();
+  }
+
+  window.onVoiceTrimChange = function(which) {
+    var startEl  = document.getElementById('voice-trim-start');
+    var endEl    = document.getElementById('voice-trim-end');
+    var startLbl = document.getElementById('voice-trim-start-lbl');
+    var endLbl   = document.getElementById('voice-trim-end-lbl');
+    if (!startEl || !endEl) return;
+
+    var s = parseFloat(startEl.value);
+    var e = parseFloat(endEl.value);
+    var dur = _voiceFileDuration;
+    var MAX_WIN = 30;
+
+    if (which === 'start') {
+      // Ensure end is at least start + 5s and at most start + 30s
+      if (e < s + 5)  { e = Math.min(dur, s + 5);  endEl.value = e.toFixed(1); }
+      if (e > s + MAX_WIN) { e = s + MAX_WIN;       endEl.value = e.toFixed(1); }
+    } else {
+      // Ensure start is at least end - 30s and at most end - 5s
+      if (s > e - 5)  { s = Math.max(0, e - 5);    startEl.value = s.toFixed(1); }
+      if (s < e - MAX_WIN) { s = e - MAX_WIN;       startEl.value = s.toFixed(1); }
+    }
+
+    _voiceTrimStart = s;
+    _voiceTrimEnd   = e;
+    if (startLbl) startLbl.textContent = fmtSec(s);
+    if (endLbl)   endLbl.textContent   = fmtSec(e);
+    _updateTrimDurInfo();
+    _updateTrimBar(dur);
+
+    // Clear preview if sliders changed
+    var pa = document.getElementById('voice-trim-preview-audio');
+    if (pa && pa.src) { pa.pause(); pa.style.display = 'none'; pa.src = ''; }
+  };
+
+  function _updateTrimDurInfo() {
+    var el = document.getElementById('voice-trim-dur-info');
+    if (!el) return;
+    var span = (_voiceTrimEnd - _voiceTrimStart).toFixed(1);
+    var ok   = span <= 30;
+    el.style.color = ok ? '#10b981' : '#f87171';
+    el.textContent = 'Selected: ' + span + ' s' + (ok ? ' ✓' : ' — max 30 s');
+  }
+
+  function _updateTrimBar(dur) {
+    var bar = document.getElementById('voice-trim-bar');
+    if (!bar || !dur) return;
+    var pct = function(v) { return (v / dur * 100).toFixed(2) + '%'; };
+    bar.style.left  = pct(_voiceTrimStart);
+    bar.style.width = pct(_voiceTrimEnd - _voiceTrimStart);
+  }
+
+  // ── Waveform drawing ──────────────────────────────────────────────────────
+
+  function _drawVoiceWaveform(buf) {
+    var container = document.getElementById('voice-trim-waveform');
+    if (!container) return;
+    container.innerHTML = '';
+    var data    = buf.getChannelData(0);
+    var numBars = 80;
+    var step    = Math.floor(data.length / numBars);
+    for (var i = 0; i < numBars; i++) {
+      var sum = 0;
+      for (var j = 0; j < step; j++) { sum += Math.abs(data[i * step + j] || 0); }
+      var amp = Math.min(1, (sum / step) * 6);
+      var bar = document.createElement('div');
+      bar.style.cssText = 'flex:1;background:rgba(16,185,129,' + (0.2 + amp * 0.7).toFixed(2) + ');border-radius:1px;height:' + Math.max(4, amp * 100) + '%;align-self:center';
+      container.appendChild(bar);
+    }
+    // Initialise trim bar position
+    _updateTrimBar(buf.duration);
+  }
+
+  // ── WAV encoder ───────────────────────────────────────────────────────────
+
+  function _encodeWav(audioBuffer, startSec, endSec) {
+    var sampleRate  = audioBuffer.sampleRate;
+    var numChannels = audioBuffer.numberOfChannels;
+    var startSample = Math.floor(startSec * sampleRate);
+    var endSample   = Math.min(Math.ceil(endSec * sampleRate), audioBuffer.length);
+    var numSamples  = endSample - startSample;
+
+    var dataLen  = numSamples * numChannels * 2; // 16-bit
+    var buf      = new ArrayBuffer(44 + dataLen);
+    var view     = new DataView(buf);
+    var write4   = function(o, s) { for (var i = 0; i < 4; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    write4(0,  'RIFF');
+    view.setUint32(4,  36 + dataLen, true);
+    write4(8,  'WAVE');
+    write4(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1,  true);  // PCM
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * numChannels * 2, true);
+    view.setUint16(32, numChannels * 2, true);
+    view.setUint16(34, 16, true);
+    write4(36, 'data');
+    view.setUint32(40, dataLen, true);
+
+    var offset = 44;
+    for (var i = 0; i < numSamples; i++) {
+      for (var ch = 0; ch < numChannels; ch++) {
+        var sample = audioBuffer.getChannelData(ch)[startSample + i];
+        var intSample = Math.max(-1, Math.min(1, sample));
+        view.setInt16(offset, intSample < 0 ? intSample * 0x8000 : intSample * 0x7FFF, true);
+        offset += 2;
+      }
+    }
+    return buf;
+  }
+
+  // ── Trim preview ──────────────────────────────────────────────────────────
+
+  window.previewVoiceTrim = function() {
+    if (!_voiceAudioBuffer) return;
+    var wavBuf  = _encodeWav(_voiceAudioBuffer, _voiceTrimStart, _voiceTrimEnd);
+    var blob    = new Blob([wavBuf], { type: 'audio/wav' });
+    var url     = URL.createObjectURL(blob);
+    var audioEl = document.getElementById('voice-trim-preview-audio');
+    if (!audioEl) return;
+    audioEl.src = url;
+    audioEl.style.display = 'block';
+    audioEl.play();
+  };
+
+  // ── Upload trimmed (or full) audio to R2 via server ───────────────────────
+
+  async function _uploadVoiceAudio() {
+    if (!_voiceAudioBuffer || !_voiceAudioFile) return null;
+
+    var needsTrim = _voiceFileDuration > 30;
+    var blob;
+
+    if (needsTrim) {
+      var wavBuf = _encodeWav(_voiceAudioBuffer, _voiceTrimStart, _voiceTrimEnd);
+      blob = new Blob([wavBuf], { type: 'audio/wav' });
+    } else {
+      // Upload original file directly
+      blob = _voiceAudioFile;
+    }
+
+    var fd = new FormData();
+    var filename = needsTrim ? 'voice-trim.wav' : _voiceAudioFile.name;
+    fd.append('audio', blob, filename);
+
+    var res = await fetch('/api/voice/upload-audio', { method: 'POST', body: fd });
+    var data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Upload failed');
+    return data.url;
+  }
+
+  // ── Voice status ──────────────────────────────────────────────────────────
+
+  window.loadVoiceStatus = async function() {
+    var statusIcon = document.getElementById('voice-status-icon');
+    var statusText = document.getElementById('voice-status-text');
+    var statusBar  = document.getElementById('voice-status-bar');
+    var deleteBtn  = document.getElementById('voice-delete-btn');
+    var createSec  = document.getElementById('voice-create-section');
+    var genLocked  = document.getElementById('voice-gen-locked');
+    var genForm    = document.getElementById('voice-gen-form');
+    if (!statusText) return;
+
+    statusIcon.className = 'fas fa-circle-notch fa-spin';
+    statusIcon.style.color = '#10b981';
+    statusText.textContent = 'Loading voice status…';
+
+    try {
+      var res = await fetch('/api/voice/status');
+      var data = await res.json();
+      if (data.persona_id) {
+        statusIcon.className = 'fas fa-check-circle';
+        statusIcon.style.color = '#10b981';
+        statusText.innerHTML = '<b style="color:#34d399">' + (data.persona_label || 'Voice') + '</b> — ready to generate';
+        statusBar.style.borderColor = 'rgba(16,185,129,.4)';
+        deleteBtn.style.display = '';
+        if (createSec) createSec.style.display = 'none';
+        if (genLocked) genLocked.style.display = 'none';
+        if (genForm)   genForm.style.display   = 'flex';
+      } else {
+        statusIcon.className = 'fas fa-info-circle';
+        statusIcon.style.color = '#6b7280';
+        statusText.textContent = 'No voice forged yet — upload a sample below.';
+        statusBar.style.borderColor = 'rgba(255,255,255,.08)';
+        deleteBtn.style.display = 'none';
+        if (createSec) createSec.style.display = '';
+        if (genLocked) genLocked.style.display = '';
+        if (genForm)   genForm.style.display   = 'none';
+      }
+    } catch (e) {
+      statusIcon.className = 'fas fa-exclamation-circle';
+      statusText.textContent = 'Could not load voice status.';
+    }
+  };
+
+  window.openVoicePanel = function() {
+    // In the new layout, VoiceForge is always visible in Voices tab
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('voices');
+    window.loadVoiceStatus();
+  };
+
+  window.closeVoicePanel = function() {
+    // No-op — Voices tab panel is always visible when tab is active
+  };
+
+  window.deleteVoicePersona = async function() {
+    if (!confirm('Remove your saved voice? You can re-forge anytime.')) return;
+    try {
+      await fetch('/api/voice/persona', { method: 'DELETE' });
+      window.loadVoiceStatus();
+    } catch (e) { alert('Error removing voice. Please try again.'); }
+  };
+
+  // ── Step 1: Upload + clone ────────────────────────────────────────────────
+
+  window.createVoicePersona = async function() {
+    var btn    = document.getElementById('voice-clone-btn');
+    var labIn  = document.getElementById('voice-label-input');
+    var msg    = document.getElementById('voice-clone-msg');
+    var label  = (labIn ? labIn.value.trim() : '');
+
+    if (!_voiceAudioFile) {
+      showVoiceMsg(msg, 'error', 'Please upload an audio file first.');
+      return;
+    }
+
+    // Validate trim window
+    var trimSpan = _voiceTrimEnd - _voiceTrimStart;
+    if (trimSpan < 5) {
+      showVoiceMsg(msg, 'error', 'Please select at least 5 seconds of audio.');
+      return;
+    }
+    if (trimSpan > 30) {
+      showVoiceMsg(msg, 'error', 'Please trim your clip to 30 seconds or less.');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="margin-right:6px"></i>Uploading…';
+    msg.style.display = 'none';
+
+    var audioUrl;
+    try {
+      audioUrl = await _uploadVoiceAudio();
+    } catch (e) {
+      showVoiceMsg(msg, 'error', 'Upload failed. Please try again.');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice';
+      return;
+    }
+
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="margin-right:6px"></i>Cloning voice…';
+
+    try {
+      var res  = await fetch('/api/voice/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audio_url: audioUrl, label: label })
+      });
+      var data = await res.json();
+      if (data.ok) {
+        showVoiceMsg(msg, 'success', '✅ Voice forged! You can now generate songs in your voice.');
+        if (labIn) labIn.value = '';
+        window.clearVoiceFile();
+        setTimeout(function() { window.loadVoiceStatus(); }, 800);
+      } else {
+        showVoiceMsg(msg, 'error', data.error || 'VoiceForge failed. Please try again.');
+      }
+    } catch (e) {
+      showVoiceMsg(msg, 'error', 'Network error. Please try again.');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice';
+    }
+  };
+
+  // ── Step 2: Generate with voice ───────────────────────────────────────────
+
+  window.generateVoiceSong = async function() {
+    var btn         = document.getElementById('voice-gen-btn');
+    var titleIn     = document.getElementById('voice-gen-title');
+    var lyricsIn    = document.getElementById('voice-gen-lyrics');
+    var tagsIn      = document.getElementById('voice-gen-tags');
+    var instrToggle = document.getElementById('voice-gen-instrumental');
+    var msg         = document.getElementById('voice-gen-msg');
+    var prog        = document.getElementById('voice-gen-progress');
+    var progText    = document.getElementById('voice-gen-progress-text');
+    var result      = document.getElementById('voice-gen-result');
+    var audio       = document.getElementById('voice-gen-audio');
+    var dlLink      = document.getElementById('voice-gen-download');
+
+    msg.style.display    = 'none';
+    result.style.display = 'none';
+    prog.style.display   = 'block';
+    progText.textContent = 'Submitting to AI…';
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="margin-right:6px"></i>Generating…';
+
+    try {
+      var res = await fetch('/api/voice/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title:             titleIn  ? titleIn.value.trim()  : '',
+          lyrics:            lyricsIn ? lyricsIn.value.trim() : '',
+          style_tags:        tagsIn   ? tagsIn.value.trim()   : '',
+          make_instrumental: instrToggle ? instrToggle.checked : false
+        })
+      });
+      var data = await res.json();
+      if (!data.ok) {
+        prog.style.display = 'none';
+        showVoiceMsg(msg, 'error', data.error || 'Generation failed. Please try again.');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
+        return;
+      }
+      _voiceCurrentJobId = data.job_id;
+      progText.textContent = 'Generating your voice song… this takes 1–3 minutes';
+      _pollVoiceJob(data.job_id, btn, prog, progText, result, audio, dlLink, msg);
+    } catch (e) {
+      prog.style.display = 'none';
+      showVoiceMsg(msg, 'error', 'Network error. Please try again.');
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
+    }
+  };
+
+  function _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg) {
+    if (_voicePollTimer) clearTimeout(_voicePollTimer);
+    _voicePollTimer = setTimeout(async function() {
+      try {
+        var res  = await fetch('/api/voice/poll/' + jobId);
+        var data = await res.json();
+        if (data.status === 'succeeded') {
+          prog.style.display   = 'none';
+          result.style.display = 'block';
+          audio.src            = data.audio_url;
+          dlLink.href          = data.audio_url;
+          dlLink.download      = (data.title || 'voice-song') + '.mp3';
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
+        } else if (data.status === 'failed') {
+          prog.style.display = 'none';
+          showVoiceMsg(msg, 'error', data.error || 'Generation failed. Please try again.');
+          btn.disabled = false;
+          btn.innerHTML = '<i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice';
+        } else {
+          _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg);
+        }
+      } catch (e) {
+        _pollVoiceJob(jobId, btn, prog, progText, result, audio, dlLink, msg);
+      }
+    }, 15000);
+  }
+  // ── END VoiceForge inline functions ──────────────────────────────────────
+
+
+
+
   var _hashTab = (window.location.hash || '').replace('#', '');
   var _validTabs = ['beats','covers','remixes','extended','oneshots','uploads','trash'];
   if (_hashTab && _validTabs.indexOf(_hashTab) !== -1) {
