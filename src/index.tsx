@@ -10965,7 +10965,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261018-121m'
+const ASSET_VER = '20261021-121n'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -16206,126 +16206,7 @@ function adminPage(user: User) {
         .maint-preset:hover{border-color:#f97316;color:#f97316}
         @keyframes pulse-red{0%,100%{opacity:1}50%{opacity:.4}}
       </style>
-      <script>
-      var _maintLoaded = false;
-      function loadMaintenanceSettings(forceReload) {
-        if (_maintLoaded && !forceReload) return;
-        _maintLoaded = true;
-        fetch('/api/admin/draft', { credentials: 'include' })
-          .then(function(r){
-            if (!r.ok) { return r.json().then(function(e){ throw new Error(r.status + ' ' + (e.error || r.statusText)); }); }
-            return r.json();
-          })
-          .then(function(d){
-            var live = d.live || {};
-            var bannerOn = live.maintenance_banner === '1';
-            var lockOn   = live.maintenance_mode   === '1';
-            var dateVal  = live.maintenance_date   || '';
-            var bt = document.getElementById('maint-banner-toggle'); if (bt) bt.checked = bannerOn;
-            var lt = document.getElementById('maint-lock-toggle');   if (lt) lt.checked = lockOn;
-            var di = document.getElementById('maint-date-input');    if (di && dateVal) di.value = dateVal;
-            updateToggleUI('maint-banner', bannerOn);
-            updateToggleUI('maint-lock', lockOn);
-            var ind = document.getElementById('maint-lock-live-indicator');
-            if (ind) ind.style.display = lockOn ? 'flex' : 'none';
-            showMaintStatus(bannerOn, lockOn);
-          }).catch(function(err){ showMaintMsg('Could not load settings: ' + (err.message || err), false); });
-      }
-      function updateToggleUI(id, on) {
-        var slider = document.getElementById(id + '-slider');
-        var knob   = document.getElementById(id + '-knob');
-        if (slider) slider.style.background = on ? (id === 'maint-lock' ? '#ef4444' : '#f97316') : '#334155';
-        if (knob)   knob.style.transform    = on ? 'translateX(24px)' : 'translateX(0)';
-      }
-      function showMaintStatus(bannerOn, lockOn) {
-        var bar = document.getElementById('maint-status-bar');
-        if (!bar) return;
-        if (lockOn) {
-          bar.style.cssText = 'display:flex;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:10px;padding:12px 18px;margin-bottom:20px;font-size:.85rem;font-weight:600;align-items:center;gap:10px;color:#fca5a5';
-          bar.innerHTML = '<i class="fas fa-lock"></i> Site is LOCKED — maintenance mode active. Only you can access the site.';
-        } else if (bannerOn) {
-          bar.style.cssText = 'display:flex;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:10px;padding:12px 18px;margin-bottom:20px;font-size:.85rem;font-weight:600;align-items:center;gap:10px;color:#fb923c';
-          bar.innerHTML = '<i class="fas fa-bell"></i> Warning banner is LIVE — users see the maintenance notice at the bottom of every page.';
-        } else {
-          bar.style.display = 'none';
-        }
-      }
-      function setMaintDate(val) {
-        var di = document.getElementById('maint-date-input');
-        if (di) di.value = val;
-      }
-      function saveMaintSetting(type) {
-        var bannerToggle = document.getElementById('maint-banner-toggle');
-        var lockToggle   = document.getElementById('maint-lock-toggle');
-        var dateInput    = document.getElementById('maint-date-input');
-        var bannerOn = bannerToggle ? bannerToggle.checked : false;
-        var lockOn   = lockToggle   ? lockToggle.checked   : false;
-        var dateVal  = dateInput    ? dateInput.value.trim() : '';
-        var payload = { maintenance_banner: bannerOn ? '1' : '0', maintenance_date: dateVal, maintenance_mode: lockOn ? '1' : '0' };
-        updateToggleUI('maint-banner', bannerOn);
-        showMaintMsg('Saving…', true);
-        fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
-          .then(function(r){
-            if (!r.ok) { return r.json().then(function(e){ throw new Error(r.status + ' ' + (e.error || r.statusText)); }); }
-            return r.json();
-          })
-          .then(function(d){
-            if (!d.ok) throw new Error('Draft save returned ok=false: ' + JSON.stringify(d));
-            return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' });
-          })
-          .then(function(r){
-            if (!r.ok) { return r.json().then(function(e){ throw new Error('Publish ' + r.status + ': ' + (e.error || r.statusText)); }); }
-            return r.json();
-          })
-          .then(function(){ showMaintMsg('✓ Saved and published', true); showMaintStatus(bannerOn, lockOn); })
-          .catch(function(err){ showMaintMsg('Error: ' + (err.message || err), false); });
-      }
-      function confirmLockToggle() {
-        var lt = document.getElementById('maint-lock-toggle');
-        var turningOn = lt ? lt.checked : false;
-        if (turningOn) {
-          if (!confirm('🔒 Lock the site now?\n\nAll users will see the maintenance page on their next navigation. Your account bypasses this.\n\nProceed?')) { if (lt) lt.checked = false; return; }
-        } else {
-          if (!confirm('🔓 Unlock the site?\n\nAll users will have access again immediately.\n\nProceed?')) { if (lt) lt.checked = true; return; }
-        }
-        var bannerToggle = document.getElementById('maint-banner-toggle');
-        var dateInput    = document.getElementById('maint-date-input');
-        var bannerOn = bannerToggle ? bannerToggle.checked : false;
-        var dateVal  = dateInput    ? dateInput.value.trim() : '';
-        var payload = { maintenance_mode: turningOn ? '1' : '0', maintenance_banner: bannerOn ? '1' : '0', maintenance_date: dateVal };
-        updateToggleUI('maint-lock', turningOn);
-        var ind = document.getElementById('maint-lock-live-indicator');
-        if (ind) ind.style.display = turningOn ? 'flex' : 'none';
-        showMaintMsg('Saving…', true);
-        fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
-          .then(function(r){
-            if (!r.ok) { return r.json().then(function(e){ throw new Error(r.status + ' ' + (e.error || r.statusText)); }); }
-            return r.json();
-          })
-          .then(function(d){
-            if (!d.ok) throw new Error('Draft save returned ok=false: ' + JSON.stringify(d));
-            return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' });
-          })
-          .then(function(r){
-            if (!r.ok) { return r.json().then(function(e){ throw new Error('Publish ' + r.status + ': ' + (e.error || r.statusText)); }); }
-            return r.json();
-          })
-          .then(function(){ showMaintMsg(turningOn ? '🔒 Site locked' : '🔓 Site unlocked', true); showMaintStatus(bannerOn, turningOn); })
-          .catch(function(err){ showMaintMsg('Error: ' + (err.message || err), false); });
-      }
-      function showMaintMsg(msg, ok) {
-        var el = document.getElementById('maint-save-msg');
-        if (!el) return;
-        el.style.display = 'block';
-        el.style.background = ok ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
-        el.style.border = ok ? '1px solid rgba(16,185,129,.3)' : '1px solid rgba(239,68,68,.3)';
-        el.style.color = ok ? '#6ee7b7' : '#fca5a5';
-        el.textContent = msg;
-        if (ok && msg !== 'Saving…') {
-          setTimeout(function(){ el.style.display='none'; }, 4000);
-        }
-      }
-      </script>
+      <!-- Maintenance JS lives in admin.v2.js to avoid template-literal escaping issues -->
     </div>
     <!-- ── /MAINTENANCE TAB ────────────────────────────────────────────────── -->
 
