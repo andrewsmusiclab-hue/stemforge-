@@ -1002,49 +1002,6 @@ p  { color: var(--sub); }
 .export-badge--locked:hover { background: rgba(255,255,255,.1); color: var(--text); }
 .export-badge--stems-cta { background: rgba(99,102,241,.13); color: #a78bfa; cursor: pointer; border: 1px solid rgba(99,102,241,.25); }
 .export-badge--stems-cta:hover { background: rgba(99,102,241,.22); color: #c4b5fd; }
-/* ── VoiceForge badge on beat/remix cards ─────────────────── */
-.vf-card-badge-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-.vf-card-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: .68rem;
-  font-weight: 700;
-  color: #fb923c;
-  background: rgba(249,115,22,.1);
-  border: 1px solid rgba(249,115,22,.28);
-  border-radius: 20px;
-  padding: 2px 8px;
-  letter-spacing: .02em;
-}
-.vf-card-detach-btn {
-  flex-shrink: 0;
-  background: rgba(239,68,68,.1);
-  border: 1px solid rgba(239,68,68,.22);
-  color: #f87171;
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: .68rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s, border-color .15s;
-  line-height: 1.5;
-}
-.vf-card-detach-btn:hover {
-  background: rgba(239,68,68,.2);
-  border-color: rgba(239,68,68,.4);
-}
-.vf-card-detach-btn:disabled {
-  opacity: .5;
-  cursor: default;
-}
-
 .project-card--new {
   border-style: dashed; background: none;
   display: flex; align-items: center; justify-content: center;
@@ -1927,8 +1884,8 @@ p  { color: var(--sub); }
 .suno-left {
   display: flex;
   flex-direction: column;
-  gap: 0;
-  padding: 16px 0 16px 0;   /* zero horizontal — tabs bleed edge-to-edge */
+  gap: 12px;
+  padding: 20px 16px 20px 20px;
   border-right: 1px solid var(--border);
   background: var(--surface);
   min-height: 100vh;
@@ -2370,7 +2327,7 @@ p  { color: var(--sub); }
   }
   .suno-right {
     padding: 20px 16px;
-    order: 2; /* inputs (order:1) always come first, result below */
+    order: -1; /* results above controls on mobile */
   }
   .suno-tab { padding: 5px 8px; font-size: .72rem; }
   .suno-create-btn { border-radius: 12px; }
@@ -2887,7 +2844,7 @@ body.light .legal-body td {
   /* Credits bar: hidden from top bar, shown in-page instead */
   .gs-page-wrap {
     margin-left: 0;
-    padding-top: 64px; /* height of top nav bar — logo+icon+label stacks taller on mobile */
+    padding-top: 58px; /* height of top nav bar */
   }
   .gs-content {
     padding: 20px 16px;
@@ -4208,358 +4165,6 @@ body {
   box-shadow: 0 4px 20px rgba(124,58,237,.6), 0 0 0 2px rgba(139,92,246,.4);
 }
 
-/* ══ CREATE PAGE 3-TAB FOLDER SYSTEM ═══════════════════════════ */
-/*
-  Visual: Stacked folder tabs — like physical file folders in a drawer.
-  - Active tab POPS UP (translateY(-4px)) above the others
-  - Inactive tabs are pushed back (translateY(4px)) and dimmed
-  - Each tab has a FULL-HEIGHT colored border on left + right + top sides
-  - Active tab's bottom border is removed so it bleeds into the content box
-  - Content box border matches the active tab's hue
-  - Folder effect: tab 1 (Mix) is leftmost/front of stack visually,
-    tabs overlap slightly (negative margin) to create stacked depth
-*/
-
-/* ── Tab row wrapper ── */
-.create-page-tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 0;
-  position: relative;
-  z-index: 10;
-  align-items: flex-end;
-  padding: 6px 0 0;          /* top breathing room so active-tab pop isn't clipped */
-  overflow: visible;
-  scroll-margin-top: 72px;
-}
-/*
-  The hue top-line trick:
-  A ::before on the tab bar draws a 2px colored line across the FULL width
-  at the very bottom of the tab bar. The active tab (z-index 6) sits above it
-  and its opaque background covers the portion directly under the tab head.
-  Left and right of the tab head the line shows through → looks like the
-  content box border-top connecting to the sides on both ends.
-  The color is set per active-tab state via .tab-*-active class on the bar.
-*/
-.create-page-tabs::before {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: rgba(255,255,255,.13);
-  z-index: 4;
-  pointer-events: none;
-  transition: background .2s ease, box-shadow .2s ease;
-}
-/* Hue line + soft outward glow beneath the tab bar — connects visually to content box sides */
-.create-page-tabs.tab-mix-active::before {
-  background: rgba(20,184,166,.65);
-  box-shadow: 0 0 8px 2px rgba(20,184,166,.35);
-}
-.create-page-tabs.tab-create-active::before {
-  background: rgba(139,92,246,.75);
-  box-shadow: 0 0 8px 2px rgba(139,92,246,.4);
-}
-.create-page-tabs.tab-voices-active::before {
-  background: rgba(245,158,11,.65);
-  box-shadow: 0 0 8px 2px rgba(245,158,11,.35);
-}
-
-/* ── Base tab button — folder shape ── */
-.create-page-tab {
-  position: relative;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 13px 10px 15px;
-  border: 2px solid rgba(255,255,255,.13);
-  border-bottom: none;
-  border-radius: 12px 12px 0 0;
-  background: rgba(10,16,34,.72);
-  color: rgba(255,255,255,.3);
-  font-size: .85rem;
-  font-weight: 700;
-  cursor: pointer;
-  letter-spacing: .03em;
-  /* Default: pushed back, dimmed — inactive "folder behind" */
-  transform: translateY(4px);
-  filter: brightness(0.6) blur(0.4px);
-  transition:
-    transform .2s cubic-bezier(.34,1.56,.64,1),
-    filter .2s ease,
-    color .2s ease,
-    background .2s ease,
-    border-color .2s ease,
-    box-shadow .2s ease;
-  z-index: 1;
-  margin-right: -1px;        /* folder overlap — tabs share edge */
-}
-.create-page-tab:last-child { margin-right: 0; }
-.create-page-tab i { font-size: .9rem; flex-shrink: 0; }
-
-/* ── MIX: teal full-border glow ── */
-#cptab-mix {
-  border-color: rgba(20,184,166,.28);
-  /* Full-height inner glow on left + right + top */
-  box-shadow:
-    inset  2px 0 14px rgba(20,184,166,.10),
-    inset -2px 0 14px rgba(20,184,166,.10),
-    inset  0  2px 12px rgba(20,184,166,.12);
-}
-#cptab-mix:hover:not(.active) {
-  filter: brightness(0.8);
-  border-color: rgba(20,184,166,.45);
-  color: rgba(94,234,212,.6);
-}
-
-/* ── CREATE: purple full-border glow ── */
-#cptab-create {
-  border-color: rgba(124,58,237,.32);
-  box-shadow:
-    inset  2px 0 14px rgba(124,58,237,.12),
-    inset -2px 0 14px rgba(124,58,237,.12),
-    inset  0  2px 12px rgba(139,92,246,.14);
-  background: rgba(14,8,38,.78);
-}
-#cptab-create:hover:not(.active) {
-  filter: brightness(0.8);
-  border-color: rgba(139,92,246,.5);
-  color: rgba(196,181,253,.6);
-}
-
-/* ── VOICES: amber full-border glow ── */
-#cptab-voices {
-  border-color: rgba(245,158,11,.28);
-  box-shadow:
-    inset  2px 0 14px rgba(245,158,11,.10),
-    inset -2px 0 14px rgba(245,158,11,.10),
-    inset  0  2px 12px rgba(245,158,11,.12);
-}
-#cptab-voices:hover:not(.active) {
-  filter: brightness(0.8);
-  border-color: rgba(245,158,11,.45);
-  color: rgba(252,211,77,.6);
-}
-
-/* ── ACTIVE state: pops up, bottom open, merges with content box ── */
-.create-page-tab.active {
-  transform: translateY(-4px);   /* POP: lifts above inactive tabs */
-  filter: none;
-  color: #fff;
-  z-index: 6;
-  cursor: default;
-  border-bottom: none;
-  border-radius: 12px 12px 0 0;  /* top corners rounded, bottom SQUARE — flush into content box */
-  padding-bottom: 20px;
-}
-/*
-  Bridge: solid fill covering the gap between the raised tab bottom and the
-  content box top. translateY(-4px) shifts visual up by 4px so layout-bottom
-  is 4px below visual-bottom. Bridge goes bottom:-10px, height:14px to
-  guarantee full coverage with no dark sliver on any screen density.
-  left: -1px / right: -1px — slightly wider than the tab so it covers the
-  border-radius corner pixels at the tab's bottom edge, closing broken corners.
-  z-index: 5 — above ::before hue line (4) and content box (5, same level).
-*/
-.create-page-tab.active::after {
-  content: '';
-  position: absolute;
-  bottom: -10px;
-  left: -1px;
-  right: -1px;
-  height: 14px;
-  background: inherit;
-  z-index: 5;
-  border-radius: 0;  /* no rounding — must be flush rectangle */
-}
-
-/* Active MIX — deep backlit inset glow like the reference amber card */
-#cptab-mix.active {
-  background: rgba(4,24,22,1);
-  border-color: rgba(20,184,166,.75);
-  color: #5eead4;
-  box-shadow:
-    inset  0  0 40px rgba(20,184,166,.18),
-    inset  3px 0 28px rgba(20,184,166,.22),
-    inset -3px 0 28px rgba(20,184,166,.22),
-    inset  0  3px 24px rgba(20,184,166,.28),
-    0 -4px 20px rgba(20,184,166,.2);
-}
-/* Bridge background must exactly match each active tab — fully opaque */
-#cptab-mix.active::after    { background: rgba(4,24,22,1); }
-#cptab-create.active::after { background: rgba(10,4,36,1); }
-#cptab-voices.active::after { background: rgba(28,16,2,1); }
-
-/* Active CREATE — deep backlit purple glow */
-#cptab-create.active {
-  background: rgba(10,4,36,1);
-  border-color: rgba(139,92,246,.85);
-  color: #c4b5fd;
-  box-shadow:
-    inset  0  0 40px rgba(124,58,237,.22),
-    inset  3px 0 28px rgba(124,58,237,.28),
-    inset -3px 0 28px rgba(124,58,237,.28),
-    inset  0  3px 24px rgba(139,92,246,.35),
-    0 -4px 20px rgba(124,58,237,.25);
-}
-
-/* Active VOICES — deep backlit amber glow */
-#cptab-voices.active {
-  background: rgba(28,16,2,1);
-  border-color: rgba(245,158,11,.75);
-  color: #fcd34d;
-  box-shadow:
-    inset  0  0 40px rgba(245,158,11,.18),
-    inset  3px 0 28px rgba(245,158,11,.22),
-    inset -3px 0 28px rgba(245,158,11,.22),
-    inset  0  3px 24px rgba(245,158,11,.28),
-    0 -4px 20px rgba(245,158,11,.2);
-}
-
-/* ── Content box ──────────────────────────────────────────────────────────────
-   border-top: none — the top hue line is drawn by .create-page-tabs::before
-   which sits at the bottom of the tab bar across the full width. The active
-   tab's opaque background covers the ::before line under the tab head only,
-   leaving the hue visible left and right of the tab → folder shape.
-   Left/right/bottom borders provide the rest of the outline.
-*/
-.create-tabs-content {
-  position: relative;
-  z-index: 5;
-  border: 2px solid rgba(255,255,255,.13);
-  border-top: none;
-  border-radius: 0 0 16px 16px;
-  background: rgba(8,14,26,1);   /* fully opaque — no bleed-through */
-  padding: 16px 16px 72px;       /* bottom padding = metallic floor height */
-  transition: border-color .2s ease, box-shadow .2s ease;
-  overflow: hidden;              /* clip ::after to rounded corners */
-  min-height: 80px;
-}
-/*
-  Metallic bottom floor — TRUE silver/steel, no blue cast.
-  Covers the entire bottom surface of the cube.
-  Gradient: dark gunmetal base → bright silver highlight band → deep shadow at edge.
-  Fully opaque throughout — no transparency anywhere in the metal zone.
-*/
-.create-tabs-content::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 72px;
-  background: linear-gradient(
-    to bottom,
-    rgba(34,38,46,1)    0%,    /* dark gunmetal top of floor */
-    rgba(52,58,68,1)    18%,   /* mid dark steel */
-    rgba(80,88,100,1)   35%,   /* steel grey */
-    rgba(118,128,144,1) 50%,   /* bright silver highlight */
-    rgba(148,158,172,1) 58%,   /* peak chrome shine */
-    rgba(118,128,144,1) 66%,   /* fade back down */
-    rgba(78,86,98,1)    78%,   /* mid steel */
-    rgba(44,48,58,1)    90%,   /* dark shadow */
-    rgba(22,24,30,1)    100%   /* very bottom edge — near black */
-  );
-  border-radius: 0 0 14px 14px;
-  pointer-events: none;
-  z-index: 6;   /* above content, above inset glows */
-}
-/* Content box per-tab hue — LEFT and RIGHT edge glow ONLY.
-   No top/bottom inset shadows — they bleed into the interior as coloured light.
-   The metallic ::after floor covers the bottom. The tab head glow covers the top. */
-.create-tabs-content.tab-mix-active {
-  border-color: rgba(20,184,166,.65);
-  box-shadow:
-    inset  8px 0 40px rgba(20,184,166,.14),
-    inset -8px 0 40px rgba(20,184,166,.14),
-    0 4px 24px rgba(0,0,0,.45);
-}
-.create-tabs-content.tab-create-active {
-  border-color: rgba(139,92,246,.75);
-  box-shadow:
-    inset  8px 0 40px rgba(124,58,237,.16),
-    inset -8px 0 40px rgba(124,58,237,.16),
-    0 4px 24px rgba(0,0,0,.45);
-}
-.create-tabs-content.tab-voices-active {
-  border-color: rgba(245,158,11,.65);
-  box-shadow:
-    inset  8px 0 40px rgba(245,158,11,.14),
-    inset -8px 0 40px rgba(245,158,11,.14),
-    0 4px 24px rgba(0,0,0,.45);
-}
-
-/* ── Tab panels — NO animation on base rule (animation triggers display:none override on mobile Webkit) ── */
-.create-tab-panel {
-  /* NO display rule here — visibility is controlled by JS inline style only */
-  /* NO animation here — applied via .create-tab-panel--entering class added by JS */
-  width: 100%;
-  overflow: visible;
-}
-.create-tab-panel--entering {
-  animation: ctabIn .2s ease;
-}
-@keyframes ctabIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-/* ── Mix tab: action row (Remix, Extend, Cover buttons) ── */
-.mix-action-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.mix-action-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 12px 6px;
-  border: 1px solid rgba(255,255,255,.1);
-  border-radius: 12px;
-  background: rgba(255,255,255,.04);
-  color: rgba(255,255,255,.55);
-  font-size: .8rem;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all .18s ease;
-  letter-spacing: .01em;
-}
-.mix-action-btn i { font-size: 1.15rem; }
-.mix-action-btn:hover {
-  background: rgba(139,92,246,.15);
-  border-color: rgba(139,92,246,.5);
-  color: #e9d5ff;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(124,58,237,.3);
-}
-.mix-action-btn.mix-action-btn--active {
-  background: linear-gradient(135deg,rgba(124,58,237,.25),rgba(30,58,122,.2));
-  border-color: rgba(168,85,247,.55);
-  color: #c084fc;
-  box-shadow: 0 2px 12px rgba(124,58,237,.3);
-}
-
-/* ── One Shot inline toggle row ── */
-.oneshot-inline-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 12px;
-  padding: 12px 14px;
-  border: 1px solid rgba(245,158,11,.2);
-  border-radius: 10px;
-  background: rgba(245,158,11,.04);
-}
-
 /* ── Reference Track inline dropdown panel ──────────────────── */
 #ref-inline-panel {
   border: 1px solid rgba(78,159,255,.25);
@@ -5010,40 +4615,15 @@ html, body {
     grid-template-columns: 1fr;
     width: 100%;
     overflow-x: hidden;
-    display: flex;
-    flex-direction: column;
   }
-  /* On mobile: tabs/inputs FIRST (top), result box SECOND (below) */
   .suno-left {
-    order: 1;                  /* inputs first on mobile */
-    padding: 8px 0 0;          /* 8px top: gives the lifted active-tab room to show fully */
-    gap: 0;
+    padding: 12px 12px;
+    gap: 10px;
     width: 100%;
     min-width: 0;
     overflow-x: hidden;
-    overflow-y: visible;       /* never clip the lifted active tab */
-    min-height: unset;
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
-  /* Ensure create-page-tabs itself doesn't clip the lifted active tab */
-  .create-page-tabs {
-    overflow: visible;
-    padding-top: 6px;          /* slightly more on mobile so the pop-up isn't clipped */
-  }
-  /* Tab content wrapper: inner padding on mobile */
-  .create-tabs-content {
-    padding: 14px 12px 72px;   /* bottom padding = metallic floor height */
-    border-radius: 0 0 10px 10px;
-    overflow: hidden;          /* clip metallic ::after to rounded corners */
-  }
-  /* Tab panel sizing on mobile — NO display override, JS controls show/hide */
-  .create-tab-panel {
-    width: 100%;
-    overflow: visible;
   }
   .suno-right {
-    order: 2;                  /* result below on mobile */
     padding: 12px 12px;
     width: 100%;
     min-width: 0;
@@ -5054,8 +4634,7 @@ html, body {
   .suno-card, .suno-card--slim {
     width: 100%;
     min-width: 0;
-    overflow-x: hidden;        /* clip horizontal only — never clip vertical content */
-    overflow-y: visible;
+    overflow: hidden;
   }
   .suno-card__header {
     padding: 12px 12px 12px 10px;
@@ -5328,14 +4907,8 @@ html, body {
 
 /* ── Extra-small screens (≤ 390px — iPhone SE, etc.) ────────── */
 @media (max-width: 390px) {
-  .suno-left {
-    padding: 0; /* keep edge-to-edge for tabs */
-  }
-  .suno-right {
+  .suno-left, .suno-right {
     padding: 10px 10px;
-  }
-  .create-tabs-content {
-    padding: 12px 10px 10px;
   }
   .creator-tab-btn {
     font-size: .65rem;

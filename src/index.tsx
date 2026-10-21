@@ -894,76 +894,6 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
   )`).run()
 
-  // ── VoiceForge — persona_id stored on user + async voice generation jobs ──
-  // persona_id is the MusicAPI persona created from a user's uploaded voice sample
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_id TEXT`).run() } catch {}
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_label TEXT`).run() } catch {}
-  // VoiceForge profile: display name and avatar image URL
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_name TEXT`).run() } catch {}
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_avatar TEXT`).run() } catch {}
-  // Jobs: which voiceforge persona was used to generate this track
-  try { await db.prepare(`ALTER TABLE jobs ADD COLUMN voice_forge_id TEXT`).run() } catch {}
-  await db.prepare(`CREATE TABLE IF NOT EXISTS voice_jobs (
-    id          TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL,
-    type        TEXT NOT NULL DEFAULT 'generate', -- 'create' (clone) or 'generate'
-    task_id     TEXT,               -- MusicAPI task_id (after submission)
-    status      TEXT NOT NULL DEFAULT 'pending',  -- pending | running | succeeded | failed
-    title       TEXT,
-    audio_url   TEXT,               -- result audio URL (when succeeded)
-    error       TEXT,
-    cost_pts    INTEGER NOT NULL DEFAULT 0,
-    created_at  INTEGER NOT NULL
-  )`).run()
-  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_voice_jobs_user_id ON voice_jobs (user_id)`).run() } catch {}
-
-  // ── Shop: cube skins + collectibles ───────────────────────────────────────
-  await db.prepare(`CREATE TABLE IF NOT EXISTS shop_items (
-    id          TEXT PRIMARY KEY,       -- e.g. 'cube_obsidian'
-    type        TEXT NOT NULL,          -- 'cube' | 'hammer' | 'bundle'
-    name        TEXT NOT NULL,
-    description TEXT,
-    price_cents INTEGER NOT NULL,       -- USD cents (0 = free)
-    rarity      TEXT NOT NULL DEFAULT 'standard', -- 'standard' | 'limited' | 'rare'
-    max_supply  INTEGER,               -- NULL = unlimited
-    sold_count  INTEGER NOT NULL DEFAULT 0,
-    active      INTEGER NOT NULL DEFAULT 1,
-    sort_order  INTEGER NOT NULL DEFAULT 0,
-    preview_colors TEXT,               -- JSON: color config for preview
-    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
-  )`).run()
-
-  await db.prepare(`CREATE TABLE IF NOT EXISTS user_purchases (
-    id          TEXT PRIMARY KEY,
-    user_id     TEXT NOT NULL,
-    item_id     TEXT NOT NULL,
-    price_paid  INTEGER NOT NULL DEFAULT 0, -- actual cents paid
-    stripe_pi   TEXT,                  -- Stripe PaymentIntent ID
-    equipped    INTEGER NOT NULL DEFAULT 0,
-    purchased_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
-  )`).run()
-
-  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_user ON user_purchases (user_id)`).run() } catch {}
-  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_item ON user_purchases (item_id)`).run() } catch {}
-
-  // Seed default shop items (idempotent)
-  const shopItems = [
-    { id: 'cube_forge',    type: 'cube', name: 'The Forge',       description: 'The original StemForge cube. Steel chrome with forge-fire faces. Every creator starts here.',      price_cents: 0,    rarity: 'standard', sort_order: 1, preview_colors: JSON.stringify({ cubeBody: '#070e1c', edgeGlow: '#00e5ff', fillLight: '#00d2ff', rimLight: '#ff8c20', botLight: '#0040ff', shellColor: '#00aaff', waveformTiers: [['#ffaa00','#ff4400'],['#00ff88','#00ffcc'],['#dd00ff','#8800ff'],['#00d4ff','#0066ff']] }) },
-    { id: 'cube_obsidian', type: 'cube', name: 'Obsidian',        description: 'Volcanic black glass with ember-cracked edges. For producers who forge in the dark.',              price_cents: 499,  rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ cubeBody: '#0a0404', edgeGlow: '#ff2200', fillLight: '#cc1100', rimLight: '#ff6600', botLight: '#660000', shellColor: '#ff3300', waveformTiers: [['#ff4400','#ff2200'],['#ff6600','#ff3300'],['#cc2200','#881100'],['#ff5500','#cc3300']] }) },
-    { id: 'cube_goldrush', type: 'cube', name: 'Gold Rush',       description: '24k brushed gold with warm amber glow. Luxury aesthetics for the chart-topping producer.',         price_cents: 499,  rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ cubeBody: '#1a1000', edgeGlow: '#ffd700', fillLight: '#ffaa00', rimLight: '#ff8800', botLight: '#cc7700', shellColor: '#ffcc00', waveformTiers: [['#ffd700','#ffaa00'],['#ffcc00','#ff9900'],['#eebb00','#cc8800'],['#ffdd44','#ffaa00']] }) },
-    { id: 'cube_neon',     type: 'cube', name: 'Neon Ghost',      description: 'Frosted glass cube with electric cyan pulse lines. Invisible in daylight. Unstoppable at night.',  price_cents: 499,  rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ cubeBody: '#020d18', edgeGlow: '#00ffff', fillLight: '#00eeff', rimLight: '#0088ff', botLight: '#00aaff', shellColor: '#00ffee', waveformTiers: [['#00ffff','#00eeff'],['#00ccff','#0088ff'],['#00eedd','#00bbcc'],['#44ffff','#00ddff']] }) },
-    { id: 'cube_diamond',  type: 'cube', name: 'Blood Diamond',   description: 'Crimson faceted gem. Only 500 ever forged — each one numbered. The rarest cube in existence.',   price_cents: 1499, rarity: 'limited', max_supply: 500, sort_order: 5, preview_colors: JSON.stringify({ cubeBody: '#1a0008', edgeGlow: '#ff0055', fillLight: '#cc0044', rimLight: '#ff0077', botLight: '#880033', shellColor: '#ff0055', waveformTiers: [['#ff0055','#cc0033'],['#ff3366','#dd0044'],['#ff0044','#aa0033'],['#ff2255','#cc0033']] }) },
-  ]
-  for (const item of shopItems) {
-    await db.prepare(`INSERT OR IGNORE INTO shop_items (id, type, name, description, price_cents, rarity, max_supply, sort_order, preview_colors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(item.id, item.type, item.name, item.description, item.price_cents, item.rarity, item.max_supply ?? null, item.sort_order, item.preview_colors).run()
-  }
-  // Grant everyone The Forge for free (idempotent)
-  // This runs lazily per-user on first shop/collection load — handled in API
-
-  // active_cube_id on users
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN active_cube_id TEXT DEFAULT 'cube_forge'`).run() } catch {}
-
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -4648,8 +4578,8 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash, active_cube_id FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null; active_cube_id: string | null }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null }>()
   const plan = fresh?.plan ?? user.plan
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
@@ -4664,8 +4594,7 @@ app.get('/api/auth/me', async (c) => {
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null,
       is_admin: isAdmin(user, c.env),
-      has_password: !!(fresh?.password_hash),
-      active_cube_id: fresh?.active_cube_id || 'cube_forge',
+      has_password: !!(fresh?.password_hash)
     }
   })
 })
@@ -4846,16 +4775,6 @@ app.post('/api/stripe/webhook', async (c) => {
         const credits = parseInt(session.metadata?.credits || '0', 10)
         if (credits > 0) {
           await c.env.DB.prepare(`UPDATE users SET bonus_credits=bonus_credits+? WHERE id=?`).bind(credits, userId).run()
-        }
-      } else if (metaType === 'shop_item' && userId) {
-        // Shop item (cube skin) purchase
-        const itemId = session.metadata?.item_id
-        if (itemId) {
-          const purchaseId = `stripe_${session.payment_intent || session.id}`
-          await c.env.DB.prepare(
-            `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, stripe_pi, equipped) VALUES (?, ?, ?, ?, ?, 0)`
-          ).bind(purchaseId, userId, itemId, session.amount_total || 0, session.payment_intent || null).run()
-          await c.env.DB.prepare(`UPDATE shop_items SET sold_count = sold_count + 1 WHERE id = ?`).bind(itemId).run()
         }
       } else if (userId && subId) {
         // Subscription purchase
@@ -5227,499 +5146,6 @@ app.get('/profile', async (c) => {
   return c.html(profilePage(user))
 })
 
-// ── /shop — unified store: cube skins + plans + credit packs ─────────────
-app.get('/shop', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/shop')
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.redirect('/login?next=/shop')
-  const ASSET_VER_SHOP = ASSET_VER
-  return c.html(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Shop — StemForge</title>
-  <link href="/static/style.css?v=${ASSET_VER_SHOP}" rel="stylesheet"/>
-  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
-  <style>
-    /* ── Shop page styles ─────────────────────────────────────── */
-    .shop-page { max-width: 1100px; margin: 0 auto; padding: 32px 20px 80px; }
-    .shop-hero { text-align: center; margin-bottom: 40px; }
-    .shop-hero h1 { font-size: 2rem; font-weight: 800; margin-bottom: 8px; background: linear-gradient(135deg,#fff,#a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .shop-hero p { color: var(--muted); font-size: .95rem; }
-
-    /* Tabs */
-    .shop-tabs { display: flex; gap: 0; border-bottom: 2px solid rgba(255,255,255,.08); margin-bottom: 36px; }
-    .shop-tab-btn { padding: 12px 24px; font-size: .9rem; font-weight: 600; color: var(--muted); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; transition: color .15s, border-color .15s; }
-    .shop-tab-btn.active { color: #fff; border-bottom-color: #8b5cf6; }
-    .shop-tab-btn:hover:not(.active) { color: #e2e8f0; }
-    .shop-tab-panel { display: none; }
-    .shop-tab-panel.active { display: block; }
-
-    /* Cube grid */
-    .cube-shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 20px; }
-    .cube-shop-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); border-radius: 16px; overflow: hidden; transition: border-color .2s, transform .2s; cursor: pointer; }
-    .cube-shop-card:hover { border-color: rgba(139,92,246,.45); transform: translateY(-3px); }
-    .cube-shop-card.owned { border-color: rgba(52,211,153,.4); }
-    .cube-shop-card.limited { border-color: rgba(239,68,68,.3); }
-    .cube-preview { height: 140px; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
-    .cube-preview-inner { width: 80px; height: 80px; position: relative; transform-style: preserve-3d; animation: cubeFloat 4s ease-in-out infinite; border-radius: 10px; }
-    @keyframes cubeFloat { 0%,100%{transform:rotateX(18deg) rotateY(-25deg) translateY(0)} 50%{transform:rotateX(18deg) rotateY(-25deg) translateY(-6px)} }
-    .cube-face { position: absolute; width: 80px; height: 80px; border-radius: 8px; border: 1.5px solid; }
-    .cube-face-front  { transform: translateZ(40px); }
-    .cube-face-back   { transform: rotateY(180deg) translateZ(40px); }
-    .cube-face-left   { transform: rotateY(-90deg) translateZ(40px); }
-    .cube-face-right  { transform: rotateY(90deg) translateZ(40px); }
-    .cube-face-top    { transform: rotateX(90deg) translateZ(40px); }
-    .cube-face-bottom { transform: rotateX(-90deg) translateZ(40px); }
-    .cube-shop-body { padding: 14px 16px 16px; }
-    .cube-shop-name { font-weight: 700; font-size: .95rem; margin-bottom: 4px; }
-    .cube-shop-desc { font-size: .78rem; color: var(--muted); margin-bottom: 12px; line-height: 1.45; }
-    .cube-shop-footer { display: flex; align-items: center; justify-content: space-between; }
-    .cube-shop-price { font-weight: 700; font-size: .95rem; }
-    .cube-shop-price.free { color: #34d399; }
-    .cube-shop-price.paid { color: #e2e8f0; }
-    .rarity-badge { font-size: .65rem; font-weight: 700; padding: 2px 7px; border-radius: 20px; letter-spacing: .04em; text-transform: uppercase; }
-    .rarity-badge.standard { background: rgba(139,92,246,.15); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); }
-    .rarity-badge.limited  { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.25); }
-    .cube-btn { padding: 8px 16px; border-radius: 8px; font-size: .82rem; font-weight: 700; cursor: pointer; border: none; transition: opacity .15s, transform .1s; }
-    .cube-btn:active { transform: scale(.97); }
-    .cube-btn--buy  { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
-    .cube-btn--owned { background: rgba(52,211,153,.12); color: #34d399; border: 1px solid rgba(52,211,153,.3); cursor: default; }
-    .cube-btn--equip { background: linear-gradient(135deg,#059669,#34d399); color: #fff; }
-    .cube-btn--equipped { background: rgba(52,211,153,.08); color: #34d399; border: 1px solid rgba(52,211,153,.25); cursor: default; font-style: italic; }
-    .supply-row { font-size: .72rem; color: #f87171; margin-top: 4px; }
-
-    /* Plans tab — reuse subscription card styles but simplified */
-    .shop-plans-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; margin-bottom: 40px; }
-    .shop-plan-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); border-radius: 16px; padding: 24px; position: relative; transition: border-color .2s; }
-    .shop-plan-card.current { border-color: rgba(139,92,246,.5); }
-    .shop-plan-card.popular::before { content: 'Most Popular'; position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; font-size: .7rem; font-weight: 700; padding: 3px 10px; border-radius: 20px; white-space: nowrap; }
-    .shop-plan-name { font-size: 1.1rem; font-weight: 800; margin-bottom: 6px; }
-    .shop-plan-price { font-size: 1.8rem; font-weight: 800; margin-bottom: 4px; }
-    .shop-plan-price span { font-size: .85rem; font-weight: 400; color: var(--muted); }
-    .shop-plan-pts { font-size: .82rem; color: var(--muted); margin-bottom: 16px; }
-    .shop-plan-feats { list-style: none; padding: 0; margin: 0 0 20px; }
-    .shop-plan-feats li { font-size: .83rem; padding: 4px 0; display: flex; gap: 8px; }
-    .shop-plan-feats li i { color: #34d399; margin-top: 2px; flex-shrink: 0; }
-    .shop-plan-btn { width: 100%; padding: 11px; border-radius: 10px; font-weight: 700; font-size: .88rem; cursor: pointer; border: none; }
-    .shop-plan-btn--primary { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
-    .shop-plan-btn--outline { background: rgba(255,255,255,.06); color: #e2e8f0; border: 1px solid rgba(255,255,255,.15); }
-    .shop-plan-btn--current { background: rgba(139,92,246,.1); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); cursor: default; }
-
-    /* Purchase success banner */
-    .shop-success-banner { background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.3); border-radius: 12px; padding: 14px 20px; margin-bottom: 28px; display: flex; align-items: center; gap: 12px; color: #34d399; font-weight: 600; }
-
-    /* Collection link */
-    .collection-cta { display: flex; align-items: center; gap: 14px; background: rgba(139,92,246,.06); border: 1px solid rgba(139,92,246,.2); border-radius: 12px; padding: 16px 20px; margin-bottom: 28px; }
-    .collection-cta a { color: #a78bfa; font-weight: 700; text-decoration: none; }
-    .collection-cta a:hover { color: #c4b5fd; }
-  </style>
-</head>
-<body>
-${globalSidebar()}
-<main class="shop-page">
-  <div class="shop-hero">
-    <h1><i class="fas fa-store" style="color:#8b5cf6;margin-right:10px;-webkit-text-fill-color:#8b5cf6"></i>StemForge Shop</h1>
-    <p>Personalize your forge. Every creator's studio can look different — because yours should.</p>
-  </div>
-
-  ${(new URL(c.req.url)).searchParams.get('purchase') === 'success' ? `
-  <div class="shop-success-banner">
-    <i class="fas fa-check-circle" style="font-size:1.3rem"></i>
-    <div>
-      <div style="font-size:1rem">Purchase complete!</div>
-      <div style="font-size:.82rem;font-weight:400;opacity:.8">Your new cube has been added to your collection. Head to <a href="/collection" style="color:#34d399">My Collection</a> to equip it.</div>
-    </div>
-  </div>` : ''}
-
-  <div class="collection-cta">
-    <i class="fas fa-gem" style="color:#8b5cf6;font-size:1.2rem;flex-shrink:0"></i>
-    <div style="flex:1">
-      <div style="font-weight:700;margin-bottom:2px">Your Collection</div>
-      <div style="font-size:.82rem;color:var(--muted)">View and equip everything you own — including your active cube skin.</div>
-    </div>
-    <a href="/collection" style="flex-shrink:0;padding:9px 18px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:9px;font-weight:700;font-size:.85rem;text-decoration:none"><i class="fas fa-gem" style="margin-right:6px"></i>My Collection</a>
-  </div>
-
-  <!-- Tab Bar -->
-  <div class="shop-tabs">
-    <button class="shop-tab-btn active" onclick="shopTab('cubes',this)"><i class="fas fa-cube" style="margin-right:6px"></i>Cube Skins</button>
-    <button class="shop-tab-btn" onclick="shopTab('plans',this)"><i class="fas fa-star" style="margin-right:6px"></i>Plans</button>
-    <button class="shop-tab-btn" onclick="shopTab('packs',this)"><i class="fas fa-bolt" style="margin-right:6px"></i>Point Packs</button>
-  </div>
-
-  <!-- CUBE SKINS TAB -->
-  <div class="shop-tab-panel active" id="shop-panel-cubes">
-    <div class="cube-shop-grid" id="cube-shop-grid">
-      <div style="color:var(--muted);padding:32px;text-align:center"><i class="fas fa-circle-notch fa-spin"></i> Loading skins…</div>
-    </div>
-  </div>
-
-  <!-- PLANS TAB -->
-  <div class="shop-tab-panel" id="shop-panel-plans">
-    <div class="shop-plans-grid">
-      <!-- Free -->
-      <div class="shop-plan-card${user.plan === 'free' ? ' current' : ''}">
-        <div class="shop-plan-name" style="color:#94a3b8">Free</div>
-        <div class="shop-plan-price">$0 <span>/ mo</span></div>
-        <div class="shop-plan-pts">75 points / month</div>
-        <ul class="shop-plan-feats">
-          <li><i class="fas fa-check"></i> Beat Generator</li>
-          <li><i class="fas fa-check"></i> Remix + Extend</li>
-          <li><i class="fas fa-check"></i> Library (5 tracks max)</li>
-        </ul>
-        <button class="shop-plan-btn ${user.plan === 'free' ? 'shop-plan-btn--current' : 'shop-plan-btn--outline'}" ${user.plan === 'free' ? 'disabled' : `onclick="window.location='/subscription'"`}>${user.plan === 'free' ? 'Current Plan' : 'Downgrade'}</button>
-      </div>
-      <!-- Creator -->
-      <div class="shop-plan-card popular${user.plan === 'creator' ? ' current' : ''}">
-        <div class="shop-plan-name" style="color:#a78bfa">Creator</div>
-        <div class="shop-plan-price" style="color:#a78bfa">$10 <span>/ mo</span></div>
-        <div class="shop-plan-pts">900 points / month</div>
-        <ul class="shop-plan-feats">
-          <li><i class="fas fa-check"></i> Everything in Free</li>
-          <li><i class="fas fa-check"></i> Stem Splitter</li>
-          <li><i class="fas fa-check"></i> One Shot Creator</li>
-          <li><i class="fas fa-check"></i> VoiceForge</li>
-          <li><i class="fas fa-check"></i> Unlimited library</li>
-        </ul>
-        <button class="shop-plan-btn ${user.plan === 'creator' ? 'shop-plan-btn--current' : 'shop-plan-btn--primary'}" ${user.plan === 'creator' ? 'disabled' : `onclick="window.location='/subscription'"`}>${user.plan === 'creator' ? 'Current Plan' : 'Upgrade — $10/mo'}</button>
-      </div>
-      <!-- Pro -->
-      <div class="shop-plan-card${user.plan === 'pro' ? ' current' : ''}">
-        <div class="shop-plan-name" style="color:#fbbf24">Pro Artist</div>
-        <div class="shop-plan-price" style="color:#fbbf24">$25 <span>/ mo</span></div>
-        <div class="shop-plan-pts">2,000 points / month</div>
-        <ul class="shop-plan-feats">
-          <li><i class="fas fa-check"></i> Everything in Creator</li>
-          <li><i class="fas fa-check"></i> Priority generation</li>
-          <li><i class="fas fa-check"></i> Studio-quality masters</li>
-          <li><i class="fas fa-check"></i> Advanced analytics</li>
-        </ul>
-        <button class="shop-plan-btn ${user.plan === 'pro' ? 'shop-plan-btn--current' : 'shop-plan-btn--primary'}" style="${user.plan !== 'pro' ? 'background:linear-gradient(135deg,#b45309,#fbbf24)' : ''}" ${user.plan === 'pro' ? 'disabled' : `onclick="window.location='/subscription'"`}>${user.plan === 'pro' ? 'Current Plan' : 'Upgrade — $25/mo'}</button>
-      </div>
-    </div>
-    <p style="text-align:center;font-size:.82rem;color:var(--muted)">Manage billing, cancel, or change plans from your <a href="/subscription" style="color:var(--primary)">Subscription page</a>.</p>
-  </div>
-
-  <!-- POINT PACKS TAB -->
-  <div class="shop-tab-panel" id="shop-panel-packs">
-    <p style="color:var(--muted);font-size:.88rem;margin-bottom:20px">One-time point top-ups — stack on top of your monthly plan. Consumed first before subscription points.</p>
-    <div class="credit-packs-grid" id="shop-credit-packs-grid">
-      <div class="credit-pack-card" data-pack="pack_150">
-        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-        <div class="credit-pack__main"><div class="credit-pack__credits">150</div><div class="credit-pack__label">Points</div></div>
-        <div class="credit-pack__price-row"><span class="credit-pack__price">$4.99</span><button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_150"><i class="fas fa-cart-plus"></i> Buy</button></div>
-      </div>
-      <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_600">
-        <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
-        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-        <div class="credit-pack__main"><div class="credit-pack__credits">600</div><div class="credit-pack__label">Points</div></div>
-        <div class="credit-pack__price-row"><span class="credit-pack__price">$9.99</span><button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_600"><i class="fas fa-cart-plus"></i> Buy</button></div>
-      </div>
-      <div class="credit-pack-card" data-pack="pack_1000">
-        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-        <div class="credit-pack__main"><div class="credit-pack__credits">1000</div><div class="credit-pack__label">Points</div></div>
-        <div class="credit-pack__price-row"><span class="credit-pack__price">$17.99</span><button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1000"><i class="fas fa-cart-plus"></i> Buy</button></div>
-      </div>
-      <div class="credit-pack-card" data-pack="pack_1500">
-        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-        <div class="credit-pack__main"><div class="credit-pack__credits">1500</div><div class="credit-pack__label">Points</div></div>
-        <div class="credit-pack__price-row"><span class="credit-pack__price">$29.99</span><button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1500"><i class="fas fa-cart-plus"></i> Buy</button></div>
-      </div>
-    </div>
-    <p style="text-align:center;font-size:.78rem;color:var(--muted);margin-top:14px">Payments secured by Stripe. Points added instantly after payment.</p>
-  </div>
-
-</main>
-<script>
-// ── Credit pack buttons (reuse existing handler) ────────────────────────
-document.querySelectorAll('[data-pack]').forEach(function(btn){
-  if(!btn.matches('button')) return;
-  btn.addEventListener('click',function(){
-    var pack=btn.dataset.pack;
-    btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
-    fetch('/api/credit-packs/purchase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pack_id:pack})})
-      .then(function(r){return r.json();})
-      .then(function(d){if(d.url)window.location=d.url;else{btn.disabled=false;btn.innerHTML='<i class="fas fa-cart-plus"></i> Buy';alert(d.error||'Error');} })
-      .catch(function(){btn.disabled=false;btn.innerHTML='<i class="fas fa-cart-plus"></i> Buy';});
-  });
-});
-
-// ── Tab switcher ────────────────────────────────────────────────────────
-function shopTab(name,btn){
-  document.querySelectorAll('.shop-tab-btn').forEach(function(b){b.classList.remove('active');});
-  document.querySelectorAll('.shop-tab-panel').forEach(function(p){p.classList.remove('active');});
-  btn.classList.add('active');
-  document.getElementById('shop-panel-'+name).classList.add('active');
-  if(name==='cubes') loadCubeShop();
-}
-
-// ── Cube shop ────────────────────────────────────────────────────────────
-var _cubeShopLoaded=false;
-function loadCubeShop(){
-  if(_cubeShopLoaded)return;
-  _cubeShopLoaded=true;
-  Promise.all([
-    fetch('/api/shop/items').then(r=>r.json()),
-    fetch('/api/shop/collection').then(r=>r.json())
-  ]).then(function(results){
-    var items=results[0].items||[];
-    var coll=results[1];
-    var ownedIds=(coll.owned||[]).map(function(o){return o.item_id;});
-    var activeCube=coll.active_cube_id||'cube_forge';
-    renderCubeGrid(items,ownedIds,activeCube);
-  }).catch(function(e){
-    document.getElementById('cube-shop-grid').innerHTML='<div style="color:var(--muted);padding:32px;text-align:center">Failed to load skins. <button onclick="location.reload()" style="color:var(--primary);background:none;border:none;cursor:pointer">Retry</button></div>';
-  });
-}
-
-function cubePreviewHtml(colors){
-  var c=colors||{};
-  var body=c.cubeBody||'#070e1c';
-  var edge=c.edgeGlow||'#00e5ff';
-  var alpha='rgba('+hexToRgb(edge)+',0.7)';
-  return '<div style="perspective:250px;width:80px;height:80px;margin:auto">'+
-    '<div style="width:80px;height:80px;position:relative;transform-style:preserve-3d;animation:cubeFloat 4s ease-in-out infinite;border-radius:10px">'+
-    makeFace('translateZ(40px)',body,edge)+
-    makeFace('rotateY(180deg) translateZ(40px)',body,edge)+
-    makeFace('rotateY(-90deg) translateZ(40px)',body,edge)+
-    makeFace('rotateY(90deg) translateZ(40px)',body,edge)+
-    makeFace('rotateX(90deg) translateZ(40px)',body,edge)+
-    makeFace('rotateX(-90deg) translateZ(40px)',body,edge)+
-    '</div></div>';
-}
-function makeFace(transform,bg,borderColor){
-  return '<div style="position:absolute;width:80px;height:80px;background:'+bg+';border:1.5px solid '+borderColor+';border-radius:8px;transform:'+transform+';box-shadow:inset 0 0 12px rgba('+hexToRgb(borderColor)+',0.2)"></div>';
-}
-function hexToRgb(hex){
-  hex=hex.replace('#','');
-  if(hex.length===3)hex=hex.split('').map(function(h){return h+h;}).join('');
-  var n=parseInt(hex,16);
-  return ((n>>16)&255)+','+(( n>>8)&255)+','+(n&255);
-}
-
-function renderCubeGrid(items,ownedIds,activeCube){
-  var grid=document.getElementById('cube-shop-grid');
-  if(!items.length){grid.innerHTML='<div style="color:var(--muted);padding:32px;text-align:center">No skins available yet.</div>';return;}
-  var html='';
-  items.forEach(function(item){
-    var colors={};try{colors=JSON.parse(item.preview_colors||'{}');}catch(e){}
-    var owned=ownedIds.indexOf(item.item_id||item.id)>-1;
-    var isActive=(item.item_id||item.id)===activeCube;
-    var limited=item.rarity==='limited';
-    var isFree=item.price_cents===0;
-    var supplyLeft=item.max_supply?item.max_supply-item.sold_count:null;
-    var itemId=item.item_id||item.id;
-
-    var btnHtml='';
-    if(owned&&isActive) btnHtml='<button class="cube-btn cube-btn--equipped" disabled><i class="fas fa-check" style="margin-right:5px"></i>Equipped</button>';
-    else if(owned)      btnHtml='<button class="cube-btn cube-btn--equip" onclick="equipCube(\\'' + itemId + '\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:5px"></i>Equip</button>';
-    else if(isFree)     btnHtml='<button class="cube-btn cube-btn--equip" onclick="claimCube(\\'' + itemId + '\\',this)">Claim Free</button>';
-    else if(supplyLeft===0) btnHtml='<button class="cube-btn" disabled style="background:rgba(255,255,255,.05);color:var(--muted)">Sold Out</button>';
-    else                btnHtml='<button class="cube-btn cube-btn--buy" onclick="buyCube(\\'' + itemId + '\\',this)"><i class="fas fa-shopping-cart" style="margin-right:5px"></i>' + (isFree?'Claim':'$'+(item.price_cents/100).toFixed(2)) + '</button>';
-
-    html+='<div class="cube-shop-card'+(owned?' owned':'')+(limited?' limited':'')+'">'+
-      '<div class="cube-preview" style="background:linear-gradient(135deg,'+darken(colors.cubeBody||'#070e1c')+',#050a14)">'+
-        cubePreviewHtml(colors)+
-      '</div>'+
-      '<div class="cube-shop-body">'+
-        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'+
-          '<div class="cube-shop-name">'+item.name+'</div>'+
-          '<span class="rarity-badge '+item.rarity+'">'+item.rarity+'</span>'+
-          (owned?'<span style="font-size:.68rem;font-weight:700;color:#34d399;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.2);border-radius:10px;padding:1px 6px">Owned</span>':'')+
-        '</div>'+
-        '<div class="cube-shop-desc">'+item.description+'</div>'+
-        (limited&&supplyLeft!==null?'<div class="supply-row"><i class="fas fa-fire" style="margin-right:4px"></i>'+(supplyLeft>0?supplyLeft+' remaining':'SOLD OUT')+'</div>':'')+
-        '<div class="cube-shop-footer">'+
-          '<span class="cube-shop-price '+(isFree?'free':'paid')+'">'+(isFree?'Free':'$'+(item.price_cents/100).toFixed(2))+'</span>'+
-          btnHtml+
-        '</div>'+
-      '</div>'+
-    '</div>';
-  });
-  grid.innerHTML=html;
-}
-
-function darken(hex){
-  hex=hex.replace('#','');
-  var n=parseInt(hex,16);
-  var r=Math.max(0,((n>>16)&255)-20);
-  var g=Math.max(0,((n>>8)&255)-20);
-  var b=Math.max(0,(n&255)-20);
-  return 'rgb('+r+','+g+','+b+')';
-}
-
-function equipCube(itemId,btn){
-  btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
-  fetch('/api/shop/equip/'+itemId,{method:'POST'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d.ok){_cubeShopLoaded=false;loadCubeShop();showToast('Cube equipped! Reload the create page to see it.');}
-      else{btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles" style="margin-right:5px"></i>Equip';alert(d.error||'Error');}
-    }).catch(function(){btn.disabled=false;btn.innerHTML='Equip';});
-}
-
-function claimCube(itemId,btn){
-  btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
-  fetch('/api/shop/purchase/'+itemId,{method:'POST'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d.ok){_cubeShopLoaded=false;loadCubeShop();showToast('Added to your collection!');}
-      else{btn.disabled=false;btn.innerHTML='Claim Free';alert(d.error||'Already owned');}
-    }).catch(function(){btn.disabled=false;btn.innerHTML='Claim Free';});
-}
-
-function buyCube(itemId,btn){
-  btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
-  fetch('/api/shop/purchase/'+itemId,{method:'POST'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if(d.checkout_url)window.location=d.checkout_url;
-      else{btn.disabled=false;btn.innerHTML='<i class="fas fa-shopping-cart" style="margin-right:5px"></i>Buy';alert(d.error||'Error');}
-    }).catch(function(){btn.disabled=false;btn.innerHTML='Buy';});
-}
-
-function showToast(msg){
-  var t=document.createElement('div');
-  t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(52,211,153,.15);border:1px solid rgba(52,211,153,.35);color:#34d399;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5)';
-  t.textContent=msg;document.body.appendChild(t);
-  setTimeout(function(){t.remove();},3500);
-}
-
-// Load cube tab immediately on page open
-loadCubeShop();
-// Open to packs tab if redirected for credit purchase
-if(window.location.hash==='#packs'||window.location.search.includes('tab=packs')){
-  document.querySelectorAll('.shop-tab-btn')[2].click();
-}
-</script>
-</body>
-</html>`)
-})
-
-// ── /collection — user's owned items + equip ──────────────────────────────
-app.get('/collection', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/collection')
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.redirect('/login?next=/collection')
-  const ASSET_VER_COLL = ASSET_VER
-  return c.html(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>My Collection — StemForge</title>
-  <link href="/static/style.css?v=${ASSET_VER_COLL}" rel="stylesheet"/>
-  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
-  <style>
-    .coll-page { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
-    .coll-hero { margin-bottom: 36px; }
-    .coll-hero h1 { font-size: 1.7rem; font-weight: 800; display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
-    .coll-hero p { color: var(--muted); font-size: .88rem; }
-    .coll-section-title { font-size: 1rem; font-weight: 700; color: #a78bfa; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
-    .coll-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 40px; }
-    .coll-card { background: rgba(255,255,255,.04); border: 1.5px solid rgba(255,255,255,.08); border-radius: 14px; overflow: hidden; transition: border-color .2s, transform .2s; }
-    .coll-card.equipped { border-color: rgba(139,92,246,.55); box-shadow: 0 0 20px rgba(139,92,246,.1); }
-    .coll-card:hover { transform: translateY(-2px); border-color: rgba(139,92,246,.3); }
-    .coll-preview { height: 120px; display: flex; align-items: center; justify-content: center; }
-    .coll-body { padding: 10px 12px 12px; }
-    .coll-name { font-weight: 700; font-size: .88rem; margin-bottom: 6px; }
-    .coll-date { font-size: .72rem; color: var(--muted); margin-bottom: 8px; }
-    .coll-equip-btn { width: 100%; padding: 7px; border-radius: 8px; font-size: .8rem; font-weight: 700; cursor: pointer; border: none; transition: opacity .15s; }
-    .coll-equip-btn--active { background: rgba(139,92,246,.12); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); cursor: default; }
-    .coll-equip-btn--equip  { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
-    .coll-empty { text-align: center; padding: 48px 20px; color: var(--muted); }
-    .coll-empty i { font-size: 3rem; opacity: .25; margin-bottom: 16px; display: block; }
-    .coll-shop-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 10px 20px; background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: .88rem; }
-  </style>
-</head>
-<body>
-${globalSidebar()}
-<main class="coll-page">
-  <div class="coll-hero">
-    <h1><i class="fas fa-gem" style="color:#8b5cf6"></i> My Collection</h1>
-    <p>Everything you own. Equip a cube to make your forge uniquely yours.</p>
-  </div>
-  <div id="coll-content"><div style="color:var(--muted);text-align:center;padding:48px"><i class="fas fa-circle-notch fa-spin"></i> Loading your collection…</div></div>
-</main>
-<script>
-(function(){
-  Promise.all([
-    fetch('/api/shop/collection').then(r=>r.json()),
-    fetch('/api/shop/items').then(r=>r.json())
-  ]).then(function(res){
-    var coll=res[0]; var allItems=res[1].items||[];
-    var owned=coll.owned||[]; var activeCube=coll.active_cube_id||'cube_forge';
-    var itemMap={};
-    allItems.forEach(function(it){itemMap[it.id]=it;});
-    if(!owned.length){
-      document.getElementById('coll-content').innerHTML=
-        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem">Purchase cube skins from the shop to personalize your forge.</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
-      return;
-    }
-    var cubes=owned.filter(function(o){return o.type==='cube';});
-    var html='';
-    if(cubes.length){
-      html+='<div class="coll-section-title"><i class="fas fa-cube"></i> Cube Skins ('+cubes.length+')</div>';
-      html+='<div class="coll-grid" id="coll-cube-grid">';
-      cubes.forEach(function(o){
-        var it=itemMap[o.item_id]||{name:o.name||o.item_id,preview_colors:'{}',rarity:'standard'};
-        var colors={};try{colors=JSON.parse(it.preview_colors||'{}');}catch(e){}
-        var isEquipped=o.item_id===activeCube;
-        var date=o.purchased_at?new Date(o.purchased_at).toLocaleDateString():'';
-        html+='<div class="coll-card'+(isEquipped?' equipped':'')+'" id="coll-card-'+o.item_id+'">';
-        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+darken(colors.cubeBody||'#070e1c')+',#050a14)">'+cubePreviewHtml(colors)+'</div>';
-        html+='<div class="coll-body">';
-        html+='<div class="coll-name">'+it.name+(isEquipped?' <i class="fas fa-check" style="color:#a78bfa;font-size:.75rem"></i>':'')+'</div>';
-        if(date) html+='<div class="coll-date">Owned since '+date+'</div>';
-        if(isEquipped) html+='<button class="coll-equip-btn coll-equip-btn--active" disabled><i class="fas fa-check" style="margin-right:4px"></i>Equipped</button>';
-        else           html+='<button class="coll-equip-btn coll-equip-btn--equip" onclick="equipCube(\\'' + o.item_id + '\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip</button>';
-        html+='</div></div>';
-      });
-      html+='</div>';
-    }
-    html+='<div style="text-align:center;margin-top:24px"><a href="/shop" style="color:var(--primary);font-size:.88rem;font-weight:600;text-decoration:none"><i class="fas fa-store" style="margin-right:6px"></i>Browse Shop for more skins</a></div>';
-    document.getElementById('coll-content').innerHTML=html;
-  }).catch(function(e){
-    document.getElementById('coll-content').innerHTML='<div class="coll-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load collection.</p><button onclick="location.reload()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-size:.88rem">Try again</button></div>';
-  });
-
-  function cubePreviewHtml(colors){
-    var c=colors||{};var body=c.cubeBody||'#070e1c';var edge=c.edgeGlow||'#00e5ff';
-    return '<div style="perspective:200px;width:70px;height:70px;margin:auto">'+
-      '<div style="width:70px;height:70px;position:relative;transform-style:preserve-3d;animation:cubeFloat 4s ease-in-out infinite;border-radius:8px">'+
-      [['translateZ(35px)'],['rotateY(180deg) translateZ(35px)'],['rotateY(-90deg) translateZ(35px)'],['rotateY(90deg) translateZ(35px)'],['rotateX(90deg) translateZ(35px)'],['rotateX(-90deg) translateZ(35px)']].map(function(t){
-        return '<div style="position:absolute;width:70px;height:70px;background:'+body+';border:1.5px solid '+edge+';border-radius:7px;transform:'+t[0]+';box-shadow:inset 0 0 10px rgba(0,0,0,.3)"></div>';
-      }).join('')+'</div></div>';
-  }
-  function darken(hex){
-    hex=hex.replace('#','');var n=parseInt(hex,16);
-    return 'rgb('+Math.max(0,((n>>16)&255)-20)+','+Math.max(0,((n>>8)&255)-20)+','+Math.max(0,(n&255)-20)+')';
-  }
-  window.equipCube=function(itemId,btn){
-    btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
-    fetch('/api/shop/equip/'+itemId,{method:'POST'})
-      .then(function(r){return r.json();})
-      .then(function(d){
-        if(d.ok){
-          var t=document.createElement('div');
-          t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#c4b5fd;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999';
-          t.innerHTML='<i class="fas fa-check" style="margin-right:8px"></i>Cube equipped! Head to Create to see it.';
-          document.body.appendChild(t);setTimeout(function(){t.remove();},3000);
-          setTimeout(function(){location.reload();},500);
-        }else{btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip';alert(d.error||'Error');}
-      }).catch(function(){btn.disabled=false;btn.innerHTML='Equip';});
-  };
-})();
-</script>
-<style>@keyframes cubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-25deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-25deg) translateY(-5px)}}</style>
-</body>
-</html>`)
-})
-
 app.get('/subscription', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) {
     return c.redirect('/login?next=/subscription')
@@ -6080,36 +5506,6 @@ app.get('/api/projects', async (c) => {
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
-    } else if (tab === 'voice') {
-      // VoiceForge songs — from voice_jobs table (admin-only check happens on client)
-      const vRes = await c.env.DB.prepare(
-        `SELECT id, user_id, title, audio_url, status, created_at FROM voice_jobs
-         WHERE user_id = ? AND type = 'generate' AND status = 'succeeded'
-         ORDER BY created_at DESC LIMIT 100`
-      ).bind(user.id).all<any>()
-      const voiceRows = vRes.results || []
-      const voiceProjects = voiceRows.map((r: any) => ({
-        id: r.id,
-        title: r.title || 'Voice Song',
-        prompt: r.title || 'Voice Song',
-        is_voice: true,
-        audio_url: r.audio_url || null,
-        stereo_url: r.audio_url || null,
-        created_at: r.created_at,
-        status: 'ready',
-        thumbnail_seed: r.id.split('').reduce((a: number, ch: string) => a + ch.charCodeAt(0), 0) % 360,
-        image_url: null,
-        blueprint: null,
-        is_oneshot: false,
-        deleted_at: null,
-        days_until_purge: null,
-        sound_type: null,
-        user_lyrics: null,
-        extend_task_type: null,
-        source_job_id: null,
-        continue_at_ms: null,
-      }))
-      return c.json({ projects: voiceProjects })
     } else {
       // beats tab: regular beats (not one-shots, not extended, not remixes, not covers), not deleted
       // Note: song_generate ext_type is a relic of the old two-song feature — those are valid beats
@@ -6172,8 +5568,6 @@ app.get('/api/projects', async (c) => {
         audio_url: d.audio_url || null,
         // Lyrics — user-typed or AI-generated, used by library lyrics panel
         user_lyrics: d.user_lyrics || null,
-        // VoiceForge linkage — set when this track was generated using a voice persona
-        voice_forge_id: d.voice_forge_id || null,
       }
     })
     return c.json({ projects })
@@ -9247,624 +8641,6 @@ app.delete('/api/admin/vault/:key', async (c) => {
   return c.json({ ok: true })
 })
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  VOICEFORGE ROUTES  (Sonic persona_music)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ── Voice error sanitiser — maps raw upstream errors to Stemforge-branded messages ──
-// Never passes through any wording that would reveal the underlying AI service.
-function sanitiseVoiceError(raw: string | undefined | null, context: 'clone' | 'generate'): string {
-  const s = (raw || '').toLowerCase()
-  // Insufficient credits on the upstream side (shouldn't happen — we check first, but just in case)
-  if (s.includes('credit') || s.includes('quota') || s.includes('insufficient') || s.includes('limit exceeded'))
-    return 'You don\'t have enough points for this. Please top up and try again.'
-  // Bad audio URL / format
-  if (s.includes('audio') && (s.includes('invalid') || s.includes('format') || s.includes('unsupported') || s.includes('cannot') || s.includes('decode')))
-    return 'We couldn\'t process that audio file. Make sure it\'s a clean MP3 or WAV with clear vocals, then try again.'
-  // URL not reachable / download failed
-  if (s.includes('download') || s.includes('fetch') || s.includes('url') || s.includes('http') || s.includes('not found') || s.includes('404') || s.includes('403') || s.includes('inaccessible'))
-    return 'We couldn\'t access that audio URL. Make sure the link is publicly accessible, then try again.'
-  // Audio too short / too long
-  if (s.includes('too short') || s.includes('too long') || s.includes('duration') || s.includes('length'))
-    return 'Your audio sample is the wrong length. Please use a 10–60 second clip of your voice and try again.'
-  // No vocals detected
-  if (s.includes('vocal') || s.includes('no voice') || s.includes('speech') || s.includes('silence'))
-    return 'We couldn\'t detect a clear voice in the audio. Please use a clip with solo vocals and no background music.'
-  // Persona expired / invalid
-  if (s.includes('persona') || s.includes('not found') || s.includes('expired'))
-    return context === 'generate'
-      ? 'Your saved voice has expired. Please re-forge your voice in Step 1 and try again.'
-      : 'VoiceForge failed. Please try again with a different audio sample.'
-  // Content policy
-  if (s.includes('policy') || s.includes('content') || s.includes('prohibited') || s.includes('banned') || s.includes('copyright') || s.includes('flagged'))
-    return 'This audio couldn\'t be processed due to content restrictions. Please use original audio that you own.'
-  // Rate limit / busy
-  if (s.includes('rate') || s.includes('throttle') || s.includes('too many') || s.includes('busy') || s.includes('queue'))
-    return 'Our voice AI is busy right now. Please wait 30 seconds and try again.'
-  // Task failed generically
-  if (s.includes('failed') || s.includes('error') || s.includes('timeout') || s.includes('timed out'))
-    return context === 'clone'
-      ? 'VoiceForge failed. Please try again — if it keeps happening, try a different audio clip.'
-      : 'Voice generation failed. Your points have been refunded. Please try again.'
-  // Fallback
-  return context === 'clone'
-    ? 'VoiceForge ran into a problem. Please try again.'
-    : 'Voice generation ran into a problem. Your points have been refunded. Please try again.'
-}
-
-// POST /api/voice/create — clone a voice from an audio URL
-// Calls MusicAPI POST /api/v1/sonic/create-voice → stores persona_id on the user
-// Cost: 5 pts (one-time per clone)
-app.post('/api/voice/create', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'AI service not configured' }, 500)
-
-  const { audio_url, label } = await c.req.json<{ audio_url: string; label?: string }>()
-  if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
-  // Basic URL validation — MusicAPI requires pathname ending in .mp3 or .wav
-  const urlPath = (() => { try { return new URL(audio_url).pathname.toLowerCase() } catch { return '' } })()
-  if (!urlPath.endsWith('.mp3') && !urlPath.endsWith('.wav')) {
-    return c.json({ error: 'audio_url must point to an .mp3 or .wav file (the URL path must end in .mp3 or .wav)' }, 400)
-  }
-
-  const CLONE_COST = 5
-  const freshUser = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
-  if (!freshUser) return c.json({ error: 'User not found' }, 404)
-  const available = (freshUser.gens_limit - freshUser.gens_used) + (freshUser.bonus_credits || 0)
-  if (available < CLONE_COST) return c.json({ error: `Not enough points (need ${CLONE_COST}, have ${available})` }, 402)
-
-  // Deduct from bonus_credits first, then gens_used
-  const cloneBonus = Math.min(freshUser.bonus_credits || 0, CLONE_COST)
-  const cloneMain = CLONE_COST - cloneBonus
-  if (cloneBonus > 0 && cloneMain > 0) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ?, gens_used = gens_used + ? WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
-  } else if (cloneBonus > 0) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(cloneBonus, user.id).run()
-  } else {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(CLONE_COST, user.id).run()
-  }
-
-  // Helper to refund credits on failure
-  const refundCredits = async () => {
-    try {
-      if (cloneBonus > 0 && cloneMain > 0) {
-        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(cloneBonus, cloneMain, user.id).run()
-      } else if (cloneBonus > 0) {
-        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(cloneBonus, user.id).run()
-      } else {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(CLONE_COST, user.id).run()
-      }
-    } catch {}
-  }
-
-  // Step 1: Call MusicAPI create-voice → returns task_id (async job)
-  let taskId: string | null = null
-  try {
-    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create-voice', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url })
-    })
-    const apiData: any = await apiRes.json()
-    if (!apiRes.ok || !apiData?.task_id) {
-      await refundCredits()
-      const rawErr = apiData?.error || apiData?.message || ''
-      console.warn('[voice/create] upstream error:', rawErr, 'status:', apiRes.status)
-      return c.json({ error: sanitiseVoiceError(rawErr, 'clone') }, 502)
-    }
-    taskId = apiData.task_id
-    console.log('[voice/create] task_id=', taskId)
-  } catch (e: any) {
-    await refundCredits()
-    console.warn('[voice/create] network error:', (e as any)?.message)
-    return c.json({ error: 'StemForge couldn\'t reach the voice AI right now. Please try again in a moment.' }, 502)
-  }
-
-  // Step 2: Poll /sonic/task/:taskId until persona_id appears (up to 25s, 5 attempts)
-  let personaId: string | null = null
-  for (let attempt = 0; attempt < 5; attempt++) {
-    // Wait before polling (2s first, then 5s intervals)
-    await new Promise(r => setTimeout(r, attempt === 0 ? 2000 : 5000))
-    try {
-      const pollRes = await fetch(`https://api.musicapi.ai/api/v1/sonic/task/${taskId}`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-      })
-      const pollData: any = await pollRes.json()
-      console.log('[voice/create] poll attempt', attempt+1, 'state=', pollData?.state, 'persona_id=', pollData?.data?.persona_id || pollData?.persona_id)
-      // Check various response shapes for persona_id
-      const pid = pollData?.data?.persona_id || pollData?.persona_id || pollData?.data?.id
-      if (pid) { personaId = pid; break }
-      // If state is failed/error, stop polling
-      const st = (pollData?.state || pollData?.status || '').toLowerCase()
-      if (st === 'failed' || st === 'error' || st === 'cancelled') {
-        const rawErr = pollData?.error || pollData?.message || 'Voice cloning failed'
-        await refundCredits()
-        return c.json({ error: sanitiseVoiceError(rawErr, 'clone') }, 502)
-      }
-    } catch (e: any) {
-      console.warn('[voice/create] poll error attempt', attempt+1, ':', (e as any)?.message)
-    }
-  }
-
-  if (!personaId) {
-    // Timed out — store the task_id so user can retry or we can async-complete
-    await refundCredits()
-    return c.json({ error: 'Voice cloning is taking longer than expected. Please try again in a moment.' }, 504)
-  }
-
-  // Store persona_id + label on the user
-  const personaLabel = (label || '').trim() || 'My Voice'
-  await c.env.DB.prepare(`UPDATE users SET persona_id = ?, persona_label = ? WHERE id = ?`).bind(personaId, personaLabel, user.id).run()
-  await logTx(c.env.DB, user.id, 'deduct', 'VoiceForge — create persona', CLONE_COST, null)
-
-  return c.json({ ok: true, persona_id: personaId, label: personaLabel })
-})
-
-// GET /api/voice/status — return current user's saved persona info
-app.get('/api/voice/status', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`).bind(user.id).first<any>()
-  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null, voice_name: row?.voice_name || null, voice_avatar: row?.voice_avatar || null })
-})
-
-// DELETE /api/voice/persona — remove saved persona from user
-app.delete('/api/voice/persona', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  await c.env.DB.prepare(`UPDATE users SET persona_id = NULL, persona_label = NULL WHERE id = ?`).bind(user.id).run()
-  return c.json({ ok: true })
-})
-
-// GET /api/voice/profile — get voice name, avatar, and tracks using this voice
-app.get('/api/voice/profile', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const row = await c.env.DB.prepare(
-    `SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`
-  ).bind(user.id).first<any>()
-  // Get all tracks that were generated with this user's voice (voice_forge_id set)
-  const tracksRes = await c.env.DB.prepare(
-    `SELECT id, data, created_at FROM jobs
-     WHERE user_id = ? AND voice_forge_id IS NOT NULL AND deleted_at IS NULL
-     ORDER BY created_at DESC LIMIT 50`
-  ).bind(user.id).all<any>()
-  const tracks = (tracksRes.results || []).map((r: any) => {
-    try {
-      const d = JSON.parse(r.data)
-      return {
-        id: r.id,
-        title: d.title || d.blueprint?.genre || 'Untitled',
-        created_at: r.created_at,
-        voice_forge_id: d.voice_forge_id,
-        audio_url: d.stereo_url || d.audio_url || null,
-      }
-    } catch { return null }
-  }).filter(Boolean)
-  return c.json({
-    persona_id: row?.persona_id || null,
-    persona_label: row?.persona_label || null,
-    voice_name: row?.voice_name || null,
-    voice_avatar: row?.voice_avatar || null,
-    tracks,
-  })
-})
-
-// PUT /api/voice/profile — save voice name and/or avatar URL
-app.put('/api/voice/profile', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const { voice_name, voice_avatar } = await c.req.json<{ voice_name?: string; voice_avatar?: string }>()
-  if (voice_name !== undefined) {
-    await c.env.DB.prepare(`UPDATE users SET voice_name = ? WHERE id = ?`).bind(voice_name.trim().slice(0,60) || null, user.id).run()
-  }
-  if (voice_avatar !== undefined) {
-    await c.env.DB.prepare(`UPDATE users SET voice_avatar = ? WHERE id = ?`).bind(voice_avatar || null, user.id).run()
-  }
-  return c.json({ ok: true })
-})
-
-// DELETE /api/voice/detach/:jobId — remove voice link from a specific track
-app.delete('/api/voice/detach/:jobId', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const jobId = c.req.param('jobId')
-  // Verify ownership
-  const row = await c.env.DB.prepare(`SELECT id, data FROM jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
-  if (!row) return c.json({ error: 'Track not found' }, 404)
-  // Clear voice_forge_id from DB column
-  await c.env.DB.prepare(`UPDATE jobs SET voice_forge_id = NULL WHERE id = ?`).bind(jobId).run()
-  // Also clear from JSON data blob
-  try {
-    const d = JSON.parse(row.data)
-    delete d.voice_forge_id
-    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(d), jobId).run()
-  } catch {}
-  return c.json({ ok: true })
-})
-
-// ══════════════════════════════════════════════════════════════════════════
-// ── SHOP API ─────────────────────────────────────────────────────────────
-// ══════════════════════════════════════════════════════════════════════════
-
-// GET /api/shop/items — list all active shop items
-app.get('/api/shop/items', async (c) => {
-  if (!c.env.DB) return c.json({ error: 'Not configured' }, 500)
-  const items = await c.env.DB.prepare(
-    `SELECT id, type, name, description, price_cents, rarity, max_supply, sold_count, sort_order, preview_colors
-     FROM shop_items WHERE active = 1 ORDER BY sort_order ASC`
-  ).all<any>()
-  return c.json({ items: items.results || [] })
-})
-
-// GET /api/shop/collection — get user's owned items + active skin
-app.get('/api/shop/collection', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-
-  // Auto-grant The Forge (free) if not already owned
-  const forgeOwned = await c.env.DB.prepare(
-    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = 'cube_forge'`
-  ).bind(user.id).first<any>()
-  if (!forgeOwned) {
-    const grantId = `grant_${user.id}_cube_forge`
-    await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, 'cube_forge', 0, 1)`
-    ).bind(grantId, user.id).run()
-  }
-
-  const purchases = await c.env.DB.prepare(
-    `SELECT up.item_id, up.equipped, up.purchased_at, si.name, si.type, si.rarity, si.preview_colors
-     FROM user_purchases up
-     JOIN shop_items si ON si.id = up.item_id
-     WHERE up.user_id = ? ORDER BY up.purchased_at ASC`
-  ).bind(user.id).all<any>()
-
-  const userData = await c.env.DB.prepare(`SELECT active_cube_id FROM users WHERE id = ?`).bind(user.id).first<any>()
-  const activeCubeId = userData?.active_cube_id || 'cube_forge'
-
-  return c.json({
-    owned: purchases.results || [],
-    active_cube_id: activeCubeId,
-  })
-})
-
-// POST /api/shop/equip/:itemId — equip an owned item
-app.post('/api/shop/equip/:itemId', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const itemId = c.req.param('itemId')
-
-  // Verify ownership
-  const owned = await c.env.DB.prepare(
-    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
-  ).bind(user.id, itemId).first<any>()
-  if (!owned) return c.json({ error: 'Item not owned' }, 403)
-
-  // Get item type
-  const item = await c.env.DB.prepare(`SELECT type FROM shop_items WHERE id = ?`).bind(itemId).first<any>()
-  if (!item) return c.json({ error: 'Item not found' }, 404)
-
-  if (item.type === 'cube') {
-    await c.env.DB.prepare(`UPDATE users SET active_cube_id = ? WHERE id = ?`).bind(itemId, user.id).run()
-  }
-
-  return c.json({ ok: true, active_cube_id: itemId })
-})
-
-// POST /api/shop/purchase/:itemId — buy an item (free items instant; paid via Stripe)
-app.post('/api/shop/purchase/:itemId', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const itemId = c.req.param('itemId')
-
-  const item = await c.env.DB.prepare(
-    `SELECT * FROM shop_items WHERE id = ? AND active = 1`
-  ).bind(itemId).first<any>()
-  if (!item) return c.json({ error: 'Item not found' }, 404)
-
-  // Already owned?
-  const already = await c.env.DB.prepare(
-    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
-  ).bind(user.id, itemId).first<any>()
-  if (already) return c.json({ error: 'Already owned' }, 409)
-
-  // Supply check
-  if (item.max_supply && item.sold_count >= item.max_supply) {
-    return c.json({ error: 'Sold out' }, 410)
-  }
-
-  // Free item — grant immediately
-  if (item.price_cents === 0) {
-    const purchaseId = `free_${user.id}_${itemId}`
-    await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, ?, 0, 0)`
-    ).bind(purchaseId, user.id, itemId).run()
-    await c.env.DB.prepare(`UPDATE shop_items SET sold_count = sold_count + 1 WHERE id = ?`).bind(itemId).run()
-    return c.json({ ok: true, purchased: true, checkout_url: null })
-  }
-
-  // Paid item — create Stripe Checkout session
-  const stripeKey = c.env.STRIPE_SECRET_KEY
-  if (!stripeKey) return c.json({ error: 'Payment not configured' }, 500)
-
-  const origin = new URL(c.req.url).origin
-  const sessionRes = await stripeRequest('POST', '/checkout/sessions', {
-    'mode': 'payment',
-    'payment_method_types[]': 'card',
-    'line_items[0][price_data][currency]': 'usd',
-    'line_items[0][price_data][product_data][name]': item.name + ' — StemForge Cube',
-    'line_items[0][price_data][product_data][description]': item.description || '',
-    'line_items[0][price_data][unit_amount]': String(item.price_cents),
-    'line_items[0][quantity]': '1',
-    'success_url': `${origin}/shop?purchase=success&item=${itemId}`,
-    'cancel_url': `${origin}/shop?purchase=cancel`,
-    'metadata[type]': 'shop_item',
-    'metadata[item_id]': itemId,
-    'metadata[user_id]': String(user.id),
-    'customer_email': user.email || '',
-  }, stripeKey)
-
-  if (!sessionRes?.url) return c.json({ error: 'Failed to create checkout' }, 500)
-  return c.json({ ok: true, checkout_url: sessionRes.url })
-})
-
-// POST /api/voice/generate — generate a song using the saved voice persona
-// Uses MusicAPI POST /api/v1/sonic/create with task_type: persona_music
-// Cost: 25 pts (same as a beat)
-app.post('/api/voice/generate', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'AI service not configured' }, 500)
-
-  // Check plan — voice generation available to Creator and Pro
-  if (user.plan === 'free') return c.json({ error: 'Voice generation requires a Creator or Pro plan.', upgrade_url: '/pricing', locked: true }, 402)
-
-  const { title, lyrics, style_tags, make_instrumental } = await c.req.json<{
-    title?: string; lyrics?: string; style_tags?: string; make_instrumental?: boolean
-  }>()
-
-  // Get persona_id from DB
-  const userRow = await c.env.DB.prepare(`SELECT persona_id, persona_label, gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`).bind(user.id).first<any>()
-  if (!userRow) return c.json({ error: 'User not found' }, 404)
-  if (!userRow.persona_id) return c.json({ error: 'No voice persona found. Create your voice first.' }, 400)
-
-  const GEN_COST = 25
-  const available = (userRow.gens_limit - userRow.gens_used) + (userRow.bonus_credits || 0)
-  if (available < GEN_COST) return c.json({ error: `Not enough points (need ${GEN_COST}, have ${available})` }, 402)
-
-  // Deduct from bonus_credits first, then gens_used
-  const genBonus = Math.min(userRow.bonus_credits || 0, GEN_COST)
-  const genMain = GEN_COST - genBonus
-  if (genBonus > 0 && genMain > 0) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ?, gens_used = gens_used + ? WHERE id = ?`).bind(genBonus, genMain, user.id).run()
-  } else if (genBonus > 0) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - ? WHERE id = ?`).bind(genBonus, user.id).run()
-  } else {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + ? WHERE id = ?`).bind(GEN_COST, user.id).run()
-  }
-
-  // Build MusicAPI request body for persona_music
-  const hasLyrics = !!(lyrics && lyrics.trim()) && !make_instrumental
-  const genBody: Record<string, any> = {
-    task_type:        'persona_music',
-    persona_id:       userRow.persona_id,
-    mv:               'sonic-v6',
-    custom_mode:      hasLyrics,
-    title:            title || 'Voice Song',
-    make_instrumental: !!make_instrumental,
-  }
-  if (hasLyrics) {
-    genBody.prompt = lyrics!.trim()
-    genBody.tags   = style_tags || ''
-  } else if (!make_instrumental) {
-    // AI description mode — need gpt_description_prompt
-    genBody.gpt_description_prompt = (style_tags || '').slice(0, 400) || 'An original song'
-  } else {
-    // Instrumental
-    genBody.custom_mode = false
-    genBody.gpt_description_prompt = style_tags || 'Instrumental music'
-  }
-
-  // Call MusicAPI — returns task_id immediately
-  let taskId: string | null = null
-  try {
-    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(genBody)
-    })
-    const apiData: any = await apiRes.json()
-    if (!apiRes.ok || !apiData?.task_id) {
-      // Refund
-      if (genBonus > 0 && genMain > 0) {
-        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(genBonus, genMain, user.id).run()
-      } else if (genBonus > 0) {
-        await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(genBonus, user.id).run()
-      } else {
-        await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(GEN_COST, user.id).run()
-      }
-      const rawErr = apiData?.error || apiData?.message || ''
-      console.warn('[voice/generate] upstream error:', rawErr)
-      return c.json({ error: sanitiseVoiceError(rawErr, 'generate') }, 502)
-    }
-    taskId = apiData.task_id
-  } catch (e: any) {
-    // Refund on network error
-    if (genBonus > 0 && genMain > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ?, gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(genBonus, genMain, user.id).run()
-    } else if (genBonus > 0) {
-      await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits + ? WHERE id = ?`).bind(genBonus, user.id).run()
-    } else {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(GEN_COST, user.id).run()
-    }
-    console.warn('[voice/generate] network error:', (e as any)?.message)
-    return c.json({ error: 'StemForge couldn\'t reach the voice AI right now. Please try again in a moment.' }, 502)
-  }
-
-  // Store voice_job record
-  const jobId = crypto.randomUUID()
-  const now = Date.now()
-  await c.env.DB.prepare(
-    `INSERT INTO voice_jobs (id, user_id, type, task_id, status, title, cost_pts, created_at) VALUES (?, ?, 'generate', ?, 'running', ?, ?, ?)`
-  ).bind(jobId, user.id, taskId, title || 'Voice Song', GEN_COST, now).run()
-
-  await logTx(c.env.DB, user.id, 'deduct', `Voice Song — ${title || 'Voice Song'}`, GEN_COST, jobId)
-  await emitBalanceEvent(c.env.DB, user.id)
-
-  return c.json({ ok: true, job_id: jobId, task_id: taskId })
-})
-
-// GET /api/voice/poll/:jobId — poll a voice generation job
-app.get('/api/voice/poll/:jobId', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'AI service not configured' }, 500)
-
-  const jobId = c.req.param('jobId')
-  const job = await c.env.DB.prepare(`SELECT * FROM voice_jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
-  if (!job) return c.json({ error: 'Job not found' }, 404)
-
-  if (job.status === 'succeeded') return c.json({ status: 'succeeded', audio_url: job.audio_url, title: job.title })
-  if (job.status === 'failed') return c.json({ status: 'failed', error: job.error })
-  if (!job.task_id) return c.json({ status: 'pending' })
-
-  // Poll MusicAPI for the task status
-  const pollRes = await fetch(`https://api.musicapi.ai/api/v1/sonic/task/${job.task_id}`, {
-    headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-  })
-  const pollData: any = await pollRes.json()
-  const state = pollData?.data?.[0]?.state || pollData?.data?.state || 'running'
-  const clips: any[] = Array.isArray(pollData?.data) ? pollData.data : (pollData?.data ? [pollData.data] : [])
-  const clip = clips.find((d: any) => d.state === 'succeeded') || clips[0]
-
-  if (state === 'succeeded' || clip?.state === 'succeeded') {
-    const audioUrl = clip?.audio_url || ''
-    await c.env.DB.prepare(`UPDATE voice_jobs SET status = 'succeeded', audio_url = ? WHERE id = ?`).bind(audioUrl, jobId).run()
-    return c.json({ status: 'succeeded', audio_url: audioUrl, title: job.title })
-  }
-  if (state === 'failed' || clip?.state === 'failed') {
-    const rawErr = clip?.error_message || ''
-    console.warn('[voice/poll] upstream failed:', rawErr)
-    const userMsg = sanitiseVoiceError(rawErr, 'generate')
-    await c.env.DB.prepare(`UPDATE voice_jobs SET status = 'failed', error = ? WHERE id = ?`).bind(rawErr, jobId).run()  // store raw in DB for admin debugging
-    // Refund
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(job.cost_pts, user.id).run()
-    await logTx(c.env.DB, user.id, 'refund', `Refund — voice generation failed (${job.title || jobId})`, job.cost_pts, jobId)
-    return c.json({ status: 'failed', error: userMsg })
-  }
-
-  return c.json({ status: 'running' })
-})
-
-// POST /api/voice/upload-audio — accept a raw audio file (MP3/WAV), store to R2, return public URL
-// Admin-only: accepts multipart/form-data with field "audio" (file)
-app.post('/api/voice/upload-audio', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user  = token ? await getSessionUser(c.env.DB, token) : null
-  if (!user) return c.json({ error: 'Please log in first.' }, 401)
-  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
-
-  let formData: FormData
-  try {
-    formData = await c.req.formData()
-  } catch {
-    return c.json({ error: 'Invalid request — expected multipart/form-data.' }, 400)
-  }
-
-  const file = formData.get('audio') as File | null
-  if (!file || typeof file.arrayBuffer !== 'function') {
-    return c.json({ error: 'No audio file provided.' }, 400)
-  }
-
-  // Validate MIME / extension
-  const name = (file.name || '').toLowerCase()
-  const mime = (file.type || '').toLowerCase()
-  const isWav = name.endsWith('.wav') || mime.includes('wav')
-  const isMp3 = name.endsWith('.mp3') || mime.includes('mpeg') || mime.includes('mp3')
-  if (!isWav && !isMp3) {
-    return c.json({ error: 'Only MP3 and WAV files are supported.' }, 400)
-  }
-
-  // 20 MB hard limit
-  const MAX_BYTES = 20 * 1024 * 1024
-  const buf = await file.arrayBuffer()
-  if (buf.byteLength > MAX_BYTES) {
-    return c.json({ error: 'File is too large. Maximum size is 20 MB.' }, 400)
-  }
-
-  const ext   = isWav ? 'wav' : 'mp3'
-  const ct    = isWav ? 'audio/wav' : 'audio/mpeg'
-  // Key uses a flat structure (no subdirectory slash) to avoid %2F routing issues.
-  // Format: voice-samples--{userId}--{timestamp}.{ext}
-  const safeId = user.id.replace(/[^a-zA-Z0-9_-]/g, '_')
-  const key    = `voice-samples--${safeId}--${Date.now()}.${ext}`
-
-  try {
-    await c.env.IMAGES.put(key, buf, { httpMetadata: { contentType: ct } })
-  } catch (e) {
-    console.warn('[voice/upload-audio] R2 put error:', (e as any)?.message)
-    return c.json({ error: 'Upload failed. Please try again.' }, 500)
-  }
-
-  const siteUrl = (c.env.SITE_URL || 'https://stemforge.studio').replace(/\/$/, '')
-  // No encodeURIComponent needed — key has no slashes, safe as a URL segment.
-  const publicUrl = `${siteUrl}/api/voice/sample/${key}`
-  return c.json({ ok: true, url: publicUrl })
-})
-
-// GET /api/voice/sample/:key — stream a voice sample from R2
-// PUBLIC (no session required) — the key is an unguessable secret token
-// (voice-samples--userId--timestamp.ext), so obscurity is the access control.
-// Key uses double-dash separator (no slashes) to avoid %2F Hono routing issues.
-app.get('/api/voice/sample/:key', async (c) => {
-  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
-
-  const key = c.req.param('key')
-  // Safety: only serve voice sample files (double-dash format, no slashes)
-  if (!key.startsWith('voice-samples--') || key.includes('/') || key.includes('..')) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-
-  const obj = await c.env.IMAGES.get(key)
-  if (!obj) return c.json({ error: 'Not found' }, 404)
-
-  const ct = obj.httpMetadata?.contentType || (key.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
-  return new Response(obj.body, {
-    headers: {
-      'Content-Type': ct,
-      'Cache-Control': 'public, max-age=3600',
-      'Access-Control-Allow-Origin': '*',
-    },
-  })
-})
-
 // GET /api/admin/ping — zero-DB health check, confirms Worker is alive and auth cookie works
 // POST /api/admin/security/change-password — admin changes their own login password
 app.post('/api/admin/security/change-password', async (c) => {
@@ -9987,49 +8763,6 @@ app.get('/api/admin/ping', async (c) => {
   return c.json({ ok: true, admin: isAdmin(user, c.env), email: user?.email || null, plan: user?.plan || null, ts: Date.now() })
 })
 
-
-// POST /api/admin/voice-test — admin-only: test MusicAPI create-voice with a given audio URL
-// Also polls /sonic/task/:id to reveal the final persona_id
-app.post('/api/admin/voice-test', async (c) => {
-  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
-  const token = getSessionCookie(c.req.raw)
-  const user  = token ? await getSessionUser(c.env.DB, token) : null
-  if (!isAdmin(user, c.env)) return c.json({ error: 'Forbidden' }, 403)
-  if (!c.env.MUSICAPI_KEY) return c.json({ error: 'MUSICAPI_KEY not set' }, 500)
-
-  const { audio_url, task_id: pollTaskId } = await c.req.json<{ audio_url?: string; task_id?: string }>()
-
-  // If task_id provided, just poll the task
-  if (pollTaskId) {
-    try {
-      const pollRes = await fetch(`https://api.musicapi.ai/api/v1/sonic/task/${pollTaskId}`, {
-        headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}` }
-      })
-      const rawText = await pollRes.text()
-      let parsed: any = null
-      try { parsed = JSON.parse(rawText) } catch {}
-      return c.json({ poll: true, status: pollRes.status, raw: rawText, parsed })
-    } catch (e: any) {
-      return c.json({ error: 'poll failed', message: e?.message || String(e) }, 502)
-    }
-  }
-
-  if (!audio_url) return c.json({ error: 'audio_url or task_id required' }, 400)
-
-  try {
-    const apiRes = await fetch('https://api.musicapi.ai/api/v1/sonic/create-voice', {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${c.env.MUSICAPI_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audio_url })
-    })
-    const rawText = await apiRes.text()
-    let parsed: any = null
-    try { parsed = JSON.parse(rawText) } catch {}
-    return c.json({ status: apiRes.status, ok: apiRes.ok, raw: rawText, parsed })
-  } catch (e: any) {
-    return c.json({ error: 'fetch failed', message: e?.message || String(e) }, 502)
-  }
-})
 
 // GET /api/admin/key-check — test all API keys are present and reachable
 app.get('/api/admin/key-check', async (c) => {
@@ -12201,7 +10934,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-174'
+const ASSET_VER = '20261018-121'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12407,12 +11140,6 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
-      <a href="/shop" class="gs-user-dropdown__item">
-        <i class="fas fa-store"></i> Shop &amp; Credits
-      </a>
-      <a href="/collection" class="gs-user-dropdown__item">
-        <i class="fas fa-gem"></i> My Collection
-      </a>
       <a href="/subscription" class="gs-user-dropdown__item">
         <i class="fas fa-credit-card"></i> Subscription
       </a>
@@ -12450,24 +11177,18 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- Shop — logged-in only -->
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="
+    <!-- Get More Credits — inside nav, below Feedback, logged-in only -->
+    <a href="/subscription" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" style="
       display:none;
-      background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08));
-      border:1px solid rgba(139,92,246,.3);
-      color:#a78bfa;font-weight:700;
+      background:linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10));
+      border:1px solid rgba(78,159,255,.25);
+      color:#4e9fff;font-weight:700;
       transition:background .15s,border-color .15s;
       text-decoration:none;
-    " onmouseover="this.style.borderColor='rgba(139,92,246,.6)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.22),rgba(167,139,250,.14))'" onmouseout="this.style.borderColor='rgba(139,92,246,.3)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08))'">
-      <i class="fas fa-store" style="width:18px;text-align:center;flex-shrink:0;color:#a78bfa"></i>
-      <span class="nav-label-full">Shop &amp; Credits</span>
-      <span class="nav-label-short">Shop</span>
-    </a>
-    <!-- My Collection — logged-in only -->
-    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none">
-      <i class="fas fa-gem" style="width:18px;text-align:center;flex-shrink:0"></i>
-      <span class="nav-label-full">My Collection</span>
-      <span class="nav-label-short">Collect</span>
+    " onmouseover="this.style.borderColor='rgba(78,159,255,.5)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.15))'" onmouseout="this.style.borderColor='rgba(78,159,255,.25)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10))'">
+      <i class="fas fa-plus-circle" style="width:18px;text-align:center;flex-shrink:0;color:#4e9fff"></i>
+      <span class="nav-label-full">Get More Credits</span>
+      <span class="nav-label-short" style="display:none">Credits</span>
     </a>
 
   </nav>
@@ -12732,8 +11453,6 @@ function nav() {
         </button>
         <div class="nav-dropdown" id="nav-dropdown">
           <a href="/profile" class="nav-dropdown__item"><i class="fas fa-user"></i> Profile</a>
-          <a href="/shop" class="nav-dropdown__item"><i class="fas fa-store"></i> Shop &amp; Credits</a>
-          <a href="/collection" class="nav-dropdown__item"><i class="fas fa-gem"></i> My Collection</a>
           <a href="/subscription" class="nav-dropdown__item"><i class="fas fa-credit-card"></i> Subscription</a>
           <a href="/account" class="nav-dropdown__item"><i class="fas fa-cog"></i> Account</a>
           <div class="nav-dropdown__divider"></div>
@@ -13431,46 +12150,28 @@ function generatorPage() {
   <!-- ── LEFT COLUMN: Input Controls ─────────────────────────── -->
   <div class="suno-left" id="suno-left">
 
-    <!-- ── CREATE PAGE: 3-Tab Layout (Mix | Create | Voices) ─── -->
-    <div class="create-page-tabs tab-mix-active" id="create-page-tabs">
-      <button class="create-page-tab active" id="cptab-mix" onclick="switchCreateTab('mix')">
-        <i class="fas fa-layer-group"></i> Mix
+    <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
+    <div class="creator-tabs-row" id="creator-tabs-row">
+      <button class="creator-tab-btn" id="ctab-remix" onclick="openRemixGated()"
+        data-tooltip="Upload an MP3 or WAV and AI Remix it into a fresh new track.">
+        <i class="fas fa-wand-magic-sparkles"></i> Remix
       </button>
-      <button class="create-page-tab" id="cptab-create" onclick="switchCreateTab('create')">
-        <i class="fas fa-music"></i> Create
+      <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
+        data-tooltip="Continue any track from your library or upload a file to extend it seamlessly.">
+        <i class="fas fa-expand-arrows-alt"></i> Song Extend
       </button>
-      <button class="create-page-tab" id="cptab-voices" onclick="switchCreateTab('voices')">
-        <i class="fas fa-microphone"></i> Voices
+      <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"
+        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more.">
+        <i class="fas fa-bolt"></i> One Shot Creator
+      </button>
+      <button class="creator-tab-btn" id="ctab-cover" onclick="openCoverPanel()"
+        data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
+        <i class="fas fa-microphone-alt"></i> Cover Song
       </button>
     </div>
 
-    <!-- ══ TAB CONTENT WRAPPER ══════════════════════════════════════ -->
-    <div class="create-tabs-content tab-mix-active" id="create-tabs-content">
-
-    <!-- ══ MIX TAB ══════════════════════════════════════════════════ -->
-    <div id="create-tab-mix" class="create-tab-panel">
-
-      <!-- Mix action buttons: Remix, Song Extend, Cover Song -->
-      <div class="mix-action-row">
-        <button class="mix-action-btn" id="mixbtn-remix" onclick="openRemixGated()"
-          data-tooltip="Upload an MP3 or WAV and AI Remix it into a fresh new track.">
-          <i class="fas fa-wand-magic-sparkles"></i>
-          <span>Remix</span>
-        </button>
-        <button class="mix-action-btn" id="mixbtn-extend" onclick="openCreatorPopup('extend')"
-          data-tooltip="Continue any track from your library or upload a file to extend it seamlessly.">
-          <i class="fas fa-expand-arrows-alt"></i>
-          <span>Song Extend</span>
-        </button>
-        <button class="mix-action-btn mix-action-btn--active" id="mixbtn-cover" onclick="switchMixSub('cover')"
-          data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
-          <i class="fas fa-microphone-alt"></i>
-          <span>Cover Song</span>
-        </button>
-      </div>
-
-      <!-- Cover Song inline panel (default open in Mix tab) -->
-      <div id="cover-inline-panel" style="margin-top:12px">
+    <!-- ── Cover Song inline panel ─────────────────────────────── -->
+    <div id="cover-inline-panel" style="display:none;margin-top:16px">
       <div class="suno-card" style="border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06)">
         <div class="suno-card__header" style="padding-bottom:10px">
           <i class="fas fa-microphone-alt" style="color:#a855f7;font-size:1rem"></i>
@@ -13644,14 +12345,10 @@ function generatorPage() {
       </div>
       <p style="font-size:.78rem;color:rgba(255,255,255,.35);margin:0">Cover generation usually takes 1–3 minutes</p>
 
-    </div><!-- /cover-processing-overlay -->
+    </div>
 
-    </div><!-- /create-tab-mix -->
 
-    <!-- ══ CREATE TAB ════════════════════════════════════════════════ -->
-    <div id="create-tab-create" class="create-tab-panel" style="display:none">
-
-    <!-- ── Generator main sections ── -->
+    <!-- ── Generator main sections (hidden while Cover Song panel is open) ── -->
     <div id="generator-main-sections">
 
     <!-- SECTION 1: Prompt — sits above Lyrics/Instrumental -->
@@ -13726,68 +12423,6 @@ function generatorPage() {
             <i class="fas fa-check-circle" style="color:var(--accent-2)"></i>
             Instrumental mode is <strong>ON</strong>.
           </p>
-
-          <!-- ── One Shot toggle — inline under Instrumental ── -->
-          <div class="oneshot-inline-toggle" id="oneshot-inline-row">
-            <div style="display:flex;align-items:center;gap:10px">
-              <i class="fas fa-bolt" style="color:#f59e0b;font-size:.95rem;flex-shrink:0"></i>
-              <div>
-                <strong style="font-size:.88rem">One Shot Creator</strong>
-                <p style="margin:2px 0 0;font-size:.75rem;color:var(--muted)">Generate isolated sounds — kicks, snares, 808s &amp; more.</p>
-              </div>
-            </div>
-            <label class="suno-switch" onclick="toggleOneshotInline(event)">
-              <input type="checkbox" id="oneshot-inline-toggle-chk"/>
-              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
-            </label>
-          </div>
-
-          <!-- One Shot inline panel — revealed when toggle is ON -->
-          <div id="oneshot-inline-panel" style="display:none;margin-top:14px;padding:16px;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:12px">
-            <p style="color:var(--muted);font-size:.82rem;margin:0 0 12px;line-height:1.5">
-              <i class="fas fa-info-circle" style="color:#f59e0b;margin-right:5px"></i>
-              Describe any sound — StemForge generates it from scratch. Adjust duration to your liking.
-            </p>
-            <!-- Prompt textarea -->
-            <div style="margin-bottom:12px">
-              <textarea id="oneshot-sfx-desc" rows="4"
-                placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
-                style="width:100%;padding:10px 12px;border:1px solid rgba(245,158,11,.3);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55;box-sizing:border-box"></textarea>
-            </div>
-            <!-- Duration slider -->
-            <div style="margin-bottom:14px">
-              <label style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;color:var(--muted)">
-                <span>Duration</span>
-                <span id="oneshot-dur-label" style="color:#f59e0b;font-weight:700;font-size:.85rem">3.0s</span>
-              </label>
-              <input type="range" id="oneshot-sfx-duration" min="1" max="16" step="1" value="6"
-                oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=(v*0.5).toFixed(1)+'s'})(this.value)"
-                style="width:100%;accent-color:#f59e0b;cursor:pointer;height:4px"/>
-              <div style="display:flex;justify-content:space-between;margin-top:4px">
-                <span style="font-size:.7rem;color:var(--muted)">0.5s</span>
-                <span style="font-size:.7rem;color:var(--muted)">8s</span>
-              </div>
-            </div>
-            <!-- Generate button -->
-            <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;background:linear-gradient(135deg,#d97706,#f59e0b);border:none;border-radius:10px;color:#fff;cursor:pointer">
-              <i class="fas fa-bolt"></i> Generate One Shot
-            </button>
-            <!-- Status -->
-            <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
-              <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px"></i>
-              <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">StemForge is crafting your sound…</span>
-            </div>
-            <!-- Result -->
-            <div id="oneshot-sfx-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(245,158,11,.3);border-radius:12px">
-              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                <i class="fas fa-check-circle" style="color:#10b981;font-size:1.1rem"></i>
-                <span id="oneshot-sfx-result-title" style="font-weight:700;font-size:.9rem">One Shot Ready</span>
-              </div>
-              <audio id="oneshot-sfx-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
-              <p style="font-size:.78rem;color:var(--muted);text-align:center;margin:0"><i class="fas fa-bolt" style="color:#f59e0b;margin-right:4px"></i>Saved to your library — download MP3 from the <strong>One Shots</strong> tab.</p>
-              <a id="oneshot-sfx-dl-mp3" href="#" download style="display:none"></a>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -13848,269 +12483,22 @@ function generatorPage() {
 
     </div><!-- /generator-main-sections -->
 
-    <!-- SECTION 6: Song Title (hidden — kept in DOM for JS compatibility) -->
+    <!-- SECTION 6: Song Title (hidden — covered by Cover tab's own field; kept in DOM for JS compatibility) -->
     <input type="text" id="gen-title" style="display:none" aria-hidden="true" tabindex="-1"/>
 
-    <!-- CREATE BUTTON -->
+    <!-- CREATE BUTTON — inline below, with tooltip -->
     <div class="suno-create-inline" id="generator-create-row">
       <button class="suno-create-btn" id="gen-full-btn"
         data-tooltip="Generate your beat using StemForge">
         <i class="fas fa-music"></i> Create
       </button>
+
     </div>
 
-    </div><!-- /create-tab-create -->
-
-    <!-- ══ VOICES TAB ════════════════════════════════════════════════ -->
-    <div id="create-tab-voices" class="create-tab-panel" style="display:none">
-
-      <!-- ── VoiceForge panel ── -->
-      <div id="voice-inline-panel">
-        <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
-          <div class="suno-card__header" style="padding-bottom:10px">
-            <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
-            <span class="suno-card__title" style="color:#34d399">VoiceForge</span>
-          </div>
-          <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
-
-            <!-- Step 1: Current voice status -->
-            <div id="voice-status-bar" style="padding:10px 12px;border-radius:8px;border:1px solid rgba(16,185,129,.25);background:rgba(16,185,129,.04);display:flex;align-items:center;gap:10px">
-              <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:.9rem" id="voice-status-icon"></i>
-              <span id="voice-status-text" style="font-size:.83rem;color:var(--muted)">Loading voice status…</span>
-              <button id="voice-delete-btn" onclick="deleteVoicePersona()" style="display:none;margin-left:auto;background:none;border:1px solid rgba(239,68,68,.4);color:#f87171;cursor:pointer;font-size:.75rem;padding:3px 9px;border-radius:6px">Remove</button>
-            </div>
-
-            <!-- Step 2: Create voice -->
-            <div id="voice-create-section">
-              <div style="margin-bottom:8px">
-                <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — FORGE YOUR VOICE</span>
-              </div>
-              <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
-                Upload a clean MP3 or WAV of your voice (10–60 seconds, solo vocals, no music). If your clip is longer than 30 seconds you can trim it below before cloning.
-              </div>
-
-              <!-- Drop zone -->
-              <div id="voice-drop-zone"
-                onclick="document.getElementById('voice-file-input').click()"
-                ondragover="event.preventDefault();this.style.borderColor='#10b981';this.style.background='rgba(16,185,129,.08)'"
-                ondragleave="this.style.borderColor='rgba(16,185,129,.3)';this.style.background='rgba(16,185,129,.03)'"
-                ondrop="event.preventDefault();this.style.borderColor='rgba(16,185,129,.3)';this.style.background='rgba(16,185,129,.03)';handleVoiceFileDrop(event)"
-                style="border:2px dashed rgba(16,185,129,.3);border-radius:10px;padding:20px 14px;text-align:center;cursor:pointer;background:rgba(16,185,129,.03);transition:all .2s;margin-bottom:8px">
-                <i class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#10b981;margin-bottom:6px;display:block"></i>
-                <span style="font-size:.84rem;color:var(--muted)">Click or drag &amp; drop an MP3 / WAV file</span>
-                <input type="file" id="voice-file-input" accept=".mp3,.wav,audio/mpeg,audio/wav" style="display:none" onchange="handleVoiceFileSelect(this)"/>
-              </div>
-
-              <!-- Selected file info -->
-              <div id="voice-file-info" style="display:none;font-size:.8rem;color:#34d399;padding:6px 10px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:7px;margin-bottom:8px;display:flex;align-items:center;gap:8px">
-                <i class="fas fa-file-audio"></i>
-                <span id="voice-file-name" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
-                <span id="voice-file-dur" style="flex-shrink:0;color:#6b7280"></span>
-                <button onclick="clearVoiceFile()" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:.85rem;padding:0 2px" title="Remove file"><i class="fas fa-times"></i></button>
-              </div>
-
-              <!-- Trim UI — shown only when duration > 30s -->
-              <div id="voice-trim-section" style="display:none;background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:14px;margin-bottom:8px">
-                <div style="font-size:.8rem;font-weight:700;color:#34d399;margin-bottom:10px;letter-spacing:.03em">
-                  <i class="fas fa-cut" style="margin-right:5px"></i>TRIM TO 30 SECONDS
-                </div>
-                <div style="font-size:.77rem;color:var(--muted);margin-bottom:12px">
-                  Your clip is longer than 30 s. Drag the handles to select up to 30 seconds of your best vocal section.
-                </div>
-                <div style="position:relative;height:40px;background:rgba(255,255,255,.04);border-radius:6px;overflow:hidden;margin-bottom:10px">
-                  <div id="voice-trim-bar" style="position:absolute;top:0;bottom:0;background:rgba(16,185,129,.25);border-left:2px solid #10b981;border-right:2px solid #10b981;cursor:grab"></div>
-                  <div id="voice-trim-waveform" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;padding:0 4px;gap:1px;pointer-events:none"></div>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:6px">
-                  <div style="display:flex;align-items:center;gap:8px">
-                    <label style="font-size:.77rem;color:var(--muted);width:40px">Start</label>
-                    <input type="range" id="voice-trim-start" min="0" step="0.1" value="0" style="flex:1;accent-color:#10b981" oninput="onVoiceTrimChange('start')"/>
-                    <span id="voice-trim-start-lbl" style="font-size:.77rem;color:#34d399;width:38px;text-align:right">0.0 s</span>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:8px">
-                    <label style="font-size:.77rem;color:var(--muted);width:40px">End</label>
-                    <input type="range" id="voice-trim-end" min="0" step="0.1" value="30" style="flex:1;accent-color:#10b981" oninput="onVoiceTrimChange('end')"/>
-                    <span id="voice-trim-end-lbl" style="font-size:.77rem;color:#34d399;width:38px;text-align:right">30.0 s</span>
-                  </div>
-                </div>
-                <div id="voice-trim-dur-info" style="font-size:.76rem;color:var(--muted);margin-top:8px;text-align:right"></div>
-                <button onclick="previewVoiceTrim()" id="voice-trim-preview-btn"
-                  style="margin-top:10px;padding:7px 14px;background:none;border:1px solid rgba(16,185,129,.4);border-radius:8px;color:#34d399;cursor:pointer;font-size:.8rem;font-weight:600">
-                  <i class="fas fa-play" style="margin-right:5px"></i>Preview Trim
-                </button>
-                <audio id="voice-trim-preview-audio" style="display:none;width:100%;margin-top:8px;border-radius:6px;accent-color:#10b981" controls></audio>
-              </div>
-
-              <div style="display:flex;flex-direction:column;gap:8px">
-                <input type="text" id="voice-label-input" placeholder="Voice name (optional, e.g. My Voice)"
-                  style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(16,185,129,.2);border-radius:8px;color:#e2e8f0;font-size:.85rem;box-sizing:border-box;outline:none"
-                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
-                <button id="voice-clone-btn" onclick="createVoicePersona()"
-                  style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                  <i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice
-                </button>
-                <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
-              </div>
-            </div>
-
-            <!-- Divider -->
-            <div style="border-top:1px solid rgba(255,255,255,.07)"></div>
-
-            <!-- Step 2: Generate with voice -->
-            <div id="voice-gen-section">
-              <div style="margin-bottom:8px">
-                <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 2 — GENERATE IN YOUR VOICE</span>
-              </div>
-              <div id="voice-gen-locked" style="padding:16px;text-align:center;color:var(--muted);font-size:.83rem;border:1px dashed rgba(255,255,255,.1);border-radius:8px">
-                <i class="fas fa-lock" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:.4"></i>
-                Complete Step 1 to unlock voice generation
-              </div>
-              <div id="voice-gen-form" style="display:none;flex-direction:column;gap:10px">
-                <input type="text" id="voice-gen-title" placeholder="Song title (optional)"
-                  style="width:100%;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;box-sizing:border-box;outline:none"
-                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"/>
-                <textarea id="voice-gen-lyrics" placeholder="Your lyrics here… (leave blank for AI-generated)" rows="5"
-                  style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;font-family:inherit;resize:vertical;box-sizing:border-box;outline:none"
-                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"></textarea>
-                <input type="text" id="voice-gen-tags" placeholder="Style tags: pop, r&amp;b, smooth (optional)"
-                  style="width:100%;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;box-sizing:border-box;outline:none"
-                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"/>
-                <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.08);border-radius:8px">
-                  <i class="fas fa-drum" style="color:#10b981;font-size:.9rem;flex-shrink:0"></i>
-                  <span style="font-size:.84rem;font-weight:600;flex:1">Instrumental only</span>
-                  <label class="suno-switch">
-                    <input type="checkbox" id="voice-gen-instrumental"/>
-                    <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
-                  </label>
-                </div>
-                <button id="voice-gen-btn" onclick="generateVoiceSong()"
-                  style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                  <i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice
-                </button>
-                <div id="voice-gen-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
-                <div id="voice-gen-progress" style="display:none;padding:14px;border:1px solid rgba(16,185,129,.2);border-radius:10px;text-align:center">
-                  <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:1.4rem;margin-bottom:8px;display:block"></i>
-                  <p id="voice-gen-progress-text" style="font-size:.83rem;color:var(--muted);margin:0">Generating your voice song… this takes 1–3 minutes</p>
-                </div>
-                <div id="voice-gen-result" style="display:none;padding:14px;border:1px solid rgba(16,185,129,.35);border-radius:10px;background:rgba(16,185,129,.05)">
-                  <p style="font-size:.8rem;font-weight:700;color:#34d399;margin:0 0 10px;letter-spacing:.04em">VOICE SONG READY</p>
-                  <audio id="voice-gen-audio" controls style="width:100%;border-radius:8px;accent-color:#10b981"></audio>
-                  <a id="voice-gen-download" href="#" download style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:.82rem;color:#34d399;text-decoration:none;font-weight:600">
-                    <i class="fas fa-download"></i> Download
-                  </a>
-                </div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </div><!-- /voice-inline-panel -->
-
-      <!-- ── Persona button (locked / coming soon) ── -->
-      <div style="margin-top:14px;padding:16px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.02);display:flex;align-items:center;gap:14px;cursor:not-allowed;opacity:.6">
-        <div style="width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,#6366f1,#8b5cf6);display:flex;align-items:center;justify-content:center;flex-shrink:0">
-          <i class="fas fa-mask" style="color:#fff;font-size:1rem"></i>
-        </div>
-        <div style="flex:1">
-          <div style="font-size:.92rem;font-weight:700;color:#e2e8f0;display:flex;align-items:center;gap:8px">
-            Persona
-            <span style="font-size:.65rem;font-weight:700;letter-spacing:.08em;background:rgba(99,102,241,.25);color:#a5b4fc;padding:2px 7px;border-radius:20px;border:1px solid rgba(99,102,241,.35)">COMING SOON</span>
-          </div>
-          <div style="font-size:.78rem;color:var(--muted);margin-top:3px">Create a full AI persona with custom voice, name &amp; style.</div>
-        </div>
-        <i class="fas fa-lock" style="color:rgba(255,255,255,.2);font-size:.9rem;flex-shrink:0"></i>
-      </div>
-
-    </div><!-- /create-tab-voices -->
-
-    </div><!-- /create-tabs-content -->
+  </div><!-- /suno-left -->
 
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
   <div class="suno-right">
-
-    <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
-    <style>
-      /* ── Right column: vertically + horizontally centre cube + text on DESKTOP only ── */
-      @media (min-width: 769px) {
-        .suno-right {
-          display: flex !important;
-          flex-direction: column !important;
-          justify-content: center !important;
-          align-items: center !important;
-          min-height: 100vh !important;
-        }
-      }
-      /* ── Cube stage: FIXED size — never stretches with page content ── */
-      #sf-cube-stage {
-        position: relative;
-        width: 100%;
-        max-width: 520px;
-        height: 420px;            /* fixed — never grows */
-        flex: none;               /* ignore flex parent sizing */
-        flex-shrink: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: transparent !important;
-        overflow: visible;
-      }
-      @media (max-width: 768px) {
-        #sf-cube-stage { height: 320px; }
-      }
-      /* Canvas wrapper — absolute, fills stage, transparent */
-      #sf-cube-wrap {
-        display: none;            /* JS sets to block for admin */
-        position: absolute;
-        inset: 0;
-        z-index: 0;
-        background: transparent !important;
-        overflow: hidden;
-      }
-      /* Canvas: fills wrap div via CSS; renderer uses setSize(W,H,false)
-         so Three.js does NOT override these CSS values. */
-      #sf-cube-canvas {
-        display: block;
-        width: 100% !important;
-        height: 100% !important;
-        cursor: grab;
-        background: transparent !important;
-      }
-      #sf-cube-canvas:active { cursor: grabbing; }
-      /* Text centred above cube */
-      #gen-empty {
-        position: relative;
-        z-index: 2;
-        background: transparent !important;
-        text-align: center;
-        padding: 20px 16px;
-        pointer-events: none;
-      }
-      #gen-empty h3 {
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #fff;
-        margin-bottom: 8px;
-        /* Bold multi-layer outline so text pops over any cube colour */
-        text-shadow:
-          0 0 0 #000,
-          -2px -2px 0 #000,
-           2px -2px 0 #000,
-          -2px  2px 0 #000,
-           2px  2px 0 #000,
-           0 3px 12px #000,
-           0 0 32px rgba(0,0,0,0.98);
-      }
-      #gen-empty p {
-        color: rgba(255,255,255,0.88);
-        font-size: 0.92rem;
-        text-shadow:
-          -1px -1px 0 #000,
-           1px -1px 0 #000,
-          -1px  1px 0 #000,
-           1px  1px 0 #000,
-           0 2px 8px #000;
-      }
-    </style>
 
     <!-- Pipeline status - dual project-card style beat cards -->
     <div class="pipeline-status suno-pipeline" id="pipeline-status" style="display:none">
@@ -14221,19 +12609,12 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- Empty state + cube background stage -->
-    <div id="sf-cube-stage">
-      <!-- Cube canvas — absolute background, z-index 0 -->
-      <div id="sf-cube-wrap">
-        <canvas id="sf-cube-canvas"></canvas>
-      </div>
-      <!-- Text overlay — z-index 1, floats above cube -->
-      <div class="gen-empty" id="gen-empty">
-        <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
-        <h3>Your beat will appear here.</h3>
-        <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
-      </div>
-    </div><!-- /sf-cube-stage -->
+    <!-- Empty state -->
+    <div class="gen-empty" id="gen-empty">
+      <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
+      <h3>Your beat will appear here.</h3>
+      <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
+    </div>
 
     <!-- Error state -->
     <div class="gen-error" id="gen-error" style="display:none">
@@ -14439,6 +12820,69 @@ function generatorPage() {
 </div>
 
 <!-- One Shot Creator Popup (Pro Artist only) -->
+<div id="creator-popup-oneshot" class="creator-popup" style="display:none">
+  <div class="creator-popup__header" id="creator-popup-oneshot-header">
+    <span class="creator-popup__title"><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator <span style="font-size:.7rem;opacity:.6;font-weight:400;margin-left:4px">Pro Artist</span></span>
+    <button class="creator-popup__close" onclick="closeCreatorPopup('oneshot')"><i class="fas fa-times"></i></button>
+  </div>
+  <div class="creator-popup__body">
+
+    <p style="color:var(--muted);font-size:.82rem;margin:0 0 14px;line-height:1.5">
+      <i class="fas fa-info-circle" style="color:var(--primary);margin-right:5px"></i>
+      Describe any sound — StemForge generates it from scratch. Adjust duration to your liking.
+      <br/><span style="font-size:.75rem;color:#a78bfa"><i class="fas fa-bolt" style="font-size:.7rem"></i> All your One Shots are saved to your library’s <strong>One Shots</strong> tab.</span>
+    </p>
+
+    <!-- Prompt textarea -->
+    <div style="margin-bottom:14px">
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:6px">Describe your sound</label>
+      <textarea id="oneshot-sfx-desc" rows="4"
+        placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
+        style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55"></textarea>
+      <p style="color:var(--muted);font-size:.74rem;margin:5px 0 0">The more detail you give, the better the result.</p>
+    </div>
+
+    <!-- Duration slider: 0.5s – 8s in 0.5s steps -->
+    <div style="margin-bottom:16px">
+      <label class="suno-option-label" style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+        <span>Duration</span>
+        <span id="oneshot-dur-label" style="color:var(--primary);font-weight:700;font-size:.85rem">3.0s</span>
+      </label>
+      <input type="range" id="oneshot-sfx-duration" min="1" max="16" step="1" value="6"
+        oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=(v*0.5).toFixed(1)+'s'})(this.value)"
+        style="width:100%;accent-color:var(--primary);cursor:pointer;height:4px"/>
+      <div style="display:flex;justify-content:space-between;margin-top:4px">
+        <span style="font-size:.7rem;color:var(--muted)">0.5s</span>
+        <span style="font-size:.7rem;color:var(--muted)">8s</span>
+      </div>
+    </div>
+
+    <!-- Generate button -->
+    <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
+      <i class="fas fa-bolt"></i> Generate One Shot
+    </button>
+
+    <!-- Status -->
+    <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
+      <i class="fas fa-spinner fa-spin" style="color:var(--primary);margin-right:6px"></i>
+      <span id="oneshot-sfx-status-msg" style="font-size:.85rem;color:var(--muted)">StemForge is crafting your sound…</span>
+    </div>
+
+    <!-- Result -->
+    <div id="oneshot-sfx-result" style="display:none;margin-top:14px;padding:14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <i class="fas fa-check-circle" style="color:#10b981;font-size:1.1rem"></i>
+        <span id="oneshot-sfx-result-title" style="font-weight:700;font-size:.9rem">One Shot Ready</span>
+      </div>
+      <audio id="oneshot-sfx-audio" controls style="width:100%;border-radius:8px;margin-bottom:10px"></audio>
+      <p style="font-size:.78rem;color:var(--muted);text-align:center;margin:0"><i class="fas fa-bolt" style="color:#f59e0b;margin-right:4px"></i>Saved to your library — download MP3 from the <strong>One Shots</strong> tab.</p>
+      <!-- oneshot-sfx-dl-mp3 anchor kept (hidden) so JS can set its href without errors -->
+      <a id="oneshot-sfx-dl-mp3" href="#" download style="display:none"></a>
+    </div>
+
+  </div>
+</div>
+
 </div><!-- /gs-content--gen -->
 
 `, `<style>.sf-nav,.sf-footer{display:none}</style>`)
@@ -15012,10 +13456,6 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
-    <!-- VoiceForge tab — visible to all logged-in users -->
-    <button class="lib-tab lib-tab--voice" data-tab="voice" id="lib-tab-voice" onclick="switchLibTab('voice')">
-      <i class="fas fa-microphone" style="color:#f97316"></i> <span style="color:#fb923c">VoiceForge</span>
-    </button>
   </div>
 
   <!-- Search bar (shared, updates with active tab) -->
@@ -15068,66 +13508,6 @@ function dashboardPage() {
       <i class="fas fa-info-circle"></i> Items are permanently deleted after 60 days in Trash.
     </div>
     <div class="project-grid" id="project-grid-trash">
-      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
-    </div>
-  </div>
-  <!-- VoiceForge tab panel -->
-  <div id="lib-panel-voice" style="display:none">
-
-    <!-- VoiceForge Profile Card -->
-    <div id="vf-profile-card" style="background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(251,146,60,.04));border:1px solid rgba(249,115,22,.25);border-radius:16px;padding:20px;margin-bottom:20px;display:none">
-      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
-        <!-- Avatar -->
-        <div style="position:relative;flex-shrink:0">
-          <div id="vf-avatar-wrap" style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#f97316,#fb923c);display:flex;align-items:center;justify-content:center;overflow:hidden;border:2px solid rgba(249,115,22,.4);cursor:pointer" onclick="vfPickAvatar()" title="Change avatar">
-            <img id="vf-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none"/>
-            <i id="vf-avatar-icon" class="fas fa-microphone" style="font-size:1.6rem;color:#fff"></i>
-          </div>
-          <button onclick="vfPickAvatar()" style="position:absolute;bottom:-2px;right:-2px;width:22px;height:22px;border-radius:50%;background:#f97316;border:none;color:#fff;font-size:.65rem;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="fas fa-camera"></i></button>
-          <input type="file" id="vf-avatar-file" accept="image/*" style="display:none" onchange="vfHandleAvatarFile(this)"/>
-        </div>
-        <!-- Name + label -->
-        <div style="flex:1;min-width:160px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
-            <input id="vf-name-input" type="text" maxlength="60" placeholder="Name your voice…"
-              style="flex:1;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:8px 12px;color:#fff;font-size:.95rem;font-weight:600;min-width:0"
-              oninput="vfNameChanged()"/>
-            <button id="vf-name-save-btn" onclick="vfSaveProfile()" style="display:none;background:#f97316;border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap"><i class="fas fa-check"></i> Save</button>
-          </div>
-          <div id="vf-persona-label" style="font-size:.8rem;color:rgba(251,146,60,.8);display:flex;align-items:center;gap:6px">
-            <i class="fas fa-circle-check" style="color:#10b981"></i>
-            <span id="vf-persona-label-text">Voice ready</span>
-          </div>
-        </div>
-        <!-- Delete persona -->
-        <button onclick="deleteVoicePersona()" style="flex-shrink:0;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:600;cursor:pointer">
-          <i class="fas fa-trash-alt" style="margin-right:4px"></i>Delete Voice
-        </button>
-      </div>
-
-      <!-- Tracks using this voice -->
-      <div style="margin-top:18px;border-top:1px solid rgba(255,255,255,.08);padding-top:14px">
-        <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(251,146,60,.7);margin-bottom:10px">
-          <i class="fas fa-music" style="margin-right:5px"></i>Tracks using this voice
-        </div>
-        <div id="vf-tracks-list" style="display:flex;flex-direction:column;gap:6px">
-          <div style="color:var(--muted);font-size:.82rem">Loading…</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- No voice state -->
-    <div id="vf-no-voice" style="display:none;text-align:center;padding:32px 16px">
-      <i class="fas fa-microphone-slash" style="font-size:2.5rem;color:var(--muted);margin-bottom:12px;display:block"></i>
-      <p style="color:var(--muted);margin:0 0 12px">No VoiceForge created yet.</p>
-      <a href="/generator" onclick="setTimeout(()=>{if(typeof switchCreateTab==='function')switchCreateTab('voices')},200)" class="btn btn--primary" style="font-size:.85rem">Create Your Voice</a>
-    </div>
-
-    <!-- VoiceForge generated songs grid -->
-    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(251,146,60,.7);margin-bottom:10px;display:flex;align-items:center;gap:6px" id="vf-songs-header" style="display:none">
-      <i class="fas fa-headphones"></i> Generated Songs
-    </div>
-    <div class="project-grid" id="project-grid-voice">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
@@ -15411,8 +13791,6 @@ function profilePage(user: User | null) {
           <div class="profile-links">
             <a href="/dashboard" class="profile-link-card"><i class="fas fa-th-large"></i><span>Library</span></a>
             <a href="/generator" class="profile-link-card"><i class="fas fa-play-circle"></i><span>New Beat</span></a>
-            <a href="/shop" class="profile-link-card"><i class="fas fa-store"></i><span>Shop</span></a>
-            <a href="/collection" class="profile-link-card"><i class="fas fa-gem"></i><span>Collection</span></a>
             <a href="/subscription" class="profile-link-card"><i class="fas fa-credit-card"></i><span>Subscription</span></a>
             <a href="/account" class="profile-link-card"><i class="fas fa-cog"></i><span>Settings</span></a>
           </div>
@@ -16002,18 +14380,80 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
 
-    <!-- ── Top Up Points → moved to Shop ────────────────────────── -->
-    <div style="display:flex;align-items:center;gap:16px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.2);border-radius:14px;padding:18px 22px;margin-bottom:28px">
-      <div style="width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
-        <i class="fas fa-store" style="color:#fff;font-size:1rem"></i>
+    <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
+    <div class="sub-credits-section" id="sub-credits-section">
+      <div class="pack-section-header">
+        <div>
+          <h3 style="margin:0 0 4px;font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:8px">
+            <span style="width:32px;height:32px;background:linear-gradient(135deg,var(--primary),#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-bolt" style="color:#fff;font-size:.85rem"></i>
+            </span>
+            Top Up Points
+          </h3>
+          <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — valid for current billing cycle, stack on top of your plan</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(78,159,255,.08);border:1px solid rgba(78,159,255,.2);border-radius:8px;font-size:.78rem;color:var(--primary)">
+          <i class="fas fa-lock-open"></i> No subscription required
+        </div>
       </div>
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:.95rem;margin-bottom:3px">Buy Point Packs &amp; Cube Skins</div>
-        <div style="font-size:.82rem;color:var(--muted);line-height:1.4">Top-up packs, cube skins, and all purchases are now in one place — the Shop.</div>
+      <div class="credit-packs-grid" id="credit-packs-grid">
+        <div class="credit-pack-card" data-pack="pack_150">
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">150</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$4.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_150">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_600">
+          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">600</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$9.99</span>
+            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_600">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_1000">
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">1000</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$17.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1000">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
+        <div class="credit-pack-card" data-pack="pack_1500">
+          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+          <div class="credit-pack__main">
+            <div class="credit-pack__credits">1500</div>
+            <div class="credit-pack__label">Points</div>
+          </div>
+          <div class="credit-pack__price-row">
+            <span class="credit-pack__price">$29.99</span>
+            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1500">
+              <i class="fas fa-cart-plus"></i> Buy
+            </button>
+          </div>
+        </div>
       </div>
-      <a href="/shop" style="flex-shrink:0;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;font-size:.85rem;text-decoration:none;white-space:nowrap;display:flex;align-items:center;gap:6px">
-        <i class="fas fa-store"></i> Open Shop
-      </a>
+      <p style="text-align:center;font-size:.78rem;color:var(--muted);margin-top:10px">
+        <i class="fas fa-shield-alt" style="color:var(--accent-2);margin-right:4px"></i>Secure checkout powered by Stripe
+      </p>
     </div>
 
     <div class="sub-plans-section">
@@ -16718,7 +15158,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
       <button class="admin-tab" data-tab="pointlog" onclick="adminTab('pointlog');loadPointLog()"><i class="fas fa-coins" style="color:#f59e0b"></i> Point Log</button>
-
+      <button class="admin-tab" data-tab="publish" onclick="adminTab('publish')" id="pp-tab-btn"><i class="fas fa-rocket" style="color:#10b981"></i> Preview &amp; Publish <span id="pp-badge" style="display:none;background:#f59e0b;color:#000;border-radius:99px;padding:1px 7px;font-size:.72rem;font-weight:800;margin-left:4px">!</span></button>
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -17626,7 +16066,148 @@ function adminPage(user: User) {
     </div>
     <!-- ── /POINT LOG TAB ──────────────────────────────────────────────────── -->
 
+    <!-- ── PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
+    <div id="admin-tab-publish" style="display:none">
 
+      <!-- How it works explainer -->
+      <div style="background:rgba(78,159,255,.06);border:1px solid rgba(78,159,255,.18);border-radius:12px;padding:14px 18px;margin-bottom:20px;display:flex;gap:14px;align-items:flex-start">
+        <i class="fas fa-info-circle" style="color:#4e9fff;margin-top:2px;flex-shrink:0"></i>
+        <div style="font-size:.82rem;color:#94a3b8;line-height:1.7">
+          <strong style="color:#e2e8f0">How this works:</strong>
+          All your code changes go to <strong style="color:#4e9fff">Staging</strong> first — users never see them.
+          Review staging, then click <strong style="color:#10b981">Publish to Live</strong> to make changes visible to everyone.
+          <br><strong style="color:#f59e0b">⚠️ One-time setup required:</strong> Add a <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">GITHUB_TOKEN</code> secret to Cloudflare Pages (both projects) to enable the Publish button.
+        </div>
+      </div>
+
+      <!-- Deploy pipeline: Staging → Live -->
+      <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:start;margin-bottom:24px">
+
+        <!-- STAGING card -->
+        <div class="pp-card" style="border-color:rgba(78,159,255,.3)">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-flask" style="color:#4e9fff"></i>
+            </div>
+            <div>
+              <div style="font-size:.95rem;font-weight:700">Staging</div>
+              <div style="font-size:.73rem;color:var(--muted)">Your private preview — only you see this</div>
+            </div>
+            <div id="pp-staging-status-dot" style="margin-left:auto;width:10px;height:10px;border-radius:50%;background:#334155"></div>
+          </div>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Latest deploy:</div>
+          <div id="pp-staging-run" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.78rem;min-height:48px">
+            <span style="color:var(--muted)">Loading…</span>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px">
+            <a href="https://stemforge-staging-4q9.pages.dev" target="_blank" rel="noopener"
+              style="flex:1;display:block;text-align:center;padding:9px 14px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.3);border-radius:8px;color:#4e9fff;font-size:.83rem;font-weight:600;text-decoration:none">
+              <i class="fas fa-external-link-alt" style="margin-right:5px"></i>Open Staging
+            </a>
+          </div>
+        </div>
+
+        <!-- Arrow -->
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding-top:60px">
+          <div style="font-size:.72rem;color:var(--muted);text-align:center">Publish<br>pushes</div>
+          <i class="fas fa-arrow-right" style="color:#334155;font-size:1.3rem"></i>
+        </div>
+
+        <!-- LIVE card -->
+        <div class="pp-card" style="border-color:rgba(16,185,129,.3)">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <div style="width:36px;height:36px;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center">
+              <i class="fas fa-globe" style="color:#10b981"></i>
+            </div>
+            <div>
+              <div style="font-size:.95rem;font-weight:700">Live — stemforge.studio</div>
+              <div style="font-size:.73rem;color:var(--muted)">What your users see right now</div>
+            </div>
+            <div id="pp-live-status-dot" style="margin-left:auto;width:10px;height:10px;border-radius:50%;background:#334155"></div>
+          </div>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Latest deploy:</div>
+          <div id="pp-live-run" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.78rem;min-height:48px">
+            <span style="color:var(--muted)">Loading…</span>
+          </div>
+          <div style="margin-top:14px">
+            <a href="https://stemforge.studio" target="_blank" rel="noopener"
+              style="display:block;text-align:center;padding:9px 14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;color:#10b981;font-size:.83rem;font-weight:600;text-decoration:none">
+              <i class="fas fa-external-link-alt" style="margin-right:5px"></i>Open Live Site
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- THE PUBLISH BUTTON — centrepiece -->
+      <div style="text-align:center;margin-bottom:24px">
+        <button id="pp-publish-btn" onclick="ppPublish()"
+          style="display:inline-flex;align-items:center;gap:10px;padding:14px 40px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:50px;color:#fff;font-size:1rem;font-weight:800;cursor:pointer;box-shadow:0 8px 32px rgba(16,185,129,.35);letter-spacing:.2px;transition:transform .15s,box-shadow .15s"
+          onmouseover="this.style.transform='scale(1.03)';this.style.boxShadow='0 12px 40px rgba(16,185,129,.45)'"
+          onmouseout="this.style.transform='';this.style.boxShadow='0 8px 32px rgba(16,185,129,.35)'">
+          <i class="fas fa-rocket"></i>
+          Publish Staging → Live
+        </button>
+        <div style="margin-top:10px;font-size:.76rem;color:var(--muted)">
+          Fast-forwards <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">main</code> to match
+          <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">staging</code> and triggers a production deploy (~2 min).
+          Users see the change when the deploy completes.
+        </div>
+      </div>
+
+      <div id="pp-msg" style="display:none;margin-bottom:20px;padding:12px 16px;border-radius:10px;font-size:.85rem;font-weight:600;text-align:center"></div>
+
+      <!-- Staging preview iframe -->
+      <div class="pp-card" style="padding:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+          <div style="font-size:.82rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
+            <i class="fas fa-desktop" style="margin-right:6px;color:#4e9fff"></i>Staging Preview
+          </div>
+          <div style="display:flex;gap:6px">
+            <button onclick="ppSetViewport('desktop')" id="pp-vp-desktop"
+              style="padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600">
+              <i class="fas fa-desktop"></i> Desktop
+            </button>
+            <button onclick="ppSetViewport('mobile')" id="pp-vp-mobile"
+              style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
+              <i class="fas fa-mobile-alt"></i> Mobile
+            </button>
+            <button onclick="ppReloadPreview()" title="Reload preview"
+              style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
+              <i class="fas fa-sync-alt"></i>
+            </button>
+          </div>
+        </div>
+        <div id="pp-iframe-wrap" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0b0e17;height:700px;transition:all .3s">
+          <iframe id="pp-iframe" src="https://stemforge-staging-4q9.pages.dev"
+            style="width:100%;height:100%;border:none;display:block" title="Staging preview"></iframe>
+        </div>
+        <div style="margin-top:8px;font-size:.73rem;color:var(--muted);text-align:center">
+          Showing <strong style="color:#4e9fff">stemforge-staging-4q9.pages.dev</strong> — 
+          this is your private staging environment. Users only see <strong style="color:#10b981">stemforge.studio</strong>.
+        </div>
+      </div>
+
+      <!-- Setup guide: GitHub Token -->
+      <div class="pp-card" style="margin-top:20px;border-color:rgba(245,158,11,.2)">
+        <div class="pp-card-header">
+          <i class="fab fa-github" style="color:#f59e0b"></i>
+          <span>One-Time Setup: GitHub Token</span>
+          <span id="pp-gh-status" style="margin-left:auto;font-size:.75rem;font-weight:700;color:#64748b">Checking…</span>
+        </div>
+        <div style="margin-top:12px;font-size:.82rem;color:#94a3b8;line-height:1.8">
+          The Publish button needs a GitHub token to fast-forward <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">main</code> and trigger the production deploy.<br>
+          <strong style="color:#e2e8f0">Steps:</strong>
+          <ol style="margin:8px 0 0 18px;padding:0;color:#94a3b8">
+            <li>Go to <a href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=StemForge+Admin+Deploy" target="_blank" style="color:#4e9fff">GitHub → Settings → Personal Access Tokens</a> — create a token with <code>repo</code> + <code>workflow</code> scopes</li>
+            <li>In <a href="https://dash.cloudflare.com" target="_blank" style="color:#4e9fff">Cloudflare Pages → stemforge → Settings → Environment Variables</a> — add secret <code>GITHUB_TOKEN</code> = your token</li>
+            <li>Repeat for the <strong>stemforge-staging</strong> project too</li>
+            <li>Done — the Publish button will work immediately after the next deploy</li>
+          </ol>
+        </div>
+      </div>
+
+    </div>
+    <!-- ── /PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
 
   </div>
 </main>
@@ -17644,7 +16225,19 @@ function adminPage(user: User) {
 .ts-pill{padding:3px 10px;border-radius:99px;border:1px solid var(--border);background:var(--bg);color:var(--muted);font-size:.75rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap}
 .ts-pill:hover{border-color:var(--primary);color:var(--primary)}
 .ts-pill--active{background:var(--primary);border-color:var(--primary);color:#fff}
-
+/* ── Preview & Publish tab ── */
+.pp-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
+.pp-card-header{display:flex;align-items:center;gap:8px;font-size:.92rem;font-weight:700;color:var(--text)}
+.pp-label{font-size:.78rem;color:var(--muted);display:block;margin-bottom:5px;font-weight:600;letter-spacing:.3px}
+.pp-input{width:100%;padding:8px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.87rem;box-sizing:border-box;outline:none;transition:border-color .15s}
+.pp-input:focus{border-color:var(--primary)}
+.pp-toggle{position:relative;display:inline-block;width:38px;height:22px;flex-shrink:0}
+.pp-toggle input{opacity:0;width:0;height:0}
+.pp-toggle-slider{position:absolute;inset:0;background:#334155;border-radius:22px;cursor:pointer;transition:.2s}
+.pp-toggle-slider:before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+.pp-toggle input:checked+.pp-toggle-slider{background:#10b981}
+.pp-toggle input:checked+.pp-toggle-slider--red{background:#ef4444}
+.pp-toggle input:checked+.pp-toggle-slider:before{transform:translateX(16px)}
 @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 <script src="/static/admin.v2.js?v=${ASSET_VER}"></script>
