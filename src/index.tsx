@@ -12201,7 +12201,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-173'
+const ASSET_VER = '20261020-174'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14030,11 +14030,15 @@ function generatorPage() {
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
     <style>
-      /* ── Right column: vertically centre the cube + text when empty ── */
-      .suno-right {
-        justify-content: center !important;
-        align-items: center !important;
-        min-height: 100vh !important;
+      /* ── Right column: vertically + horizontally centre cube + text on DESKTOP only ── */
+      @media (min-width: 769px) {
+        .suno-right {
+          display: flex !important;
+          flex-direction: column !important;
+          justify-content: center !important;
+          align-items: center !important;
+          min-height: 100vh !important;
+        }
       }
       /* ── Cube stage: FIXED size — never stretches with page content ── */
       #sf-cube-stage {
@@ -14052,7 +14056,6 @@ function generatorPage() {
       }
       @media (max-width: 768px) {
         #sf-cube-stage { height: 320px; }
-        .suno-right { min-height: auto !important; }
       }
       /* Canvas wrapper — absolute, fills stage, transparent */
       #sf-cube-wrap {
