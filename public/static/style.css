@@ -1002,49 +1002,6 @@ p  { color: var(--sub); }
 .export-badge--locked:hover { background: rgba(255,255,255,.1); color: var(--text); }
 .export-badge--stems-cta { background: rgba(99,102,241,.13); color: #a78bfa; cursor: pointer; border: 1px solid rgba(99,102,241,.25); }
 .export-badge--stems-cta:hover { background: rgba(99,102,241,.22); color: #c4b5fd; }
-/* ── VoiceForge badge on beat/remix cards ─────────────────── */
-.vf-card-badge-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-.vf-card-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: .68rem;
-  font-weight: 700;
-  color: #fb923c;
-  background: rgba(249,115,22,.1);
-  border: 1px solid rgba(249,115,22,.28);
-  border-radius: 20px;
-  padding: 2px 8px;
-  letter-spacing: .02em;
-}
-.vf-card-detach-btn {
-  flex-shrink: 0;
-  background: rgba(239,68,68,.1);
-  border: 1px solid rgba(239,68,68,.22);
-  color: #f87171;
-  border-radius: 6px;
-  padding: 2px 8px;
-  font-size: .68rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background .15s, border-color .15s;
-  line-height: 1.5;
-}
-.vf-card-detach-btn:hover {
-  background: rgba(239,68,68,.2);
-  border-color: rgba(239,68,68,.4);
-}
-.vf-card-detach-btn:disabled {
-  opacity: .5;
-  cursor: default;
-}
-
 .project-card--new {
   border-style: dashed; background: none;
   display: flex; align-items: center; justify-content: center;

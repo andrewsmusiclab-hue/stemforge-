@@ -239,89 +239,11 @@ function sfShowNoticeModal(notice, onDismiss) {
 }
 
 
-// ── Cube skin definitions ─────────────────────────────────────────────────
-window._CUBE_SKINS = {
-  cube_forge: {
-    cubeBody:   0x070e1c,  cubeEmissive: 0x001a33, emissiveInt: 0.12,
-    edgeGlow:   0x00e5ff,  edgeOpacity: 0.70,
-    shellColor: 0x00aaff,  shellOpacity: 0.03,
-    fillLight:  0x00d2ff,  fillInt: 0.80,
-    rimLight:   0xff8c20,  rimInt: 0.60,
-    botLight:   0x0040ff,  botInt: 0.40,
-    waveformTiers: [
-      {bg:'#1a0e00',wc:'#ffaa00',wc2:'#ff4400',amp:52,density:160},
-      {bg:'#001a0e',wc:'#00ff88',wc2:'#00ffcc',amp:38,density:150},
-      {bg:'#12001a',wc:'#dd00ff',wc2:'#8800ff',amp:28,density:140},
-      {bg:'#001020',wc:'#00d4ff',wc2:'#0066ff',amp:18,density:120},
-    ]
-  },
-  cube_obsidian: {
-    cubeBody:   0x0a0404,  cubeEmissive: 0x1a0000, emissiveInt: 0.18,
-    edgeGlow:   0xff2200,  edgeOpacity: 0.80,
-    shellColor: 0xff3300,  shellOpacity: 0.04,
-    fillLight:  0xcc1100,  fillInt: 0.90,
-    rimLight:   0xff6600,  rimInt: 0.70,
-    botLight:   0x660000,  botInt: 0.50,
-    waveformTiers: [
-      {bg:'#1a0000',wc:'#ff4400',wc2:'#ff2200',amp:52,density:160},
-      {bg:'#180000',wc:'#ff6600',wc2:'#ff3300',amp:38,density:150},
-      {bg:'#100000',wc:'#cc2200',wc2:'#881100',amp:28,density:140},
-      {bg:'#0e0000',wc:'#ff5500',wc2:'#cc3300',amp:18,density:120},
-    ]
-  },
-  cube_goldrush: {
-    cubeBody:   0x1a1000,  cubeEmissive: 0x1a0a00, emissiveInt: 0.15,
-    edgeGlow:   0xffd700,  edgeOpacity: 0.85,
-    shellColor: 0xffcc00,  shellOpacity: 0.04,
-    fillLight:  0xffaa00,  fillInt: 0.85,
-    rimLight:   0xff8800,  rimInt: 0.65,
-    botLight:   0xcc7700,  botInt: 0.45,
-    waveformTiers: [
-      {bg:'#1a0e00',wc:'#ffd700',wc2:'#ffaa00',amp:52,density:160},
-      {bg:'#160c00',wc:'#ffcc00',wc2:'#ff9900',amp:38,density:150},
-      {bg:'#120a00',wc:'#eebb00',wc2:'#cc8800',amp:28,density:140},
-      {bg:'#0e0800',wc:'#ffdd44',wc2:'#ffaa00',amp:18,density:120},
-    ]
-  },
-  cube_neon: {
-    cubeBody:   0x020d18,  cubeEmissive: 0x001a1a, emissiveInt: 0.20,
-    edgeGlow:   0x00ffff,  edgeOpacity: 0.85,
-    shellColor: 0x00ffee,  shellOpacity: 0.04,
-    fillLight:  0x00eeff,  fillInt: 0.90,
-    rimLight:   0x0088ff,  rimInt: 0.70,
-    botLight:   0x00aaff,  botInt: 0.50,
-    waveformTiers: [
-      {bg:'#001a1a',wc:'#00ffff',wc2:'#00eeff',amp:52,density:160},
-      {bg:'#001218',wc:'#00ccff',wc2:'#0088ff',amp:38,density:150},
-      {bg:'#001016',wc:'#00eedd',wc2:'#00bbcc',amp:28,density:140},
-      {bg:'#000e14',wc:'#44ffff',wc2:'#00ddff',amp:18,density:120},
-    ]
-  },
-  cube_diamond: {
-    cubeBody:   0x1a0008,  cubeEmissive: 0x1a0010, emissiveInt: 0.20,
-    edgeGlow:   0xff0055,  edgeOpacity: 0.90,
-    shellColor: 0xff0055,  shellOpacity: 0.05,
-    fillLight:  0xcc0044,  fillInt: 0.95,
-    rimLight:   0xff0077,  rimInt: 0.75,
-    botLight:   0x880033,  botInt: 0.55,
-    waveformTiers: [
-      {bg:'#1a0008',wc:'#ff0055',wc2:'#cc0033',amp:52,density:160},
-      {bg:'#150006',wc:'#ff3366',wc2:'#dd0044',amp:38,density:150},
-      {bg:'#100005',wc:'#ff0044',wc2:'#aa0033',amp:28,density:140},
-      {bg:'#0c0004',wc:'#ff2255',wc2:'#cc0033',amp:18,density:120},
-    ]
-  },
-};
-
 // ── StemForge 3D Logo Cube v5 — UMD script chain, no ES modules ──────────
 window._sfInitCube = function(user) {
   function D(msg){ console.log('[SFCube]', msg); }
 
-  // Resolve active skin from user data
-  var skinId = (user && user.active_cube_id) ? user.active_cube_id : 'cube_forge';
-  var SKIN = (window._CUBE_SKINS && window._CUBE_SKINS[skinId]) ? window._CUBE_SKINS[skinId] : window._CUBE_SKINS['cube_forge'];
-
-  D('_sfInitCube called user='+(user?user.email:'null')+' is_admin='+(user&&user.is_admin)+' skin='+skinId);
+  D('_sfInitCube called user='+(user?user.email:'null')+' is_admin='+(user&&user.is_admin));
   var wrap   = document.getElementById('sf-cube-wrap');
   var canvas = document.getElementById('sf-cube-canvas');
   if (!wrap || !canvas) { D('ABORT: elements missing'); return; }
@@ -405,19 +327,21 @@ window._sfInitCube = function(user) {
     // Low ambient — let emissiveMap carry the face color, not external lights
     scene.add(new T.AmbientLight(0xffffff, 0.25));
     var key = new T.DirectionalLight(0xffffff, 0.8); key.position.set(4,7,5); scene.add(key);
-    var fill = new T.PointLight(SKIN.fillLight, SKIN.fillInt, 30); fill.position.set(-4,3,4); scene.add(fill);
-    var rim  = new T.PointLight(SKIN.rimLight,  SKIN.rimInt,  22); rim.position.set(1,6,-4); scene.add(rim);
-    var bot  = new T.PointLight(SKIN.botLight,  SKIN.botInt,  14); bot.position.set(0,-5,3); scene.add(bot);
+    var fill = new T.PointLight(0x00d2ff, 0.8, 30); fill.position.set(-4,3,4); scene.add(fill);
+    var rim  = new T.PointLight(0xff8c20, 0.6, 22); rim.position.set(1,6,-4); scene.add(rim);
+    var bot  = new T.PointLight(0x0040ff, 0.4, 14); bot.position.set(0,-5,3); scene.add(bot);
 
     // ── DAW stem waveform texture ──────────────────────────────────────────
     function makeDAWStemFace(variant, isImpact) {
       var SZ=512, c=document.createElement('canvas'); c.width=c.height=SZ;
       var ctx=c.getContext('2d');
       ctx.fillStyle='#060d1c'; ctx.fillRect(0,0,SZ,SZ);
-      // Use active skin waveform tiers
-      var tiers = SKIN.waveformTiers.map(function(t,i){
-        return {bg:t.bg||'#060d1c',wc:t.wc,wc2:t.wc2,amp:[52,38,28,18][i]||30,density:[160,150,140,120][i]||140};
-      });
+      var tiers=[
+        {bg:'#1a0e00',wc:'#ffaa00',wc2:'#ff4400',amp:52,density:160}, // Tier 1 — orange-gold (forge/impact)
+        {bg:'#001a0e',wc:'#00ff88',wc2:'#00ffcc',amp:38,density:150}, // Tier 2 — electric green
+        {bg:'#12001a',wc:'#dd00ff',wc2:'#8800ff',amp:28,density:140}, // Tier 3 — vivid magenta/purple
+        {bg:'#001020',wc:'#00d4ff',wc2:'#0066ff',amp:18,density:120}, // Tier 4 — bright cyan-blue
+      ];
       var tierH=Math.floor(SZ/4), divH=4, seed=variant*7919+1234;
       tiers.forEach(function(td,ti){
         var y0=ti*tierH, y1=y0+tierH-divH, midY=(y0+y1)/2, halfH=(y1-y0)/2-4;
@@ -474,8 +398,8 @@ window._sfInitCube = function(user) {
         // Divider
         if(ti<3){ ctx.fillStyle='rgba(0,0,0,0.9)'; ctx.fillRect(0,y1,SZ,divH); ctx.fillStyle=td.wc+'30'; ctx.fillRect(0,y1,SZ,1); }
       });
-      // Edge rim glow — per-tier colours blended vertically (skin-driven)
-      var tierColors=SKIN.waveformTiers.map(function(t){return t.wc;});
+      // Edge rim glow — per-tier colours blended vertically
+      var tierColors=['#ffaa00','#00ff88','#dd00ff','#00d4ff'];
       ['left','right'].forEach(function(side){
         var x0=side==='left'?0:SZ-22, x1=side==='left'?22:SZ;
         tierColors.forEach(function(tc,ti2){
@@ -498,19 +422,19 @@ window._sfInitCube = function(user) {
     var geo = new T.RoundedBoxGeometry(SIZE,SIZE,SIZE,4,RADIUS);
     var cubeMat = new T.MeshPhysicalMaterial({
       metalness:0.9, roughness:0.12, clearcoat:0.7, clearcoatRoughness:0.07,
-      color:new T.Color(SKIN.cubeBody), emissive:new T.Color(SKIN.cubeEmissive), emissiveIntensity:SKIN.emissiveInt,
+      color:new T.Color(0x070e1c), emissive:new T.Color(0x001a33), emissiveIntensity:0.12,
       envMap:envMap, envMapIntensity:2.5
     });
     var cube = new T.Mesh(geo, cubeMat);
     cubeGroup.add(cube);
 
     // ── Edge glow ──────────────────────────────────────────────────────────
-    var edgeMat = new T.LineBasicMaterial({color:SKIN.edgeGlow,transparent:true,opacity:SKIN.edgeOpacity});
+    var edgeMat = new T.LineBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.7});
     var edges   = new T.LineSegments(new T.EdgesGeometry(new T.BoxGeometry(SIZE,SIZE,SIZE)), edgeMat);
     cubeGroup.add(edges);
 
     // ── Bloom shell ────────────────────────────────────────────────────────
-    var shellMat = new T.MeshBasicMaterial({color:SKIN.shellColor,transparent:true,opacity:SKIN.shellOpacity,side:T.BackSide});
+    var shellMat = new T.MeshBasicMaterial({color:0x00aaff,transparent:true,opacity:0.03,side:T.BackSide});
     var shell    = new T.Mesh(new T.RoundedBoxGeometry(SIZE+0.2,SIZE+0.2,SIZE+0.2,4,RADIUS+0.05), shellMat);
     cubeGroup.add(shell);
 
@@ -1668,7 +1592,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (voiceBtn && user.is_admin) {
           voiceBtn.style.display = '';
         }
-        // VoiceForge library tab — visible to all logged-in users (tab already shown in HTML)
+        // VoiceForge library tab — also admin-only
+        var voiceLibTab = document.getElementById('lib-tab-voice');
+        if (voiceLibTab && user.is_admin) {
+          voiceLibTab.style.display = '';
+        }
       })();
 
       // ── TikTok identify — link this session to the known user ─
@@ -2516,18 +2444,6 @@ document.addEventListener('DOMContentLoaded', () => {
         '<div class="project-card__tags">' +
           (bpm ? '<span class="export-badge" style="background:rgba(78,159,255,.12);color:var(--primary);border:1px solid rgba(78,159,255,.25);font-size:.72rem">' + bpm + '</span>' : '') +
         '</div>' +
-        (p.voice_forge_id ?
-          '<div class="vf-card-badge-row" data-job-id="' + p.id + '">' +
-            '<span class="vf-card-badge">' +
-              '<i class="fas fa-microphone" style="font-size:.63rem"></i> VoiceForge' +
-            '</span>' +
-            '<button class="vf-card-detach-btn" ' +
-              'onclick="event.stopPropagation();vfDetachFromCard(\'' + p.id + '\',this)" ' +
-              'title="Remove VoiceForge from this track">' +
-              '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
-            '</button>' +
-          '</div>'
-        : '') +
       '</div>' +
     '</div>';
   }
@@ -2794,21 +2710,12 @@ document.addEventListener('DOMContentLoaded', () => {
   window.fetchUploadsTab = fetchUploadsTab;
 
   // ── Fetch VoiceForge tab ────────────────────────────────────
-  // ── VoiceForge library tab — full profile + songs ──────────────────────────
-  var _vfProfile = null; // cached profile data
-
   async function fetchVoiceTab() {
     var gridEl = document.getElementById('project-grid-voice');
     if (!gridEl) return;
+    if (_libLoaded.voice) { renderVoiceGrid(gridEl, _libData.voice); return; }
     gridEl.innerHTML = '<div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading\u2026</div>';
     try {
-      // Load profile (voice name, avatar, tracks using voice)
-      var profRes = await fetch('/api/voice/profile');
-      var profData = profRes.ok ? await profRes.json() : {};
-      _vfProfile = profData;
-      renderVoiceProfileCard(profData);
-
-      // Load generated songs
       var res = await fetch('/api/projects?tab=voice');
       if (!res.ok) {
         gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
@@ -2825,218 +2732,36 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   window.fetchVoiceTab = fetchVoiceTab;
 
-  // ── Render the VoiceForge profile card at top of voice tab ──
-  function renderVoiceProfileCard(prof) {
-    var card    = document.getElementById('vf-profile-card');
-    var noVoice = document.getElementById('vf-no-voice');
-    var header  = document.getElementById('vf-songs-header');
-    if (!card) return;
-
-    if (!prof || !prof.persona_id) {
-      card.style.display = 'none';
-      if (noVoice) noVoice.style.display = '';
-      if (header)  header.style.display  = 'none';
-      return;
-    }
-
-    card.style.display = '';
-    if (noVoice) noVoice.style.display = 'none';
-    if (header)  header.style.display  = '';
-
-    // Avatar
-    var avatarImg  = document.getElementById('vf-avatar-img');
-    var avatarIcon = document.getElementById('vf-avatar-icon');
-    if (prof.voice_avatar) {
-      avatarImg.src = prof.voice_avatar;
-      avatarImg.style.display = '';
-      if (avatarIcon) avatarIcon.style.display = 'none';
-    } else {
-      if (avatarImg)  avatarImg.style.display  = 'none';
-      if (avatarIcon) avatarIcon.style.display = '';
-    }
-
-    // Name
-    var nameInput = document.getElementById('vf-name-input');
-    if (nameInput) nameInput.value = prof.voice_name || prof.persona_label || '';
-
-    // Persona label
-    var labelText = document.getElementById('vf-persona-label-text');
-    if (labelText) labelText.textContent = (prof.persona_label || 'Voice') + ' — ready';
-
-    // Tracks list
-    renderVfTracksList(prof.tracks || []);
-  }
-
-  function renderVfTracksList(tracks) {
-    var listEl = document.getElementById('vf-tracks-list');
-    if (!listEl) return;
-    if (!tracks || tracks.length === 0) {
-      listEl.innerHTML = '<div style="color:var(--muted);font-size:.82rem;font-style:italic">No tracks using this voice yet. Generate one!</div>';
-      return;
-    }
-    var html = '';
-    tracks.forEach(function(t) {
-      var title = (t.title || 'Untitled').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      var date  = t.created_at ? new Date(t.created_at).toLocaleDateString() : '';
-      html += '<div class="vf-track-row" data-job-id="' + t.id + '" style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:rgba(255,255,255,.04);border-radius:8px;border:1px solid rgba(255,255,255,.07)">' +
-        '<i class="fas fa-music" style="color:#fb923c;font-size:.85rem;flex-shrink:0"></i>' +
-        '<div style="flex:1;min-width:0">' +
-          '<div style="font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + title + '</div>' +
-          (date ? '<div style="font-size:.72rem;color:var(--muted)">' + date + '</div>' : '') +
-        '</div>' +
-        '<button onclick="vfDetachFromTrack(\'' + t.id + '\',this)" style="flex-shrink:0;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:600;cursor:pointer" title="Remove voice from this track">' +
-          '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
-        '</button>' +
-      '</div>';
-    });
-    listEl.innerHTML = html;
-  }
-
-  // ── VoiceForge profile actions ──────────────────────────────
-  window.vfNameChanged = function() {
-    var btn = document.getElementById('vf-name-save-btn');
-    if (btn) btn.style.display = '';
-  };
-
-  window.vfSaveProfile = async function() {
-    var nameInput = document.getElementById('vf-name-input');
-    var btn       = document.getElementById('vf-name-save-btn');
-    var name = nameInput ? nameInput.value.trim() : '';
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>'; }
-    try {
-      await fetch('/api/voice/profile', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ voice_name: name })
-      });
-      if (btn) { btn.style.display = 'none'; btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save'; }
-    } catch(e) {
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-check"></i> Save'; }
-    }
-  };
-
-  window.vfPickAvatar = function() {
-    var fi = document.getElementById('vf-avatar-file');
-    if (fi) fi.click();
-  };
-
-  window.vfHandleAvatarFile = async function(input) {
-    var file = input.files && input.files[0];
-    if (!file) return;
-    var avatarImg  = document.getElementById('vf-avatar-img');
-    var avatarIcon = document.getElementById('vf-avatar-icon');
-    // Preview immediately
-    var reader = new FileReader();
-    reader.onload = function(e) {
-      if (avatarImg) { avatarImg.src = e.target.result; avatarImg.style.display = ''; }
-      if (avatarIcon) avatarIcon.style.display = 'none';
-    };
-    reader.readAsDataURL(file);
-    // Upload to R2 via existing upload endpoint then save URL
-    try {
-      var fd = new FormData();
-      fd.append('file', file);
-      var res = await fetch('/api/voice/upload-audio', { method: 'POST', body: fd });
-      var data = res.ok ? await res.json() : null;
-      if (data && data.url) {
-        await fetch('/api/voice/profile', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ voice_avatar: data.url })
-        });
-      }
-    } catch(e) { /* silent — preview still shows */ }
-  };
-
-  window.vfDetachFromTrack = async function(jobId, btn) {
-    if (!confirm('Remove this voice from the track? The track stays in your library but will no longer be linked to your VoiceForge.')) return;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
-    try {
-      var res = await fetch('/api/voice/detach/' + jobId, { method: 'DELETE' });
-      if (res.ok) {
-        // Remove row from the voice profile tracks list
-        var row = btn.closest('.vf-track-row') || btn.closest('div[style]');
-        if (row) row.remove();
-        // Remove badge from beat/remix card if it exists in DOM
-        var cardBadge = document.querySelector('.vf-card-badge-row[data-job-id="' + jobId + '"]');
-        if (cardBadge) cardBadge.remove();
-        // Invalidate beats cache so badge disappears on next load
-        _libLoaded.beats = false;
-        _libLoaded.remixes = false;
-        _libLoaded.voice = false;
-      } else {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
-      }
-    } catch(e) {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
-    }
-  };
-
-  // ── vfDetachFromCard — called from VoiceForge badge on beat/remix cards ──
-  window.vfDetachFromCard = async function(jobId, btn) {
-    if (!confirm('Remove this voice from the track? The track stays in your library.')) return;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
-    try {
-      var res = await fetch('/api/voice/detach/' + jobId, { method: 'DELETE' });
-      if (res.ok) {
-        // Remove badge row from this card
-        var badgeRow = btn.closest('.vf-card-badge-row');
-        if (badgeRow) badgeRow.remove();
-        // Remove from voice profile tracks list if rendered
-        var trackRow = document.querySelector('.vf-track-row[data-job-id="' + jobId + '"]');
-        if (trackRow) trackRow.remove();
-        // Invalidate caches
-        _libLoaded.beats = false;
-        _libLoaded.remixes = false;
-        _libLoaded.voice = false;
-      } else {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
-      }
-    } catch(e) {
-      btn.disabled = false;
-      btn.innerHTML = '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach';
-    }
-  };
-
-  // ── Render VoiceForge generated-songs grid ──────────────────
+  // ── Render VoiceForge cards ─────────────────────────────────
   function renderVoiceGrid(gridEl, songs) {
     if (!gridEl) return;
     if (!songs || songs.length === 0) {
-      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the Create → Voices tab!</p></div>';
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the VoiceForge panel!</p></div>';
       return;
     }
     var html = '';
-    songs.forEach(function(s, i) {
-      var hue = s.thumbnail_seed || 28;
-      var title = (s.title || 'Voice Song').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    songs.forEach(function(s) {
+      var hue = s.thumbnail_seed || 28; // orange-ish default
+      var title = s.title || 'Voice Song';
       var audioUrl = s.audio_url || s.stereo_url || '';
       var created = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
-      html += '<div class="project-card" data-id="' + s.id + '">' +
-        '<div class="project-card__art" style="background:linear-gradient(135deg,hsl(' + hue + ',70%,20%),hsl(' + ((hue+40)%360) + ',60%,12%));position:relative;overflow:hidden">' +
-          '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">' +
-            '<i class="fas fa-microphone" style="font-size:28px;color:rgba(249,115,22,.8)"></i>' +
-          '</div>' +
-          (audioUrl ? '<div class="project-card__play" onclick="playDashProject(this)" data-audio="' + audioUrl + '"><i class="fas fa-play"></i></div>' : '') +
+      html += '<div class="project-card" style="--card-hue:' + hue + '">' +
+        '<div class="project-card__art project-card__art--' + ((hue % 8) + 1) + '" style="background:linear-gradient(135deg,hsl(' + hue + ',70%,35%),hsl(' + ((hue+40)%360) + ',60%,20%))">' +
+          '<i class="fas fa-microphone" style="font-size:28px;color:rgba(255,255,255,.7)"></i>' +
         '</div>' +
         '<div class="project-card__body">' +
-          '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">' +
-            '<h4 style="margin:0;flex:1">' + title + '</h4>' +
-          '</div>' +
-          '<p style="margin:2px 0 6px;font-size:.78rem;color:var(--muted)">' + created + '</p>' +
-          '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
-            '<span style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:700;color:#fb923c;background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.25);border-radius:20px;padding:2px 8px">' +
-              '<i class="fas fa-microphone" style="font-size:.65rem"></i> VoiceForge' +
-            '</span>' +
-            (audioUrl ? '<a href="' + audioUrl + '" download target="_blank" style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:600;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:2px 8px;text-decoration:none">' +
-              '<i class="fas fa-download" style="font-size:.65rem"></i> Download' +
-            '</a>' : '') +
-          '</div>' +
+          '<div class="project-card__title">' + title + '</div>' +
+          '<div class="project-card__meta" style="color:var(--muted);font-size:.78rem">' + created + '</div>' +
         '</div>' +
+        (audioUrl ? '<div class="project-card__actions">' +
+          '<a href="' + audioUrl + '" target="_blank" download class="btn btn--ghost btn--xs" title="Download"><i class="fas fa-download"></i></a>' +
+          '<button class="btn btn--ghost btn--xs" title="Play" onclick="(function(el,u){' +
+            'var a=el.closest(\'.project-card\').querySelector(\'.vc-audio-el\');' +
+            'if(!a){a=document.createElement(\'audio\');a.className=\'vc-audio-el\';a.src=u;a.controls=false;a.style.display=\'none\';el.closest(\'.project-card\').appendChild(a);}' +
+            'if(a.paused){a.play();el.innerHTML=\'<i class=\\\"fas fa-pause\\\"></i>\';}else{a.pause();a.currentTime=0;el.innerHTML=\'<i class=\\\"fas fa-play\\\"></i>\';}' +
+            'a.onended=function(){el.innerHTML=\'<i class=\\\"fas fa-play\\\"></i>\';};' +
+          '})(this,\'' + audioUrl.replace(/'/g, "\\'") + '\')"><i class="fas fa-play"></i></button>' +
+        '</div>' : '') +
       '</div>';
     });
     gridEl.innerHTML = html;
