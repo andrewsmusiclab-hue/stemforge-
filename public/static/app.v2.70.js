@@ -1553,9 +1553,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showPopup() {
-      // Don't show on auth/landing pages — only when the user is actually logged in
+      // Don't show on auth/landing pages or admin — only when the user is actually logged in
       var path = window.location.pathname;
-      if (path === '/' || path === '/login' || path === '/signup' || path === '/register') return;
+      if (path === '/' || path === '/login' || path === '/signup' || path === '/register' || path === '/admin' || path.startsWith('/admin')) return;
 
       // Already rendered (hot reload guard)
       if (document.getElementById('sf-feat-popup-' + FEAT_ID)) return;
