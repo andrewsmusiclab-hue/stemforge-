@@ -30,7 +30,7 @@ When in doubt → build only, start a local preview, share the preview URL. Ask 
 - **D1 database**: `andrew-pryce-db` (binding `DB`, id `ffd0c782-4ccc-42c2-9f35-4c577105516b`)
 - **Admin email**: `andrewsmusiclab@gmail.com`
 - **Active JS file**: `public/static/app.v2.70.js`
-- **Git remote**: `https://andrewsmusiclab-hue:[GITHUB_TOKEN_REDACTED]@github.com/andrewsmusiclab-hue/stemforge-.git`
+- **Git remote**: `https://github.com/andrewsmusiclab-hue/stemforge-.git` (token injected at push time — do not hardcode here)
 - **STRICT**: Never mention "MusicAPI" in any user-facing text
 
 ## 🔒 This file must be read at the start of every session.
