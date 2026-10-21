@@ -1698,12 +1698,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (gsSigninBtn) gsSigninBtn.style.display = 'none';
       // Show nav items that are hidden for unauthenticated users
       document.querySelectorAll('.gs-auth-nav').forEach(el => { el.style.display = 'flex'; });
-      // Show admin-only items (Shop, Collection, Voices tab) only for admin account
-      if (user.is_admin) {
-        document.querySelectorAll('.gs-admin-only').forEach(function(el) {
-          el.style.display = 'flex';
-        });
-      }
 
       const initials = user.name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2);
       if (gsAvatar) {

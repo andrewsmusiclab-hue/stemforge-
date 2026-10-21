@@ -5227,13 +5227,12 @@ app.get('/profile', async (c) => {
   return c.html(profilePage(user))
 })
 
-// ── /shop — unified store: cube skins + plans + credit packs (ADMIN ONLY) ──
+// ── /shop — unified store: cube skins + plans + credit packs ─────────────
 app.get('/shop', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/shop')
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login?next=/shop')
-  if (!isAdmin(user, c.env)) return c.redirect('/')
   const ASSET_VER_SHOP = ASSET_VER
   return c.html(`<!DOCTYPE html>
 <html lang="en">
@@ -5606,7 +5605,6 @@ app.get('/collection', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login?next=/collection')
-  if (!isAdmin(user, c.env)) return c.redirect('/')
   const ASSET_VER_COLL = ASSET_VER
   return c.html(`<!DOCTYPE html>
 <html lang="en">
@@ -12203,7 +12201,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-176'
+const ASSET_VER = '20261020-174'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12409,10 +12407,10 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
-      <a href="/shop" class="gs-user-dropdown__item gs-admin-only" style="display:none">
+      <a href="/shop" class="gs-user-dropdown__item">
         <i class="fas fa-store"></i> Shop &amp; Credits
       </a>
-      <a href="/collection" class="gs-user-dropdown__item gs-admin-only" style="display:none">
+      <a href="/collection" class="gs-user-dropdown__item">
         <i class="fas fa-gem"></i> My Collection
       </a>
       <a href="/subscription" class="gs-user-dropdown__item">
@@ -12452,8 +12450,8 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- Shop — admin only -->
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-admin-only" data-page="shop" style="
+    <!-- Shop — logged-in only -->
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="
       display:none;
       background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08));
       border:1px solid rgba(139,92,246,.3);
@@ -12465,8 +12463,8 @@ function globalSidebar() {
       <span class="nav-label-full">Shop &amp; Credits</span>
       <span class="nav-label-short">Shop</span>
     </a>
-    <!-- My Collection — admin only -->
-    <a href="/collection" class="gs-sidebar__nav-item gs-admin-only" data-page="collection" style="display:none">
+    <!-- My Collection — logged-in only -->
+    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none">
       <i class="fas fa-gem" style="width:18px;text-align:center;flex-shrink:0"></i>
       <span class="nav-label-full">My Collection</span>
       <span class="nav-label-short">Collect</span>
@@ -12734,8 +12732,8 @@ function nav() {
         </button>
         <div class="nav-dropdown" id="nav-dropdown">
           <a href="/profile" class="nav-dropdown__item"><i class="fas fa-user"></i> Profile</a>
-          <a href="/shop" class="nav-dropdown__item gs-admin-only" style="display:none"><i class="fas fa-store"></i> Shop &amp; Credits</a>
-          <a href="/collection" class="nav-dropdown__item gs-admin-only" style="display:none"><i class="fas fa-gem"></i> My Collection</a>
+          <a href="/shop" class="nav-dropdown__item"><i class="fas fa-store"></i> Shop &amp; Credits</a>
+          <a href="/collection" class="nav-dropdown__item"><i class="fas fa-gem"></i> My Collection</a>
           <a href="/subscription" class="nav-dropdown__item"><i class="fas fa-credit-card"></i> Subscription</a>
           <a href="/account" class="nav-dropdown__item"><i class="fas fa-cog"></i> Account</a>
           <div class="nav-dropdown__divider"></div>
@@ -13441,7 +13439,7 @@ function generatorPage() {
       <button class="create-page-tab" id="cptab-create" onclick="switchCreateTab('create')">
         <i class="fas fa-music"></i> Create
       </button>
-      <button class="create-page-tab gs-admin-only" id="cptab-voices" onclick="switchCreateTab('voices')" style="display:none">
+      <button class="create-page-tab" id="cptab-voices" onclick="switchCreateTab('voices')">
         <i class="fas fa-microphone"></i> Voices
       </button>
     </div>
@@ -15413,8 +15411,8 @@ function profilePage(user: User | null) {
           <div class="profile-links">
             <a href="/dashboard" class="profile-link-card"><i class="fas fa-th-large"></i><span>Library</span></a>
             <a href="/generator" class="profile-link-card"><i class="fas fa-play-circle"></i><span>New Beat</span></a>
-            <a href="/shop" class="profile-link-card gs-admin-only" style="display:none"><i class="fas fa-store"></i><span>Shop</span></a>
-            <a href="/collection" class="profile-link-card gs-admin-only" style="display:none"><i class="fas fa-gem"></i><span>Collection</span></a>
+            <a href="/shop" class="profile-link-card"><i class="fas fa-store"></i><span>Shop</span></a>
+            <a href="/collection" class="profile-link-card"><i class="fas fa-gem"></i><span>Collection</span></a>
             <a href="/subscription" class="profile-link-card"><i class="fas fa-credit-card"></i><span>Subscription</span></a>
             <a href="/account" class="profile-link-card"><i class="fas fa-cog"></i><span>Settings</span></a>
           </div>
@@ -16004,8 +16002,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
 
-    <!-- ── Top Up Points → moved to Shop (admin only) ───────────── -->
-    <div class="gs-admin-only" style="display:none;align-items:center;gap:16px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.2);border-radius:14px;padding:18px 22px;margin-bottom:28px">
+    <!-- ── Top Up Points → moved to Shop ────────────────────────── -->
+    <div style="display:flex;align-items:center;gap:16px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.2);border-radius:14px;padding:18px 22px;margin-bottom:28px">
       <div style="width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
         <i class="fas fa-store" style="color:#fff;font-size:1rem"></i>
       </div>
