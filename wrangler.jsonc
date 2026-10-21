@@ -7,7 +7,6 @@
     "nodejs_compat"
   ],
   "vars": {
-    "SITE_URL": "https://stemforge.studio",
     "ADMIN_EMAIL": "andrewsmusiclab@gmail.com",
     "GOOGLE_CLIENT_ID": "651689276754-6hgjfc7olij98f2t42l0df8ei6oduldu.apps.googleusercontent.com",
     "STRIPE_CREATOR_PRICE_ID": "price_1TqKUSBGtMHyMzRlSqmFzjv3",
