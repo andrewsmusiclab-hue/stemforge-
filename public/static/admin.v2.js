@@ -1935,12 +1935,11 @@ function setMaintDate(val) {
 }
 function saveMaintSetting(type) {
   var bannerToggle = document.getElementById('maint-banner-toggle');
-  var lockToggle   = document.getElementById('maint-lock-toggle');
   var dateInput    = document.getElementById('maint-date-input');
   var bannerOn = bannerToggle ? bannerToggle.checked : false;
-  var lockOn   = lockToggle   ? lockToggle.checked   : false;
   var dateVal  = dateInput    ? dateInput.value.trim() : '';
-  var payload = { maintenance_banner: bannerOn ? '1' : '0', maintenance_date: dateVal, maintenance_mode: lockOn ? '1' : '0' };
+  // NOTE: never include maintenance_mode here — only confirmLockToggle() may change it
+  var payload = { maintenance_banner: bannerOn ? '1' : '0', maintenance_date: dateVal };
   updateToggleUI('maint-banner', bannerOn);
   showMaintMsg('Saving...', true);
   fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
@@ -1956,7 +1955,12 @@ function saveMaintSetting(type) {
       if (!r.ok) { return r.json().then(function(e){ throw new Error('Publish ' + r.status + ': ' + (e.error || r.statusText)); }); }
       return r.json();
     })
-    .then(function(){ showMaintMsg('Saved and published', true); showMaintStatus(bannerOn, lockOn); })
+    .then(function(){
+      showMaintMsg('Saved and published', true);
+      // Read current lock state from the toggle (we didn't change it)
+      var lt = document.getElementById('maint-lock-toggle');
+      showMaintStatus(bannerOn, lt ? lt.checked : false);
+    })
     .catch(function(err){ showMaintMsg('Error: ' + (err.message || err), false); });
 }
 function confirmLockToggle() {
