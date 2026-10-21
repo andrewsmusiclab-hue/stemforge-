@@ -43,6 +43,44 @@ app.use('/api/*', cors())
 // ── Static assets ──────────────────────────────────────────────
 app.use('/static/*', serveStatic({ root: './' }))
 
+// ── Maintenance lock middleware ─────────────────────────────────
+// When maintenance_mode='1' in live site_drafts, all page routes
+// return the maintenance page. Admin account bypasses the lock.
+// API routes (/api/*) and static assets are always allowed through
+// so in-flight jobs can complete their polling.
+app.use('*', async (c, next) => {
+  const path = new URL(c.req.url).pathname
+  // Always pass through: API, static assets, auth routes
+  if (
+    path.startsWith('/api/') ||
+    path.startsWith('/static/') ||
+    path === '/favicon.ico'
+  ) return next()
+
+  // Only enforce if DB is available
+  if (!c.env.DB) return next()
+
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT value FROM site_drafts WHERE key='maintenance_mode' AND status='live'`
+    ).first<{ value: string }>()
+
+    if (row?.value === '1') {
+      // Check if this is the admin — they bypass the lock
+      const token = getSessionCookie(c.req.raw)
+      if (token && c.env.SESSION_SECRET) {
+        const user = await getSessionUser(c.env.DB, token)
+        if (user && isAdmin(user, c.env)) return next()
+      }
+      // Everyone else sees the maintenance page
+      return c.html(maintenancePage(), 503)
+    }
+  } catch {
+    // If DB check fails, don't block the site
+  }
+  return next()
+})
+
 // ═══════════════════════════════════════════════════════════════
 //  PIPELINE CONSTANTS
 // ═══════════════════════════════════════════════════════════════
@@ -4784,7 +4822,7 @@ app.get('/api/auth/google/callback', async (c) => {
       status: 302,
       headers: {
         'Location': redirectAfterLogin,
-        'Set-Cookie': setSessionCookie(token, c.env.SITE_URL)
+        'Set-Cookie': setSessionCookie(token, getSiteUrl(c))
       }
     })
   } catch (err: any) {
@@ -8836,7 +8874,9 @@ const DRAFT_DEFAULTS: Record<string, string> = {
   feature_remix_enabled: '1',
   feature_extend_enabled:'1',
   maintenance_mode:      '0',
-  maintenance_message:   'StemForge is undergoing maintenance. We\'ll be back shortly!',
+  maintenance_message:   'StemForge is undergoing scheduled maintenance. We\'ll be back in a couple of hours!',
+  maintenance_banner:    '0',
+  maintenance_date:      '',
   custom_banner_html:    '',
 }
 
@@ -12208,7 +12248,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-174'
+const ASSET_VER = '20261020-178'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12271,12 +12311,19 @@ ${extraHead}
           + (isDraft ? '<span style="margin-left:10px;background:rgba(255,255,255,.2);padding:1px 7px;border-radius:4px;font-size:.72rem">DRAFT PREVIEW</span>' : '');
       }
     }
-    // ── Maintenance notice ───────────────────────────────────────────
-    if (cfg.maintenance_mode === '1' && cfg.maintenance_message) {
-      var mb = document.getElementById('sf-maintenance-bar');
-      if (mb) {
-        mb.style.cssText = 'display:block;background:linear-gradient(90deg,#7c2d12,#b45309);color:#fff;text-align:center;padding:9px 16px;font-size:.84rem;font-weight:600;font-family:Inter,sans-serif;line-height:1.4;position:relative;z-index:200';
-        mb.innerHTML = '<i class="fas fa-hard-hat" style="margin-right:7px"></i>' + cfg.maintenance_message;
+    // ── Scheduled maintenance bottom banner ─────────────────────────
+    // Shows the advance warning banner (maintenance_banner='1')
+    // This is separate from maintenance_mode which locks the site
+    if (cfg.maintenance_banner === '1' && cfg.maintenance_date) {
+      var dismissed = sessionStorage.getItem('sf_maint_dismissed');
+      if (!dismissed) {
+        var mb = document.getElementById('sf-maintenance-bar');
+        if (mb) {
+          mb.style.cssText = 'display:flex;position:fixed;bottom:0;left:0;right:0;z-index:9000;align-items:center;justify-content:center;gap:12px;background:linear-gradient(90deg,#78350f,#92400e);color:#fff;padding:10px 48px 10px 16px;font-size:.84rem;font-weight:600;font-family:Inter,sans-serif;line-height:1.4;box-shadow:0 -4px 20px rgba(0,0,0,.4)';
+          mb.innerHTML = '<i class="fas fa-tools" style="font-size:.9rem;opacity:.85"></i>'
+            + '<span>⚠️ Scheduled maintenance ' + cfg.maintenance_date + ' — the site will be temporarily unavailable.</span>'
+            + '<button onclick="sessionStorage.setItem(\'sf_maint_dismissed\',\'1\');this.parentElement.style.display=\'none\'" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.15);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:.9rem;display:flex;align-items:center;justify-content:center" title="Dismiss">×</button>';
+        }
       }
     }
     // ── Custom banner HTML ───────────────────────────────────────────
@@ -13427,6 +13474,52 @@ window.showSfPlanToast = function(type, plan, msg) {
 </main>`)
 }
 
+
+// ─── MAINTENANCE PAGE ────────────────────────────────────────────────────────
+function maintenancePage() {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>StemForge — Scheduled Maintenance</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0a0a0f;color:#e2e8f0;font-family:'Inter',sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;text-align:center}
+  .logo{width:72px;height:72px;object-fit:contain;margin-bottom:28px;filter:drop-shadow(0 0 24px rgba(167,139,250,.4))}
+  .icon-wrap{width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#4f46e5);display:flex;align-items:center;justify-content:center;font-size:2rem;margin:0 auto 28px;box-shadow:0 0 40px rgba(124,58,237,.3)}
+  h1{font-size:2rem;font-weight:800;background:linear-gradient(135deg,#a78bfa,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:12px}
+  .sub{color:#94a3b8;font-size:1rem;max-width:420px;line-height:1.6;margin-bottom:32px}
+  .time-badge{display:inline-flex;align-items:center;gap:8px;background:rgba(124,58,237,.15);border:1px solid rgba(124,58,237,.3);border-radius:12px;padding:10px 20px;font-size:.9rem;font-weight:600;color:#a78bfa;margin-bottom:40px}
+  .dots{display:flex;gap:8px;justify-content:center}
+  .dot{width:10px;height:10px;border-radius:50%;background:#7c3aed;animation:pulse 1.4s ease-in-out infinite}
+  .dot:nth-child(2){animation-delay:.2s}
+  .dot:nth-child(3){animation-delay:.4s}
+  @keyframes pulse{0%,80%,100%{opacity:.3;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
+  .footer{position:fixed;bottom:20px;color:#475569;font-size:.78rem}
+</style>
+</head>
+<body>
+  <img src="/static/stemforge-logo-v21.png" class="logo" alt="StemForge" onerror="this.style.display='none';document.querySelector('.icon-wrap').style.display='flex'"/>
+  <div class="icon-wrap" style="display:none"><i class="fas fa-hard-hat"></i></div>
+  <h1>Scheduled Maintenance</h1>
+  <p class="sub">StemForge is currently down for scheduled maintenance. We're making improvements and will be back shortly!</p>
+  <div class="time-badge">
+    <i class="fas fa-clock"></i>
+    <span>Come back in a couple of hours</span>
+  </div>
+  <div class="dots">
+    <div class="dot"></div>
+    <div class="dot"></div>
+    <div class="dot"></div>
+  </div>
+  <p class="footer">stemforge.studio &nbsp;·&nbsp; Thank you for your patience</p>
+</body>
+</html>`
+}
 
 // ─── GENERATOR PAGE (real pipeline UI) ───────────────────────────────────────
 function generatorPage() {
@@ -16725,6 +16818,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="broadcasts" onclick="adminTab('broadcasts');loadBroadcastStats()"><i class="fas fa-envelope" style="color:#a78bfa"></i> Broadcasts</button>
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
       <button class="admin-tab" data-tab="pointlog" onclick="adminTab('pointlog');loadPointLog()"><i class="fas fa-coins" style="color:#f59e0b"></i> Point Log</button>
+      <button class="admin-tab" data-tab="maintenance" onclick="adminTab('maintenance');loadMaintenanceSettings()"><i class="fas fa-hard-hat" style="color:#f97316"></i> Maintenance</button>
 
     </div>
 
@@ -17632,6 +17726,223 @@ function adminPage(user: User) {
       </script>
     </div>
     <!-- ── /POINT LOG TAB ──────────────────────────────────────────────────── -->
+
+    <!-- ── MAINTENANCE TAB ────────────────────────────────────────────────── -->
+    <div id="admin-tab-maintenance" style="display:none">
+      <div style="max-width:640px">
+
+        <!-- Status indicator -->
+        <div id="maint-status-bar" style="display:none;border-radius:10px;padding:12px 18px;margin-bottom:20px;font-size:.85rem;font-weight:600;align-items:center;gap:10px"></div>
+
+        <!-- CARD 1: Advance Warning Banner -->
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:20px">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px">
+            <div>
+              <h3 style="font-size:1rem;font-weight:700;display:flex;align-items:center;gap:8px">
+                <i class="fas fa-bell" style="color:#f97316"></i> Maintenance Warning Banner
+              </h3>
+              <p style="color:var(--muted);font-size:.82rem;margin-top:4px">Shows a sticky banner at the <strong>bottom</strong> of every page giving users advance notice. The site stays fully open.</p>
+            </div>
+            <!-- Toggle -->
+            <label style="position:relative;display:inline-block;width:52px;height:28px;flex-shrink:0;cursor:pointer">
+              <input type="checkbox" id="maint-banner-toggle" onchange="saveMaintSetting('banner')" style="opacity:0;width:0;height:0;position:absolute">
+              <span id="maint-banner-slider" style="position:absolute;inset:0;border-radius:14px;background:#334155;transition:background .2s">
+                <span id="maint-banner-knob" style="position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .2s;display:block"></span>
+              </span>
+            </label>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <label style="font-size:.82rem;color:var(--muted);font-weight:600">Maintenance date/time to show in the banner</label>
+            <input type="text" id="maint-date-input" placeholder="e.g. tomorrow at 2am – 6am EST" style="padding:9px 13px;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#fff;font-size:.88rem;width:100%">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="maint-preset" onclick="setMaintDate('tomorrow at 2am – 6am EST')">tomorrow 2am–6am</button>
+              <button class="maint-preset" onclick="setMaintDate('tonight at 2am – 4am EST')">tonight 2am–4am</button>
+              <button class="maint-preset" onclick="setMaintDate('Sunday at 2am – 6am EST')">Sunday 2am–6am</button>
+            </div>
+            <button onclick="saveMaintSetting('banner')" style="align-self:flex-start;padding:8px 20px;background:#f97316;border:none;border-radius:8px;color:#fff;font-size:.84rem;font-weight:600;cursor:pointer"><i class="fas fa-save"></i> Save &amp; Apply Banner</button>
+          </div>
+        </div>
+
+        <!-- CARD 2: Site Lock -->
+        <div style="background:var(--surface);border:2px solid rgba(239,68,68,.25);border-radius:14px;padding:24px;margin-bottom:20px">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px">
+            <div>
+              <h3 style="font-size:1rem;font-weight:700;display:flex;align-items:center;gap:8px;color:#f87171">
+                <i class="fas fa-lock"></i> Site Lock (Maintenance Mode)
+              </h3>
+              <p style="color:var(--muted);font-size:.82rem;margin-top:4px">Locks the site for all users immediately. Anyone who navigates to a new page sees the maintenance screen. <strong style="color:#fca5a5">Your account always bypasses the lock.</strong> In-flight jobs complete before the user hits the wall on their next navigation.</p>
+            </div>
+            <!-- Toggle -->
+            <label style="position:relative;display:inline-block;width:52px;height:28px;flex-shrink:0;cursor:pointer">
+              <input type="checkbox" id="maint-lock-toggle" onchange="confirmLockToggle()" style="opacity:0;width:0;height:0;position:absolute">
+              <span id="maint-lock-slider" style="position:absolute;inset:0;border-radius:14px;background:#334155;transition:background .2s">
+                <span id="maint-lock-knob" style="position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:transform .2s;display:block"></span>
+              </span>
+            </label>
+          </div>
+          <div id="maint-lock-live-indicator" style="display:none;align-items:center;gap:8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px 14px;font-size:.82rem;color:#fca5a5;font-weight:600">
+            <span style="width:8px;height:8px;border-radius:50%;background:#ef4444;display:inline-block;animation:pulse-red 1s infinite"></span>
+            Site is currently LOCKED — only you can access it
+          </div>
+        </div>
+
+        <!-- Save feedback -->
+        <div id="maint-save-msg" style="display:none;border-radius:8px;padding:10px 16px;font-size:.84rem;font-weight:600;margin-top:4px"></div>
+
+      </div>
+      <style>
+        .maint-preset{padding:5px 12px;background:rgba(255,255,255,.07);border:1px solid var(--border);border-radius:6px;color:var(--muted);font-size:.78rem;cursor:pointer;transition:all .15s}
+        .maint-preset:hover{border-color:#f97316;color:#f97316}
+        @keyframes pulse-red{0%,100%{opacity:1}50%{opacity:.4}}
+      </style>
+      <script>
+      var _maintLoaded = false;
+      function loadMaintenanceSettings() {
+        if (_maintLoaded) return;
+        _maintLoaded = true;
+        fetch('/api/admin/draft', { credentials: 'include' })
+          .then(function(r){ return r.json(); })
+          .then(function(d){
+            var live = d.live || {};
+            var draft = d.draft || {};
+            // Use live values (what users actually see)
+            var bannerOn  = live.maintenance_banner === '1';
+            var lockOn    = live.maintenance_mode   === '1';
+            var dateVal   = live.maintenance_date   || '';
+
+            // Banner toggle
+            var bt = document.getElementById('maint-banner-toggle');
+            if (bt) bt.checked = bannerOn;
+            updateToggleUI('maint-banner', bannerOn);
+
+            // Lock toggle
+            var lt = document.getElementById('maint-lock-toggle');
+            if (lt) lt.checked = lockOn;
+            updateToggleUI('maint-lock', lockOn);
+
+            // Date input
+            var di = document.getElementById('maint-date-input');
+            if (di && dateVal) di.value = dateVal;
+
+            // Live indicator
+            var ind = document.getElementById('maint-lock-live-indicator');
+            if (ind) ind.style.display = lockOn ? 'flex' : 'none';
+
+            // Status bar
+            showMaintStatus(bannerOn, lockOn);
+          }).catch(function(){ showMaintMsg('Could not load settings', false); });
+      }
+
+      function updateToggleUI(id, on) {
+        var slider = document.getElementById(id + '-slider');
+        var knob   = document.getElementById(id + '-knob');
+        if (slider) slider.style.background = on ? (id === 'maint-lock' ? '#ef4444' : '#f97316') : '#334155';
+        if (knob)   knob.style.transform    = on ? 'translateX(24px)' : 'translateX(0)';
+      }
+
+      function showMaintStatus(bannerOn, lockOn) {
+        var bar = document.getElementById('maint-status-bar');
+        if (!bar) return;
+        if (lockOn) {
+          bar.style.cssText = 'display:flex;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:10px;padding:12px 18px;margin-bottom:20px;font-size:.85rem;font-weight:600;align-items:center;gap:10px;color:#fca5a5';
+          bar.innerHTML = '<i class="fas fa-lock"></i> Site is LOCKED — maintenance mode active. Only you can access the site.';
+        } else if (bannerOn) {
+          bar.style.cssText = 'display:flex;background:rgba(249,115,22,.1);border:1px solid rgba(249,115,22,.3);border-radius:10px;padding:12px 18px;margin-bottom:20px;font-size:.85rem;font-weight:600;align-items:center;gap:10px;color:#fb923c';
+          bar.innerHTML = '<i class="fas fa-bell"></i> Warning banner is LIVE — users see the maintenance notice at the bottom of every page.';
+        } else {
+          bar.style.display = 'none';
+        }
+      }
+
+      function setMaintDate(val) {
+        var di = document.getElementById('maint-date-input');
+        if (di) di.value = val;
+      }
+
+      function saveMaintSetting(type) {
+        var bannerToggle = document.getElementById('maint-banner-toggle');
+        var lockToggle   = document.getElementById('maint-lock-toggle');
+        var dateInput    = document.getElementById('maint-date-input');
+        var bannerOn = bannerToggle ? bannerToggle.checked : false;
+        var lockOn   = lockToggle   ? lockToggle.checked   : false;
+        var dateVal  = dateInput    ? dateInput.value.trim() : '';
+
+        var payload = {};
+        if (type === 'banner') {
+          payload.maintenance_banner = bannerOn ? '1' : '0';
+          payload.maintenance_date   = dateVal;
+        }
+        // Also save current lock state so publish keeps it correct
+        payload.maintenance_mode = lockOn ? '1' : '0';
+
+        updateToggleUI('maint-banner', bannerOn);
+
+        // Save draft then immediately publish to live
+        fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+          .then(function(r){ return r.json(); })
+          .then(function(){
+            // Publish to live immediately
+            return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' });
+          })
+          .then(function(){ showMaintMsg('✓ Saved and published', true); showMaintStatus(bannerOn, lockOn); })
+          .catch(function(){ showMaintMsg('Error saving — please try again', false); });
+      }
+
+      function confirmLockToggle() {
+        var lt = document.getElementById('maint-lock-toggle');
+        var turningOn = lt ? lt.checked : false;
+        if (turningOn) {
+          if (!confirm('🔒 Lock the site now?\\n\\nAll users will see the maintenance page on their next navigation. Your account bypasses this.\\n\\nProceed?')) {
+            if (lt) lt.checked = false;
+            return;
+          }
+        } else {
+          if (!confirm('🔓 Unlock the site?\\n\\nAll users will have access again immediately.\\n\\nProceed?')) {
+            if (lt) lt.checked = true;
+            return;
+          }
+        }
+        var lockOn = turningOn;
+        var bannerToggle = document.getElementById('maint-banner-toggle');
+        var dateInput    = document.getElementById('maint-date-input');
+        var bannerOn = bannerToggle ? bannerToggle.checked : false;
+        var dateVal  = dateInput    ? dateInput.value.trim() : '';
+
+        var payload = {
+          maintenance_mode:   lockOn   ? '1' : '0',
+          maintenance_banner: bannerOn ? '1' : '0',
+          maintenance_date:   dateVal
+        };
+
+        updateToggleUI('maint-lock', lockOn);
+        var ind = document.getElementById('maint-lock-live-indicator');
+        if (ind) ind.style.display = lockOn ? 'flex' : 'none';
+
+        fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+          .then(function(r){ return r.json(); })
+          .then(function(){
+            return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' });
+          })
+          .then(function(){
+            showMaintMsg(lockOn ? '🔒 Site locked — maintenance mode active' : '🔓 Site unlocked — maintenance mode off', true);
+            showMaintStatus(bannerOn, lockOn);
+          })
+          .catch(function(){ showMaintMsg('Error — could not update site lock', false); });
+      }
+
+      function showMaintMsg(msg, ok) {
+        var el = document.getElementById('maint-save-msg');
+        if (!el) return;
+        el.style.display = 'block';
+        el.style.background = ok ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
+        el.style.border = ok ? '1px solid rgba(16,185,129,.3)' : '1px solid rgba(239,68,68,.3)';
+        el.style.color = ok ? '#6ee7b7' : '#fca5a5';
+        el.textContent = msg;
+        setTimeout(function(){ el.style.display='none'; }, 4000);
+      }
+      </script>
+    </div>
+    <!-- ── /MAINTENANCE TAB ────────────────────────────────────────────────── -->
 
 
 
