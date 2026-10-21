@@ -5318,7 +5318,7 @@ app.get('/shop', async (c) => {
   </style>
 </head>
 <body>
-${renderNav(user, c.env, '/shop')}
+${globalSidebar()}
 <main class="shop-page">
   <div class="shop-hero">
     <h1><i class="fas fa-store" style="color:#8b5cf6;margin-right:10px;-webkit-text-fill-color:#8b5cf6"></i>StemForge Shop</h1>
@@ -5637,7 +5637,7 @@ app.get('/collection', async (c) => {
   </style>
 </head>
 <body>
-${renderNav(user, c.env, '/collection')}
+${globalSidebar()}
 <main class="coll-page">
   <div class="coll-hero">
     <h1><i class="fas fa-gem" style="color:#8b5cf6"></i> My Collection</h1>
@@ -12201,7 +12201,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-172'
+const ASSET_VER = '20261020-173'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -15999,88 +15999,18 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
 
-    <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
-    <div class="sub-credits-section" id="sub-credits-section">
-      <div style="display:flex;align-items:center;gap:14px;background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.18);border-radius:12px;padding:14px 18px;margin-bottom:20px">
-        <i class="fas fa-store" style="color:#8b5cf6;font-size:1.1rem;flex-shrink:0"></i>
-        <div style="flex:1">
-          <div style="font-weight:700;font-size:.9rem;margin-bottom:2px">Point packs &amp; cube skins are now in the Shop</div>
-          <div style="font-size:.8rem;color:var(--muted)">Buy point top-ups, upgrade your plan, and personalize your cube all in one place.</div>
-        </div>
-        <a href="/shop#packs" style="flex-shrink:0;padding:8px 16px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:8px;font-weight:700;font-size:.82rem;text-decoration:none;white-space:nowrap"><i class="fas fa-arrow-right" style="margin-right:5px"></i>Go to Shop</a>
+    <!-- ── Top Up Points → moved to Shop ────────────────────────── -->
+    <div style="display:flex;align-items:center;gap:16px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.2);border-radius:14px;padding:18px 22px;margin-bottom:28px">
+      <div style="width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="fas fa-store" style="color:#fff;font-size:1rem"></i>
       </div>
-      <div class="pack-section-header">
-        <div>
-          <h3 style="margin:0 0 4px;font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:8px">
-            <span style="width:32px;height:32px;background:linear-gradient(135deg,var(--primary),#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center">
-              <i class="fas fa-bolt" style="color:#fff;font-size:.85rem"></i>
-            </span>
-            Top Up Points
-          </h3>
-          <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — valid for current billing cycle, stack on top of your plan</p>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(78,159,255,.08);border:1px solid rgba(78,159,255,.2);border-radius:8px;font-size:.78rem;color:var(--primary)">
-          <i class="fas fa-lock-open"></i> No subscription required
-        </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:3px">Buy Point Packs &amp; Cube Skins</div>
+        <div style="font-size:.82rem;color:var(--muted);line-height:1.4">Top-up packs, cube skins, and all purchases are now in one place — the Shop.</div>
       </div>
-      <div class="credit-packs-grid" id="credit-packs-grid">
-        <div class="credit-pack-card" data-pack="pack_150">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">150</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$4.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_150">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_600">
-          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">600</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$9.99</span>
-            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_600">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card" data-pack="pack_1000">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">1000</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$17.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1000">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card" data-pack="pack_1500">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">1500</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$29.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1500">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-      </div>
-      <p style="text-align:center;font-size:.78rem;color:var(--muted);margin-top:10px">
-        <i class="fas fa-shield-alt" style="color:var(--accent-2);margin-right:4px"></i>Secure checkout powered by Stripe
-      </p>
+      <a href="/shop" style="flex-shrink:0;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;font-size:.85rem;text-decoration:none;white-space:nowrap;display:flex;align-items:center;gap:6px">
+        <i class="fas fa-store"></i> Open Shop
+      </a>
     </div>
 
     <div class="sub-plans-section">
