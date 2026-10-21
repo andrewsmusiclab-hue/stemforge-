@@ -898,6 +898,11 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // persona_id is the MusicAPI persona created from a user's uploaded voice sample
   try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_id TEXT`).run() } catch {}
   try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_label TEXT`).run() } catch {}
+  // VoiceForge profile: display name and avatar image URL
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_name TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_avatar TEXT`).run() } catch {}
+  // Jobs: which voiceforge persona was used to generate this track
+  try { await db.prepare(`ALTER TABLE jobs ADD COLUMN voice_forge_id TEXT`).run() } catch {}
   await db.prepare(`CREATE TABLE IF NOT EXISTS voice_jobs (
     id          TEXT PRIMARY KEY,
     user_id     TEXT NOT NULL,
@@ -911,6 +916,53 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     created_at  INTEGER NOT NULL
   )`).run()
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_voice_jobs_user_id ON voice_jobs (user_id)`).run() } catch {}
+
+  // ── Shop: cube skins + collectibles ───────────────────────────────────────
+  await db.prepare(`CREATE TABLE IF NOT EXISTS shop_items (
+    id          TEXT PRIMARY KEY,       -- e.g. 'cube_obsidian'
+    type        TEXT NOT NULL,          -- 'cube' | 'hammer' | 'bundle'
+    name        TEXT NOT NULL,
+    description TEXT,
+    price_cents INTEGER NOT NULL,       -- USD cents (0 = free)
+    rarity      TEXT NOT NULL DEFAULT 'standard', -- 'standard' | 'limited' | 'rare'
+    max_supply  INTEGER,               -- NULL = unlimited
+    sold_count  INTEGER NOT NULL DEFAULT 0,
+    active      INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    preview_colors TEXT,               -- JSON: color config for preview
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+  )`).run()
+
+  await db.prepare(`CREATE TABLE IF NOT EXISTS user_purchases (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    item_id     TEXT NOT NULL,
+    price_paid  INTEGER NOT NULL DEFAULT 0, -- actual cents paid
+    stripe_pi   TEXT,                  -- Stripe PaymentIntent ID
+    equipped    INTEGER NOT NULL DEFAULT 0,
+    purchased_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+  )`).run()
+
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_user ON user_purchases (user_id)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_item ON user_purchases (item_id)`).run() } catch {}
+
+  // Seed default shop items (idempotent)
+  const shopItems = [
+    { id: 'cube_forge',    type: 'cube', name: 'The Forge',       description: 'The original StemForge cube. Steel chrome with forge-fire faces. Every creator starts here.',      price_cents: 0,    rarity: 'standard', sort_order: 1, preview_colors: JSON.stringify({ cubeBody: '#070e1c', edgeGlow: '#00e5ff', fillLight: '#00d2ff', rimLight: '#ff8c20', botLight: '#0040ff', shellColor: '#00aaff', waveformTiers: [['#ffaa00','#ff4400'],['#00ff88','#00ffcc'],['#dd00ff','#8800ff'],['#00d4ff','#0066ff']] }) },
+    { id: 'cube_obsidian', type: 'cube', name: 'Obsidian',        description: 'Volcanic black glass with ember-cracked edges. For producers who forge in the dark.',              price_cents: 499,  rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ cubeBody: '#0a0404', edgeGlow: '#ff2200', fillLight: '#cc1100', rimLight: '#ff6600', botLight: '#660000', shellColor: '#ff3300', waveformTiers: [['#ff4400','#ff2200'],['#ff6600','#ff3300'],['#cc2200','#881100'],['#ff5500','#cc3300']] }) },
+    { id: 'cube_goldrush', type: 'cube', name: 'Gold Rush',       description: '24k brushed gold with warm amber glow. Luxury aesthetics for the chart-topping producer.',         price_cents: 499,  rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ cubeBody: '#1a1000', edgeGlow: '#ffd700', fillLight: '#ffaa00', rimLight: '#ff8800', botLight: '#cc7700', shellColor: '#ffcc00', waveformTiers: [['#ffd700','#ffaa00'],['#ffcc00','#ff9900'],['#eebb00','#cc8800'],['#ffdd44','#ffaa00']] }) },
+    { id: 'cube_neon',     type: 'cube', name: 'Neon Ghost',      description: 'Frosted glass cube with electric cyan pulse lines. Invisible in daylight. Unstoppable at night.',  price_cents: 499,  rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ cubeBody: '#020d18', edgeGlow: '#00ffff', fillLight: '#00eeff', rimLight: '#0088ff', botLight: '#00aaff', shellColor: '#00ffee', waveformTiers: [['#00ffff','#00eeff'],['#00ccff','#0088ff'],['#00eedd','#00bbcc'],['#44ffff','#00ddff']] }) },
+    { id: 'cube_diamond',  type: 'cube', name: 'Blood Diamond',   description: 'Crimson faceted gem. Only 500 ever forged — each one numbered. The rarest cube in existence.',   price_cents: 1499, rarity: 'limited', max_supply: 500, sort_order: 5, preview_colors: JSON.stringify({ cubeBody: '#1a0008', edgeGlow: '#ff0055', fillLight: '#cc0044', rimLight: '#ff0077', botLight: '#880033', shellColor: '#ff0055', waveformTiers: [['#ff0055','#cc0033'],['#ff3366','#dd0044'],['#ff0044','#aa0033'],['#ff2255','#cc0033']] }) },
+  ]
+  for (const item of shopItems) {
+    await db.prepare(`INSERT OR IGNORE INTO shop_items (id, type, name, description, price_cents, rarity, max_supply, sort_order, preview_colors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(item.id, item.type, item.name, item.description, item.price_cents, item.rarity, item.max_supply ?? null, item.sort_order, item.preview_colors).run()
+  }
+  // Grant everyone The Forge for free (idempotent)
+  // This runs lazily per-user on first shop/collection load — handled in API
+
+  // active_cube_id on users
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN active_cube_id TEXT DEFAULT 'cube_forge'`).run() } catch {}
 
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
@@ -4596,8 +4648,8 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash, active_cube_id FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null; active_cube_id: string | null }>()
   const plan = fresh?.plan ?? user.plan
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
@@ -4612,7 +4664,8 @@ app.get('/api/auth/me', async (c) => {
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null,
       is_admin: isAdmin(user, c.env),
-      has_password: !!(fresh?.password_hash)
+      has_password: !!(fresh?.password_hash),
+      active_cube_id: fresh?.active_cube_id || 'cube_forge',
     }
   })
 })
@@ -4793,6 +4846,16 @@ app.post('/api/stripe/webhook', async (c) => {
         const credits = parseInt(session.metadata?.credits || '0', 10)
         if (credits > 0) {
           await c.env.DB.prepare(`UPDATE users SET bonus_credits=bonus_credits+? WHERE id=?`).bind(credits, userId).run()
+        }
+      } else if (metaType === 'shop_item' && userId) {
+        // Shop item (cube skin) purchase
+        const itemId = session.metadata?.item_id
+        if (itemId) {
+          const purchaseId = `stripe_${session.payment_intent || session.id}`
+          await c.env.DB.prepare(
+            `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, stripe_pi, equipped) VALUES (?, ?, ?, ?, ?, 0)`
+          ).bind(purchaseId, userId, itemId, session.amount_total || 0, session.payment_intent || null).run()
+          await c.env.DB.prepare(`UPDATE shop_items SET sold_count = sold_count + 1 WHERE id = ?`).bind(itemId).run()
         }
       } else if (userId && subId) {
         // Subscription purchase
@@ -5162,6 +5225,501 @@ app.get('/profile', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   return c.html(profilePage(user))
+})
+
+// ── /shop — unified store: cube skins + plans + credit packs (ADMIN ONLY) ──
+app.get('/shop', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/shop')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login?next=/shop')
+  if (!isAdmin(user, c.env)) return c.redirect('/')
+  const ASSET_VER_SHOP = ASSET_VER
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Shop — StemForge</title>
+  <link href="/static/style.css?v=${ASSET_VER_SHOP}" rel="stylesheet"/>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
+  <style>
+    /* ── Shop page styles ─────────────────────────────────────── */
+    .shop-page { max-width: 1100px; margin: 0 auto; padding: 32px 20px 80px; }
+    .shop-hero { text-align: center; margin-bottom: 40px; }
+    .shop-hero h1 { font-size: 2rem; font-weight: 800; margin-bottom: 8px; background: linear-gradient(135deg,#fff,#a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .shop-hero p { color: var(--muted); font-size: .95rem; }
+
+    /* Tabs */
+    .shop-tabs { display: flex; gap: 0; border-bottom: 2px solid rgba(255,255,255,.08); margin-bottom: 36px; }
+    .shop-tab-btn { padding: 12px 24px; font-size: .9rem; font-weight: 600; color: var(--muted); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; transition: color .15s, border-color .15s; }
+    .shop-tab-btn.active { color: #fff; border-bottom-color: #8b5cf6; }
+    .shop-tab-btn:hover:not(.active) { color: #e2e8f0; }
+    .shop-tab-panel { display: none; }
+    .shop-tab-panel.active { display: block; }
+
+    /* Cube grid */
+    .cube-shop-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 20px; }
+    .cube-shop-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); border-radius: 16px; overflow: hidden; transition: border-color .2s, transform .2s; cursor: pointer; }
+    .cube-shop-card:hover { border-color: rgba(139,92,246,.45); transform: translateY(-3px); }
+    .cube-shop-card.owned { border-color: rgba(52,211,153,.4); }
+    .cube-shop-card.limited { border-color: rgba(239,68,68,.3); }
+    .cube-preview { height: 140px; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; }
+    .cube-preview-inner { width: 80px; height: 80px; position: relative; transform-style: preserve-3d; animation: cubeFloat 4s ease-in-out infinite; border-radius: 10px; }
+    @keyframes cubeFloat { 0%,100%{transform:rotateX(18deg) rotateY(-25deg) translateY(0)} 50%{transform:rotateX(18deg) rotateY(-25deg) translateY(-6px)} }
+    .cube-face { position: absolute; width: 80px; height: 80px; border-radius: 8px; border: 1.5px solid; }
+    .cube-face-front  { transform: translateZ(40px); }
+    .cube-face-back   { transform: rotateY(180deg) translateZ(40px); }
+    .cube-face-left   { transform: rotateY(-90deg) translateZ(40px); }
+    .cube-face-right  { transform: rotateY(90deg) translateZ(40px); }
+    .cube-face-top    { transform: rotateX(90deg) translateZ(40px); }
+    .cube-face-bottom { transform: rotateX(-90deg) translateZ(40px); }
+    .cube-shop-body { padding: 14px 16px 16px; }
+    .cube-shop-name { font-weight: 700; font-size: .95rem; margin-bottom: 4px; }
+    .cube-shop-desc { font-size: .78rem; color: var(--muted); margin-bottom: 12px; line-height: 1.45; }
+    .cube-shop-footer { display: flex; align-items: center; justify-content: space-between; }
+    .cube-shop-price { font-weight: 700; font-size: .95rem; }
+    .cube-shop-price.free { color: #34d399; }
+    .cube-shop-price.paid { color: #e2e8f0; }
+    .rarity-badge { font-size: .65rem; font-weight: 700; padding: 2px 7px; border-radius: 20px; letter-spacing: .04em; text-transform: uppercase; }
+    .rarity-badge.standard { background: rgba(139,92,246,.15); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); }
+    .rarity-badge.limited  { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.25); }
+    .cube-btn { padding: 8px 16px; border-radius: 8px; font-size: .82rem; font-weight: 700; cursor: pointer; border: none; transition: opacity .15s, transform .1s; }
+    .cube-btn:active { transform: scale(.97); }
+    .cube-btn--buy  { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
+    .cube-btn--owned { background: rgba(52,211,153,.12); color: #34d399; border: 1px solid rgba(52,211,153,.3); cursor: default; }
+    .cube-btn--equip { background: linear-gradient(135deg,#059669,#34d399); color: #fff; }
+    .cube-btn--equipped { background: rgba(52,211,153,.08); color: #34d399; border: 1px solid rgba(52,211,153,.25); cursor: default; font-style: italic; }
+    .supply-row { font-size: .72rem; color: #f87171; margin-top: 4px; }
+
+    /* Plans tab — reuse subscription card styles but simplified */
+    .shop-plans-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; margin-bottom: 40px; }
+    .shop-plan-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09); border-radius: 16px; padding: 24px; position: relative; transition: border-color .2s; }
+    .shop-plan-card.current { border-color: rgba(139,92,246,.5); }
+    .shop-plan-card.popular::before { content: 'Most Popular'; position: absolute; top: -10px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; font-size: .7rem; font-weight: 700; padding: 3px 10px; border-radius: 20px; white-space: nowrap; }
+    .shop-plan-name { font-size: 1.1rem; font-weight: 800; margin-bottom: 6px; }
+    .shop-plan-price { font-size: 1.8rem; font-weight: 800; margin-bottom: 4px; }
+    .shop-plan-price span { font-size: .85rem; font-weight: 400; color: var(--muted); }
+    .shop-plan-pts { font-size: .82rem; color: var(--muted); margin-bottom: 16px; }
+    .shop-plan-feats { list-style: none; padding: 0; margin: 0 0 20px; }
+    .shop-plan-feats li { font-size: .83rem; padding: 4px 0; display: flex; gap: 8px; }
+    .shop-plan-feats li i { color: #34d399; margin-top: 2px; flex-shrink: 0; }
+    .shop-plan-btn { width: 100%; padding: 11px; border-radius: 10px; font-weight: 700; font-size: .88rem; cursor: pointer; border: none; }
+    .shop-plan-btn--primary { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
+    .shop-plan-btn--outline { background: rgba(255,255,255,.06); color: #e2e8f0; border: 1px solid rgba(255,255,255,.15); }
+    .shop-plan-btn--current { background: rgba(139,92,246,.1); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); cursor: default; }
+
+    /* Purchase success banner */
+    .shop-success-banner { background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.3); border-radius: 12px; padding: 14px 20px; margin-bottom: 28px; display: flex; align-items: center; gap: 12px; color: #34d399; font-weight: 600; }
+
+    /* Collection link */
+    .collection-cta { display: flex; align-items: center; gap: 14px; background: rgba(139,92,246,.06); border: 1px solid rgba(139,92,246,.2); border-radius: 12px; padding: 16px 20px; margin-bottom: 28px; }
+    .collection-cta a { color: #a78bfa; font-weight: 700; text-decoration: none; }
+    .collection-cta a:hover { color: #c4b5fd; }
+  </style>
+</head>
+<body>
+${globalSidebar()}
+<main class="shop-page">
+  <div class="shop-hero">
+    <h1><i class="fas fa-store" style="color:#8b5cf6;margin-right:10px;-webkit-text-fill-color:#8b5cf6"></i>StemForge Shop</h1>
+    <p>Personalize your forge. Every creator's studio can look different — because yours should.</p>
+  </div>
+
+  ${(new URL(c.req.url)).searchParams.get('purchase') === 'success' ? `
+  <div class="shop-success-banner">
+    <i class="fas fa-check-circle" style="font-size:1.3rem"></i>
+    <div>
+      <div style="font-size:1rem">Purchase complete!</div>
+      <div style="font-size:.82rem;font-weight:400;opacity:.8">Your new cube has been added to your collection. Head to <a href="/collection" style="color:#34d399">My Collection</a> to equip it.</div>
+    </div>
+  </div>` : ''}
+
+  <div class="collection-cta">
+    <i class="fas fa-gem" style="color:#8b5cf6;font-size:1.2rem;flex-shrink:0"></i>
+    <div style="flex:1">
+      <div style="font-weight:700;margin-bottom:2px">Your Collection</div>
+      <div style="font-size:.82rem;color:var(--muted)">View and equip everything you own — including your active cube skin.</div>
+    </div>
+    <a href="/collection" style="flex-shrink:0;padding:9px 18px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:9px;font-weight:700;font-size:.85rem;text-decoration:none"><i class="fas fa-gem" style="margin-right:6px"></i>My Collection</a>
+  </div>
+
+  <!-- Tab Bar -->
+  <div class="shop-tabs">
+    <button class="shop-tab-btn active" onclick="shopTab('cubes',this)"><i class="fas fa-cube" style="margin-right:6px"></i>Cube Skins</button>
+    <button class="shop-tab-btn" onclick="shopTab('plans',this)"><i class="fas fa-star" style="margin-right:6px"></i>Plans</button>
+    <button class="shop-tab-btn" onclick="shopTab('packs',this)"><i class="fas fa-bolt" style="margin-right:6px"></i>Point Packs</button>
+  </div>
+
+  <!-- CUBE SKINS TAB -->
+  <div class="shop-tab-panel active" id="shop-panel-cubes">
+    <div class="cube-shop-grid" id="cube-shop-grid">
+      <div style="color:var(--muted);padding:32px;text-align:center"><i class="fas fa-circle-notch fa-spin"></i> Loading skins…</div>
+    </div>
+  </div>
+
+  <!-- PLANS TAB -->
+  <div class="shop-tab-panel" id="shop-panel-plans">
+    <div class="shop-plans-grid">
+      <!-- Free -->
+      <div class="shop-plan-card${user.plan === 'free' ? ' current' : ''}">
+        <div class="shop-plan-name" style="color:#94a3b8">Free</div>
+        <div class="shop-plan-price">$0 <span>/ mo</span></div>
+        <div class="shop-plan-pts">75 points / month</div>
+        <ul class="shop-plan-feats">
+          <li><i class="fas fa-check"></i> Beat Generator</li>
+          <li><i class="fas fa-check"></i> Remix + Extend</li>
+          <li><i class="fas fa-check"></i> Library (5 tracks max)</li>
+        </ul>
+        <button class="shop-plan-btn ${user.plan === 'free' ? 'shop-plan-btn--current' : 'shop-plan-btn--outline'}" ${user.plan === 'free' ? 'disabled' : `onclick="window.location='/subscription'"`}>${user.plan === 'free' ? 'Current Plan' : 'Downgrade'}</button>
+      </div>
+      <!-- Creator -->
+      <div class="shop-plan-card popular${user.plan === 'creator' ? ' current' : ''}">
+        <div class="shop-plan-name" style="color:#a78bfa">Creator</div>
+        <div class="shop-plan-price" style="color:#a78bfa">$10 <span>/ mo</span></div>
+        <div class="shop-plan-pts">900 points / month</div>
+        <ul class="shop-plan-feats">
+          <li><i class="fas fa-check"></i> Everything in Free</li>
+          <li><i class="fas fa-check"></i> Stem Splitter</li>
+          <li><i class="fas fa-check"></i> One Shot Creator</li>
+          <li><i class="fas fa-check"></i> VoiceForge</li>
+          <li><i class="fas fa-check"></i> Unlimited library</li>
+        </ul>
+        <button class="shop-plan-btn ${user.plan === 'creator' ? 'shop-plan-btn--current' : 'shop-plan-btn--primary'}" ${user.plan === 'creator' ? 'disabled' : `onclick="window.location='/subscription'"`}>${user.plan === 'creator' ? 'Current Plan' : 'Upgrade — $10/mo'}</button>
+      </div>
+      <!-- Pro -->
+      <div class="shop-plan-card${user.plan === 'pro' ? ' current' : ''}">
+        <div class="shop-plan-name" style="color:#fbbf24">Pro Artist</div>
+        <div class="shop-plan-price" style="color:#fbbf24">$25 <span>/ mo</span></div>
+        <div class="shop-plan-pts">2,000 points / month</div>
+        <ul class="shop-plan-feats">
+          <li><i class="fas fa-check"></i> Everything in Creator</li>
+          <li><i class="fas fa-check"></i> Priority generation</li>
+          <li><i class="fas fa-check"></i> Studio-quality masters</li>
+          <li><i class="fas fa-check"></i> Advanced analytics</li>
+        </ul>
+        <button class="shop-plan-btn ${user.plan === 'pro' ? 'shop-plan-btn--current' : 'shop-plan-btn--primary'}" style="${user.plan !== 'pro' ? 'background:linear-gradient(135deg,#b45309,#fbbf24)' : ''}" ${user.plan === 'pro' ? 'disabled' : `onclick="window.location='/subscription'"`}>${user.plan === 'pro' ? 'Current Plan' : 'Upgrade — $25/mo'}</button>
+      </div>
+    </div>
+    <p style="text-align:center;font-size:.82rem;color:var(--muted)">Manage billing, cancel, or change plans from your <a href="/subscription" style="color:var(--primary)">Subscription page</a>.</p>
+  </div>
+
+  <!-- POINT PACKS TAB -->
+  <div class="shop-tab-panel" id="shop-panel-packs">
+    <p style="color:var(--muted);font-size:.88rem;margin-bottom:20px">One-time point top-ups — stack on top of your monthly plan. Consumed first before subscription points.</p>
+    <div class="credit-packs-grid" id="shop-credit-packs-grid">
+      <div class="credit-pack-card" data-pack="pack_150">
+        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+        <div class="credit-pack__main"><div class="credit-pack__credits">150</div><div class="credit-pack__label">Points</div></div>
+        <div class="credit-pack__price-row"><span class="credit-pack__price">$4.99</span><button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_150"><i class="fas fa-cart-plus"></i> Buy</button></div>
+      </div>
+      <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_600">
+        <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
+        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+        <div class="credit-pack__main"><div class="credit-pack__credits">600</div><div class="credit-pack__label">Points</div></div>
+        <div class="credit-pack__price-row"><span class="credit-pack__price">$9.99</span><button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_600"><i class="fas fa-cart-plus"></i> Buy</button></div>
+      </div>
+      <div class="credit-pack-card" data-pack="pack_1000">
+        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+        <div class="credit-pack__main"><div class="credit-pack__credits">1000</div><div class="credit-pack__label">Points</div></div>
+        <div class="credit-pack__price-row"><span class="credit-pack__price">$17.99</span><button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1000"><i class="fas fa-cart-plus"></i> Buy</button></div>
+      </div>
+      <div class="credit-pack-card" data-pack="pack_1500">
+        <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
+        <div class="credit-pack__main"><div class="credit-pack__credits">1500</div><div class="credit-pack__label">Points</div></div>
+        <div class="credit-pack__price-row"><span class="credit-pack__price">$29.99</span><button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1500"><i class="fas fa-cart-plus"></i> Buy</button></div>
+      </div>
+    </div>
+    <p style="text-align:center;font-size:.78rem;color:var(--muted);margin-top:14px">Payments secured by Stripe. Points added instantly after payment.</p>
+  </div>
+
+</main>
+<script>
+// ── Credit pack buttons (reuse existing handler) ────────────────────────
+document.querySelectorAll('[data-pack]').forEach(function(btn){
+  if(!btn.matches('button')) return;
+  btn.addEventListener('click',function(){
+    var pack=btn.dataset.pack;
+    btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
+    fetch('/api/credit-packs/purchase',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pack_id:pack})})
+      .then(function(r){return r.json();})
+      .then(function(d){if(d.url)window.location=d.url;else{btn.disabled=false;btn.innerHTML='<i class="fas fa-cart-plus"></i> Buy';alert(d.error||'Error');} })
+      .catch(function(){btn.disabled=false;btn.innerHTML='<i class="fas fa-cart-plus"></i> Buy';});
+  });
+});
+
+// ── Tab switcher ────────────────────────────────────────────────────────
+function shopTab(name,btn){
+  document.querySelectorAll('.shop-tab-btn').forEach(function(b){b.classList.remove('active');});
+  document.querySelectorAll('.shop-tab-panel').forEach(function(p){p.classList.remove('active');});
+  btn.classList.add('active');
+  document.getElementById('shop-panel-'+name).classList.add('active');
+  if(name==='cubes') loadCubeShop();
+}
+
+// ── Cube shop ────────────────────────────────────────────────────────────
+var _cubeShopLoaded=false;
+function loadCubeShop(){
+  if(_cubeShopLoaded)return;
+  _cubeShopLoaded=true;
+  Promise.all([
+    fetch('/api/shop/items').then(r=>r.json()),
+    fetch('/api/shop/collection').then(r=>r.json())
+  ]).then(function(results){
+    var items=results[0].items||[];
+    var coll=results[1];
+    var ownedIds=(coll.owned||[]).map(function(o){return o.item_id;});
+    var activeCube=coll.active_cube_id||'cube_forge';
+    renderCubeGrid(items,ownedIds,activeCube);
+  }).catch(function(e){
+    document.getElementById('cube-shop-grid').innerHTML='<div style="color:var(--muted);padding:32px;text-align:center">Failed to load skins. <button onclick="location.reload()" style="color:var(--primary);background:none;border:none;cursor:pointer">Retry</button></div>';
+  });
+}
+
+function cubePreviewHtml(colors){
+  var c=colors||{};
+  var body=c.cubeBody||'#070e1c';
+  var edge=c.edgeGlow||'#00e5ff';
+  var alpha='rgba('+hexToRgb(edge)+',0.7)';
+  return '<div style="perspective:250px;width:80px;height:80px;margin:auto">'+
+    '<div style="width:80px;height:80px;position:relative;transform-style:preserve-3d;animation:cubeFloat 4s ease-in-out infinite;border-radius:10px">'+
+    makeFace('translateZ(40px)',body,edge)+
+    makeFace('rotateY(180deg) translateZ(40px)',body,edge)+
+    makeFace('rotateY(-90deg) translateZ(40px)',body,edge)+
+    makeFace('rotateY(90deg) translateZ(40px)',body,edge)+
+    makeFace('rotateX(90deg) translateZ(40px)',body,edge)+
+    makeFace('rotateX(-90deg) translateZ(40px)',body,edge)+
+    '</div></div>';
+}
+function makeFace(transform,bg,borderColor){
+  return '<div style="position:absolute;width:80px;height:80px;background:'+bg+';border:1.5px solid '+borderColor+';border-radius:8px;transform:'+transform+';box-shadow:inset 0 0 12px rgba('+hexToRgb(borderColor)+',0.2)"></div>';
+}
+function hexToRgb(hex){
+  hex=hex.replace('#','');
+  if(hex.length===3)hex=hex.split('').map(function(h){return h+h;}).join('');
+  var n=parseInt(hex,16);
+  return ((n>>16)&255)+','+(( n>>8)&255)+','+(n&255);
+}
+
+function renderCubeGrid(items,ownedIds,activeCube){
+  var grid=document.getElementById('cube-shop-grid');
+  if(!items.length){grid.innerHTML='<div style="color:var(--muted);padding:32px;text-align:center">No skins available yet.</div>';return;}
+  var html='';
+  items.forEach(function(item){
+    var colors={};try{colors=JSON.parse(item.preview_colors||'{}');}catch(e){}
+    var owned=ownedIds.indexOf(item.item_id||item.id)>-1;
+    var isActive=(item.item_id||item.id)===activeCube;
+    var limited=item.rarity==='limited';
+    var isFree=item.price_cents===0;
+    var supplyLeft=item.max_supply?item.max_supply-item.sold_count:null;
+    var itemId=item.item_id||item.id;
+
+    var btnHtml='';
+    if(owned&&isActive) btnHtml='<button class="cube-btn cube-btn--equipped" disabled><i class="fas fa-check" style="margin-right:5px"></i>Equipped</button>';
+    else if(owned)      btnHtml='<button class="cube-btn cube-btn--equip" onclick="equipCube(\\'' + itemId + '\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:5px"></i>Equip</button>';
+    else if(isFree)     btnHtml='<button class="cube-btn cube-btn--equip" onclick="claimCube(\\'' + itemId + '\\',this)">Claim Free</button>';
+    else if(supplyLeft===0) btnHtml='<button class="cube-btn" disabled style="background:rgba(255,255,255,.05);color:var(--muted)">Sold Out</button>';
+    else                btnHtml='<button class="cube-btn cube-btn--buy" onclick="buyCube(\\'' + itemId + '\\',this)"><i class="fas fa-shopping-cart" style="margin-right:5px"></i>' + (isFree?'Claim':'$'+(item.price_cents/100).toFixed(2)) + '</button>';
+
+    html+='<div class="cube-shop-card'+(owned?' owned':'')+(limited?' limited':'')+'">'+
+      '<div class="cube-preview" style="background:linear-gradient(135deg,'+darken(colors.cubeBody||'#070e1c')+',#050a14)">'+
+        cubePreviewHtml(colors)+
+      '</div>'+
+      '<div class="cube-shop-body">'+
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'+
+          '<div class="cube-shop-name">'+item.name+'</div>'+
+          '<span class="rarity-badge '+item.rarity+'">'+item.rarity+'</span>'+
+          (owned?'<span style="font-size:.68rem;font-weight:700;color:#34d399;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.2);border-radius:10px;padding:1px 6px">Owned</span>':'')+
+        '</div>'+
+        '<div class="cube-shop-desc">'+item.description+'</div>'+
+        (limited&&supplyLeft!==null?'<div class="supply-row"><i class="fas fa-fire" style="margin-right:4px"></i>'+(supplyLeft>0?supplyLeft+' remaining':'SOLD OUT')+'</div>':'')+
+        '<div class="cube-shop-footer">'+
+          '<span class="cube-shop-price '+(isFree?'free':'paid')+'">'+(isFree?'Free':'$'+(item.price_cents/100).toFixed(2))+'</span>'+
+          btnHtml+
+        '</div>'+
+      '</div>'+
+    '</div>';
+  });
+  grid.innerHTML=html;
+}
+
+function darken(hex){
+  hex=hex.replace('#','');
+  var n=parseInt(hex,16);
+  var r=Math.max(0,((n>>16)&255)-20);
+  var g=Math.max(0,((n>>8)&255)-20);
+  var b=Math.max(0,(n&255)-20);
+  return 'rgb('+r+','+g+','+b+')';
+}
+
+function equipCube(itemId,btn){
+  btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
+  fetch('/api/shop/equip/'+itemId,{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){_cubeShopLoaded=false;loadCubeShop();showToast('Cube equipped! Reload the create page to see it.');}
+      else{btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles" style="margin-right:5px"></i>Equip';alert(d.error||'Error');}
+    }).catch(function(){btn.disabled=false;btn.innerHTML='Equip';});
+}
+
+function claimCube(itemId,btn){
+  btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
+  fetch('/api/shop/purchase/'+itemId,{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){_cubeShopLoaded=false;loadCubeShop();showToast('Added to your collection!');}
+      else{btn.disabled=false;btn.innerHTML='Claim Free';alert(d.error||'Already owned');}
+    }).catch(function(){btn.disabled=false;btn.innerHTML='Claim Free';});
+}
+
+function buyCube(itemId,btn){
+  btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
+  fetch('/api/shop/purchase/'+itemId,{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.checkout_url)window.location=d.checkout_url;
+      else{btn.disabled=false;btn.innerHTML='<i class="fas fa-shopping-cart" style="margin-right:5px"></i>Buy';alert(d.error||'Error');}
+    }).catch(function(){btn.disabled=false;btn.innerHTML='Buy';});
+}
+
+function showToast(msg){
+  var t=document.createElement('div');
+  t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(52,211,153,.15);border:1px solid rgba(52,211,153,.35);color:#34d399;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999;box-shadow:0 4px 20px rgba(0,0,0,.5)';
+  t.textContent=msg;document.body.appendChild(t);
+  setTimeout(function(){t.remove();},3500);
+}
+
+// Load cube tab immediately on page open
+loadCubeShop();
+// Open to packs tab if redirected for credit purchase
+if(window.location.hash==='#packs'||window.location.search.includes('tab=packs')){
+  document.querySelectorAll('.shop-tab-btn')[2].click();
+}
+</script>
+</body>
+</html>`)
+})
+
+// ── /collection — user's owned items + equip ──────────────────────────────
+app.get('/collection', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/collection')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login?next=/collection')
+  if (!isAdmin(user, c.env)) return c.redirect('/')
+  const ASSET_VER_COLL = ASSET_VER
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>My Collection — StemForge</title>
+  <link href="/static/style.css?v=${ASSET_VER_COLL}" rel="stylesheet"/>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
+  <style>
+    .coll-page { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+    .coll-hero { margin-bottom: 36px; }
+    .coll-hero h1 { font-size: 1.7rem; font-weight: 800; display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .coll-hero p { color: var(--muted); font-size: .88rem; }
+    .coll-section-title { font-size: 1rem; font-weight: 700; color: #a78bfa; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
+    .coll-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 40px; }
+    .coll-card { background: rgba(255,255,255,.04); border: 1.5px solid rgba(255,255,255,.08); border-radius: 14px; overflow: hidden; transition: border-color .2s, transform .2s; }
+    .coll-card.equipped { border-color: rgba(139,92,246,.55); box-shadow: 0 0 20px rgba(139,92,246,.1); }
+    .coll-card:hover { transform: translateY(-2px); border-color: rgba(139,92,246,.3); }
+    .coll-preview { height: 120px; display: flex; align-items: center; justify-content: center; }
+    .coll-body { padding: 10px 12px 12px; }
+    .coll-name { font-weight: 700; font-size: .88rem; margin-bottom: 6px; }
+    .coll-date { font-size: .72rem; color: var(--muted); margin-bottom: 8px; }
+    .coll-equip-btn { width: 100%; padding: 7px; border-radius: 8px; font-size: .8rem; font-weight: 700; cursor: pointer; border: none; transition: opacity .15s; }
+    .coll-equip-btn--active { background: rgba(139,92,246,.12); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); cursor: default; }
+    .coll-equip-btn--equip  { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
+    .coll-empty { text-align: center; padding: 48px 20px; color: var(--muted); }
+    .coll-empty i { font-size: 3rem; opacity: .25; margin-bottom: 16px; display: block; }
+    .coll-shop-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 10px 20px; background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: .88rem; }
+  </style>
+</head>
+<body>
+${globalSidebar()}
+<main class="coll-page">
+  <div class="coll-hero">
+    <h1><i class="fas fa-gem" style="color:#8b5cf6"></i> My Collection</h1>
+    <p>Everything you own. Equip a cube to make your forge uniquely yours.</p>
+  </div>
+  <div id="coll-content"><div style="color:var(--muted);text-align:center;padding:48px"><i class="fas fa-circle-notch fa-spin"></i> Loading your collection…</div></div>
+</main>
+<script>
+(function(){
+  Promise.all([
+    fetch('/api/shop/collection').then(r=>r.json()),
+    fetch('/api/shop/items').then(r=>r.json())
+  ]).then(function(res){
+    var coll=res[0]; var allItems=res[1].items||[];
+    var owned=coll.owned||[]; var activeCube=coll.active_cube_id||'cube_forge';
+    var itemMap={};
+    allItems.forEach(function(it){itemMap[it.id]=it;});
+    if(!owned.length){
+      document.getElementById('coll-content').innerHTML=
+        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem">Purchase cube skins from the shop to personalize your forge.</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
+      return;
+    }
+    var cubes=owned.filter(function(o){return o.type==='cube';});
+    var html='';
+    if(cubes.length){
+      html+='<div class="coll-section-title"><i class="fas fa-cube"></i> Cube Skins ('+cubes.length+')</div>';
+      html+='<div class="coll-grid" id="coll-cube-grid">';
+      cubes.forEach(function(o){
+        var it=itemMap[o.item_id]||{name:o.name||o.item_id,preview_colors:'{}',rarity:'standard'};
+        var colors={};try{colors=JSON.parse(it.preview_colors||'{}');}catch(e){}
+        var isEquipped=o.item_id===activeCube;
+        var date=o.purchased_at?new Date(o.purchased_at).toLocaleDateString():'';
+        html+='<div class="coll-card'+(isEquipped?' equipped':'')+'" id="coll-card-'+o.item_id+'">';
+        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+darken(colors.cubeBody||'#070e1c')+',#050a14)">'+cubePreviewHtml(colors)+'</div>';
+        html+='<div class="coll-body">';
+        html+='<div class="coll-name">'+it.name+(isEquipped?' <i class="fas fa-check" style="color:#a78bfa;font-size:.75rem"></i>':'')+'</div>';
+        if(date) html+='<div class="coll-date">Owned since '+date+'</div>';
+        if(isEquipped) html+='<button class="coll-equip-btn coll-equip-btn--active" disabled><i class="fas fa-check" style="margin-right:4px"></i>Equipped</button>';
+        else           html+='<button class="coll-equip-btn coll-equip-btn--equip" onclick="equipCube(\\'' + o.item_id + '\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip</button>';
+        html+='</div></div>';
+      });
+      html+='</div>';
+    }
+    html+='<div style="text-align:center;margin-top:24px"><a href="/shop" style="color:var(--primary);font-size:.88rem;font-weight:600;text-decoration:none"><i class="fas fa-store" style="margin-right:6px"></i>Browse Shop for more skins</a></div>';
+    document.getElementById('coll-content').innerHTML=html;
+  }).catch(function(e){
+    document.getElementById('coll-content').innerHTML='<div class="coll-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load collection.</p><button onclick="location.reload()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-size:.88rem">Try again</button></div>';
+  });
+
+  function cubePreviewHtml(colors){
+    var c=colors||{};var body=c.cubeBody||'#070e1c';var edge=c.edgeGlow||'#00e5ff';
+    return '<div style="perspective:200px;width:70px;height:70px;margin:auto">'+
+      '<div style="width:70px;height:70px;position:relative;transform-style:preserve-3d;animation:cubeFloat 4s ease-in-out infinite;border-radius:8px">'+
+      [['translateZ(35px)'],['rotateY(180deg) translateZ(35px)'],['rotateY(-90deg) translateZ(35px)'],['rotateY(90deg) translateZ(35px)'],['rotateX(90deg) translateZ(35px)'],['rotateX(-90deg) translateZ(35px)']].map(function(t){
+        return '<div style="position:absolute;width:70px;height:70px;background:'+body+';border:1.5px solid '+edge+';border-radius:7px;transform:'+t[0]+';box-shadow:inset 0 0 10px rgba(0,0,0,.3)"></div>';
+      }).join('')+'</div></div>';
+  }
+  function darken(hex){
+    hex=hex.replace('#','');var n=parseInt(hex,16);
+    return 'rgb('+Math.max(0,((n>>16)&255)-20)+','+Math.max(0,((n>>8)&255)-20)+','+Math.max(0,(n&255)-20)+')';
+  }
+  window.equipCube=function(itemId,btn){
+    btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
+    fetch('/api/shop/equip/'+itemId,{method:'POST'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.ok){
+          var t=document.createElement('div');
+          t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#c4b5fd;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999';
+          t.innerHTML='<i class="fas fa-check" style="margin-right:8px"></i>Cube equipped! Head to Create to see it.';
+          document.body.appendChild(t);setTimeout(function(){t.remove();},3000);
+          setTimeout(function(){location.reload();},500);
+        }else{btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip';alert(d.error||'Error');}
+      }).catch(function(){btn.disabled=false;btn.innerHTML='Equip';});
+  };
+})();
+</script>
+<style>@keyframes cubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-25deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-25deg) translateY(-5px)}}</style>
+</body>
+</html>`)
 })
 
 app.get('/subscription', async (c) => {
@@ -5616,6 +6174,8 @@ app.get('/api/projects', async (c) => {
         audio_url: d.audio_url || null,
         // Lyrics — user-typed or AI-generated, used by library lyrics panel
         user_lyrics: d.user_lyrics || null,
+        // VoiceForge linkage — set when this track was generated using a voice persona
+        voice_forge_id: d.voice_forge_id || null,
       }
     })
     return c.json({ projects })
@@ -8853,8 +9413,8 @@ app.get('/api/voice/status', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label FROM users WHERE id = ?`).bind(user.id).first<{ persona_id: string | null; persona_label: string | null }>()
-  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null })
+  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`).bind(user.id).first<any>()
+  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null, voice_name: row?.voice_name || null, voice_avatar: row?.voice_avatar || null })
 })
 
 // DELETE /api/voice/persona — remove saved persona from user
@@ -8865,6 +9425,211 @@ app.delete('/api/voice/persona', async (c) => {
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
   await c.env.DB.prepare(`UPDATE users SET persona_id = NULL, persona_label = NULL WHERE id = ?`).bind(user.id).run()
   return c.json({ ok: true })
+})
+
+// GET /api/voice/profile — get voice name, avatar, and tracks using this voice
+app.get('/api/voice/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const row = await c.env.DB.prepare(
+    `SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`
+  ).bind(user.id).first<any>()
+  // Get all tracks that were generated with this user's voice (voice_forge_id set)
+  const tracksRes = await c.env.DB.prepare(
+    `SELECT id, data, created_at FROM jobs
+     WHERE user_id = ? AND voice_forge_id IS NOT NULL AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT 50`
+  ).bind(user.id).all<any>()
+  const tracks = (tracksRes.results || []).map((r: any) => {
+    try {
+      const d = JSON.parse(r.data)
+      return {
+        id: r.id,
+        title: d.title || d.blueprint?.genre || 'Untitled',
+        created_at: r.created_at,
+        voice_forge_id: d.voice_forge_id,
+        audio_url: d.stereo_url || d.audio_url || null,
+      }
+    } catch { return null }
+  }).filter(Boolean)
+  return c.json({
+    persona_id: row?.persona_id || null,
+    persona_label: row?.persona_label || null,
+    voice_name: row?.voice_name || null,
+    voice_avatar: row?.voice_avatar || null,
+    tracks,
+  })
+})
+
+// PUT /api/voice/profile — save voice name and/or avatar URL
+app.put('/api/voice/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { voice_name, voice_avatar } = await c.req.json<{ voice_name?: string; voice_avatar?: string }>()
+  if (voice_name !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET voice_name = ? WHERE id = ?`).bind(voice_name.trim().slice(0,60) || null, user.id).run()
+  }
+  if (voice_avatar !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET voice_avatar = ? WHERE id = ?`).bind(voice_avatar || null, user.id).run()
+  }
+  return c.json({ ok: true })
+})
+
+// DELETE /api/voice/detach/:jobId — remove voice link from a specific track
+app.delete('/api/voice/detach/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const jobId = c.req.param('jobId')
+  // Verify ownership
+  const row = await c.env.DB.prepare(`SELECT id, data FROM jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
+  if (!row) return c.json({ error: 'Track not found' }, 404)
+  // Clear voice_forge_id from DB column
+  await c.env.DB.prepare(`UPDATE jobs SET voice_forge_id = NULL WHERE id = ?`).bind(jobId).run()
+  // Also clear from JSON data blob
+  try {
+    const d = JSON.parse(row.data)
+    delete d.voice_forge_id
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(d), jobId).run()
+  } catch {}
+  return c.json({ ok: true })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── SHOP API ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+
+// GET /api/shop/items — list all active shop items
+app.get('/api/shop/items', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'Not configured' }, 500)
+  const items = await c.env.DB.prepare(
+    `SELECT id, type, name, description, price_cents, rarity, max_supply, sold_count, sort_order, preview_colors
+     FROM shop_items WHERE active = 1 ORDER BY sort_order ASC`
+  ).all<any>()
+  return c.json({ items: items.results || [] })
+})
+
+// GET /api/shop/collection — get user's owned items + active skin
+app.get('/api/shop/collection', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+
+  // Auto-grant The Forge (free) if not already owned
+  const forgeOwned = await c.env.DB.prepare(
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = 'cube_forge'`
+  ).bind(user.id).first<any>()
+  if (!forgeOwned) {
+    const grantId = `grant_${user.id}_cube_forge`
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, 'cube_forge', 0, 1)`
+    ).bind(grantId, user.id).run()
+  }
+
+  const purchases = await c.env.DB.prepare(
+    `SELECT up.item_id, up.equipped, up.purchased_at, si.name, si.type, si.rarity, si.preview_colors
+     FROM user_purchases up
+     JOIN shop_items si ON si.id = up.item_id
+     WHERE up.user_id = ? ORDER BY up.purchased_at ASC`
+  ).bind(user.id).all<any>()
+
+  const userData = await c.env.DB.prepare(`SELECT active_cube_id FROM users WHERE id = ?`).bind(user.id).first<any>()
+  const activeCubeId = userData?.active_cube_id || 'cube_forge'
+
+  return c.json({
+    owned: purchases.results || [],
+    active_cube_id: activeCubeId,
+  })
+})
+
+// POST /api/shop/equip/:itemId — equip an owned item
+app.post('/api/shop/equip/:itemId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const itemId = c.req.param('itemId')
+
+  // Verify ownership
+  const owned = await c.env.DB.prepare(
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
+  ).bind(user.id, itemId).first<any>()
+  if (!owned) return c.json({ error: 'Item not owned' }, 403)
+
+  // Get item type
+  const item = await c.env.DB.prepare(`SELECT type FROM shop_items WHERE id = ?`).bind(itemId).first<any>()
+  if (!item) return c.json({ error: 'Item not found' }, 404)
+
+  if (item.type === 'cube') {
+    await c.env.DB.prepare(`UPDATE users SET active_cube_id = ? WHERE id = ?`).bind(itemId, user.id).run()
+  }
+
+  return c.json({ ok: true, active_cube_id: itemId })
+})
+
+// POST /api/shop/purchase/:itemId — buy an item (free items instant; paid via Stripe)
+app.post('/api/shop/purchase/:itemId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const itemId = c.req.param('itemId')
+
+  const item = await c.env.DB.prepare(
+    `SELECT * FROM shop_items WHERE id = ? AND active = 1`
+  ).bind(itemId).first<any>()
+  if (!item) return c.json({ error: 'Item not found' }, 404)
+
+  // Already owned?
+  const already = await c.env.DB.prepare(
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
+  ).bind(user.id, itemId).first<any>()
+  if (already) return c.json({ error: 'Already owned' }, 409)
+
+  // Supply check
+  if (item.max_supply && item.sold_count >= item.max_supply) {
+    return c.json({ error: 'Sold out' }, 410)
+  }
+
+  // Free item — grant immediately
+  if (item.price_cents === 0) {
+    const purchaseId = `free_${user.id}_${itemId}`
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, ?, 0, 0)`
+    ).bind(purchaseId, user.id, itemId).run()
+    await c.env.DB.prepare(`UPDATE shop_items SET sold_count = sold_count + 1 WHERE id = ?`).bind(itemId).run()
+    return c.json({ ok: true, purchased: true, checkout_url: null })
+  }
+
+  // Paid item — create Stripe Checkout session
+  const stripeKey = c.env.STRIPE_SECRET_KEY
+  if (!stripeKey) return c.json({ error: 'Payment not configured' }, 500)
+
+  const origin = new URL(c.req.url).origin
+  const sessionRes = await stripeRequest('POST', '/checkout/sessions', {
+    'mode': 'payment',
+    'payment_method_types[]': 'card',
+    'line_items[0][price_data][currency]': 'usd',
+    'line_items[0][price_data][product_data][name]': item.name + ' — StemForge Cube',
+    'line_items[0][price_data][product_data][description]': item.description || '',
+    'line_items[0][price_data][unit_amount]': String(item.price_cents),
+    'line_items[0][quantity]': '1',
+    'success_url': `${origin}/shop?purchase=success&item=${itemId}`,
+    'cancel_url': `${origin}/shop?purchase=cancel`,
+    'metadata[type]': 'shop_item',
+    'metadata[item_id]': itemId,
+    'metadata[user_id]': String(user.id),
+    'customer_email': user.email || '',
+  }, stripeKey)
+
+  if (!sessionRes?.url) return c.json({ error: 'Failed to create checkout' }, 500)
+  return c.json({ ok: true, checkout_url: sessionRes.url })
 })
 
 // POST /api/voice/generate — generate a song using the saved voice persona
@@ -11438,7 +12203,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261020-170'
+const ASSET_VER = '20261020-175'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -11644,6 +12409,12 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
+      <a href="/shop" class="gs-user-dropdown__item gs-admin-only" style="display:none">
+        <i class="fas fa-store"></i> Shop &amp; Credits
+      </a>
+      <a href="/collection" class="gs-user-dropdown__item gs-admin-only" style="display:none">
+        <i class="fas fa-gem"></i> My Collection
+      </a>
       <a href="/subscription" class="gs-user-dropdown__item">
         <i class="fas fa-credit-card"></i> Subscription
       </a>
@@ -11681,18 +12452,24 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- Get More Credits — inside nav, below Feedback, logged-in only -->
-    <a href="/subscription" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" style="
+    <!-- Shop — admin only -->
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav gs-admin-only" data-page="shop" style="
       display:none;
-      background:linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10));
-      border:1px solid rgba(78,159,255,.25);
-      color:#4e9fff;font-weight:700;
+      background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08));
+      border:1px solid rgba(139,92,246,.3);
+      color:#a78bfa;font-weight:700;
       transition:background .15s,border-color .15s;
       text-decoration:none;
-    " onmouseover="this.style.borderColor='rgba(78,159,255,.5)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.15))'" onmouseout="this.style.borderColor='rgba(78,159,255,.25)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10))'">
-      <i class="fas fa-plus-circle" style="width:18px;text-align:center;flex-shrink:0;color:#4e9fff"></i>
-      <span class="nav-label-full">Get More Credits</span>
-      <span class="nav-label-short" style="display:none">Credits</span>
+    " onmouseover="this.style.borderColor='rgba(139,92,246,.6)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.22),rgba(167,139,250,.14))'" onmouseout="this.style.borderColor='rgba(139,92,246,.3)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08))'">
+      <i class="fas fa-store" style="width:18px;text-align:center;flex-shrink:0;color:#a78bfa"></i>
+      <span class="nav-label-full">Shop &amp; Credits</span>
+      <span class="nav-label-short">Shop</span>
+    </a>
+    <!-- My Collection — admin only -->
+    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav gs-admin-only" data-page="collection" style="display:none">
+      <i class="fas fa-gem" style="width:18px;text-align:center;flex-shrink:0"></i>
+      <span class="nav-label-full">My Collection</span>
+      <span class="nav-label-short">Collect</span>
     </a>
 
   </nav>
@@ -11957,6 +12734,8 @@ function nav() {
         </button>
         <div class="nav-dropdown" id="nav-dropdown">
           <a href="/profile" class="nav-dropdown__item"><i class="fas fa-user"></i> Profile</a>
+          <a href="/shop" class="nav-dropdown__item gs-admin-only" style="display:none"><i class="fas fa-store"></i> Shop &amp; Credits</a>
+          <a href="/collection" class="nav-dropdown__item gs-admin-only" style="display:none"><i class="fas fa-gem"></i> My Collection</a>
           <a href="/subscription" class="nav-dropdown__item"><i class="fas fa-credit-card"></i> Subscription</a>
           <a href="/account" class="nav-dropdown__item"><i class="fas fa-cog"></i> Account</a>
           <div class="nav-dropdown__divider"></div>
@@ -12662,7 +13441,7 @@ function generatorPage() {
       <button class="create-page-tab" id="cptab-create" onclick="switchCreateTab('create')">
         <i class="fas fa-music"></i> Create
       </button>
-      <button class="create-page-tab" id="cptab-voices" onclick="switchCreateTab('voices')">
+      <button class="create-page-tab gs-admin-only" id="cptab-voices" onclick="switchCreateTab('voices')" style="display:none">
         <i class="fas fa-microphone"></i> Voices
       </button>
     </div>
@@ -13253,11 +14032,15 @@ function generatorPage() {
 
     <!-- ── StemForge 3D Logo Cube — admin-only, Three.js WebGL ──────── -->
     <style>
-      /* ── Right column: vertically centre the cube + text when empty ── */
-      .suno-right {
-        justify-content: center !important;
-        align-items: center !important;
-        min-height: 100vh !important;
+      /* ── Right column: vertically + horizontally centre cube + text on DESKTOP only ── */
+      @media (min-width: 769px) {
+        .suno-right {
+          display: flex !important;
+          flex-direction: column !important;
+          justify-content: center !important;
+          align-items: center !important;
+          min-height: 100vh !important;
+        }
       }
       /* ── Cube stage: FIXED size — never stretches with page content ── */
       #sf-cube-stage {
@@ -13275,7 +14058,6 @@ function generatorPage() {
       }
       @media (max-width: 768px) {
         #sf-cube-stage { height: 320px; }
-        .suno-right { min-height: auto !important; }
       }
       /* Canvas wrapper — absolute, fills stage, transparent */
       #sf-cube-wrap {
@@ -14232,8 +15014,8 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
-    <!-- VoiceForge tab — hidden by default, JS reveals for admin only -->
-    <button class="lib-tab lib-tab--voice" data-tab="voice" id="lib-tab-voice" onclick="switchLibTab('voice')" style="display:none">
+    <!-- VoiceForge tab — visible to all logged-in users -->
+    <button class="lib-tab lib-tab--voice" data-tab="voice" id="lib-tab-voice" onclick="switchLibTab('voice')">
       <i class="fas fa-microphone" style="color:#f97316"></i> <span style="color:#fb923c">VoiceForge</span>
     </button>
   </div>
@@ -14291,11 +15073,61 @@ function dashboardPage() {
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
-  <!-- VoiceForge tab panel — admin-only -->
+  <!-- VoiceForge tab panel -->
   <div id="lib-panel-voice" style="display:none">
-    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
-      <i class="fas fa-microphone" style="color:#f97316"></i>
-      <span style="color:#fb923c">Songs generated with your VoiceForge voice.</span>
+
+    <!-- VoiceForge Profile Card -->
+    <div id="vf-profile-card" style="background:linear-gradient(135deg,rgba(249,115,22,.08),rgba(251,146,60,.04));border:1px solid rgba(249,115,22,.25);border-radius:16px;padding:20px;margin-bottom:20px;display:none">
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <!-- Avatar -->
+        <div style="position:relative;flex-shrink:0">
+          <div id="vf-avatar-wrap" style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,#f97316,#fb923c);display:flex;align-items:center;justify-content:center;overflow:hidden;border:2px solid rgba(249,115,22,.4);cursor:pointer" onclick="vfPickAvatar()" title="Change avatar">
+            <img id="vf-avatar-img" src="" alt="" style="width:100%;height:100%;object-fit:cover;display:none"/>
+            <i id="vf-avatar-icon" class="fas fa-microphone" style="font-size:1.6rem;color:#fff"></i>
+          </div>
+          <button onclick="vfPickAvatar()" style="position:absolute;bottom:-2px;right:-2px;width:22px;height:22px;border-radius:50%;background:#f97316;border:none;color:#fff;font-size:.65rem;cursor:pointer;display:flex;align-items:center;justify-content:center"><i class="fas fa-camera"></i></button>
+          <input type="file" id="vf-avatar-file" accept="image/*" style="display:none" onchange="vfHandleAvatarFile(this)"/>
+        </div>
+        <!-- Name + label -->
+        <div style="flex:1;min-width:160px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+            <input id="vf-name-input" type="text" maxlength="60" placeholder="Name your voice…"
+              style="flex:1;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:8px 12px;color:#fff;font-size:.95rem;font-weight:600;min-width:0"
+              oninput="vfNameChanged()"/>
+            <button id="vf-name-save-btn" onclick="vfSaveProfile()" style="display:none;background:#f97316;border:none;color:#fff;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:700;cursor:pointer;white-space:nowrap"><i class="fas fa-check"></i> Save</button>
+          </div>
+          <div id="vf-persona-label" style="font-size:.8rem;color:rgba(251,146,60,.8);display:flex;align-items:center;gap:6px">
+            <i class="fas fa-circle-check" style="color:#10b981"></i>
+            <span id="vf-persona-label-text">Voice ready</span>
+          </div>
+        </div>
+        <!-- Delete persona -->
+        <button onclick="deleteVoicePersona()" style="flex-shrink:0;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#f87171;border-radius:8px;padding:8px 14px;font-size:.8rem;font-weight:600;cursor:pointer">
+          <i class="fas fa-trash-alt" style="margin-right:4px"></i>Delete Voice
+        </button>
+      </div>
+
+      <!-- Tracks using this voice -->
+      <div style="margin-top:18px;border-top:1px solid rgba(255,255,255,.08);padding-top:14px">
+        <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(251,146,60,.7);margin-bottom:10px">
+          <i class="fas fa-music" style="margin-right:5px"></i>Tracks using this voice
+        </div>
+        <div id="vf-tracks-list" style="display:flex;flex-direction:column;gap:6px">
+          <div style="color:var(--muted);font-size:.82rem">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- No voice state -->
+    <div id="vf-no-voice" style="display:none;text-align:center;padding:32px 16px">
+      <i class="fas fa-microphone-slash" style="font-size:2.5rem;color:var(--muted);margin-bottom:12px;display:block"></i>
+      <p style="color:var(--muted);margin:0 0 12px">No VoiceForge created yet.</p>
+      <a href="/generator" onclick="setTimeout(()=>{if(typeof switchCreateTab==='function')switchCreateTab('voices')},200)" class="btn btn--primary" style="font-size:.85rem">Create Your Voice</a>
+    </div>
+
+    <!-- VoiceForge generated songs grid -->
+    <div style="font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(251,146,60,.7);margin-bottom:10px;display:flex;align-items:center;gap:6px" id="vf-songs-header" style="display:none">
+      <i class="fas fa-headphones"></i> Generated Songs
     </div>
     <div class="project-grid" id="project-grid-voice">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
@@ -14581,6 +15413,8 @@ function profilePage(user: User | null) {
           <div class="profile-links">
             <a href="/dashboard" class="profile-link-card"><i class="fas fa-th-large"></i><span>Library</span></a>
             <a href="/generator" class="profile-link-card"><i class="fas fa-play-circle"></i><span>New Beat</span></a>
+            <a href="/shop" class="profile-link-card gs-admin-only" style="display:none"><i class="fas fa-store"></i><span>Shop</span></a>
+            <a href="/collection" class="profile-link-card gs-admin-only" style="display:none"><i class="fas fa-gem"></i><span>Collection</span></a>
             <a href="/subscription" class="profile-link-card"><i class="fas fa-credit-card"></i><span>Subscription</span></a>
             <a href="/account" class="profile-link-card"><i class="fas fa-cog"></i><span>Settings</span></a>
           </div>
@@ -15170,80 +16004,18 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <p class="sub-usage-note" id="sub-usage-note">${pct}% of your monthly generations used · Resets on billing date</p>
     </div>
 
-    <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
-    <div class="sub-credits-section" id="sub-credits-section">
-      <div class="pack-section-header">
-        <div>
-          <h3 style="margin:0 0 4px;font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:8px">
-            <span style="width:32px;height:32px;background:linear-gradient(135deg,var(--primary),#8b5cf6);border-radius:8px;display:flex;align-items:center;justify-content:center">
-              <i class="fas fa-bolt" style="color:#fff;font-size:.85rem"></i>
-            </span>
-            Top Up Points
-          </h3>
-          <p style="color:var(--muted);font-size:.85rem;margin:0">One-time packs — valid for current billing cycle, stack on top of your plan</p>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;padding:6px 12px;background:rgba(78,159,255,.08);border:1px solid rgba(78,159,255,.2);border-radius:8px;font-size:.78rem;color:var(--primary)">
-          <i class="fas fa-lock-open"></i> No subscription required
-        </div>
+    <!-- ── Top Up Points → moved to Shop (admin only) ───────────── -->
+    <div class="gs-admin-only" style="display:none;align-items:center;gap:16px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.2);border-radius:14px;padding:18px 22px;margin-bottom:28px">
+      <div style="width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="fas fa-store" style="color:#fff;font-size:1rem"></i>
       </div>
-      <div class="credit-packs-grid" id="credit-packs-grid">
-        <div class="credit-pack-card" data-pack="pack_150">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">150</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$4.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_150">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card credit-pack-card--popular" data-pack="pack_600">
-          <div class="credit-pack__badge"><i class="fas fa-star"></i> Best Value</div>
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">600</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$9.99</span>
-            <button class="credit-pack-btn credit-pack-btn--primary" data-pack="pack_600">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card" data-pack="pack_1000">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">1000</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$17.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1000">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
-        <div class="credit-pack-card" data-pack="pack_1500">
-          <div class="credit-pack__icon"><i class="fas fa-coins"></i></div>
-          <div class="credit-pack__main">
-            <div class="credit-pack__credits">1500</div>
-            <div class="credit-pack__label">Points</div>
-          </div>
-          <div class="credit-pack__price-row">
-            <span class="credit-pack__price">$29.99</span>
-            <button class="credit-pack-btn credit-pack-btn--default" data-pack="pack_1500">
-              <i class="fas fa-cart-plus"></i> Buy
-            </button>
-          </div>
-        </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:3px">Buy Point Packs &amp; Cube Skins</div>
+        <div style="font-size:.82rem;color:var(--muted);line-height:1.4">Top-up packs, cube skins, and all purchases are now in one place — the Shop.</div>
       </div>
-      <p style="text-align:center;font-size:.78rem;color:var(--muted);margin-top:10px">
-        <i class="fas fa-shield-alt" style="color:var(--accent-2);margin-right:4px"></i>Secure checkout powered by Stripe
-      </p>
+      <a href="/shop" style="flex-shrink:0;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;font-size:.85rem;text-decoration:none;white-space:nowrap;display:flex;align-items:center;gap:6px">
+        <i class="fas fa-store"></i> Open Shop
+      </a>
     </div>
 
     <div class="sub-plans-section">
