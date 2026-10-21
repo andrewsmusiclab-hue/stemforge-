@@ -76,7 +76,7 @@ runDiag();
     .catch(function(e){ showErr(String(e.message||e)); });
 })();
 
-var adminTabs=['analytics','revenue','users','signups','notices','stuckjobs','broadcasts','security'];
+var adminTabs=['analytics','revenue','users','signups','notices','stuckjobs','broadcasts','security','pointlog','publish','maintenance'];
 function adminTab(tab){
   document.querySelectorAll('.admin-tab[data-tab]').forEach(function(t){ t.classList.remove('admin-tab--active'); });
   var btn=document.querySelector('[data-tab="'+tab+'"]'); if(btn) btn.classList.add('admin-tab--active');
