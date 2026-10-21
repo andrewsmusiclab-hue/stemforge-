@@ -16208,11 +16208,14 @@ function adminPage(user: User) {
       </style>
       <script>
       var _maintLoaded = false;
-      function loadMaintenanceSettings() {
-        if (_maintLoaded) return;
+      function loadMaintenanceSettings(forceReload) {
+        if (_maintLoaded && !forceReload) return;
         _maintLoaded = true;
         fetch('/api/admin/draft', { credentials: 'include' })
-          .then(function(r){ return r.json(); })
+          .then(function(r){
+            if (!r.ok) { return r.json().then(function(e){ throw new Error(r.status + ' ' + (e.error || r.statusText)); }); }
+            return r.json();
+          })
           .then(function(d){
             var live = d.live || {};
             var bannerOn = live.maintenance_banner === '1';
@@ -16226,7 +16229,7 @@ function adminPage(user: User) {
             var ind = document.getElementById('maint-lock-live-indicator');
             if (ind) ind.style.display = lockOn ? 'flex' : 'none';
             showMaintStatus(bannerOn, lockOn);
-          }).catch(function(){ showMaintMsg('Could not load settings', false); });
+          }).catch(function(err){ showMaintMsg('Could not load settings: ' + (err.message || err), false); });
       }
       function updateToggleUI(id, on) {
         var slider = document.getElementById(id + '-slider');
@@ -16260,11 +16263,22 @@ function adminPage(user: User) {
         var dateVal  = dateInput    ? dateInput.value.trim() : '';
         var payload = { maintenance_banner: bannerOn ? '1' : '0', maintenance_date: dateVal, maintenance_mode: lockOn ? '1' : '0' };
         updateToggleUI('maint-banner', bannerOn);
+        showMaintMsg('Saving…', true);
         fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
-          .then(function(r){ return r.json(); })
-          .then(function(){ return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' }); })
+          .then(function(r){
+            if (!r.ok) { return r.json().then(function(e){ throw new Error(r.status + ' ' + (e.error || r.statusText)); }); }
+            return r.json();
+          })
+          .then(function(d){
+            if (!d.ok) throw new Error('Draft save returned ok=false: ' + JSON.stringify(d));
+            return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' });
+          })
+          .then(function(r){
+            if (!r.ok) { return r.json().then(function(e){ throw new Error('Publish ' + r.status + ': ' + (e.error || r.statusText)); }); }
+            return r.json();
+          })
           .then(function(){ showMaintMsg('✓ Saved and published', true); showMaintStatus(bannerOn, lockOn); })
-          .catch(function(){ showMaintMsg('Error saving — please try again', false); });
+          .catch(function(err){ showMaintMsg('Error: ' + (err.message || err), false); });
       }
       function confirmLockToggle() {
         var lt = document.getElementById('maint-lock-toggle');
@@ -16282,11 +16296,22 @@ function adminPage(user: User) {
         updateToggleUI('maint-lock', turningOn);
         var ind = document.getElementById('maint-lock-live-indicator');
         if (ind) ind.style.display = turningOn ? 'flex' : 'none';
+        showMaintMsg('Saving…', true);
         fetch('/api/admin/draft', { method:'POST', credentials:'include', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
-          .then(function(r){ return r.json(); })
-          .then(function(){ return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' }); })
+          .then(function(r){
+            if (!r.ok) { return r.json().then(function(e){ throw new Error(r.status + ' ' + (e.error || r.statusText)); }); }
+            return r.json();
+          })
+          .then(function(d){
+            if (!d.ok) throw new Error('Draft save returned ok=false: ' + JSON.stringify(d));
+            return fetch('/api/admin/draft/publish', { method:'POST', credentials:'include' });
+          })
+          .then(function(r){
+            if (!r.ok) { return r.json().then(function(e){ throw new Error('Publish ' + r.status + ': ' + (e.error || r.statusText)); }); }
+            return r.json();
+          })
           .then(function(){ showMaintMsg(turningOn ? '🔒 Site locked' : '🔓 Site unlocked', true); showMaintStatus(bannerOn, turningOn); })
-          .catch(function(){ showMaintMsg('Error — could not update site lock', false); });
+          .catch(function(err){ showMaintMsg('Error: ' + (err.message || err), false); });
       }
       function showMaintMsg(msg, ok) {
         var el = document.getElementById('maint-save-msg');
@@ -16296,7 +16321,9 @@ function adminPage(user: User) {
         el.style.border = ok ? '1px solid rgba(16,185,129,.3)' : '1px solid rgba(239,68,68,.3)';
         el.style.color = ok ? '#6ee7b7' : '#fca5a5';
         el.textContent = msg;
-        setTimeout(function(){ el.style.display='none'; }, 4000);
+        if (ok && msg !== 'Saving…') {
+          setTimeout(function(){ el.style.display='none'; }, 4000);
+        }
       }
       </script>
     </div>

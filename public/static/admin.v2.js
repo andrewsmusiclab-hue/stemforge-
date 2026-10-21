@@ -98,7 +98,7 @@ function adminTab(tab){
   var hash = window.location.hash || '';
   var match = hash.match(/^#tab-(.+)$/);
   var startTab = match ? match[1] : 'analytics';
-  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','security','pointlog'];
+  var validTabs = ['analytics','revenue','users','signups','stuckjobs','broadcasts','promos','email','security','pointlog','publish','maintenance'];
   if (validTabs.indexOf(startTab) === -1) startTab = 'analytics';
   if (startTab !== 'analytics') {
     adminTab(startTab);
