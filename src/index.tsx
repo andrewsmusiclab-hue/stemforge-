@@ -11037,7 +11037,7 @@ ${extraHead}
           mb.style.cssText = 'display:flex;position:fixed;bottom:0;left:0;right:0;z-index:9000;align-items:center;justify-content:center;gap:12px;background:linear-gradient(90deg,#78350f,#92400e);color:#fff;padding:10px 48px 10px 16px;font-size:.84rem;font-weight:600;font-family:Inter,sans-serif;line-height:1.4;box-shadow:0 -4px 20px rgba(0,0,0,.4)';
           mb.innerHTML = '<i class="fas fa-tools" style="font-size:.9rem;opacity:.85"></i>'
             + '<span>⚠️ Scheduled maintenance ' + cfg.maintenance_date + ' — the site will be temporarily unavailable.</span>'
-            + '<button onclick="sessionStorage.setItem(\'sf_maint_dismissed\',\'1\');this.parentElement.style.display=\'none\'" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.15);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:.9rem;display:flex;align-items:center;justify-content:center" title="Dismiss">×</button>';
+            + '<button onclick="sessionStorage.setItem(&apos;sf_maint_dismissed&apos;,&apos;1&apos;);this.parentElement.style.display=&apos;none&apos;" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:rgba(255,255,255,.15);border:none;color:#fff;width:26px;height:26px;border-radius:50%;cursor:pointer;font-size:.9rem;display:flex;align-items:center;justify-content:center" title="Dismiss">\xd7</button>';
         }
       }
     }
