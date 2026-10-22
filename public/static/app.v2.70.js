@@ -1369,7 +1369,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <p style="margin-bottom:12px">StemForge just got a major upgrade. Here's everything that's new:</p>
         <ul style="margin:0 0 14px;padding:0 0 0 16px">
           <li><b style="color:#a78bfa">3-Tab Create page</b> — The Create page is now organised into three tabs: <b>Mix</b> (Remix, Song Extend, Cover Song), <b>Create</b> (beat generation), and <b>Voices</b>.</li>
-          <li><b style="color:#a78bfa">Cube Skin System</b> — 5 unique cube skins to collect: The Forge, Obsidian, Gold Rush, Neon Ghost, and Blood Diamond. Everyone gets The Forge free.</li>
+
           <li><b style="color:#fbbf24">Point cost updates</b> — Beat Generation, Remix, and AI Cover Song are now 35 pts. Song Extend is 25 pts.</li>
           <li><b style="color:#f87171">Stem Splitter is now Pro Artist only</b> — Creator plan members can no longer access the Stem Splitter. Creator plan retains all other features.</li>
           <li><b style="color:#10b981">Song Extend now on Creator plan</b> — Creator plan members can now use Song Extend.</li>
@@ -1650,12 +1650,11 @@ document.addEventListener('DOMContentLoaded', () => {
         switchTab: 'create',
       },
       {
-        selector: '#oneshot-inline-row',
+        selector: '.suno-tab[data-tab="oneshot"]',
         title: '⚡ One Shot Creator',
-        body: '<b>One Shot Creator</b> sits right below the Instrumental toggle. Flip the switch to generate isolated sounds — kicks, snares, 808s, FX — anything you can describe. Available on Creator &amp; Pro Artist plans.',
-        pos: 'right',
+        body: '<b>One Shot Creator</b> is its own tab beside Write and Instrumental. Click it to generate isolated sounds — kicks, snares, 808s, FX — anything you can describe. Available on Creator &amp; Pro Artist plans.',
+        pos: 'bottom',
         switchTab: 'create',
-        switchSubTab: 'instrumental',
       },
       {
         selector: 'a[href="/dashboard"]',
@@ -4386,7 +4385,7 @@ document.addEventListener('DOMContentLoaded', () => {
   //  SUNO-STYLE GENERATOR CONTROLS
   // ═══════════════════════════════════════════════════════════════
 
-  // ── Tab switching (Write / Prompt / Instrumental) ─────────────
+  // ── Tab switching (Write / Instrumental / One Shot) ──────────
   let activeTab = 'write'; // track active tab
   document.querySelectorAll('.suno-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -4412,6 +4411,35 @@ document.addEventListener('DOMContentLoaded', () => {
           instrCheckbox.checked = false;
           if (instrNote) instrNote.style.display = 'none';
         }
+      }
+
+      // One Shot tab: collapse vocals + styles cards; restore on switch away
+      const vocalsCard = document.getElementById('card-vocals');
+      const stylesCard = document.getElementById('card-styles');
+      const genCreateRow = document.getElementById('generator-create-row');
+      if (target === 'oneshot') {
+        // Plan gate — must be creator or pro
+        const plan = (window._sfUser && window._sfUser.plan) || 'free';
+        if (plan === 'free') {
+          // Revert tab to previous
+          document.querySelectorAll('.suno-tab').forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.suno-tab-panel').forEach(p => p.classList.remove('active'));
+          const prevTab = document.querySelector('.suno-tab[data-tab="' + (activeTab === 'oneshot' ? 'write' : activeTab) + '"]');
+          if (prevTab) prevTab.classList.add('active');
+          const prevPanel = document.getElementById('tab-write');
+          if (prevPanel) prevPanel.classList.add('active');
+          activeTab = 'write';
+          if (typeof showUpgradeModal === 'function') showUpgradeModal('One Shot Creator');
+          else alert('One Shot Creator requires a Creator or Pro Artist plan.');
+          return;
+        }
+        if (vocalsCard) vocalsCard.style.display = 'none';
+        if (stylesCard) stylesCard.style.display = 'none';
+        if (genCreateRow) genCreateRow.style.display = 'none';
+      } else {
+        if (vocalsCard) vocalsCard.style.display = '';
+        if (stylesCard) stylesCard.style.display = '';
+        if (genCreateRow) genCreateRow.style.display = '';
       }
     });
   });

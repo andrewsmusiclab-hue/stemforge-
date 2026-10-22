@@ -5283,9 +5283,9 @@ ${globalSidebar()}
   </div>
   <div class="shop-cs-features">
     <div class="shop-cs-feat">
-      <i class="fas fa-cube"></i>
-      <span>Cube Skins</span>
-      <p>Unique 3D skins for your forge — from Obsidian to Gold Rush.</p>
+      <i class="fas fa-palette"></i>
+      <span>Exclusive Themes</span>
+      <p>Unlock unique visual themes and personalisation options for your forge.</p>
     </div>
     <div class="shop-cs-feat">
       <i class="fas fa-bolt"></i>
@@ -5371,7 +5371,7 @@ ${globalSidebar()}
     allItems.forEach(function(it){itemMap[it.id]=it;});
     if(!owned.length){
       document.getElementById('coll-content').innerHTML=
-        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem">Cube skins will be available in the Shop soon!</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
+        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem">Exclusive items will be available in the Shop soon!</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
       return;
     }
     var cubes=owned.filter(function(o){return o.type==='cube';});
@@ -5395,7 +5395,7 @@ ${globalSidebar()}
       });
       html+='</div>';
     }
-    html+='<div style="text-align:center;margin-top:24px"><a href="/shop" style="color:var(--primary);font-size:.88rem;font-weight:600;text-decoration:none"><i class="fas fa-store" style="margin-right:6px"></i>Browse Shop for more skins</a></div>';
+    html+='<div style="text-align:center;margin-top:24px"><a href="/shop" style="color:var(--primary);font-size:.88rem;font-weight:600;text-decoration:none"><i class="fas fa-store" style="margin-right:6px"></i>Browse Shop</a></div>';
     document.getElementById('coll-content').innerHTML=html;
   }).catch(function(){
     document.getElementById('coll-content').innerHTML='<div class="coll-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load collection.</p><button onclick="location.reload()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-size:.88rem">Try again</button></div>';
@@ -15522,8 +15522,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
         <i class="fas fa-store" style="color:#fff;font-size:1rem"></i>
       </div>
       <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:.95rem;margin-bottom:3px">Buy Point Packs &amp; Cube Skins</div>
-        <div style="font-size:.82rem;color:var(--muted);line-height:1.4">Top-up packs, cube skins, and all purchases are in one place — the Shop.</div>
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:3px">Buy Point Packs</div>
+        <div style="font-size:.82rem;color:var(--muted);line-height:1.4">Top-up packs and all purchases are in one place — the Shop.</div>
       </div>
       <a href="/shop" style="flex-shrink:0;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;font-size:.85rem;text-decoration:none;white-space:nowrap;display:flex;align-items:center;gap:6px">
         <i class="fas fa-store"></i> Open Shop
