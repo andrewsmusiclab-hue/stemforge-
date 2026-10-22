@@ -1605,12 +1605,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════════════
   // ── sfTour — Interactive Site Walkthrough ─────────────────────────────
   // Highlights elements one by one with a backdrop + popup + Next/Skip.
-  // Shows automatically once (localStorage key sf_tour_v175_seen).
+  // Shows automatically once (localStorage key sf_tour_v175b_seen).
   // "Don't show again" = same localStorage key set to '1'.
   // Can be replayed via window._sfStartTour(true).
   // ══════════════════════════════════════════════════════════════════════
   (function sfTour() {
-    var LS_KEY = 'sf_tour_v175_seen';
+    var LS_KEY = 'sf_tour_v175b_seen';
     var TOUR_ID = 'sf-tour-overlay';
 
     // ── Tour step definitions ────────────────────────────────────
@@ -1618,62 +1618,68 @@ document.addEventListener('DOMContentLoaded', () => {
       {
         selector: '.gs-sidebar',
         title: '👋 Welcome to StemForge',
-        body: "We've made some major upgrades including a fully live <b>VoiceForge</b> feature. This tour takes about 60 seconds and shows you exactly where everything lives.",
+        body: 'StemForge is your AI music studio — generate beats, remix tracks, extend songs, create covers, and clone your voice. This tour takes about 60 seconds.',
         pos: 'right',
         highlight: false,
       },
       {
         selector: 'a[href="/generator"]',
-        title: '🎵 Create Tab — Your Music Studio',
-        body: 'The <b>Create</b> tab is where you generate beats, remix tracks, extend songs, create AI covers, and now — <b>clone your voice and generate songs in your own voice</b> with VoiceForge.',
+        title: '🎵 Create — Your Music Studio',
+        body: 'The <b>Create</b> tab is your main studio. It has <b>three tabs</b>: <b>Mix</b> (remix, extend, cover), <b>Create</b> (generate beats), and <b>Voices</b> (clone your voice). Let\'s walk through each one.',
         pos: 'right',
       },
       {
-        selector: '#cptab-voices',
-        title: '🎤 VoiceForge — Now Live!',
-        body: 'Click the <b>Voices</b> tab to open the voice studio. <b>Step 1</b>: upload 10–60s of your solo vocals to clone your voice (10 pts). <b>Step 2</b>: generate full songs in your own voice (35 pts, Creator/Pro).',
+        selector: '#cptab-mix',
+        title: '🎛️ Mix Tab',
+        body: 'The <b>Mix</b> tab gives you three tools: <b>Remix</b> — upload audio and AI-restyle it. <b>Song Extend</b> — continue any track from where it ends. <b>Cover Song</b> — turn any audio into an AI cover in a new style.',
         pos: 'right',
       },
       {
         selector: '#mixbtn-remix',
-        title: '🎛️ Remix, Extend & More',
-        body: 'The <b>Mix</b> tab has <b>Remix</b> (upload + AI restyle), <b>Song Extend</b> (continue any track), and <b>Cover Song</b> — turn any audio into a brand-new AI cover.',
+        title: '🪄 Remix',
+        body: '<b>Remix</b> lets you upload an MP3 or WAV and completely reinvent it — new style, new energy, same soul. Great for giving old tracks a fresh makeover.',
+        pos: 'bottom',
+      },
+      {
+        selector: '#mixbtn-cover',
+        title: '🎤 Cover Song',
+        body: '<b>Cover Song</b> transforms any audio into an AI cover in a style you choose. Upload the audio, pick a direction, and StemForge does the rest.',
+        pos: 'bottom',
+      },
+      {
+        selector: '#cptab-create',
+        title: '🎹 Create Tab',
+        body: 'The <b>Create</b> tab is where you generate original beats from scratch. Add a <b>Prompt</b>, write <b>Lyrics</b>, choose your <b>Style</b>, set <b>BPM & Key</b>, and hit Create.',
+        pos: 'right',
+      },
+      {
+        selector: '#card-prompt',
+        title: '✍️ Prompt',
+        body: 'Describe your beat in the <b>Prompt</b> box — mood, genre, instruments, energy. Use the <b>magic wand</b> to auto-suggest a prompt based on your style settings.',
         pos: 'right',
       },
       {
         selector: 'a[href="/dashboard"]',
         title: '📚 Library — All Your Tracks',
-        body: 'Your <b>Library</b> organises everything you make — Beats, Remixes, Extended, Covers, One Shots, Uploads, Trash, and the brand-new <b>Voices tab</b> for all your VoiceForge songs.',
-        pos: 'right',
-      },
-      {
-        selector: '#sidebar-get-credits-btn',
-        title: '🛒 Shop & Credits',
-        body: 'The <b>Shop</b> is where you\'ll top up points and unlock exclusive cube skins to personalise your 3D forge on the Create page. Cube skins are exclusive drops — grab them before they sell out.',
-        pos: 'right',
-      },
-      {
-        selector: 'a[href="/collection"]',
-        title: '💎 My Collection',
-        body: '<b>My Collection</b> shows all the cube skins you own. Equip any skin to change your forge theme live on the Create page. Everyone starts with <b>The Forge</b> skin free — no purchase needed.',
+        body: 'Your <b>Library</b> keeps everything you create — Beats, Remixes, Extended tracks, Covers, One Shots, Uploads, and Voice songs. Never lose a track.',
         pos: 'right',
       },
       {
         selector: '#sidebar-whats-new-btn',
         title: '⭐ What\'s New',
-        body: 'The <b>What\'s New</b> button shows every update, new feature, and change on StemForge. A purple badge appears whenever there\'s something fresh. You can also replay this tour from there anytime.',
+        body: 'The <b>What\'s New</b> button shows every update and new feature on StemForge. A purple badge lights up when something\'s fresh. You can replay this tour from here anytime.',
         pos: 'right',
       },
       {
         selector: '#gs-user-block',
-        title: '👤 Your Profile Menu',
-        body: 'Click your <b>avatar or name</b> to open the profile dropdown — access your Profile, Shop, Collection, Subscription, and Account settings all in one place.',
+        title: '👤 Your Profile',
+        body: 'Click your <b>avatar or name</b> to access your Profile, Subscription plan, and Account settings.',
         pos: 'right',
       },
       {
         selector: null,
-        title: '🚀 You\'re All Set — Go Make Something!',
-        body: "That's the tour! Head to the <b>Create</b> tab and try VoiceForge first — upload 10–60 seconds of your voice, forge it, then generate a full song in your own voice. If you need a refresher, open <b>What's New</b> and hit 'Start Walkthrough Tour'.",
+        title: '🚀 You\'re All Set!',
+        body: 'That\'s the tour! Head to the <b>Create</b> tab and start making music. If you need a refresher, open <b>What\'s New</b> and hit \'Start Walkthrough Tour\'.',
         pos: 'center',
         isLast: true,
       }
@@ -1684,12 +1690,22 @@ document.addEventListener('DOMContentLoaded', () => {
     var highlightBox = null;
     var popup = null;
     var scrollTopBefore = 0;
+    var _sfTourElevated = null; // tracks { el, pos, zIndex } for z-index restore
 
     function markSeen() {
       try { localStorage.setItem(LS_KEY, '1'); } catch(e) {}
     }
 
+    function _sfRestoreElevated() {
+      if (_sfTourElevated) {
+        _sfTourElevated.el.style.position = _sfTourElevated.pos;
+        _sfTourElevated.el.style.zIndex   = _sfTourElevated.zIndex;
+        _sfTourElevated = null;
+      }
+    }
+
     function cleanup() {
+      _sfRestoreElevated();
       var el = document.getElementById(TOUR_ID);
       if (el) el.remove();
       var hb = document.getElementById('sf-tour-highlight');
@@ -1775,8 +1791,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
       var rect = getRect(step.selector);
 
+      // Restore previous elevated element before elevating new one
+      _sfRestoreElevated();
+
       // Highlight box (cutout glow)
       if (rect && step.selector) {
+        // Elevate the actual target element above the dark overlay so its text is visible
+        var targetEl = rect.el || document.querySelector(step.selector);
+        if (targetEl) {
+          var cs = window.getComputedStyle(targetEl);
+          _sfTourElevated = { el: targetEl, pos: targetEl.style.position, zIndex: targetEl.style.zIndex };
+          targetEl.style.position = (cs.position === 'static' ? 'relative' : cs.position);
+          targetEl.style.zIndex = '100003';
+        }
         var PADDING = 8;
         var hl = document.createElement('div');
         hl.id = 'sf-tour-highlight';
@@ -1863,6 +1890,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Shows once per user per feature. Key matches the What's New entry id.
   // Dismissed forever the moment user closes it — localStorage prevents re-show.
   (function sfFeaturePopup() {
+    return; // disabled — VoiceForge popup suppressed
     var FEAT_ID  = 'oct2026-voiceforge-live';
     var LS_KEY   = 'sf_feat_seen_' + FEAT_ID;
 
@@ -2035,8 +2063,9 @@ document.addEventListener('DOMContentLoaded', () => {
       // Show What's New button + Get More Credits (logged-in only)
       const whatsNewBtn = document.getElementById('sidebar-whats-new-btn');
       if (whatsNewBtn) whatsNewBtn.style.display = 'flex';
-      const getCreditsBtn = document.getElementById('sidebar-get-credits-btn');
-      if (getCreditsBtn) getCreditsBtn.style.display = 'flex'; // show inside nav
+      // Shop & Collection permanently hidden — do not re-show
+      // const getCreditsBtn = document.getElementById('sidebar-get-credits-btn');
+      // if (getCreditsBtn) getCreditsBtn.style.display = 'flex';
       // Re-check badge now that button is visible
       if (typeof window._sfCheckWhatsNewBadge === 'function') window._sfCheckWhatsNewBadge();
 

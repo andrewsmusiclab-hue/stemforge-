@@ -11947,12 +11947,9 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
-      <a href="/shop" class="gs-user-dropdown__item">
-        <i class="fas fa-store"></i> Shop &amp; Credits
-      </a>
-      <a href="/collection" class="gs-user-dropdown__item">
-        <i class="fas fa-gem"></i> My Collection
-      </a>
+      <!-- Shop & Collection hidden permanently -->
+      <!-- <a href="/shop" class="gs-user-dropdown__item"><i class="fas fa-store"></i> Shop &amp; Credits</a> -->
+      <!-- <a href="/collection" class="gs-user-dropdown__item"><i class="fas fa-gem"></i> My Collection</a> -->
       <a href="/subscription" class="gs-user-dropdown__item">
         <i class="fas fa-credit-card"></i> Subscription
       </a>
@@ -11990,24 +11987,12 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- Shop & Credits — logged-in only -->
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="
-      display:none;
-      background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08));
-      border:1px solid rgba(139,92,246,.3);
-      color:#a78bfa;font-weight:700;
-      transition:background .15s,border-color .15s;
-      text-decoration:none;
-    " onmouseover="this.style.borderColor='rgba(139,92,246,.6)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.22),rgba(167,139,250,.14))'" onmouseout="this.style.borderColor='rgba(139,92,246,.3)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08))'">
-      <i class="fas fa-store" style="width:18px;text-align:center;flex-shrink:0;color:#a78bfa"></i>
-      <span class="nav-label-full">Shop &amp; Credits</span>
-      <span class="nav-label-short">Shop</span>
+    <!-- Shop & Collection permanently hidden -->
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" data-page="shop" style="display:none!important" aria-hidden="true">
+      <i class="fas fa-store"></i><span class="nav-label-full">Shop &amp; Credits</span>
     </a>
-    <!-- My Collection — logged-in only -->
-    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none">
-      <i class="fas fa-gem" style="width:18px;text-align:center;flex-shrink:0"></i>
-      <span class="nav-label-full">My Collection</span>
-      <span class="nav-label-short">Collect</span>
+    <a href="/collection" class="gs-sidebar__nav-item" data-page="collection" style="display:none!important" aria-hidden="true">
+      <i class="fas fa-gem"></i><span class="nav-label-full">My Collection</span>
     </a>
 
   </nav>
@@ -13576,6 +13561,74 @@ function generatorPage() {
   </div><!-- /suno-left -->
 
   <!-- ── RIGHT COLUMN: Result / Pipeline ─────────────────────── -->
+
+  <!-- ── StemForge 3D Cube CSS (admin-only WebGL cube behind empty state) ── -->
+  <style>
+    #sf-cube-stage {
+      position: relative;
+      width: 100%;
+      height: 420px;
+      flex: none;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent !important;
+      overflow: visible;
+    }
+    @media (max-width: 768px) {
+      #sf-cube-stage { height: 300px; }
+    }
+    #sf-cube-wrap {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      background: transparent !important;
+      overflow: hidden;
+    }
+    #sf-cube-canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+      cursor: grab;
+      background: transparent !important;
+    }
+    #sf-cube-canvas:active { cursor: grabbing; }
+    #gen-empty {
+      position: relative;
+      z-index: 2;
+      background: transparent !important;
+      text-align: center;
+      padding: 20px 16px;
+      pointer-events: none;
+    }
+    #gen-empty h3 {
+      font-size: 1.3rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 8px;
+      text-shadow:
+        0 0 0 #000,
+        -2px -2px 0 #000,
+         2px -2px 0 #000,
+        -2px  2px 0 #000,
+         2px  2px 0 #000,
+         0 3px 12px #000,
+         0 0 32px rgba(0,0,0,0.98);
+    }
+    #gen-empty p {
+      color: rgba(255,255,255,0.88);
+      font-size: 0.92rem;
+      text-shadow:
+        -1px -1px 0 #000,
+         1px -1px 0 #000,
+        -1px  1px 0 #000,
+         1px  1px 0 #000,
+         0 2px 8px #000;
+    }
+  </style>
+
   <div class="suno-right">
 
     <!-- Pipeline status - dual project-card style beat cards -->
@@ -13687,12 +13740,19 @@ function generatorPage() {
       </div>
     </div>
 
-    <!-- Empty state -->
-    <div class="gen-empty" id="gen-empty">
-      <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
-      <h3>Your beat will appear here.</h3>
-      <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
-    </div>
+    <!-- Empty state + 3D cube background (admin-only cube, text always visible) -->
+    <div id="sf-cube-stage">
+      <!-- Cube canvas — absolute background, z-index 0, JS shows for admin only -->
+      <div id="sf-cube-wrap">
+        <canvas id="sf-cube-canvas"></canvas>
+      </div>
+      <!-- Text overlay — z-index 2, floats above cube -->
+      <div class="gen-empty" id="gen-empty">
+        <div class="gen-empty__icon"><i class="fas fa-wave-square"></i></div>
+        <h3>Your beat will appear here.</h3>
+        <p>Fill in lyrics or a prompt, set your style,<br/>then hit <strong>Create</strong> below.</p>
+      </div>
+    </div><!-- /sf-cube-stage -->
 
     <!-- Error state -->
     <div class="gen-error" id="gen-error" style="display:none">
