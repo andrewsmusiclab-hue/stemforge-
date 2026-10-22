@@ -2406,10 +2406,10 @@ document.addEventListener('DOMContentLoaded', () => {
       tabBar.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
-    // Step 5: when switching to Voices tab, load voice status
-    if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {
-      window.loadVoiceStatus();
-    }
+    // Step 5: Voices tab is currently locked (Coming Soon) — skip loadVoiceStatus
+    // if (tab === 'voices' && typeof window.loadVoiceStatus === 'function') {
+    //   window.loadVoiceStatus();
+    // }
   };
 
   // ── Mix sub-panel switcher (Cover active by default) ────────────
@@ -3116,7 +3116,8 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (tab === 'covers') {
       if (window.fetchCoversTab) window.fetchCoversTab();
     } else if (tab === 'voice') {
-      fetchVoiceTab();
+      // VoiceForge library is locked (Coming Soon) — panel shows static card, no API call
+      // fetchVoiceTab();  // re-enable when VoiceForge launches
     } else {
       fetchLibTab(tab);
     }

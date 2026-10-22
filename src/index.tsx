@@ -13014,8 +13014,11 @@ function generatorPage() {
       <button class="create-page-tab" id="cptab-create" onclick="switchCreateTab('create')">
         <i class="fas fa-music"></i> Create
       </button>
-      <button class="create-page-tab" id="cptab-voices" onclick="switchCreateTab('voices')">
+      <button class="create-page-tab create-page-tab--locked" id="cptab-voices" onclick="switchCreateTab('voices')"
+        style="opacity:.45;cursor:not-allowed;pointer-events:none;position:relative">
+        <i class="fas fa-lock" style="font-size:.65rem;vertical-align:middle;margin-right:2px"></i>
         <i class="fas fa-microphone"></i> Voices
+        <span style="position:absolute;top:-6px;right:-2px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.55rem;font-weight:700;padding:1px 5px;border-radius:10px;letter-spacing:.03em;line-height:1.6">SOON</span>
       </button>
     </div>
 
@@ -13409,8 +13412,23 @@ function generatorPage() {
     <!-- ══ VOICES TAB ════════════════════════════════════════════════ -->
     <div id="create-tab-voices" class="create-tab-panel" style="display:none">
 
-      <!-- ── Voice Studio panel ── -->
-      <div id="voice-inline-panel">
+      <!-- ── Coming Soon overlay ── -->
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:48px 24px 52px;text-align:center">
+        <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(139,92,246,.22));border:1px solid rgba(139,92,246,.35);display:flex;align-items:center;justify-content:center;margin-bottom:20px;box-shadow:0 0 28px rgba(139,92,246,.18)">
+          <i class="fas fa-lock" style="font-size:1.7rem;color:#a78bfa"></i>
+        </div>
+        <div style="font-size:1.15rem;font-weight:700;color:#e2e8f0;margin-bottom:8px;letter-spacing:.01em">VoiceForge — Coming Soon</div>
+        <div style="font-size:.84rem;color:var(--muted);line-height:1.65;max-width:340px;margin-bottom:22px">
+          Clone your voice and generate songs that sound like <em>you</em>. VoiceForge is finishing its final tuning — we'll let you know the moment it drops.
+        </div>
+        <div style="display:inline-flex;align-items:center;gap:8px;background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(139,92,246,.15));border:1px solid rgba(139,92,246,.3);border-radius:20px;padding:8px 18px">
+          <i class="fas fa-bell" style="color:#a78bfa;font-size:.85rem"></i>
+          <span style="font-size:.8rem;font-weight:600;color:#c4b5fd;letter-spacing:.03em">Stay tuned for updates</span>
+        </div>
+      </div>
+
+      <!-- ── Voice Studio panel (hidden until launch) ── -->
+      <div id="voice-inline-panel" style="display:none">
         <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
           <div class="suno-card__header" style="padding-bottom:10px">
             <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
@@ -14596,8 +14614,11 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
-    <button class="lib-tab lib-tab--voice" data-tab="voice" onclick="switchLibTab('voice')">
-      <i class="fas fa-fingerprint" style="color:#10b981"></i> <span style="color:#34d399">VoiceForge</span>
+    <button class="lib-tab lib-tab--voice lib-tab--locked" data-tab="voice" onclick="switchLibTab('voice')"
+      style="opacity:.4;cursor:not-allowed;pointer-events:none;position:relative">
+      <i class="fas fa-lock" style="font-size:.6rem;vertical-align:middle;margin-right:2px;color:#9ca3af"></i>
+      <i class="fas fa-fingerprint" style="color:#6b7280"></i> <span style="color:#9ca3af">VoiceForge</span>
+      <span style="position:absolute;top:-5px;right:-2px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.52rem;font-weight:700;padding:1px 5px;border-radius:10px;letter-spacing:.03em;line-height:1.6">SOON</span>
     </button>
   </div>
 
@@ -14655,11 +14676,21 @@ function dashboardPage() {
     </div>
   </div>
   <div id="lib-panel-voice" style="display:none">
-    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
-      <i class="fas fa-fingerprint" style="color:#10b981"></i>
-      <span style="color:#34d399">Songs generated with your VoiceForge voice clone.</span>
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:44px 20px 48px;text-align:center">
+      <div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(139,92,246,.22));border:1px solid rgba(139,92,246,.35);display:flex;align-items:center;justify-content:center;margin-bottom:16px;box-shadow:0 0 22px rgba(139,92,246,.15)">
+        <i class="fas fa-lock" style="font-size:1.4rem;color:#a78bfa"></i>
+      </div>
+      <div style="font-size:1.05rem;font-weight:700;color:#e2e8f0;margin-bottom:7px">VoiceForge Library — Coming Soon</div>
+      <div style="font-size:.82rem;color:var(--muted);line-height:1.6;max-width:300px;margin-bottom:18px">
+        Your voice-cloned tracks will appear here once VoiceForge launches. We're putting the finishing touches on it now.
+      </div>
+      <div style="display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(139,92,246,.12));border:1px solid rgba(139,92,246,.28);border-radius:18px;padding:7px 16px">
+        <i class="fas fa-bell" style="color:#a78bfa;font-size:.8rem"></i>
+        <span style="font-size:.78rem;font-weight:600;color:#c4b5fd;letter-spacing:.03em">Coming soon</span>
+      </div>
     </div>
-    <div class="project-grid" id="project-grid-voice">
+    <!-- hidden grid kept for future activation -->
+    <div class="project-grid" id="project-grid-voice" style="display:none">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
