@@ -1589,7 +1589,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Can be replayed via window._sfStartTour(true).
   // ══════════════════════════════════════════════════════════════════════
   (function sfTour() {
-    var LS_KEY = 'sf_tour_v175b_seen';
+    var LS_KEY = 'sf_tour_v175c_seen';
     var TOUR_ID = 'sf-tour-overlay';
 
     // ── Tour step definitions ────────────────────────────────────
@@ -1919,10 +1919,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window._sfStartTour = startTour;
 
-    // Auto-start after 2s on first visit (not on auth pages)
+    // Auto-start after 2s — ONLY on the /generator (Create) page
     setTimeout(function() {
       var path = window.location.pathname;
-      if (path === '/' || path === '/login' || path === '/signup' || path === '/register' || path.startsWith('/admin')) return;
+      if (path !== '/generator') return;
       try {
         if (!localStorage.getItem(LS_KEY)) startTour(false);
       } catch(e) {}
