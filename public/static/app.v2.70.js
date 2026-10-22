@@ -1677,8 +1677,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function _sfRestoreElevated() {
       if (_sfTourElevated) {
-        _sfTourElevated.el.style.position = _sfTourElevated.pos;
-        _sfTourElevated.el.style.zIndex   = _sfTourElevated.zIndex;
+        _sfTourElevated.el.style.position     = _sfTourElevated.pos;
+        _sfTourElevated.el.style.zIndex       = _sfTourElevated.zIndex;
+        _sfTourElevated.el.style.pointerEvents = _sfTourElevated.pe;
         _sfTourElevated = null;
       }
     }
@@ -1776,9 +1777,10 @@ document.addEventListener('DOMContentLoaded', () => {
         var targetEl = rect.el || document.querySelector(step.selector);
         if (targetEl) {
           var cs = window.getComputedStyle(targetEl);
-          _sfTourElevated = { el: targetEl, pos: targetEl.style.position, zIndex: targetEl.style.zIndex };
+          _sfTourElevated = { el: targetEl, pos: targetEl.style.position, zIndex: targetEl.style.zIndex, pe: targetEl.style.pointerEvents };
           targetEl.style.position = (cs.position === 'static' ? 'relative' : cs.position);
           targetEl.style.zIndex = '100003';
+          targetEl.style.pointerEvents = 'none';
         }
         var PADDING = 8;
         var hl = document.createElement('div');
@@ -1806,7 +1808,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Popup
       var pop = document.createElement('div');
       pop.id = 'sf-tour-popup';
-      pop.style.cssText = 'position:fixed;z-index:100002;transition:opacity .25s ease;opacity:0';
+      pop.style.cssText = 'position:fixed;z-index:100004;transition:opacity .25s ease;opacity:0';
       pop.innerHTML = buildPopupHtml(step, idx, steps.length);
       document.body.appendChild(pop);
       popup = pop;
