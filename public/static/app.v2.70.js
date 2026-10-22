@@ -4478,18 +4478,39 @@ document.addEventListener('DOMContentLoaded', () => {
   const arrowLeft   = document.getElementById('chips-arrow-left');
   const arrowRight  = document.getElementById('chips-arrow-right');
   if (chipsScroll && arrowLeft && arrowRight) {
-    const SCROLL_STEP = 140;
+    const SCROLL_STEP = 160;
     const updateArrows = () => {
+      // Use CSS class for dimming — NEVER set .disabled (that greys + blocks clicks)
+      // If the container is invisible (width=0), skip — leave buttons un-dimmed
+      if (!chipsScroll.clientWidth) return;
       const atStart = chipsScroll.scrollLeft <= 2;
       const atEnd   = chipsScroll.scrollLeft + chipsScroll.clientWidth >= chipsScroll.scrollWidth - 2;
-      arrowLeft.disabled  = atStart;
-      arrowRight.disabled = atEnd;
+      arrowLeft.classList.toggle('chips-arrow-dim', atStart);
+      arrowRight.classList.toggle('chips-arrow-dim', atEnd);
     };
-    arrowLeft.addEventListener('click',  () => { chipsScroll.scrollLeft -= SCROLL_STEP; });
-    arrowRight.addEventListener('click', () => { chipsScroll.scrollLeft += SCROLL_STEP; });
+    const flashBtn = (btn) => {
+      btn.classList.add('chips-arrow-flash');
+      setTimeout(() => { btn.classList.remove('chips-arrow-flash'); }, 150);
+    };
+    arrowLeft.addEventListener('click', () => {
+      flashBtn(arrowLeft);
+      chipsScroll.scrollBy({ left: -SCROLL_STEP, behavior: 'smooth' });
+      setTimeout(updateArrows, 320);
+    });
+    arrowRight.addEventListener('click', () => {
+      flashBtn(arrowRight);
+      chipsScroll.scrollBy({ left: SCROLL_STEP, behavior: 'smooth' });
+      setTimeout(updateArrows, 320);
+    });
     chipsScroll.addEventListener('scroll', updateArrows, { passive: true });
-    // Run once on load so right arrow is enabled correctly
+    // Run once immediately + again after layout settles (panel may be hidden on load)
     updateArrows();
+    setTimeout(updateArrows, 400);
+    setTimeout(updateArrows, 1200);
+    // Also re-check when Create tab becomes active
+    document.addEventListener('sf:createTabChanged', function(e) {
+      if (e.detail === 'create') setTimeout(updateArrows, 150);
+    });
   }
 
   // ── More Options collapse ─────────────────────────────────────

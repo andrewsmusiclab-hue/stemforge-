@@ -13371,7 +13371,7 @@ function generatorPage() {
           maxlength="200"/>
         <div class="suno-style-chips-row">
           <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
-          <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left" disabled><i class="fas fa-chevron-left"></i></button>
+          <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
             <button class="suno-chip" data-style="hip hop">Hip Hop</button>
             <button class="suno-chip" data-style="R&B">R&B</button>
