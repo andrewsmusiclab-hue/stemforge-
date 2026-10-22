@@ -1629,15 +1629,15 @@ document.addEventListener('DOMContentLoaded', () => {
         pos: 'right',
       },
       {
-        selector: '#ctab-voice',
+        selector: '#cptab-voices',
         title: '🎤 VoiceForge — Now Live!',
-        body: 'Click <b>VoiceForge</b> in the creator tools row to open the voice studio. <b>Step 1</b>: upload 10–60s of your solo vocals to clone your voice (5 pts). <b>Step 2</b>: generate full songs in your voice (25 pts, Creator/Pro).',
+        body: 'Click the <b>Voices</b> tab to open the voice studio. <b>Step 1</b>: upload 10–60s of your solo vocals to clone your voice (10 pts). <b>Step 2</b>: generate full songs in your own voice (35 pts, Creator/Pro).',
         pos: 'right',
       },
       {
-        selector: '#ctab-remix',
+        selector: '#mixbtn-remix',
         title: '🎛️ Remix, Extend & More',
-        body: 'The creator tools row also has <b>Remix</b> (upload + AI restyle), <b>Song Extend</b> (continue any track), <b>One Shot Creator</b> (drum hits &amp; FX), and <b>Cover Song</b> (Pro plan).',
+        body: 'The <b>Mix</b> tab has <b>Remix</b> (upload + AI restyle), <b>Song Extend</b> (continue any track), and <b>Cover Song</b> — turn any audio into a brand-new AI cover.',
         pos: 'right',
       },
       {
@@ -12754,22 +12754,13 @@ window.toggleRefDropdown = function() {
   };
 
   window.openVoicePanel = function() {
-    // Show the voice inline panel, hide generator main sections + cover panel
-    var vp   = document.getElementById('voice-inline-panel');
-    var cp   = document.getElementById('cover-inline-panel');
-    var main = document.getElementById('generator-main-sections');
-    if (cp)   cp.style.display   = 'none';
-    if (vp)   vp.style.display   = 'block';
-    if (main) main.style.display = 'none';
-    // Load voice status to update Step 1/Step 2 state
+    // Switch to Voices tab in the 3-tab layout, then load voice status
+    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('voices');
     window.loadVoiceStatus();
   };
 
   window.closeVoicePanel = function() {
-    var vp   = document.getElementById('voice-inline-panel');
-    var main = document.getElementById('generator-main-sections');
-    if (vp)   vp.style.display   = 'none';
-    if (main) main.style.display = '';
+    // No-op — tab visibility is handled by switchCreateTab
   };
 
   window.deleteVoicePersona = async function() {

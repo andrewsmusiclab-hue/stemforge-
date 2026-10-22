@@ -5482,7 +5482,7 @@ app.post('/api/voice/create', async (c) => {
     return c.json({ error: 'audio_url must point to an .mp3 or .wav file' }, 400)
   }
 
-  const CLONE_COST = 5
+  const CLONE_COST = 10
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
@@ -5586,7 +5586,7 @@ app.post('/api/voice/generate', async (c) => {
   if (!userRow) return c.json({ error: 'User not found' }, 404)
   if (!userRow.persona_id) return c.json({ error: 'No voice persona found. Create your voice first.' }, 400)
 
-  const GEN_COST = 25
+  const GEN_COST = 35
   const available = (userRow.gens_limit - userRow.gens_used) + (userRow.bonus_credits || 0)
   if (available < GEN_COST) return c.json({ error: `Not enough points (need ${GEN_COST}, have ${available})` }, 402)
 
@@ -13010,32 +13010,46 @@ function generatorPage() {
   <!-- ── LEFT COLUMN: Input Controls ─────────────────────────── -->
   <div class="suno-left" id="suno-left">
 
-    <!-- ── 3 Side-by-side tabs above lyrics ─────────────────── -->
-    <div class="creator-tabs-row" id="creator-tabs-row">
-      <button class="creator-tab-btn" id="ctab-remix" onclick="openRemixGated()"
-        data-tooltip="Upload an MP3 or WAV and AI Remix it into a fresh new track.">
-        <i class="fas fa-wand-magic-sparkles"></i> Remix
+    <!-- ── CREATE PAGE: 3-Tab Layout (Mix | Create | Voices) ─── -->
+    <div class="create-page-tabs tab-mix-active" id="create-page-tabs">
+      <button class="create-page-tab active" id="cptab-mix" onclick="switchCreateTab('mix')">
+        <i class="fas fa-layer-group"></i> Mix
       </button>
-      <button class="creator-tab-btn" id="ctab-extend" onclick="openCreatorPopup('extend')"
-        data-tooltip="Continue any track from your library or upload a file to extend it seamlessly.">
-        <i class="fas fa-expand-arrows-alt"></i> Song Extend
+      <button class="create-page-tab" id="cptab-create" onclick="switchCreateTab('create')">
+        <i class="fas fa-music"></i> Create
       </button>
-      <button class="creator-tab-btn" id="ctab-oneshot" onclick="openOneShotGated()"
-        data-tooltip="Generate isolated one-shot sounds — kicks, snares, 808s, hi-hats &amp; more.">
-        <i class="fas fa-bolt"></i> One Shot Creator
-      </button>
-      <button class="creator-tab-btn" id="ctab-cover" onclick="openCoverPanel()"
-        data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
-        <i class="fas fa-microphone-alt"></i> Cover Song
-      </button>
-      <button class="creator-tab-btn" id="ctab-voice" onclick="openVoicePanel()"
-        data-tooltip="Clone your voice and generate AI songs in your own voice — VoiceForge is live!">
-        <i class="fas fa-fingerprint"></i> VoiceForge
+      <button class="create-page-tab" id="cptab-voices" onclick="switchCreateTab('voices')">
+        <i class="fas fa-microphone"></i> Voices
       </button>
     </div>
 
-    <!-- ── Cover Song inline panel ─────────────────────────────── -->
-    <div id="cover-inline-panel" style="display:none;margin-top:16px">
+    <!-- ══ TAB CONTENT WRAPPER ══════════════════════════════════════ -->
+    <div class="create-tabs-content tab-mix-active" id="create-tabs-content">
+
+    <!-- ══ MIX TAB ══════════════════════════════════════════════════ -->
+    <div id="create-tab-mix" class="create-tab-panel">
+
+      <!-- Mix action buttons: Remix, Song Extend, Cover Song -->
+      <div class="mix-action-row">
+        <button class="mix-action-btn" id="mixbtn-remix" onclick="openRemixGated()"
+          data-tooltip="Upload an MP3 or WAV and AI Remix it into a fresh new track.">
+          <i class="fas fa-wand-magic-sparkles"></i>
+          <span>Remix</span>
+        </button>
+        <button class="mix-action-btn" id="mixbtn-extend" onclick="openCreatorPopup('extend')"
+          data-tooltip="Continue any track from your library or upload a file to extend it seamlessly.">
+          <i class="fas fa-expand-arrows-alt"></i>
+          <span>Song Extend</span>
+        </button>
+        <button class="mix-action-btn mix-action-btn--active" id="mixbtn-cover" onclick="switchMixSub('cover')"
+          data-tooltip="Turn any song into an AI cover — upload audio and choose a new style.">
+          <i class="fas fa-microphone-alt"></i>
+          <span>Cover Song</span>
+        </button>
+      </div>
+
+      <!-- Cover Song inline panel (default open in Mix tab) -->
+      <div id="cover-inline-panel" style="margin-top:12px">
       <div class="suno-card" style="border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06)">
         <div class="suno-card__header" style="padding-bottom:10px">
           <i class="fas fa-microphone-alt" style="color:#a855f7;font-size:1rem"></i>
@@ -13069,7 +13083,7 @@ function generatorPage() {
             <div id="cover-upload-error" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);border-radius:8px;font-size:.82rem;line-height:1.45;color:#f87171"></div>
           </div>
 
-          <!-- Instrumental toggle — sits ABOVE lyrics so toggling it hides/shows them intuitively -->
+          <!-- Instrumental toggle -->
           <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:8px">
             <i class="fas fa-drum" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
             <span style="font-size:.85rem;font-weight:600;flex:1">Make Instrumental</span>
@@ -13099,7 +13113,7 @@ function generatorPage() {
             </div>
             <textarea id="cover-style-prompt" class="suno-textarea" rows="3"
               placeholder="e.g. dark trap version with 808s and heavy reverb, or leave blank to let AI decide…"></textarea>
-            <div id="cover-style-ai-badge" style="display:none;margin-top:6px;font-size:.72rem;color:#a855f7;display:none;align-items:center;gap:5px">
+            <div id="cover-style-ai-badge" style="display:none;margin-top:6px;font-size:.72rem;color:#a855f7;align-items:center;gap:5px">
               <i class="fas fa-magic" style="font-size:.68rem"></i>
               <span>AI detected — edit freely before creating</span>
             </div>
@@ -13119,21 +13133,18 @@ function generatorPage() {
           <!-- Audio mini-player (shown after upload) -->
           <div id="cover-mini-player" style="display:none;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.25);border-radius:10px;padding:12px 14px">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-              <!-- Restart -->
               <button onclick="coverPlayerRestart()" title="Restart from beginning"
                 style="width:30px;height:30px;border-radius:50%;background:none;border:1px solid rgba(139,92,246,.35);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:rgba(168,85,247,.7);font-size:.75rem;transition:all .15s"
                 onmouseenter="this.style.color='#a855f7';this.style.borderColor='rgba(168,85,247,.7)';this.style.background='rgba(168,85,247,.1)'"
                 onmouseleave="this.style.color='rgba(168,85,247,.7)';this.style.borderColor='rgba(139,92,246,.35)';this.style.background='none'">
                 <i class="fas fa-step-backward"></i>
               </button>
-              <!-- Play/Pause -->
               <button id="cover-play-btn" onclick="coverPlayerToggle()"
                 style="width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#7c3aed,#a855f7);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:transform .15s,opacity .2s">
                 <i id="cover-play-icon" class="fas fa-play" style="color:#fff;font-size:.82rem;margin-left:2px"></i>
               </button>
               <div style="flex:1;min-width:0">
                 <div id="cover-player-filename" style="font-size:.78rem;font-weight:600;color:#c084fc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px"></div>
-                <!-- Scrubber -->
                 <div style="display:flex;align-items:center;gap:8px">
                   <span id="cover-player-cur" style="font-size:.72rem;color:var(--muted);width:32px;flex-shrink:0;text-align:right">0:00</span>
                   <div id="cover-scrubber-track"
@@ -13152,7 +13163,7 @@ function generatorPage() {
           </div>
 
           <!-- Status -->
-          <div id="cover-status" style="display:none;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px"></div>
+          <div id="cover-status" style="display:none;font-size:.82rem;color:var(--muted);align-items:center;gap:6px"></div>
 
           <!-- Create button -->
           <button id="cover-create-btn" onclick="startCoverSong()"
@@ -13161,7 +13172,7 @@ function generatorPage() {
           </button>
         </div>
       </div>
-    </div>
+      </div><!-- /cover-inline-panel -->
 
     <!-- ── Cover processing overlay ────────────────────────────── -->
     <style>
@@ -13208,157 +13219,14 @@ function generatorPage() {
         </div>
       </div>
       <p style="font-size:.78rem;color:rgba(255,255,255,.35);margin:0">Cover generation usually takes 1–3 minutes</p>
+    </div><!-- /cover-processing-overlay -->
 
-    </div>
+    </div><!-- /create-tab-mix -->
 
-    <!-- ── VoiceForge Inline Panel ────────────────────────────────────────── -->
-    <div id="voice-inline-panel" style="display:none;margin-top:16px">
-      <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
+    <!-- ══ CREATE TAB ════════════════════════════════════════════════ -->
+    <div id="create-tab-create" class="create-tab-panel" style="display:none">
 
-        <!-- Panel Header -->
-        <div class="suno-card__header" style="padding-bottom:10px">
-          <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
-          <span class="suno-card__title" style="color:#34d399">VoiceForge</span>
-          <button onclick="closeVoicePanel()" style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem"><i class="fas fa-times"></i></button>
-        </div>
-
-        <div class="suno-card__body" style="display:flex;flex-direction:column;gap:16px">
-
-          <!-- Voice Status Bar -->
-          <div id="voice-status-bar" style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.08);border-radius:10px">
-            <i id="voice-status-icon" class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:.95rem;flex-shrink:0"></i>
-            <span id="voice-status-text" style="font-size:.83rem;color:var(--muted)">Loading voice status…</span>
-            <button id="voice-delete-btn" onclick="deleteVoicePersona()" style="display:none;margin-left:auto;background:none;border:none;color:#f87171;font-size:.76rem;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background .15s" onmouseover="this.style.background='rgba(239,68,68,.1)'" onmouseout="this.style.background='none'">
-              <i class="fas fa-trash-alt"></i> Remove
-            </button>
-          </div>
-
-          <!-- ── STEP 1: Upload &amp; Clone ────────────────────────────── -->
-          <div id="voice-create-section">
-            <div style="font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#10b981;margin-bottom:10px">
-              <i class="fas fa-upload" style="margin-right:5px"></i>Step 1 — Forge Your Voice
-            </div>
-
-            <!-- Upload zone -->
-            <div
-              id="voice-drop-zone"
-              onclick="document.getElementById('voice-file-input').click()"
-              ondragover="event.preventDefault();this.style.borderColor='#10b981'"
-              ondragleave="this.style.borderColor='rgba(16,185,129,.35)'"
-              ondrop="event.preventDefault();this.style.borderColor='rgba(16,185,129,.35)';handleVoiceFileDrop(event)"
-              style="border:2px dashed rgba(16,185,129,.35);border-radius:10px;padding:20px 16px;text-align:center;cursor:pointer;transition:border-color .2s">
-              <i class="fas fa-microphone-lines" style="font-size:1.5rem;color:#10b981;display:block;margin-bottom:8px"></i>
-              <span style="font-size:.83rem;color:var(--muted)">Drag &amp; drop an MP3 or WAV — or click to browse</span>
-              <div style="font-size:.73rem;color:rgba(255,255,255,.25);margin-top:4px">10–60 seconds of solo vocals · Max 20 MB</div>
-            </div>
-            <input type="file" id="voice-file-input" accept=".mp3,.wav,audio/mpeg,audio/wav" style="display:none" onchange="handleVoiceFileSelect(this)"/>
-
-            <!-- File info row -->
-            <div id="voice-file-info" style="display:none;align-items:center;gap:8px;margin-top:8px;padding:8px 12px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);border-radius:8px;font-size:.8rem">
-              <i class="fas fa-file-audio" style="color:#34d399"></i>
-              <span id="voice-file-name" style="color:#e2e8f0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
-              <span id="voice-file-dur" style="color:#6b7280;flex-shrink:0"></span>
-              <button onclick="clearVoiceFile()" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:.8rem;padding:2px 4px" title="Remove file"><i class="fas fa-times"></i></button>
-            </div>
-
-            <!-- Trim section -->
-            <div id="voice-trim-section" style="display:none;margin-top:12px">
-              <div style="font-size:.75rem;color:var(--muted);margin-bottom:8px"><i class="fas fa-scissors" style="margin-right:4px;color:#10b981"></i>Your file is longer than 30 s — trim it down:</div>
-              <!-- Waveform + trim bar -->
-              <div style="position:relative;height:48px;background:rgba(255,255,255,.04);border-radius:6px;overflow:hidden;margin-bottom:8px">
-                <div id="voice-trim-waveform" style="display:flex;align-items:center;height:100%;gap:1px;padding:0 4px"></div>
-                <div id="voice-trim-bar" style="position:absolute;top:0;left:0;height:100%;background:rgba(16,185,129,.25);pointer-events:none;transition:left .1s,width .1s"></div>
-              </div>
-              <div style="display:flex;gap:12px;margin-bottom:6px">
-                <div style="flex:1">
-                  <label style="font-size:.72rem;color:var(--muted);display:block;margin-bottom:3px">Start <span id="voice-trim-start-lbl" style="color:#10b981">0.0 s</span></label>
-                  <input type="range" id="voice-trim-start" min="0" step="0.1" value="0" oninput="onVoiceTrimChange('start')" style="width:100%;accent-color:#10b981"/>
-                </div>
-                <div style="flex:1">
-                  <label style="font-size:.72rem;color:var(--muted);display:block;margin-bottom:3px">End <span id="voice-trim-end-lbl" style="color:#10b981">30.0 s</span></label>
-                  <input type="range" id="voice-trim-end" min="0" step="0.1" value="30" oninput="onVoiceTrimChange('end')" style="width:100%;accent-color:#10b981"/>
-                </div>
-              </div>
-              <div style="display:flex;align-items:center;justify-content:space-between">
-                <span id="voice-trim-dur-info" style="font-size:.73rem;color:#10b981"></span>
-                <button onclick="previewVoiceTrim()" style="font-size:.75rem;color:#10b981;background:none;border:1px solid rgba(16,185,129,.3);border-radius:6px;padding:4px 10px;cursor:pointer"><i class="fas fa-play" style="margin-right:4px"></i>Preview trim</button>
-              </div>
-              <audio id="voice-trim-preview-audio" controls style="display:none;width:100%;margin-top:8px;border-radius:6px"></audio>
-            </div>
-
-            <!-- Voice label -->
-            <div style="margin-top:12px">
-              <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:5px">Voice Label <span style="color:rgba(255,255,255,.25)">(optional)</span></label>
-              <input type="text" id="voice-label-input" placeholder="e.g. My Rap Voice" maxlength="60"
-                style="width:100%;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#f1f5f9;font-size:.85rem;padding:9px 12px;outline:none;box-sizing:border-box"/>
-            </div>
-
-            <!-- Clone button + message -->
-            <button id="voice-clone-btn" onclick="createVoicePersona()"
-              style="width:100%;margin-top:12px;padding:11px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:.88rem;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .15s"
-              onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
-              <i class="fas fa-fingerprint"></i> Forge My Voice
-            </button>
-            <div id="voice-clone-msg" style="display:none;margin-top:8px;padding:10px 12px;border-radius:8px;font-size:.82rem;line-height:1.45"></div>
-          </div>
-
-          <!-- ── STEP 2: Generate ─────────────────────────────────────── -->
-          <div>
-            <div style="font-size:.72rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#8b5cf6;margin-bottom:10px">
-              <i class="fas fa-music" style="margin-right:5px"></i>Step 2 — Generate In Your Voice
-            </div>
-
-            <!-- Locked overlay (until voice is forged) -->
-            <div id="voice-gen-locked" style="padding:16px;background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);border-radius:10px;text-align:center">
-              <i class="fas fa-lock" style="font-size:1.4rem;color:#8b5cf6;margin-bottom:8px;display:block"></i>
-              <p style="font-size:.83rem;color:var(--muted);margin:0">Forge your voice in Step 1 first, then generate unlimited songs in your own voice.</p>
-            </div>
-
-            <!-- Gen form (shown when voice is ready) -->
-            <div id="voice-gen-form" style="display:none;flex-direction:column;gap:12px">
-              <div>
-                <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:5px">Song Title <span style="color:rgba(255,255,255,.25)">(optional)</span></label>
-                <input type="text" id="voice-gen-title" placeholder="Untitled Voice Song" maxlength="80"
-                  style="width:100%;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#f1f5f9;font-size:.85rem;padding:9px 12px;outline:none;box-sizing:border-box"/>
-              </div>
-              <div>
-                <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:5px">Style / Mood Tags</label>
-                <input type="text" id="voice-gen-tags" placeholder="e.g. hip-hop, dark trap, 808s" maxlength="200"
-                  style="width:100%;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#f1f5f9;font-size:.85rem;padding:9px 12px;outline:none;box-sizing:border-box"/>
-              </div>
-              <div>
-                <label style="font-size:.75rem;color:var(--muted);display:block;margin-bottom:5px">Lyrics <span style="color:rgba(255,255,255,.25)">(leave blank for AI-generated)</span></label>
-                <textarea id="voice-gen-lyrics" rows="5" placeholder="[Verse]&#10;Your lyrics here…&#10;&#10;[Chorus]&#10;…"
-                  style="width:100%;background:var(--surface-2,rgba(255,255,255,.06));border:1px solid var(--border);border-radius:8px;color:#f1f5f9;font-size:.83rem;padding:9px 12px;resize:vertical;outline:none;box-sizing:border-box;font-family:inherit"></textarea>
-              </div>
-              <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid var(--border);border-radius:8px">
-                <input type="checkbox" id="voice-gen-instrumental" style="accent-color:#8b5cf6;width:15px;height:15px"/>
-                <label for="voice-gen-instrumental" style="font-size:.83rem;color:var(--muted);cursor:pointer"><i class="fas fa-drum" style="margin-right:5px;color:#8b5cf6"></i>Instrumental only (no vocals in output)</label>
-              </div>
-              <button id="voice-gen-btn" onclick="generateVoiceSong()"
-                style="width:100%;padding:11px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:10px;font-weight:700;font-size:.88rem;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:opacity .15s"
-                onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
-                <i class="fas fa-music"></i> Generate in My Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 25 pts</span>
-              </button>
-              <div id="voice-gen-msg" style="display:none;padding:10px 12px;border-radius:8px;font-size:.82rem;line-height:1.45"></div>
-              <div id="voice-gen-progress" style="display:none;text-align:center;padding:12px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.15);border-radius:10px">
-                <i class="fas fa-circle-notch fa-spin" style="color:#8b5cf6;font-size:1.2rem;display:block;margin-bottom:8px"></i>
-                <span id="voice-gen-progress-text" style="font-size:.8rem;color:var(--muted)">Generating…</span>
-              </div>
-              <div id="voice-gen-result" style="display:none;padding:14px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.25);border-radius:10px">
-                <div style="font-size:.75rem;font-weight:700;color:#34d399;margin-bottom:10px"><i class="fas fa-check-circle" style="margin-right:5px"></i>Your voice song is ready!</div>
-                <audio id="voice-gen-audio" controls style="width:100%;border-radius:6px;margin-bottom:10px"></audio>
-                <a id="voice-gen-download" href="#" download style="display:inline-flex;align-items:center;gap:6px;font-size:.8rem;color:#10b981;text-decoration:none;padding:6px 12px;border:1px solid rgba(16,185,129,.3);border-radius:7px;transition:background .15s" onmouseover="this.style.background='rgba(16,185,129,.1)'" onmouseout="this.style.background='none'"><i class="fas fa-download"></i> Download</a>
-              </div>
-            </div>
-          </div>
-
-        </div><!-- /suno-card__body -->
-      </div><!-- /suno-card -->
-    </div><!-- /voice-inline-panel -->
-
-
-    <!-- ── Generator main sections (hidden while Cover Song panel is open) ── -->
+    <!-- ── Generator main sections ── -->
     <div id="generator-main-sections">
 
     <!-- SECTION 1: Prompt — sits above Lyrics/Instrumental -->
@@ -13433,11 +13301,59 @@ function generatorPage() {
             <i class="fas fa-check-circle" style="color:var(--accent-2)"></i>
             Instrumental mode is <strong>ON</strong>.
           </p>
+
+          <!-- ── One Shot toggle — inline under Instrumental ── -->
+          <div class="oneshot-inline-toggle" id="oneshot-inline-row">
+            <div style="display:flex;align-items:center;gap:10px">
+              <i class="fas fa-bolt" style="color:#f59e0b;font-size:.95rem;flex-shrink:0"></i>
+              <div>
+                <strong style="font-size:.88rem">One Shot Creator</strong>
+                <p style="margin:2px 0 0;font-size:.75rem;color:var(--muted)">Generate isolated sounds — kicks, snares, 808s &amp; more.</p>
+              </div>
+            </div>
+            <label class="suno-switch" onclick="toggleOneshotInline(event)">
+              <input type="checkbox" id="oneshot-inline-toggle-chk"/>
+              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
+            </label>
+          </div>
+
+          <!-- One Shot inline panel — revealed when toggle is ON -->
+          <div id="oneshot-inline-panel" style="display:none;margin-top:14px;padding:16px;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:12px">
+            <p style="color:var(--muted);font-size:.82rem;margin:0 0 12px;line-height:1.5">
+              <i class="fas fa-info-circle" style="color:#f59e0b;margin-right:5px"></i>
+              Describe any sound — StemForge generates it from scratch. Adjust duration to your liking.
+            </p>
+            <div style="margin-bottom:12px">
+              <textarea id="oneshot-sfx-desc" rows="4"
+                placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
+                style="width:100%;padding:10px 12px;border:1px solid rgba(245,158,11,.3);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55;box-sizing:border-box"></textarea>
+            </div>
+            <div style="margin-bottom:14px">
+              <label style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;color:var(--muted)">
+                <span>Duration</span>
+                <span id="oneshot-dur-label" style="color:#f59e0b;font-weight:700;font-size:.85rem">3.0s</span>
+              </label>
+              <input type="range" id="oneshot-sfx-duration" min="1" max="16" step="1" value="6"
+                oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=(v*0.5).toFixed(1)+'s'})(this.value)"
+                style="width:100%;accent-color:#f59e0b;cursor:pointer;height:4px"/>
+              <div style="display:flex;justify-content:space-between;margin-top:4px">
+                <span style="font-size:.7rem;color:var(--muted)">0.5s</span>
+                <span style="font-size:.7rem;color:var(--muted)">8s</span>
+              </div>
+            </div>
+            <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;background:linear-gradient(135deg,#d97706,#f59e0b);border:none;border-radius:10px;color:#fff;cursor:pointer">
+              <i class="fas fa-bolt"></i> Generate One Shot
+            </button>
+            <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
+              <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px"></i>
+              <span id="oneshot-sfx-status-text" style="font-size:.83rem;color:var(--muted)">Generating your one shot…</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- SECTION 1.5: Vocal Gender Toggle — below Lyrics, above Reference Track -->
+    <!-- SECTION 1.5: Vocal Gender Toggle -->
     <div class="suno-card suno-card--slim" id="card-vocals" data-tooltip="Choose vocal gender feel, or turn off for instrumental">
       <div style="display:flex;align-items:center;gap:10px;padding:2px 0">
         <i class="fas fa-microphone" style="color:var(--primary);font-size:.95rem;flex-shrink:0"></i>
@@ -13455,7 +13371,6 @@ function generatorPage() {
         </div>
       </div>
     </div>
-
 
     <!-- SECTION 4: Styles -->
     <div class="suno-card" id="card-styles">
@@ -13493,17 +13408,167 @@ function generatorPage() {
 
     </div><!-- /generator-main-sections -->
 
-    <!-- SECTION 6: Song Title (hidden — covered by Cover tab's own field; kept in DOM for JS compatibility) -->
+    <!-- SECTION 6: Song Title (hidden — kept in DOM for JS compatibility) -->
     <input type="text" id="gen-title" style="display:none" aria-hidden="true" tabindex="-1"/>
 
-    <!-- CREATE BUTTON — inline below, with tooltip -->
+    <!-- CREATE BUTTON -->
     <div class="suno-create-inline" id="generator-create-row">
       <button class="suno-create-btn" id="gen-full-btn"
         data-tooltip="Generate your beat using StemForge">
         <i class="fas fa-music"></i> Create
       </button>
-
     </div>
+
+    </div><!-- /create-tab-create -->
+
+    <!-- ══ VOICES TAB ════════════════════════════════════════════════ -->
+    <div id="create-tab-voices" class="create-tab-panel" style="display:none">
+
+      <!-- ── VoiceForge panel ── -->
+      <div id="voice-inline-panel">
+        <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
+          <div class="suno-card__header" style="padding-bottom:10px">
+            <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
+            <span class="suno-card__title" style="color:#34d399">VoiceForge</span>
+          </div>
+          <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
+
+            <!-- Step 1: Current voice status -->
+            <div id="voice-status-bar" style="padding:10px 12px;border-radius:8px;border:1px solid rgba(16,185,129,.25);background:rgba(16,185,129,.04);display:flex;align-items:center;gap:10px">
+              <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:.9rem" id="voice-status-icon"></i>
+              <span id="voice-status-text" style="font-size:.83rem;color:var(--muted)">Loading voice status…</span>
+              <button id="voice-delete-btn" onclick="deleteVoicePersona()" style="display:none;margin-left:auto;background:none;border:1px solid rgba(239,68,68,.4);color:#f87171;cursor:pointer;font-size:.75rem;padding:3px 9px;border-radius:6px">Remove</button>
+            </div>
+
+            <!-- Step 1: Create voice -->
+            <div id="voice-create-section">
+              <div style="margin-bottom:8px">
+                <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — FORGE YOUR VOICE</span>
+              </div>
+              <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
+                Upload a clean MP3 or WAV of your voice (10–60 seconds, solo vocals, no music). If your clip is longer than 30 seconds you can trim it below before cloning.
+              </div>
+
+              <!-- Drop zone -->
+              <div id="voice-drop-zone"
+                onclick="document.getElementById('voice-file-input').click()"
+                ondragover="event.preventDefault();this.style.borderColor='#10b981';this.style.background='rgba(16,185,129,.08)'"
+                ondragleave="this.style.borderColor='rgba(16,185,129,.3)';this.style.background='rgba(16,185,129,.03)'"
+                ondrop="event.preventDefault();this.style.borderColor='rgba(16,185,129,.3)';this.style.background='rgba(16,185,129,.03)';handleVoiceFileDrop(event)"
+                style="border:2px dashed rgba(16,185,129,.3);border-radius:10px;padding:20px 14px;text-align:center;cursor:pointer;background:rgba(16,185,129,.03);transition:all .2s;margin-bottom:8px">
+                <i class="fas fa-cloud-upload-alt" style="font-size:1.6rem;color:#10b981;margin-bottom:6px;display:block"></i>
+                <span style="font-size:.84rem;color:var(--muted)">Click or drag &amp; drop an MP3 / WAV file</span>
+                <input type="file" id="voice-file-input" accept=".mp3,.wav,audio/mpeg,audio/wav" style="display:none" onchange="handleVoiceFileSelect(this)"/>
+              </div>
+
+              <!-- Selected file info -->
+              <div id="voice-file-info" style="display:none;font-size:.8rem;color:#34d399;padding:6px 10px;background:rgba(16,185,129,.07);border:1px solid rgba(16,185,129,.2);border-radius:7px;margin-bottom:8px;align-items:center;gap:8px">
+                <i class="fas fa-file-audio"></i>
+                <span id="voice-file-name" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+                <span id="voice-file-dur" style="flex-shrink:0;color:#6b7280"></span>
+                <button onclick="clearVoiceFile()" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:.85rem;padding:0 2px" title="Remove file"><i class="fas fa-times"></i></button>
+              </div>
+
+              <!-- Trim UI — shown only when duration > 30s -->
+              <div id="voice-trim-section" style="display:none;background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.2);border-radius:10px;padding:14px;margin-bottom:8px">
+                <div style="font-size:.8rem;font-weight:700;color:#34d399;margin-bottom:10px;letter-spacing:.03em">
+                  <i class="fas fa-cut" style="margin-right:5px"></i>TRIM TO 30 SECONDS
+                </div>
+                <div style="font-size:.77rem;color:var(--muted);margin-bottom:12px">
+                  Your clip is longer than 30 s. Drag the handles to select up to 30 seconds of your best vocal section.
+                </div>
+                <div style="position:relative;height:40px;background:rgba(255,255,255,.04);border-radius:6px;overflow:hidden;margin-bottom:10px">
+                  <div id="voice-trim-bar" style="position:absolute;top:0;bottom:0;background:rgba(16,185,129,.25);border-left:2px solid #10b981;border-right:2px solid #10b981;cursor:grab"></div>
+                  <div id="voice-trim-waveform" style="position:absolute;top:0;left:0;right:0;bottom:0;display:flex;align-items:center;padding:0 4px;gap:1px;pointer-events:none"></div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <label style="font-size:.77rem;color:var(--muted);width:40px">Start</label>
+                    <input type="range" id="voice-trim-start" min="0" step="0.1" value="0" style="flex:1;accent-color:#10b981" oninput="onVoiceTrimChange('start')"/>
+                    <span id="voice-trim-start-lbl" style="font-size:.77rem;color:#34d399;width:38px;text-align:right">0.0 s</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <label style="font-size:.77rem;color:var(--muted);width:40px">End</label>
+                    <input type="range" id="voice-trim-end" min="0" step="0.1" value="30" style="flex:1;accent-color:#10b981" oninput="onVoiceTrimChange('end')"/>
+                    <span id="voice-trim-end-lbl" style="font-size:.77rem;color:#34d399;width:38px;text-align:right">30.0 s</span>
+                  </div>
+                </div>
+                <div id="voice-trim-dur-info" style="font-size:.76rem;color:var(--muted);margin-top:8px;text-align:right"></div>
+                <button onclick="previewVoiceTrim()" id="voice-trim-preview-btn"
+                  style="margin-top:10px;padding:7px 14px;background:none;border:1px solid rgba(16,185,129,.4);border-radius:8px;color:#34d399;cursor:pointer;font-size:.8rem;font-weight:600">
+                  <i class="fas fa-play" style="margin-right:5px"></i>Preview Trim
+                </button>
+                <audio id="voice-trim-preview-audio" style="display:none;width:100%;margin-top:8px;border-radius:6px;accent-color:#10b981" controls></audio>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <input type="text" id="voice-label-input" placeholder="Voice name (optional, e.g. My Voice)"
+                  style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(16,185,129,.2);border-radius:8px;color:#e2e8f0;font-size:.85rem;box-sizing:border-box;outline:none"
+                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
+                <button id="voice-clone-btn" onclick="createVoicePersona()"
+                  style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
+                  <i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 10 pts</span>
+                </button>
+                <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
+              </div>
+            </div>
+
+            <!-- Divider -->
+            <div style="border-top:1px solid rgba(255,255,255,.07)"></div>
+
+            <!-- Step 2: Generate with voice -->
+            <div id="voice-gen-section">
+              <div style="margin-bottom:8px">
+                <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 2 — GENERATE IN YOUR VOICE</span>
+              </div>
+              <div id="voice-gen-locked" style="padding:16px;text-align:center;color:var(--muted);font-size:.83rem;border:1px dashed rgba(255,255,255,.1);border-radius:8px">
+                <i class="fas fa-lock" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:.4"></i>
+                Complete Step 1 to unlock voice generation
+              </div>
+              <div id="voice-gen-form" style="display:none;flex-direction:column;gap:10px">
+                <input type="text" id="voice-gen-title" placeholder="Song title (optional)"
+                  style="width:100%;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;box-sizing:border-box;outline:none"
+                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"/>
+                <textarea id="voice-gen-lyrics" placeholder="Your lyrics here… (leave blank for AI-generated)" rows="5"
+                  style="width:100%;padding:10px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;font-family:inherit;resize:vertical;box-sizing:border-box;outline:none"
+                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"></textarea>
+                <input type="text" id="voice-gen-tags" placeholder="Style tags: pop, r&amp;b, smooth (optional)"
+                  style="width:100%;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.84rem;box-sizing:border-box;outline:none"
+                  onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(255,255,255,.1)'"/>
+                <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--surface-2,rgba(255,255,255,.04));border:1px solid rgba(255,255,255,.08);border-radius:8px">
+                  <i class="fas fa-drum" style="color:#10b981;font-size:.9rem;flex-shrink:0"></i>
+                  <span style="font-size:.84rem;font-weight:600;flex:1">Instrumental only</span>
+                  <label class="suno-switch">
+                    <input type="checkbox" id="voice-gen-instrumental"/>
+                    <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
+                  </label>
+                </div>
+                <button id="voice-gen-btn" onclick="generateVoiceSong()"
+                  style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
+                  <i class="fas fa-music" style="margin-right:6px"></i>Generate in My Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 35 pts</span>
+                </button>
+                <div id="voice-gen-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
+                <div id="voice-gen-progress" style="display:none;padding:14px;border:1px solid rgba(16,185,129,.2);border-radius:10px;text-align:center">
+                  <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:1.4rem;margin-bottom:8px;display:block"></i>
+                  <p id="voice-gen-progress-text" style="font-size:.83rem;color:var(--muted);margin:0">Generating your voice song… this takes 1–3 minutes</p>
+                </div>
+                <div id="voice-gen-result" style="display:none;padding:14px;border:1px solid rgba(16,185,129,.35);border-radius:10px;background:rgba(16,185,129,.05)">
+                  <p style="font-size:.8rem;font-weight:700;color:#34d399;margin:0 0 10px;letter-spacing:.04em">VOICE SONG READY</p>
+                  <audio id="voice-gen-audio" controls style="width:100%;border-radius:8px;accent-color:#10b981"></audio>
+                  <a id="voice-gen-download" href="#" download style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:.82rem;color:#34d399;text-decoration:none;font-weight:600">
+                    <i class="fas fa-download"></i> Download
+                  </a>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div><!-- /voice-inline-panel -->
+
+    </div><!-- /create-tab-voices -->
+
+    </div><!-- /create-tabs-content -->
 
   </div><!-- /suno-left -->
 
