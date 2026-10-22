@@ -6477,8 +6477,8 @@ app.post('/api/job/extend-upload', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Song Extend requires a Pro Artist plan.', upgrade: true }, 403)
+  if (user.plan !== 'pro' && user.plan !== 'creator' && user.plan !== 'developer') {
+    return c.json({ error: 'Song Extend requires a Creator or Pro Artist plan.', upgrade: true }, 403)
   }
 
   const { upload_audio_id, extend_at, lyrics, title, make_instrumental, source_duration_ms } = await c.req.json<{
@@ -6696,8 +6696,8 @@ app.post('/api/job/extend', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  if (user.plan !== 'pro' && user.plan !== 'developer') {
-    return c.json({ error: 'Song Extend requires a Pro Artist plan.', upgrade: true }, 403)
+  if (user.plan !== 'pro' && user.plan !== 'creator' && user.plan !== 'developer') {
+    return c.json({ error: 'Song Extend requires a Creator or Pro Artist plan.', upgrade: true }, 403)
   }
 
   const { source_job_id, extend_at, lyrics, make_instrumental } = await c.req.json<{
@@ -12395,7 +12395,9 @@ function homePage() {
             <li><i class="fas fa-check"></i> 900 points monthly (35 pts/gen)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="color:#4e9fff;font-size:.75rem"></i> Song Extend</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-fingerprint" style="color:#10b981;font-size:.75rem"></i> VoiceForge (clone &amp; generate)</li>
             <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro Artist only)</li>
           </ul>
           <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
@@ -12420,6 +12422,7 @@ function homePage() {
             <li><i class="fas fa-check"></i> WAV download + commercial use</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-guitar" style="color:#a855f7;font-size:.75rem"></i> AI Cover Song</li>
+            <li><i class="fas fa-check"></i> <i class="fas fa-fingerprint" style="color:#10b981;font-size:.75rem"></i> VoiceForge (clone &amp; generate)</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
           <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
