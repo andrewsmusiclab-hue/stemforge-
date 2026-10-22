@@ -13243,6 +13243,7 @@ function generatorPage() {
         <div class="suno-tab-group" id="lyrics-tabs">
           <button class="suno-tab active" data-tab="write" data-tooltip="Write your own lyrics — use [Verse], [Chorus] tags">Write</button>
           <button class="suno-tab" data-tab="instrumental" data-tooltip="No vocals — generate a pure instrumental beat">Instrumental</button>
+          <button class="suno-tab" data-tab="oneshot" data-tooltip="Generate isolated sounds — kicks, snares, 808s &amp; more" style="color:#f59e0b"><i class="fas fa-bolt" style="margin-right:4px;font-size:.75rem"></i>One Shot</button>
         </div>
       </div>
       <div class="suno-card__body" id="lyrics-body">
@@ -13288,52 +13289,37 @@ function generatorPage() {
             Instrumental mode is <strong>ON</strong>.
           </p>
 
-          <!-- ── One Shot toggle — inline under Instrumental ── -->
-          <div class="oneshot-inline-toggle" id="oneshot-inline-row">
-            <div style="display:flex;align-items:center;gap:10px">
-              <i class="fas fa-bolt" style="color:#f59e0b;font-size:.95rem;flex-shrink:0"></i>
-              <div>
-                <strong style="font-size:.88rem">One Shot Creator</strong>
-                <p style="margin:2px 0 0;font-size:.75rem;color:var(--muted)">Generate isolated sounds — kicks, snares, 808s &amp; more.</p>
-              </div>
-            </div>
-            <label class="suno-switch" onclick="toggleOneshotInline(event)">
-              <input type="checkbox" id="oneshot-inline-toggle-chk"/>
-              <span class="suno-switch__track"><span class="suno-switch__thumb"></span></span>
-            </label>
+        </div>
+        <!-- One Shot tab panel -->
+        <div class="suno-tab-panel" id="tab-oneshot">
+          <div style="margin-bottom:12px;padding:10px 12px;background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.2);border-radius:10px;font-size:.81rem;color:var(--muted);line-height:1.5">
+            <i class="fas fa-info-circle" style="color:#f59e0b;margin-right:5px"></i>
+            Describe any sound — StemForge generates it from scratch. Adjust duration to your liking.
           </div>
-
-          <!-- One Shot inline panel — revealed when toggle is ON -->
-          <div id="oneshot-inline-panel" style="display:none;margin-top:14px;padding:16px;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:12px">
-            <p style="color:var(--muted);font-size:.82rem;margin:0 0 12px;line-height:1.5">
-              <i class="fas fa-info-circle" style="color:#f59e0b;margin-right:5px"></i>
-              Describe any sound — StemForge generates it from scratch. Adjust duration to your liking.
-            </p>
-            <div style="margin-bottom:12px">
-              <textarea id="oneshot-sfx-desc" rows="4"
-                placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
-                style="width:100%;padding:10px 12px;border:1px solid rgba(245,158,11,.3);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55;box-sizing:border-box"></textarea>
+          <div style="margin-bottom:12px">
+            <textarea id="oneshot-sfx-desc" rows="4"
+              placeholder="e.g. deep punchy 808 bass hit with sub rumble and distorted tail, trap style&#10;&#10;or: tight snare crack with reverb tail, crisp and bright&#10;&#10;or: vinyl scratch effect, short and sharp"
+              style="width:100%;padding:10px 12px;border:1px solid rgba(245,158,11,.3);border-radius:10px;background:var(--bg);color:var(--text);font-size:.88rem;resize:vertical;line-height:1.55;box-sizing:border-box"></textarea>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;color:var(--muted)">
+              <span>Duration</span>
+              <span id="oneshot-dur-label" style="color:#f59e0b;font-weight:700;font-size:.85rem">3.0s</span>
+            </label>
+            <input type="range" id="oneshot-sfx-duration" min="1" max="16" step="1" value="6"
+              oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=(v*0.5).toFixed(1)+'s'})(this.value)"
+              style="width:100%;accent-color:#f59e0b;cursor:pointer;height:4px"/>
+            <div style="display:flex;justify-content:space-between;margin-top:4px">
+              <span style="font-size:.7rem;color:var(--muted)">0.5s</span>
+              <span style="font-size:.7rem;color:var(--muted)">8s</span>
             </div>
-            <div style="margin-bottom:14px">
-              <label style="font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;color:var(--muted)">
-                <span>Duration</span>
-                <span id="oneshot-dur-label" style="color:#f59e0b;font-weight:700;font-size:.85rem">3.0s</span>
-              </label>
-              <input type="range" id="oneshot-sfx-duration" min="1" max="16" step="1" value="6"
-                oninput="(function(v){document.getElementById('oneshot-dur-label').textContent=(v*0.5).toFixed(1)+'s'})(this.value)"
-                style="width:100%;accent-color:#f59e0b;cursor:pointer;height:4px"/>
-              <div style="display:flex;justify-content:space-between;margin-top:4px">
-                <span style="font-size:.7rem;color:var(--muted)">0.5s</span>
-                <span style="font-size:.7rem;color:var(--muted)">8s</span>
-              </div>
-            </div>
-            <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;background:linear-gradient(135deg,#d97706,#f59e0b);border:none;border-radius:10px;color:#fff;cursor:pointer">
-              <i class="fas fa-bolt"></i> Generate One Shot
-            </button>
-            <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
-              <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px"></i>
-              <span id="oneshot-sfx-status-text" style="font-size:.83rem;color:var(--muted)">Generating your one shot…</span>
-            </div>
+          </div>
+          <button id="oneshot-sfx-gen-btn" onclick="generateOneshotSfx()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700;background:linear-gradient(135deg,#d97706,#f59e0b);border:none;border-radius:10px;color:#fff;cursor:pointer">
+            <i class="fas fa-bolt"></i> Generate One Shot
+          </button>
+          <div id="oneshot-sfx-status" style="display:none;margin-top:12px;text-align:center;padding:12px;background:var(--surface-2,rgba(255,255,255,.04));border-radius:8px">
+            <i class="fas fa-spinner fa-spin" style="color:#f59e0b;margin-right:6px"></i>
+            <span id="oneshot-sfx-status-text" style="font-size:.83rem;color:var(--muted)">Generating your one shot…</span>
           </div>
         </div>
       </div>
