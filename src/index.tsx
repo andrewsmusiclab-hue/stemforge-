@@ -13018,7 +13018,7 @@ function generatorPage() {
         style="opacity:.45;cursor:not-allowed;pointer-events:none;position:relative">
         <i class="fas fa-lock" style="font-size:.65rem;vertical-align:middle;margin-right:2px"></i>
         <i class="fas fa-microphone"></i> Voices
-        <span style="position:absolute;top:-6px;right:-2px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.55rem;font-weight:700;padding:1px 5px;border-radius:10px;letter-spacing:.03em;line-height:1.6">SOON</span>
+        <span style="position:absolute;top:-7px;right:-4px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.5rem;font-weight:700;padding:1px 6px;border-radius:10px;letter-spacing:.03em;line-height:1.7;white-space:nowrap">Coming Soon</span>
       </button>
     </div>
 
@@ -14618,7 +14618,7 @@ function dashboardPage() {
       style="opacity:.4;cursor:not-allowed;pointer-events:none;position:relative">
       <i class="fas fa-lock" style="font-size:.6rem;vertical-align:middle;margin-right:2px;color:#9ca3af"></i>
       <i class="fas fa-fingerprint" style="color:#6b7280"></i> <span style="color:#9ca3af">VoiceForge</span>
-      <span style="position:absolute;top:-5px;right:-2px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.52rem;font-weight:700;padding:1px 5px;border-radius:10px;letter-spacing:.03em;line-height:1.6">SOON</span>
+      <span style="position:absolute;top:-6px;right:-4px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.48rem;font-weight:700;padding:1px 6px;border-radius:10px;letter-spacing:.03em;line-height:1.7;white-space:nowrap">Coming Soon</span>
     </button>
   </div>
 
