@@ -11608,10 +11608,10 @@ function homePage() {
           <p class="plan-card__desc">For artists, writers, and content creators.</p>
           <ul class="plan-card__features">
             <li><i class="fas fa-check"></i> 900 points monthly (35 pts/gen)</li>
-            <li><i class="fas fa-check"></i> Auto Split (up to 5 stems, 70 pts)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
+            <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro Artist only)</li>
           </ul>
           <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
           <div id="home-creator-plan-status" style="margin:8px 0 0">
@@ -13012,10 +13012,9 @@ function pricingPage() {
         <div class="plan-card__credits"><i class="fas fa-music"></i> 900 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
           <li><i class="fas fa-check"></i> Full StemForge beat generation (35 pts)</li>
-          <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (70 pts)</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
-          <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro only)</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro Artist only)</li>
           <li class="muted"><i class="fas fa-times"></i> Vocals &amp; Instrumental split</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
@@ -13070,7 +13069,7 @@ function pricingPage() {
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
         <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">40 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
@@ -13761,7 +13760,6 @@ function checkoutPage() {
         <ul class="checkout-plan-summary__features" id="co-plan-features">
           <!-- Creator features (default) — updated by JS when plan=pro -->
           <li id="co-feat-points"><i class="fas fa-check"></i> 900 points monthly</li>
-          <li id="co-feat-split"><i class="fas fa-check"></i> Auto Split (up to 5 stems)</li>
           <li id="co-feat-wav"><i class="fas fa-check"></i> WAV download</li>
           <li id="co-feat-commercial"><i class="fas fa-check"></i> Commercial use rights</li>
           <li id="co-feat-oneshot"><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
@@ -14576,7 +14574,7 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
           </div>
           <ul>
             <li><i class="fas fa-check"></i> 900 points monthly (35 pts/gen)</li>
-            <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (70 pts)</li>
+            <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro Artist only)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
@@ -14738,15 +14736,15 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
       <div class="credit-table-wrap" style="overflow-x:auto">
         <div class="credit-table">
           <div class="credit-table__row credit-table__row--header"><span>Action</span><span>Points Cost</span><span>Available On</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-music"></i> Generate 1 StemForge beat</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">40 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
-          <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
           <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
-          <div class="credit-table__row"><span><i class="fas fa-microphone-alt" style="color:#a855f7"></i> AI Cover Song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+          <div class="credit-table__row"><span><i class="fas fa-microphone-alt" style="color:#a855f7"></i> AI Cover Song</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
           <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val" style="color:#10b981">Included</span><span class="tier-badge tier-badge--creator">Creator+</span></div>
         </div>
       </div>
