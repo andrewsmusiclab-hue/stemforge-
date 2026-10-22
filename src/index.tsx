@@ -923,6 +923,74 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
   )`).run()
 
+  // ── VoiceForge — persona_id stored on user + async voice generation jobs ──
+  // persona_id is the AI persona created from a user's uploaded voice sample
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_id TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN persona_label TEXT`).run() } catch {}
+  // VoiceForge profile: display name and avatar image URL
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_name TEXT`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN voice_avatar TEXT`).run() } catch {}
+  // Jobs: which voiceforge persona was used to generate this track
+  try { await db.prepare(`ALTER TABLE jobs ADD COLUMN voice_forge_id TEXT`).run() } catch {}
+  await db.prepare(`CREATE TABLE IF NOT EXISTS voice_jobs (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    type        TEXT NOT NULL DEFAULT 'generate',
+    task_id     TEXT,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    title       TEXT,
+    audio_url   TEXT,
+    error       TEXT,
+    cost_pts    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL
+  )`).run()
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_voice_jobs_user_id ON voice_jobs (user_id)`).run() } catch {}
+
+  // ── Shop: cube skins + collectibles ───────────────────────────────────────
+  await db.prepare(`CREATE TABLE IF NOT EXISTS shop_items (
+    id          TEXT PRIMARY KEY,
+    type        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT,
+    price_cents INTEGER NOT NULL,
+    rarity      TEXT NOT NULL DEFAULT 'standard',
+    max_supply  INTEGER,
+    sold_count  INTEGER NOT NULL DEFAULT 0,
+    active      INTEGER NOT NULL DEFAULT 1,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    preview_colors TEXT,
+    created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+  )`).run()
+
+  await db.prepare(`CREATE TABLE IF NOT EXISTS user_purchases (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    item_id     TEXT NOT NULL,
+    price_paid  INTEGER NOT NULL DEFAULT 0,
+    stripe_pi   TEXT,
+    equipped    INTEGER NOT NULL DEFAULT 0,
+    purchased_at INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+  )`).run()
+
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_user ON user_purchases (user_id)`).run() } catch {}
+  try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_item ON user_purchases (item_id)`).run() } catch {}
+
+  // Seed default cube skins (idempotent)
+  const shopItems = [
+    { id: 'cube_forge',    type: 'cube', name: 'The Forge',       description: 'The original StemForge cube. Steel chrome with forge-fire faces. Every creator starts here.',      price_cents: 0,    rarity: 'standard', sort_order: 1, preview_colors: JSON.stringify({ cubeBody: '#070e1c', edgeGlow: '#00e5ff', fillLight: '#00d2ff', rimLight: '#ff8c20', botLight: '#0040ff', shellColor: '#00aaff', waveformTiers: [['#ffaa00','#ff4400'],['#00ff88','#00ffcc'],['#dd00ff','#8800ff'],['#00d4ff','#0066ff']] }) },
+    { id: 'cube_obsidian', type: 'cube', name: 'Obsidian',        description: 'Volcanic black glass with ember-cracked edges. For producers who forge in the dark.',              price_cents: 499,  rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ cubeBody: '#0a0404', edgeGlow: '#ff2200', fillLight: '#cc1100', rimLight: '#ff6600', botLight: '#660000', shellColor: '#ff3300', waveformTiers: [['#ff4400','#ff2200'],['#ff6600','#ff3300'],['#cc2200','#881100'],['#ff5500','#cc3300']] }) },
+    { id: 'cube_goldrush', type: 'cube', name: 'Gold Rush',       description: '24k brushed gold with warm amber glow. Luxury aesthetics for the chart-topping producer.',         price_cents: 499,  rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ cubeBody: '#1a1000', edgeGlow: '#ffd700', fillLight: '#ffaa00', rimLight: '#ff8800', botLight: '#cc7700', shellColor: '#ffcc00', waveformTiers: [['#ffd700','#ffaa00'],['#ffcc00','#ff9900'],['#eebb00','#cc8800'],['#ffdd44','#ffaa00']] }) },
+    { id: 'cube_neon',     type: 'cube', name: 'Neon Ghost',      description: 'Frosted glass cube with electric cyan pulse lines. Invisible in daylight. Unstoppable at night.',  price_cents: 499,  rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ cubeBody: '#020d18', edgeGlow: '#00ffff', fillLight: '#00eeff', rimLight: '#0088ff', botLight: '#00aaff', shellColor: '#00ffee', waveformTiers: [['#00ffff','#00eeff'],['#00ccff','#0088ff'],['#00eedd','#00bbcc'],['#44ffff','#00ddff']] }) },
+    { id: 'cube_diamond',  type: 'cube', name: 'Blood Diamond',   description: 'Crimson faceted gem. Only 500 ever forged — each one numbered. The rarest cube in existence.',   price_cents: 1499, rarity: 'limited', max_supply: 500, sort_order: 5, preview_colors: JSON.stringify({ cubeBody: '#1a0008', edgeGlow: '#ff0055', fillLight: '#cc0044', rimLight: '#ff0077', botLight: '#880033', shellColor: '#ff0055', waveformTiers: [['#ff0055','#cc0033'],['#ff3366','#dd0044'],['#ff0044','#aa0033'],['#ff2255','#cc0033']] }) },
+  ]
+  for (const item of shopItems) {
+    await db.prepare(`INSERT OR IGNORE INTO shop_items (id, type, name, description, price_cents, rarity, max_supply, sort_order, preview_colors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(item.id, item.type, item.name, item.description, item.price_cents, item.rarity, (item as any).max_supply ?? null, item.sort_order, item.preview_colors).run()
+  }
+
+  // active_cube_id on users
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN active_cube_id TEXT DEFAULT 'cube_forge'`).run() } catch {}
+
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id)`).run() } catch {}
@@ -4607,8 +4675,8 @@ app.get('/api/auth/me', async (c) => {
   }
   // Re-fetch fresh gens from DB (session cache may be stale)
   const fresh = await c.env.DB.prepare(
-    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash FROM users WHERE id = ?`
-  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null }>()
+    `SELECT gens_used, gens_limit, plan, account_locked, lock_reason, bonus_credits, password_hash, active_cube_id FROM users WHERE id = ?`
+  ).bind(user.id).first<{ gens_used: number; gens_limit: number; plan: string; account_locked: number; lock_reason: string | null; bonus_credits: number; password_hash: string | null; active_cube_id: string | null }>()
   const plan = fresh?.plan ?? user.plan
   c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
   c.header('Pragma', 'no-cache')
@@ -4623,7 +4691,8 @@ app.get('/api/auth/me', async (c) => {
       account_locked: fresh?.account_locked ?? 0,
       lock_reason: fresh?.lock_reason ?? null,
       is_admin: isAdmin(user, c.env),
-      has_password: !!(fresh?.password_hash)
+      has_password: !!(fresh?.password_hash),
+      active_cube_id: fresh?.active_cube_id || 'cube_forge',
     }
   })
 })
@@ -5173,6 +5242,397 @@ app.get('/profile', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   return c.html(profilePage(user))
+})
+
+// ── /shop — Coming Soon placeholder (full shop restoring later) ──────────
+app.get('/shop', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/shop')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login?next=/shop')
+  const ASSET_VER_SHOP = ASSET_VER
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Shop — StemForge</title>
+  <link href="/static/style.css?v=${ASSET_VER_SHOP}" rel="stylesheet"/>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
+  <style>
+    .shop-cs-page { max-width: 680px; margin: 80px auto; padding: 0 20px 80px; text-align: center; }
+    .shop-cs-icon { font-size: 4rem; margin-bottom: 24px; display: block; }
+    .shop-cs-title { font-size: 2rem; font-weight: 800; margin-bottom: 12px; background: linear-gradient(135deg,#a78bfa,#8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    .shop-cs-sub { color: var(--muted); font-size: 1rem; line-height: 1.7; margin-bottom: 32px; max-width: 460px; margin-left: auto; margin-right: auto; }
+    .shop-cs-badge { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg,rgba(139,92,246,.18),rgba(167,139,250,.08)); border: 1px solid rgba(139,92,246,.4); border-radius: 999px; padding: 8px 20px; font-size: .88rem; font-weight: 700; color: #c4b5fd; margin-bottom: 32px; }
+    .shop-cs-features { display: grid; grid-template-columns: repeat(auto-fill,minmax(180px,1fr)); gap: 14px; margin-bottom: 36px; text-align: left; }
+    .shop-cs-feat { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 16px; }
+    .shop-cs-feat i { color: #8b5cf6; margin-bottom: 8px; font-size: 1.2rem; display: block; }
+    .shop-cs-feat span { font-size: .82rem; color: #e2e8f0; font-weight: 600; }
+    .shop-cs-feat p { font-size: .76rem; color: var(--muted); margin: 4px 0 0; line-height: 1.5; }
+  </style>
+</head>
+<body>
+${globalSidebar()}
+<main class="shop-cs-page">
+  <span class="shop-cs-icon">🛒</span>
+  <h1 class="shop-cs-title">Shop — Coming Soon</h1>
+  <p class="shop-cs-sub">We're building something special for you. The StemForge Shop will let you personalise your forge, top up points, and unlock exclusive skins.</p>
+  <div class="shop-cs-badge">
+    <i class="fas fa-clock"></i> Launching very soon
+  </div>
+  <div class="shop-cs-features">
+    <div class="shop-cs-feat">
+      <i class="fas fa-cube"></i>
+      <span>Cube Skins</span>
+      <p>Unique 3D skins for your forge — from Obsidian to Gold Rush.</p>
+    </div>
+    <div class="shop-cs-feat">
+      <i class="fas fa-bolt"></i>
+      <span>Point Packs</span>
+      <p>One-time credit top-ups that stack on your monthly plan.</p>
+    </div>
+    <div class="shop-cs-feat">
+      <i class="fas fa-star"></i>
+      <span>Plan Upgrades</span>
+      <p>Upgrade to Creator or Pro Artist directly from the Shop.</p>
+    </div>
+    <div class="shop-cs-feat">
+      <i class="fas fa-gem"></i>
+      <span>Collectibles</span>
+      <p>Limited-edition items. Once they're gone, they're gone.</p>
+    </div>
+  </div>
+  <a href="/subscription" style="display:inline-flex;align-items:center;gap:8px;padding:12px 24px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;text-decoration:none;font-size:.9rem">
+    <i class="fas fa-credit-card"></i> Manage Subscription
+  </a>
+</main>
+<script src="/static/app.v2.70.js?v=${ASSET_VER_SHOP}"></script>
+</body>
+</html>`)
+})
+
+// ── /collection — user's owned cube skins ────────────────────────────────
+app.get('/collection', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/collection')
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.redirect('/login?next=/collection')
+  const ASSET_VER_COLL = ASSET_VER
+  return c.html(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>My Collection — StemForge</title>
+  <link href="/static/style.css?v=${ASSET_VER_COLL}" rel="stylesheet"/>
+  <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
+  <style>
+    .coll-page { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+    .coll-hero { margin-bottom: 36px; }
+    .coll-hero h1 { font-size: 1.7rem; font-weight: 800; display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .coll-hero p { color: var(--muted); font-size: .88rem; }
+    .coll-section-title { font-size: 1rem; font-weight: 700; color: #a78bfa; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
+    .coll-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 40px; }
+    .coll-card { background: rgba(255,255,255,.04); border: 1.5px solid rgba(255,255,255,.08); border-radius: 14px; overflow: hidden; transition: border-color .2s, transform .2s; }
+    .coll-card.equipped { border-color: rgba(139,92,246,.55); box-shadow: 0 0 20px rgba(139,92,246,.1); }
+    .coll-card:hover { transform: translateY(-2px); border-color: rgba(139,92,246,.3); }
+    .coll-preview { height: 120px; display: flex; align-items: center; justify-content: center; }
+    .coll-body { padding: 10px 12px 12px; }
+    .coll-name { font-weight: 700; font-size: .88rem; margin-bottom: 6px; }
+    .coll-date { font-size: .72rem; color: var(--muted); margin-bottom: 8px; }
+    .coll-equip-btn { width: 100%; padding: 7px; border-radius: 8px; font-size: .8rem; font-weight: 700; cursor: pointer; border: none; transition: opacity .15s; }
+    .coll-equip-btn--active { background: rgba(139,92,246,.12); color: #a78bfa; border: 1px solid rgba(139,92,246,.25); cursor: default; }
+    .coll-equip-btn--equip  { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
+    .coll-empty { text-align: center; padding: 48px 20px; color: var(--muted); }
+    .coll-empty i { font-size: 3rem; opacity: .25; margin-bottom: 16px; display: block; }
+    .coll-shop-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; padding: 10px 20px; background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: .88rem; }
+    @keyframes cubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-25deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-25deg) translateY(-5px)}}
+  </style>
+</head>
+<body>
+${globalSidebar()}
+<main class="coll-page">
+  <div class="coll-hero">
+    <h1><i class="fas fa-gem" style="color:#8b5cf6"></i> My Collection</h1>
+    <p>Everything you own. Equip a cube to make your forge uniquely yours.</p>
+  </div>
+  <div id="coll-content"><div style="color:var(--muted);text-align:center;padding:48px"><i class="fas fa-circle-notch fa-spin"></i> Loading your collection…</div></div>
+</main>
+<script>
+(function(){
+  Promise.all([
+    fetch('/api/shop/collection').then(r=>r.json()),
+    fetch('/api/shop/items').then(r=>r.json())
+  ]).then(function(res){
+    var coll=res[0]; var allItems=res[1].items||[];
+    var owned=coll.owned||[]; var activeCube=coll.active_cube_id||'cube_forge';
+    var itemMap={};
+    allItems.forEach(function(it){itemMap[it.id]=it;});
+    if(!owned.length){
+      document.getElementById('coll-content').innerHTML=
+        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem">Cube skins will be available in the Shop soon!</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
+      return;
+    }
+    var cubes=owned.filter(function(o){return o.type==='cube';});
+    var html='';
+    if(cubes.length){
+      html+='<div class="coll-section-title"><i class="fas fa-cube"></i> Cube Skins ('+cubes.length+')</div>';
+      html+='<div class="coll-grid" id="coll-cube-grid">';
+      cubes.forEach(function(o){
+        var it=itemMap[o.item_id]||{name:o.name||o.item_id,preview_colors:'{}',rarity:'standard'};
+        var colors={};try{colors=JSON.parse(it.preview_colors||'{}');}catch(e){}
+        var isEquipped=o.item_id===activeCube;
+        var date=o.purchased_at?new Date(o.purchased_at).toLocaleDateString():'';
+        html+='<div class="coll-card'+(isEquipped?' equipped':'')+'" id="coll-card-'+o.item_id+'">';
+        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+darken(colors.cubeBody||'#070e1c')+',#050a14)">'+cubePreviewHtml(colors)+'</div>';
+        html+='<div class="coll-body">';
+        html+='<div class="coll-name">'+it.name+(isEquipped?' <i class="fas fa-check" style="color:#a78bfa;font-size:.75rem"></i>':'')+'</div>';
+        if(date) html+='<div class="coll-date">Owned since '+date+'</div>';
+        if(isEquipped) html+='<button class="coll-equip-btn coll-equip-btn--active" disabled><i class="fas fa-check" style="margin-right:4px"></i>Equipped</button>';
+        else           html+='<button class="coll-equip-btn coll-equip-btn--equip" onclick="equipCube(\\'' + o.item_id + '\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip</button>';
+        html+='</div></div>';
+      });
+      html+='</div>';
+    }
+    html+='<div style="text-align:center;margin-top:24px"><a href="/shop" style="color:var(--primary);font-size:.88rem;font-weight:600;text-decoration:none"><i class="fas fa-store" style="margin-right:6px"></i>Browse Shop for more skins</a></div>';
+    document.getElementById('coll-content').innerHTML=html;
+  }).catch(function(){
+    document.getElementById('coll-content').innerHTML='<div class="coll-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load collection.</p><button onclick="location.reload()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-size:.88rem">Try again</button></div>';
+  });
+  function cubePreviewHtml(colors){
+    var c=colors||{};var body=c.cubeBody||'#070e1c';var edge=c.edgeGlow||'#00e5ff';
+    return '<div style="perspective:200px;width:70px;height:70px;margin:auto">'+
+      '<div style="width:70px;height:70px;position:relative;transform-style:preserve-3d;animation:cubeFloat 4s ease-in-out infinite;border-radius:8px">'+
+      [['translateZ(35px)'],['rotateY(180deg) translateZ(35px)'],['rotateY(-90deg) translateZ(35px)'],['rotateY(90deg) translateZ(35px)'],['rotateX(90deg) translateZ(35px)'],['rotateX(-90deg) translateZ(35px)']].map(function(t){
+        return '<div style="position:absolute;width:70px;height:70px;background:'+body+';border:1.5px solid '+edge+';border-radius:7px;transform:'+t[0]+';box-shadow:inset 0 0 10px rgba(0,0,0,.3)"></div>';
+      }).join('')+'</div></div>';
+  }
+  function darken(hex){
+    hex=hex.replace('#','');var n=parseInt(hex,16);
+    return 'rgb('+Math.max(0,((n>>16)&255)-20)+','+Math.max(0,((n>>8)&255)-20)+','+Math.max(0,(n&255)-20)+')';
+  }
+  window.equipCube=function(itemId,btn){
+    btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
+    fetch('/api/shop/equip/'+itemId,{method:'POST'})
+      .then(function(r){return r.json();})
+      .then(function(d){
+        if(d.ok){
+          var t=document.createElement('div');
+          t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#c4b5fd;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999';
+          t.innerHTML='<i class="fas fa-check" style="margin-right:8px"></i>Cube equipped! Head to Create to see it.';
+          document.body.appendChild(t);setTimeout(function(){t.remove();},3000);
+          setTimeout(function(){location.reload();},500);
+        }else{btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip';alert(d.error||'Error');}
+      }).catch(function(){btn.disabled=false;btn.innerHTML='Equip';});
+  };
+})();
+</script>
+<script src="/static/app.v2.70.js?v=${ASSET_VER_COLL}"></script>
+</body>
+</html>`)
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── VOICE FORGE API ROUTES ────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+
+// GET /api/voice/status — return current user's saved persona info
+app.get('/api/voice/status', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const row = await c.env.DB.prepare(`SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`).bind(user.id).first<any>()
+  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null, voice_name: row?.voice_name || null, voice_avatar: row?.voice_avatar || null })
+})
+
+// GET /api/voice/profile — get voice name, avatar, and tracks using this voice
+app.get('/api/voice/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const row = await c.env.DB.prepare(
+    `SELECT persona_id, persona_label, voice_name, voice_avatar FROM users WHERE id = ?`
+  ).bind(user.id).first<any>()
+  const tracksRes = await c.env.DB.prepare(
+    `SELECT id, data, created_at FROM jobs
+     WHERE user_id = ? AND voice_forge_id IS NOT NULL AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT 50`
+  ).bind(user.id).all<any>()
+  const tracks = (tracksRes.results || []).map((r: any) => {
+    try {
+      const d = JSON.parse(r.data)
+      return { id: r.id, title: d.title || d.blueprint?.genre || 'Untitled', created_at: r.created_at, voice_forge_id: d.voice_forge_id, audio_url: d.stereo_url || d.audio_url || null }
+    } catch { return null }
+  }).filter(Boolean)
+  return c.json({ persona_id: row?.persona_id || null, persona_label: row?.persona_label || null, voice_name: row?.voice_name || null, voice_avatar: row?.voice_avatar || null, tracks })
+})
+
+// PUT /api/voice/profile — save voice name and/or avatar URL
+app.put('/api/voice/profile', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const { voice_name, voice_avatar } = await c.req.json<{ voice_name?: string; voice_avatar?: string }>()
+  if (voice_name !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET voice_name = ? WHERE id = ?`).bind(voice_name.trim().slice(0,60) || null, user.id).run()
+  }
+  if (voice_avatar !== undefined) {
+    await c.env.DB.prepare(`UPDATE users SET voice_avatar = ? WHERE id = ?`).bind(voice_avatar || null, user.id).run()
+  }
+  return c.json({ ok: true })
+})
+
+// DELETE /api/voice/persona — remove saved persona from user
+app.delete('/api/voice/persona', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  await c.env.DB.prepare(`UPDATE users SET persona_id = NULL, persona_label = NULL WHERE id = ?`).bind(user.id).run()
+  return c.json({ ok: true })
+})
+
+// DELETE /api/voice/detach/:jobId — remove voice link from a specific track
+app.delete('/api/voice/detach/:jobId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const jobId = c.req.param('jobId')
+  const row = await c.env.DB.prepare(`SELECT id, data FROM jobs WHERE id = ? AND user_id = ?`).bind(jobId, user.id).first<any>()
+  if (!row) return c.json({ error: 'Track not found' }, 404)
+  await c.env.DB.prepare(`UPDATE jobs SET voice_forge_id = NULL WHERE id = ?`).bind(jobId).run()
+  try {
+    const d = JSON.parse(row.data)
+    delete d.voice_forge_id
+    await c.env.DB.prepare(`UPDATE jobs SET data = ? WHERE id = ?`).bind(JSON.stringify(d), jobId).run()
+  } catch {}
+  return c.json({ ok: true })
+})
+
+// GET /api/voice/sample/:key — stream a voice sample from R2 (public, unguessable key)
+app.get('/api/voice/sample/:key', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage not available.' }, 500)
+  const key = c.req.param('key')
+  if (!key.startsWith('voice-samples--') || key.includes('/') || key.includes('..')) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  const ct = obj.httpMetadata?.contentType || (key.endsWith('.wav') ? 'audio/wav' : 'audio/mpeg')
+  return new Response(obj.body, {
+    headers: { 'Content-Type': ct, 'Cache-Control': 'private, max-age=3600' }
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── SHOP API ROUTES ───────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+
+// GET /api/shop/items — list all active shop items
+app.get('/api/shop/items', async (c) => {
+  if (!c.env.DB) return c.json({ error: 'Not configured' }, 500)
+  const items = await c.env.DB.prepare(
+    `SELECT id, type, name, description, price_cents, rarity, max_supply, sold_count, sort_order, preview_colors
+     FROM shop_items WHERE active = 1 ORDER BY sort_order ASC`
+  ).all<any>()
+  return c.json({ items: items.results || [] })
+})
+
+// GET /api/shop/collection — get user's owned items + active skin
+app.get('/api/shop/collection', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  // Auto-grant The Forge (free) if not already owned
+  const forgeOwned = await c.env.DB.prepare(
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = 'cube_forge'`
+  ).bind(user.id).first<any>()
+  if (!forgeOwned) {
+    const grantId = `grant_${user.id}_cube_forge`
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, 'cube_forge', 0, 1)`
+    ).bind(grantId, user.id).run()
+  }
+  const purchases = await c.env.DB.prepare(
+    `SELECT up.item_id, up.equipped, up.purchased_at, si.name, si.type, si.rarity, si.preview_colors
+     FROM user_purchases up
+     JOIN shop_items si ON si.id = up.item_id
+     WHERE up.user_id = ? ORDER BY up.purchased_at ASC`
+  ).bind(user.id).all<any>()
+  const userData = await c.env.DB.prepare(`SELECT active_cube_id FROM users WHERE id = ?`).bind(user.id).first<any>()
+  const activeCubeId = userData?.active_cube_id || 'cube_forge'
+  return c.json({ owned: purchases.results || [], active_cube_id: activeCubeId })
+})
+
+// POST /api/shop/equip/:itemId — equip an owned item
+app.post('/api/shop/equip/:itemId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const itemId = c.req.param('itemId')
+  const owned = await c.env.DB.prepare(
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
+  ).bind(user.id, itemId).first<any>()
+  if (!owned) return c.json({ error: 'Item not owned' }, 403)
+  const item = await c.env.DB.prepare(`SELECT type FROM shop_items WHERE id = ?`).bind(itemId).first<any>()
+  if (!item) return c.json({ error: 'Item not found' }, 404)
+  if (item.type === 'cube') {
+    await c.env.DB.prepare(`UPDATE users SET active_cube_id = ? WHERE id = ?`).bind(itemId, user.id).run()
+  }
+  return c.json({ ok: true, active_cube_id: itemId })
+})
+
+// POST /api/shop/purchase/:itemId — buy an item (free items instant; paid via Stripe)
+app.post('/api/shop/purchase/:itemId', async (c) => {
+  if (!c.env.DB || !c.env.SESSION_SECRET) return c.json({ error: 'Not configured' }, 500)
+  const token = getSessionCookie(c.req.raw)
+  const user = token ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Not authenticated' }, 401)
+  const itemId = c.req.param('itemId')
+  const item = await c.env.DB.prepare(
+    `SELECT * FROM shop_items WHERE id = ? AND active = 1`
+  ).bind(itemId).first<any>()
+  if (!item) return c.json({ error: 'Item not found' }, 404)
+  const already = await c.env.DB.prepare(
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
+  ).bind(user.id, itemId).first<any>()
+  if (already) return c.json({ error: 'Already owned' }, 409)
+  if (item.max_supply && item.sold_count >= item.max_supply) return c.json({ error: 'Sold out' }, 410)
+  if (item.price_cents === 0) {
+    const purchaseId = `free_${user.id}_${itemId}`
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, ?, 0, 0)`
+    ).bind(purchaseId, user.id, itemId).run()
+    await c.env.DB.prepare(`UPDATE shop_items SET sold_count = sold_count + 1 WHERE id = ?`).bind(itemId).run()
+    return c.json({ ok: true, purchased: true, checkout_url: null })
+  }
+  const stripeKey = c.env.STRIPE_SECRET_KEY
+  if (!stripeKey) return c.json({ error: 'Payment not configured' }, 500)
+  const origin = new URL(c.req.url).origin
+  const sessionRes = await stripeRequest('POST', '/checkout/sessions', {
+    'mode': 'payment',
+    'payment_method_types[]': 'card',
+    'line_items[0][price_data][currency]': 'usd',
+    'line_items[0][price_data][product_data][name]': item.name + ' — StemForge Cube',
+    'line_items[0][price_data][product_data][description]': item.description || '',
+    'line_items[0][price_data][unit_amount]': String(item.price_cents),
+    'line_items[0][quantity]': '1',
+    'success_url': `${origin}/shop?purchase=success&item=${itemId}`,
+    'cancel_url': `${origin}/shop?purchase=cancel`,
+    'metadata[type]': 'shop_item',
+    'metadata[item_id]': itemId,
+    'metadata[user_id]': String(user.id),
+    'customer_email': user.email || '',
+  }, stripeKey)
+  if (!sessionRes?.url) return c.json({ error: 'Failed to create checkout' }, 500)
+  return c.json({ ok: true, checkout_url: sessionRes.url })
 })
 
 app.get('/subscription', async (c) => {
@@ -10965,7 +11425,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-130a'
+const ASSET_VER = '20261022-174r'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -11176,6 +11636,12 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
+      <a href="/shop" class="gs-user-dropdown__item">
+        <i class="fas fa-store"></i> Shop &amp; Credits
+      </a>
+      <a href="/collection" class="gs-user-dropdown__item">
+        <i class="fas fa-gem"></i> My Collection
+      </a>
       <a href="/subscription" class="gs-user-dropdown__item">
         <i class="fas fa-credit-card"></i> Subscription
       </a>
@@ -11213,18 +11679,24 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- Get More Credits — inside nav, below Feedback, logged-in only -->
-    <a href="/subscription" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" style="
+    <!-- Shop & Credits — logged-in only -->
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="
       display:none;
-      background:linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10));
-      border:1px solid rgba(78,159,255,.25);
-      color:#4e9fff;font-weight:700;
+      background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08));
+      border:1px solid rgba(139,92,246,.3);
+      color:#a78bfa;font-weight:700;
       transition:background .15s,border-color .15s;
       text-decoration:none;
-    " onmouseover="this.style.borderColor='rgba(78,159,255,.5)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.18),rgba(139,92,246,.15))'" onmouseout="this.style.borderColor='rgba(78,159,255,.25)';this.style.background='linear-gradient(135deg,rgba(78,159,255,.12),rgba(139,92,246,.10))'">
-      <i class="fas fa-plus-circle" style="width:18px;text-align:center;flex-shrink:0;color:#4e9fff"></i>
-      <span class="nav-label-full">Get More Credits</span>
-      <span class="nav-label-short" style="display:none">Credits</span>
+    " onmouseover="this.style.borderColor='rgba(139,92,246,.6)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.22),rgba(167,139,250,.14))'" onmouseout="this.style.borderColor='rgba(139,92,246,.3)';this.style.background='linear-gradient(135deg,rgba(139,92,246,.14),rgba(167,139,250,.08))'">
+      <i class="fas fa-store" style="width:18px;text-align:center;flex-shrink:0;color:#a78bfa"></i>
+      <span class="nav-label-full">Shop &amp; Credits</span>
+      <span class="nav-label-short">Shop</span>
+    </a>
+    <!-- My Collection — logged-in only -->
+    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none">
+      <i class="fas fa-gem" style="width:18px;text-align:center;flex-shrink:0"></i>
+      <span class="nav-label-full">My Collection</span>
+      <span class="nav-label-short">Collect</span>
     </a>
 
   </nav>
@@ -11301,11 +11773,13 @@ function globalSidebar() {
         padding:16px 18px;
       ">
         <div style="font-size:.78rem;font-weight:700;color:#4fc3f7;letter-spacing:.5px;margin-bottom:6px;">👋 WELCOME TO WHAT'S NEW TAB</div>
-        <p style="margin:0;font-size:.82rem;color:#cbd5e1;line-height:1.6">
+        <p style="margin:0 0 12px;font-size:.82rem;color:#cbd5e1;line-height:1.6">
           This tab is your go-to place for everything happening on StemForge. Whenever we ship a new feature,
-          tweak something, or fix a bug — you'll find it here with a clear description of what changed and why.
-          Check back anytime to stay up to date!
+          tweak something, or fix a bug — you'll find it here. You can also replay the site tour anytime below.
         </p>
+        <button onclick="window._sfCloseWhatsNew();setTimeout(function(){window._sfStartTour&&window._sfStartTour(true);},200)" style="display:inline-flex;align-items:center;gap:7px;padding:9px 18px;background:linear-gradient(135deg,rgba(139,92,246,.2),rgba(167,139,250,.1));border:1px solid rgba(139,92,246,.4);color:#c4b5fd;border-radius:9px;font-weight:700;font-size:.8rem;cursor:pointer;transition:all .15s" onmouseover="this.style.background='linear-gradient(135deg,rgba(139,92,246,.3),rgba(167,139,250,.18))'" onmouseout="this.style.background='linear-gradient(135deg,rgba(139,92,246,.2),rgba(167,139,250,.1))'">
+          <i class="fas fa-map-signs"></i> Replay Site Tour
+        </button>
       </div>
       <!-- Update entries -->
       <div id="whats-new-entries" style="padding:16px 24px 24px;display:flex;flex-direction:column;gap:14px">
@@ -14455,6 +14929,20 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
     </div>
 
     <!-- ── Buy More Credits / Credit Packs ───────────────────── -->
+    <!-- Shop redirect banner -->
+    <div style="display:flex;align-items:center;gap:16px;background:rgba(139,92,246,.07);border:1px solid rgba(139,92,246,.2);border-radius:14px;padding:18px 22px;margin-bottom:28px">
+      <div style="width:44px;height:44px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <i class="fas fa-store" style="color:#fff;font-size:1rem"></i>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:.95rem;margin-bottom:3px">Buy Point Packs &amp; Cube Skins</div>
+        <div style="font-size:.82rem;color:var(--muted);line-height:1.4">Top-up packs, cube skins, and all purchases are in one place — the Shop.</div>
+      </div>
+      <a href="/shop" style="flex-shrink:0;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;font-size:.85rem;text-decoration:none;white-space:nowrap;display:flex;align-items:center;gap:6px">
+        <i class="fas fa-store"></i> Open Shop
+      </a>
+    </div>
+
     <div class="sub-credits-section" id="sub-credits-section">
       <div class="pack-section-header">
         <div>

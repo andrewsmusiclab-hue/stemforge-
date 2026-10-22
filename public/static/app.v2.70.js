@@ -1360,6 +1360,50 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'oct2026-v174-update',
+      date: 'October 2026',
+      title: 'Big Update: New Navigation, Shop, VoiceForge & More',
+      tag: 'MAJOR UPDATE',
+      tagColor: '#8b5cf6',
+      body: `<div style="margin:10px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.7">
+        <p style="margin-bottom:12px">StemForge just got a major upgrade. Here's everything that's new:</p>
+        <ul style="margin:0 0 14px;padding:0 0 0 16px">
+          <li><b style="color:#a78bfa">Shop &amp; My Collection</b> — A brand-new Shop is now in the sidebar (coming soon with full inventory). Your personal Collection page is live too.</li>
+          <li><b style="color:#a78bfa">VoiceForge tab in Library</b> — All your VoiceForge generated songs now live in the Library under the Voices tab.</li>
+          <li><b style="color:#a78bfa">Cube Skin System</b> — 5 unique cube skins to collect: The Forge, Obsidian, Gold Rush, Neon Ghost, and Blood Diamond. Everyone gets The Forge free.</li>
+          <li><b style="color:#a78bfa">Voices tab locked</b> — VoiceForge is coming very soon. You'll see it in the Create tab as a preview.</li>
+          <li><b style="color:#fbbf24">Point cost updates</b> — Beat Generation, Remix, and AI Cover Song are now 35 pts. Song Extend is 25 pts.</li>
+          <li><b style="color:#f87171">Stem Splitter is now Pro Artist only</b> — Creator plan members can no longer access the Stem Splitter. Creator plan retains all other features.</li>
+        </ul>
+        <p style="font-size:.79rem;color:#6b7280">New to the layout? Hit the <b style="color:#fcd34d">Start Tour</b> button below for a quick walkthrough of everything that moved.</p>
+        <button onclick="window._sfStartTour&&window._sfStartTour(true)" style="margin-top:8px;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:.83rem;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
+          <i class="fas fa-map-signs"></i> Start Site Tour
+        </button>
+      </div>`
+    },
+    {
+      id: 'oct2026-point-cost-update',
+      date: 'October 2026',
+      title: 'Point Cost Updates & Stem Splitter Now Pro Artist Only',
+      tag: 'PLAN UPDATE',
+      tagColor: '#f59e0b',
+      body: `<div style="margin:10px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.7">
+        <p style="margin-bottom:10px"><b style="color:#fcd34d">Updated point costs (effective immediately):</b></p>
+        <ul style="margin:0 0 12px;padding:0 0 0 16px">
+          <li><b style="color:#e2e8f0">Beat Generation</b> — 25 pts → <b style="color:#a78bfa">35 pts</b></li>
+          <li><b style="color:#e2e8f0">Remix</b> — 25 pts → <b style="color:#a78bfa">35 pts</b></li>
+          <li><b style="color:#e2e8f0">AI Cover Song</b> — 25 pts → <b style="color:#a78bfa">35 pts</b></li>
+          <li><b style="color:#e2e8f0">Song Extend</b> — 20 pts → <b style="color:#a78bfa">25 pts</b></li>
+        </ul>
+        <p style="margin-bottom:10px"><b style="color:#fcd34d">Stem Splitter is now Pro Artist exclusive:</b></p>
+        <ul style="margin:0;padding:0 0 0 16px">
+          <li>Stem Splitter (Auto Split + Vocals &amp; Instrumental) is now only available on the <b style="color:#fbbf24">Pro Artist</b> plan.</li>
+          <li>Creator plan members retain all other features — Beat Gen, Remix, Extend, AI Cover, VoiceForge (coming soon), unlimited library, and One Shot Creator.</li>
+          <li>Pro Artist plan now includes <b style="color:#e2e8f0">2,000 pts/month</b> to accommodate the updated costs.</li>
+        </ul>
+      </div>`
+    },
+    {
       id: 'oct2026-stem-splitter-guide',
       date: 'October 2026',
       title: 'How to Access the Stem Splitter',
@@ -1537,6 +1581,251 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
   window._sfCheckWhatsNewBadge();
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── sfTour — Interactive Site Walkthrough ─────────────────────────────
+  // Highlights elements one by one with a backdrop + popup + Next/Skip.
+  // Shows automatically once (localStorage key sf_tour_v174_seen).
+  // "Don't show again" = same localStorage key set to '1'.
+  // Can be replayed via window._sfStartTour(true).
+  // ══════════════════════════════════════════════════════════════════════
+  (function sfTour() {
+    var LS_KEY = 'sf_tour_v174_seen';
+    var TOUR_ID = 'sf-tour-overlay';
+
+    // ── Tour step definitions ────────────────────────────────────
+    var steps = [
+      {
+        selector: '.gs-sidebar',
+        title: '👋 Welcome to the New StemForge',
+        body: "We've made some big changes to the layout. This quick tour will show you what's new and where everything lives. It only takes about 30 seconds!",
+        pos: 'right',
+        highlight: false,
+      },
+      {
+        selector: 'a[href="/generator"]',
+        title: '🎵 Create Tab',
+        body: 'The <b>Create</b> tab is your music studio. Generate beats, remix tracks, extend songs, create AI covers, and explore VoiceForge — all in one place.',
+        pos: 'right',
+      },
+      {
+        selector: 'a[href="/dashboard"]',
+        title: '📚 Library Tab',
+        body: 'Your <b>Library</b> now has even more tabs — Beats, Remixes, Extended, Covers, One Shots, Uploads, Trash, and the new <b>Voices</b> tab for VoiceForge songs.',
+        pos: 'right',
+      },
+      {
+        selector: '#sidebar-get-credits-btn',
+        title: '🛒 Shop & Credits',
+        body: 'The new <b>Shop</b> is where you\'ll buy point packs and unlock cube skins to personalise your forge. It\'s launching very soon!',
+        pos: 'right',
+      },
+      {
+        selector: 'a[href="/collection"]',
+        title: '💎 My Collection',
+        body: '<b>My Collection</b> shows all the cube skins you own. Equip any skin to change your 3D forge theme on the Create page. Everyone starts with <b>The Forge</b> skin free.',
+        pos: 'right',
+      },
+      {
+        selector: '#sidebar-whats-new-btn',
+        title: '⭐ What\'s New',
+        body: 'The <b>What\'s New</b> button keeps you updated on every feature, update, and change. You can replay this tour anytime from there.',
+        pos: 'right',
+      },
+      {
+        selector: '#gs-user-block',
+        title: '👤 Your Profile Menu',
+        body: 'Click your <b>avatar / name</b> to open the profile menu — access your Profile, Shop, Collection, Subscription, and Account settings all in one place.',
+        pos: 'right',
+      },
+      {
+        selector: null,
+        title: '🚀 You\'re All Set!',
+        body: 'That\'s the tour! If you ever need a refresher, open <b>What\'s New</b> from the sidebar and hit "Start Tour". Now go make something great.',
+        pos: 'center',
+        isLast: true,
+      }
+    ];
+
+    var currentStep = 0;
+    var overlay = null;
+    var highlightBox = null;
+    var popup = null;
+    var scrollTopBefore = 0;
+
+    function markSeen() {
+      try { localStorage.setItem(LS_KEY, '1'); } catch(e) {}
+    }
+
+    function cleanup() {
+      var el = document.getElementById(TOUR_ID);
+      if (el) el.remove();
+      var hb = document.getElementById('sf-tour-highlight');
+      if (hb) hb.remove();
+      var pp = document.getElementById('sf-tour-popup');
+      if (pp) pp.remove();
+      document.body.style.overflow = '';
+      overlay = null; highlightBox = null; popup = null;
+    }
+
+    function skip() {
+      markSeen();
+      cleanup();
+    }
+
+    function getRect(sel) {
+      if (!sel) return null;
+      var el = document.querySelector(sel);
+      if (!el) return null;
+      var r = el.getBoundingClientRect();
+      return { top: r.top, left: r.left, width: r.width, height: r.height, el: el };
+    }
+
+    function buildPopupHtml(step, stepNum, total) {
+      var isLast = !!step.isLast;
+      var progressDots = '';
+      for (var i = 0; i < total; i++) {
+        progressDots += '<span style="width:7px;height:7px;border-radius:50%;background:' + (i === stepNum ? '#8b5cf6' : 'rgba(255,255,255,.2)') + ';display:inline-block;transition:background .2s"></span> ';
+      }
+      return '<div style="background:#0f0f1a;border:1px solid rgba(139,92,246,.4);border-radius:16px;padding:22px 24px 20px;max-width:320px;width:100%;box-shadow:0 24px 60px rgba(0,0,0,.8),0 0 40px rgba(139,92,246,.12);position:relative">' +
+        '<div style="height:2px;background:linear-gradient(90deg,#7c3aed,#8b5cf6,#a78bfa);border-radius:2px;margin-bottom:16px"></div>' +
+        '<div style="font-size:.65rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#a78bfa;margin-bottom:6px">Step ' + (stepNum+1) + ' of ' + total + '</div>' +
+        '<h3 style="font-size:1rem;font-weight:800;margin:0 0 8px;color:#f1f5f9">' + step.title + '</h3>' +
+        '<p style="font-size:.83rem;color:#94a3b8;line-height:1.6;margin:0 0 16px">' + step.body + '</p>' +
+        '<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">' + progressDots + '</div>' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">' +
+          '<button id="sf-tour-skip" style="font-size:.76rem;color:rgba(255,255,255,.35);background:none;border:none;cursor:pointer;padding:4px 0;transition:color .15s" onmouseenter="this.style.color=\'rgba(255,255,255,.65)\'" onmouseleave="this.style.color=\'rgba(255,255,255,.35)\'">Don\'t show again</button>' +
+          (isLast
+            ? '<button id="sf-tour-next" style="padding:9px 22px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.85rem;cursor:pointer;transition:opacity .15s">Done 🎉</button>'
+            : '<div style="display:flex;gap:8px">' +
+                '<button id="sf-tour-next" style="padding:9px 22px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.85rem;cursor:pointer;transition:opacity .15s">Next →</button>' +
+              '</div>'
+          ) +
+        '</div>' +
+      '</div>';
+    }
+
+    function positionPopup(rect, pos) {
+      if (!popup) return;
+      var pad = 16;
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      var pw = popup.offsetWidth || 330;
+      var ph = popup.offsetHeight || 220;
+
+      if (!rect || pos === 'center') {
+        popup.style.left = Math.max(pad, Math.min(vw/2 - pw/2, vw - pw - pad)) + 'px';
+        popup.style.top  = Math.max(pad, Math.min(vh/2 - ph/2, vh - ph - pad)) + 'px';
+        return;
+      }
+      if (pos === 'right') {
+        var left = rect.left + rect.width + 20;
+        var top  = rect.top + rect.height/2 - ph/2;
+        // Clamp to viewport
+        if (left + pw > vw - pad) left = rect.left - pw - 20;
+        if (left < pad) left = pad;
+        top = Math.max(pad, Math.min(top, vh - ph - pad));
+        popup.style.left = left + 'px';
+        popup.style.top  = top  + 'px';
+      }
+    }
+
+    function showStep(idx) {
+      currentStep = idx;
+      var step = steps[idx];
+      if (!step) { skip(); return; }
+
+      // Remove old popup
+      var oldPop = document.getElementById('sf-tour-popup');
+      if (oldPop) oldPop.remove();
+      var oldHl = document.getElementById('sf-tour-highlight');
+      if (oldHl) oldHl.remove();
+
+      var rect = getRect(step.selector);
+
+      // Highlight box (cutout glow)
+      if (rect && step.selector) {
+        var PADDING = 8;
+        var hl = document.createElement('div');
+        hl.id = 'sf-tour-highlight';
+        hl.style.cssText = [
+          'position:fixed',
+          'top:' + (rect.top - PADDING) + 'px',
+          'left:' + (rect.left - PADDING) + 'px',
+          'width:' + (rect.width + PADDING*2) + 'px',
+          'height:' + (rect.height + PADDING*2) + 'px',
+          'border:2px solid rgba(139,92,246,.9)',
+          'border-radius:12px',
+          'box-shadow:0 0 0 9999px rgba(0,0,0,.72),0 0 28px rgba(139,92,246,.5),inset 0 0 12px rgba(139,92,246,.1)',
+          'z-index:100001',
+          'pointer-events:none',
+          'transition:all .3s cubic-bezier(.4,0,.2,1)',
+        ].join(';');
+        document.body.appendChild(hl);
+      } else if (!rect && step.selector) {
+        // Element not found — skip to next
+        showStep(idx + 1);
+        return;
+      }
+
+      // Popup
+      var pop = document.createElement('div');
+      pop.id = 'sf-tour-popup';
+      pop.style.cssText = 'position:fixed;z-index:100002;transition:opacity .25s ease;opacity:0';
+      pop.innerHTML = buildPopupHtml(step, idx, steps.length);
+      document.body.appendChild(pop);
+      popup = pop;
+
+      // Position after render
+      setTimeout(function() {
+        positionPopup(rect, step.pos);
+        pop.style.opacity = '1';
+      }, 30);
+
+      // Wire buttons
+      var nextBtn = document.getElementById('sf-tour-next');
+      var skipBtn = document.getElementById('sf-tour-skip');
+      if (nextBtn) nextBtn.addEventListener('click', function() {
+        if (step.isLast) { skip(); } else { showStep(idx + 1); }
+      });
+      if (skipBtn) skipBtn.addEventListener('click', function() { skip(); });
+    }
+
+    function startTour(force) {
+      // Don't show on auth/landing/admin pages
+      var path = window.location.pathname;
+      if (path === '/' || path === '/login' || path === '/signup' || path === '/register' || path.startsWith('/admin')) return;
+      if (!force) {
+        try { if (localStorage.getItem(LS_KEY)) return; } catch(e) { return; }
+      }
+
+      // Close What's New if open
+      if (window._sfCloseWhatsNew) window._sfCloseWhatsNew();
+
+      // Semi-transparent backdrop (full-screen, below the highlight)
+      if (!document.getElementById(TOUR_ID)) {
+        var bg = document.createElement('div');
+        bg.id = TOUR_ID;
+        bg.style.cssText = 'position:fixed;inset:0;z-index:100000;background:transparent;pointer-events:none';
+        document.body.appendChild(bg);
+        overlay = bg;
+      }
+
+      showStep(0);
+    }
+
+    window._sfStartTour = startTour;
+
+    // Auto-start after 2s on first visit (not on auth pages)
+    setTimeout(function() {
+      var path = window.location.pathname;
+      if (path === '/' || path === '/login' || path === '/signup' || path === '/register' || path.startsWith('/admin')) return;
+      try {
+        if (!localStorage.getItem(LS_KEY)) startTour(false);
+      } catch(e) {}
+    }, 2200);
+  })();
+  // ── End sfTour ─────────────────────────────────────────────────
 
   // ── Feature Announcement Popup ────────────────────────────────
   // Shows once per user per feature. Key matches the What's New entry id.
