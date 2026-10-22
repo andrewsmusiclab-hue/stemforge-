@@ -2839,11 +2839,11 @@ document.addEventListener('DOMContentLoaded', () => {
         (p.voice_forge_id ?
           '<div class="vf-card-badge-row" data-job-id="' + p.id + '">' +
             '<span class="vf-card-badge">' +
-              '<i class="fas fa-microphone" style="font-size:.63rem"></i> Voice' +
+              '<i class="fas fa-microphone" style="font-size:.63rem"></i> VoiceForge' +
             '</span>' +
             '<button class="vf-card-detach-btn" ' +
               'onclick="event.stopPropagation();vfDetachFromCard(\'' + p.id + '\',this)" ' +
-              'title="Remove voice from this track">' +
+              'title="Remove VoiceForge from this track">' +
               '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
             '</button>' +
           '</div>'
@@ -2935,7 +2935,7 @@ document.addEventListener('DOMContentLoaded', () => {
         oneshots: '<i class="fas fa-bolt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No one shots yet. Head to the <a href="/generator">Generator</a> to create some!</p>',
         trash:    '<i class="fas fa-trash-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>Trash is empty.</p>',
         remixes:  '<i class="fas fa-wand-magic-sparkles" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#a855f7"></i><p>No remixes yet. Upload a track on the Create page to remix it!</p>',
-        voice:    '<i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No voice songs yet. Generate one in the Create → Voices tab!</p>',
+        voice:    '<i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the Create → Voices tab!</p>',
       };
       gridEl.innerHTML = `<div class="project-grid-empty">${emptyMsgs[tab]||''}</div>`;
       return;
@@ -3026,7 +3026,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…', voice: 'Search voice songs…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…', voice: 'Search VoiceForge songs…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -3131,7 +3131,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Load generated songs
       var res = await fetch('/api/projects?tab=voice');
       if (!res.ok) {
-        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load voice songs.</div>';
+        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
         return;
       }
       var data = await res.json();
@@ -3140,7 +3140,7 @@ document.addEventListener('DOMContentLoaded', () => {
       updateTabCount('voice', _libData.voice.length);
       renderVoiceGrid(gridEl, _libData.voice);
     } catch(e) {
-      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load voice songs.</div>';
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
     }
   }
   window.fetchVoiceTab = fetchVoiceTab;
@@ -3327,7 +3327,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderVoiceGrid(gridEl, songs) {
     if (!gridEl) return;
     if (!songs || songs.length === 0) {
-      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No voice songs yet. Generate one in the Create → Voices tab!</p></div>';
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the Create → Voices tab!</p></div>';
       return;
     }
     var html = '';
@@ -3350,7 +3350,7 @@ document.addEventListener('DOMContentLoaded', () => {
           '<p style="margin:2px 0 6px;font-size:.78rem;color:var(--muted)">' + created + '</p>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
             '<span style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:700;color:#fb923c;background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.25);border-radius:20px;padding:2px 8px">' +
-              '<i class="fas fa-microphone" style="font-size:.65rem"></i> Voice' +
+              '<i class="fas fa-microphone" style="font-size:.65rem"></i> VoiceForge' +
             '</span>' +
             (audioUrl ? '<a href="' + audioUrl + '" download target="_blank" style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:600;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:2px 8px;text-decoration:none">' +
               '<i class="fas fa-download" style="font-size:.65rem"></i> Download' +
@@ -12744,7 +12744,7 @@ window.toggleRefDropdown = function() {
       } else {
         statusIcon.className = 'fas fa-info-circle';
         statusIcon.style.color = '#6b7280';
-        statusText.textContent = 'No voice created yet — upload a sample below.';
+        statusText.textContent = 'No voice forged yet — upload a sample below.';
         statusBar.style.borderColor = 'rgba(255,255,255,.08)';
         deleteBtn.style.display = 'none';
         if (createSec) createSec.style.display = '';
@@ -12828,7 +12828,7 @@ window.toggleRefDropdown = function() {
         window.clearVoiceFile();
         setTimeout(function() { window.loadVoiceStatus(); }, 800);
       } else {
-        showVoiceMsg(msg, 'error', data.error || 'Voice generation failed. Please try again.');
+        showVoiceMsg(msg, 'error', data.error || 'VoiceForge failed. Please try again.');
       }
     } catch (e) {
       showVoiceMsg(msg, 'error', 'Network error. Please try again.');

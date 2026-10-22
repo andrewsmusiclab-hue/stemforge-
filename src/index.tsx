@@ -13415,7 +13415,7 @@ function generatorPage() {
         <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
           <div class="suno-card__header" style="padding-bottom:10px">
             <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
-            <span class="suno-card__title" style="color:#34d399">Voice Studio</span>
+            <span class="suno-card__title" style="color:#34d399">VoiceForge</span>
           </div>
           <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
 
@@ -13493,7 +13493,7 @@ function generatorPage() {
                   onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
                 <button id="voice-clone-btn" onclick="createVoicePersona()"
                   style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                  <i class="fas fa-fingerprint" style="margin-right:6px"></i>Create Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 10 pts</span>
+                  <i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 10 pts</span>
                 </button>
                 <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
               </div>
@@ -14594,6 +14594,9 @@ function dashboardPage() {
     <button class="lib-tab lib-tab--trash" data-tab="trash" onclick="switchLibTab('trash')">
       <i class="fas fa-trash-alt"></i> Trash
     </button>
+    <button class="lib-tab lib-tab--voice" data-tab="voice" onclick="switchLibTab('voice')">
+      <i class="fas fa-fingerprint" style="color:#10b981"></i> <span style="color:#34d399">VoiceForge</span>
+    </button>
   </div>
 
   <!-- Search bar (shared, updates with active tab) -->
@@ -14646,6 +14649,15 @@ function dashboardPage() {
       <i class="fas fa-info-circle"></i> Items are permanently deleted after 60 days in Trash.
     </div>
     <div class="project-grid" id="project-grid-trash">
+      <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
+    </div>
+  </div>
+  <div id="lib-panel-voice" style="display:none">
+    <div style="padding:10px 0 4px;font-size:.82rem;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <i class="fas fa-fingerprint" style="color:#10b981"></i>
+      <span style="color:#34d399">Songs generated with your VoiceForge voice clone.</span>
+    </div>
+    <div class="project-grid" id="project-grid-voice">
       <div class="project-grid-loading"><i class="fas fa-spinner fa-spin"></i> Loading…</div>
     </div>
   </div>
