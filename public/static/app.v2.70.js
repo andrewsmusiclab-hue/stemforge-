@@ -1360,42 +1360,21 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
-      id: 'oct2026-voiceforge-live',
+      id: 'oct2026-v175-update',
       date: 'October 2026',
-      title: '🎤 VoiceForge Is Now Live — Clone Your Voice & Generate Songs',
-      tag: 'NEW FEATURE',
-      tagColor: '#10b981',
-      body: `<div style="margin:10px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.7">
-        <p style="margin-bottom:12px"><b style="color:#34d399">VoiceForge is fully live</b> — you can now clone your voice and generate original AI songs in your own voice directly from the Create page.</p>
-        <ul style="margin:0 0 14px;padding:0 0 0 16px">
-          <li><b style="color:#10b981">Step 1 — Forge Your Voice</b> — Upload a 10–60 second MP3 or WAV clip of your solo vocals. We'll clone your voice for <b style="color:#fcd34d">5 pts</b> (one-time).</li>
-          <li><b style="color:#10b981">Trim tool built-in</b> — Got a longer recording? Use the interactive trim sliders with live waveform preview to select the perfect clip.</li>
-          <li><b style="color:#8b5cf6">Step 2 — Generate In Your Voice</b> — Once forged, write your own lyrics or let AI write them. Generate full songs in your voice for <b style="color:#fcd34d">25 pts</b> each.</li>
-          <li><b style="color:#a78bfa">Creator &amp; Pro plans</b> — Voice generation (Step 2) is available on Creator and Pro Artist plans. Forging your voice (Step 1) works on all plans.</li>
-          <li><b style="color:#fbbf24">VoiceForge tab</b> — Click the <b>VoiceForge</b> button in the creator tools row at the top of the Create page to get started.</li>
-        </ul>
-        <button onclick="window._sfStartTour&&window._sfStartTour(true)" style="margin-top:4px;padding:10px 20px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:.83rem;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
-          <i class="fas fa-map-signs"></i> Start Walkthrough Tour
-        </button>
-      </div>`
-    },
-    {
-      id: 'oct2026-v174-update',
-      date: 'October 2026',
-      title: 'Big Update: New Navigation, Shop, VoiceForge & More',
+      title: '🚀 Big Update: New 3-Tab Create Layout (Mix | Create | Voices)',
       tag: 'MAJOR UPDATE',
       tagColor: '#8b5cf6',
       body: `<div style="margin:10px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.7">
         <p style="margin-bottom:12px">StemForge just got a major upgrade. Here's everything that's new:</p>
         <ul style="margin:0 0 14px;padding:0 0 0 16px">
-          <li><b style="color:#a78bfa">Shop &amp; My Collection</b> — A brand-new Shop is now in the sidebar (coming soon with full inventory). Your personal Collection page is live too.</li>
-          <li><b style="color:#a78bfa">VoiceForge tab in Library</b> — All your VoiceForge generated songs now live in the Library under the Voices tab.</li>
+          <li><b style="color:#a78bfa">3-Tab Create page</b> — The Create page is now organised into three tabs: <b>Mix</b> (Remix, Song Extend, Cover Song), <b>Create</b> (beat generation), and <b>Voices</b>.</li>
           <li><b style="color:#a78bfa">Cube Skin System</b> — 5 unique cube skins to collect: The Forge, Obsidian, Gold Rush, Neon Ghost, and Blood Diamond. Everyone gets The Forge free.</li>
-          <li><b style="color:#10b981">VoiceForge tab on Create page</b> — Click the <b>VoiceForge</b> button in the creator tools row to forge your voice (5 pts) and generate songs in your voice (25 pts, Creator/Pro).</li>
           <li><b style="color:#fbbf24">Point cost updates</b> — Beat Generation, Remix, and AI Cover Song are now 35 pts. Song Extend is 25 pts.</li>
           <li><b style="color:#f87171">Stem Splitter is now Pro Artist only</b> — Creator plan members can no longer access the Stem Splitter. Creator plan retains all other features.</li>
+          <li><b style="color:#10b981">Song Extend now on Creator plan</b> — Creator plan members can now use Song Extend.</li>
         </ul>
-        <p style="font-size:.79rem;color:#6b7280">New to the layout? Hit the <b style="color:#fcd34d">Start Tour</b> button below for a quick walkthrough of everything that moved.</p>
+        <p style="font-size:.79rem;color:#6b7280">New to the layout? Hit the button below for a quick walkthrough of everything.</p>
         <button onclick="window._sfStartTour&&window._sfStartTour(true)" style="margin-top:8px;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:.83rem;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
           <i class="fas fa-map-signs"></i> Start Site Tour
         </button>
@@ -1418,7 +1397,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <p style="margin-bottom:10px"><b style="color:#fcd34d">Stem Splitter is now Pro Artist exclusive:</b></p>
         <ul style="margin:0;padding:0 0 0 16px">
           <li>Stem Splitter (Auto Split + Vocals &amp; Instrumental) is now only available on the <b style="color:#fbbf24">Pro Artist</b> plan.</li>
-          <li>Creator plan members retain all other features — Beat Gen, Remix, Extend, AI Cover, VoiceForge (coming soon), unlimited library, and One Shot Creator.</li>
+          <li>Creator plan members retain all other features — Beat Gen, Remix, Extend, AI Cover, unlimited library, and One Shot Creator.</li>
           <li>Pro Artist plan now includes <b style="color:#e2e8f0">2,000 pts/month</b> to accommodate the updated costs.</li>
         </ul>
       </div>`
@@ -1618,14 +1597,14 @@ document.addEventListener('DOMContentLoaded', () => {
       {
         selector: '.gs-sidebar',
         title: '👋 Welcome to StemForge',
-        body: 'StemForge is your AI music studio — generate beats, remix tracks, extend songs, create covers, and clone your voice. This tour takes about 60 seconds.',
+        body: 'StemForge is your AI music studio — generate beats, remix tracks, extend songs, and create AI covers. This tour takes about 60 seconds.',
         pos: 'right',
         highlight: false,
       },
       {
         selector: 'a[href="/generator"]',
         title: '🎵 Create — Your Music Studio',
-        body: 'The <b>Create</b> tab is your main studio. It has <b>three tabs</b>: <b>Mix</b> (remix, extend, cover), <b>Create</b> (generate beats), and <b>Voices</b> (clone your voice). Let\'s walk through each one.',
+        body: 'The <b>Create</b> tab is your main studio. It has <b>three tabs</b>: <b>Mix</b> (remix, extend, cover), <b>Create</b> (generate beats), and <b>Voices</b>. Let\'s walk through each one.',
         pos: 'right',
       },
       {
@@ -1717,7 +1696,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function skip() {
-      markSeen();
+      // Tour is mandatory — skip only called on replay/force, not from UI
       cleanup();
     }
 
@@ -1741,13 +1720,10 @@ document.addEventListener('DOMContentLoaded', () => {
         '<h3 style="font-size:1rem;font-weight:800;margin:0 0 8px;color:#f1f5f9">' + step.title + '</h3>' +
         '<p style="font-size:.83rem;color:#94a3b8;line-height:1.6;margin:0 0 16px">' + step.body + '</p>' +
         '<div style="display:flex;align-items:center;gap:6px;margin-bottom:14px">' + progressDots + '</div>' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">' +
-          '<button id="sf-tour-skip" style="font-size:.76rem;color:rgba(255,255,255,.35);background:none;border:none;cursor:pointer;padding:4px 0;transition:color .15s" onmouseenter="this.style.color=\'rgba(255,255,255,.65)\'" onmouseleave="this.style.color=\'rgba(255,255,255,.35)\'">Don\'t show again</button>' +
+        '<div style="display:flex;align-items:center;justify-content:flex-end;gap:10px">' +
           (isLast
             ? '<button id="sf-tour-next" style="padding:9px 22px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.85rem;cursor:pointer;transition:opacity .15s">Done 🎉</button>'
-            : '<div style="display:flex;gap:8px">' +
-                '<button id="sf-tour-next" style="padding:9px 22px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.85rem;cursor:pointer;transition:opacity .15s">Next →</button>' +
-              '</div>'
+            : '<button id="sf-tour-next" style="padding:9px 22px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:9px;font-weight:700;font-size:.85rem;cursor:pointer;transition:opacity .15s">Next →</button>'
           ) +
         '</div>' +
       '</div>';
@@ -1781,7 +1757,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function showStep(idx) {
       currentStep = idx;
       var step = steps[idx];
-      if (!step) { skip(); return; }
+      if (!step) { markSeen(); cleanup(); return; }
 
       // Remove old popup
       var oldPop = document.getElementById('sf-tour-popup');
@@ -1841,13 +1817,11 @@ document.addEventListener('DOMContentLoaded', () => {
         pop.style.opacity = '1';
       }, 30);
 
-      // Wire buttons
+      // Wire buttons — no skip, user must complete tour
       var nextBtn = document.getElementById('sf-tour-next');
-      var skipBtn = document.getElementById('sf-tour-skip');
       if (nextBtn) nextBtn.addEventListener('click', function() {
-        if (step.isLast) { skip(); } else { showStep(idx + 1); }
+        if (step.isLast) { markSeen(); cleanup(); } else { showStep(idx + 1); }
       });
-      if (skipBtn) skipBtn.addEventListener('click', function() { skip(); });
     }
 
     function startTour(force) {
@@ -1865,7 +1839,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!document.getElementById(TOUR_ID)) {
         var bg = document.createElement('div');
         bg.id = TOUR_ID;
-        bg.style.cssText = 'position:fixed;inset:0;z-index:100000;background:transparent;pointer-events:none';
+        // pointer-events:auto blocks all click-off interaction — user must use Next button
+        bg.style.cssText = 'position:fixed;inset:0;z-index:100000;background:transparent;pointer-events:auto;cursor:default';
         document.body.appendChild(bg);
         overlay = bg;
       }
@@ -2864,11 +2839,11 @@ document.addEventListener('DOMContentLoaded', () => {
         (p.voice_forge_id ?
           '<div class="vf-card-badge-row" data-job-id="' + p.id + '">' +
             '<span class="vf-card-badge">' +
-              '<i class="fas fa-microphone" style="font-size:.63rem"></i> VoiceForge' +
+              '<i class="fas fa-microphone" style="font-size:.63rem"></i> Voice' +
             '</span>' +
             '<button class="vf-card-detach-btn" ' +
               'onclick="event.stopPropagation();vfDetachFromCard(\'' + p.id + '\',this)" ' +
-              'title="Remove VoiceForge from this track">' +
+              'title="Remove voice from this track">' +
               '<i class="fas fa-unlink" style="margin-right:3px"></i>Detach' +
             '</button>' +
           '</div>'
@@ -2960,7 +2935,7 @@ document.addEventListener('DOMContentLoaded', () => {
         oneshots: '<i class="fas fa-bolt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>No one shots yet. Head to the <a href="/generator">Generator</a> to create some!</p>',
         trash:    '<i class="fas fa-trash-alt" style="font-size:40px;opacity:.3;margin-bottom:16px"></i><p>Trash is empty.</p>',
         remixes:  '<i class="fas fa-wand-magic-sparkles" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#a855f7"></i><p>No remixes yet. Upload a track on the Create page to remix it!</p>',
-        voice:    '<i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the VoiceForge panel!</p>',
+        voice:    '<i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No voice songs yet. Generate one in the Create → Voices tab!</p>',
       };
       gridEl.innerHTML = `<div class="project-grid-empty">${emptyMsgs[tab]||''}</div>`;
       return;
@@ -3051,7 +3026,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update search placeholder
     const searchInput = document.getElementById('lib-search');
     if (searchInput) {
-      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…', voice: 'Search VoiceForge songs…' };
+      const placeholders = { beats: 'Search beats…', extended: 'Search extended tracks…', oneshots: 'Search one shots…', uploads: 'Search uploads…', trash: 'Search trash…', remixes: 'Search remixes…', covers: 'Search covers…', voice: 'Search voice songs…' };
       searchInput.placeholder = placeholders[tab] || 'Search…';
       // Reset search when switching tabs
       searchInput.value = '';
@@ -3156,7 +3131,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Load generated songs
       var res = await fetch('/api/projects?tab=voice');
       if (!res.ok) {
-        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
+        gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load voice songs.</div>';
         return;
       }
       var data = await res.json();
@@ -3165,7 +3140,7 @@ document.addEventListener('DOMContentLoaded', () => {
       updateTabCount('voice', _libData.voice.length);
       renderVoiceGrid(gridEl, _libData.voice);
     } catch(e) {
-      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load VoiceForge songs.</div>';
+      gridEl.innerHTML = '<div class="project-grid-loading" style="color:var(--muted)">Could not load voice songs.</div>';
     }
   }
   window.fetchVoiceTab = fetchVoiceTab;
@@ -3352,7 +3327,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderVoiceGrid(gridEl, songs) {
     if (!gridEl) return;
     if (!songs || songs.length === 0) {
-      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No VoiceForge songs yet. Generate one in the Create → Voices tab!</p></div>';
+      gridEl.innerHTML = '<div class="project-grid-empty"><i class="fas fa-microphone" style="font-size:40px;opacity:.3;margin-bottom:16px;color:#f97316"></i><p>No voice songs yet. Generate one in the Create → Voices tab!</p></div>';
       return;
     }
     var html = '';
@@ -3375,7 +3350,7 @@ document.addEventListener('DOMContentLoaded', () => {
           '<p style="margin:2px 0 6px;font-size:.78rem;color:var(--muted)">' + created + '</p>' +
           '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">' +
             '<span style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:700;color:#fb923c;background:rgba(249,115,22,.12);border:1px solid rgba(249,115,22,.25);border-radius:20px;padding:2px 8px">' +
-              '<i class="fas fa-microphone" style="font-size:.65rem"></i> VoiceForge' +
+              '<i class="fas fa-microphone" style="font-size:.65rem"></i> Voice' +
             '</span>' +
             (audioUrl ? '<a href="' + audioUrl + '" download target="_blank" style="display:inline-flex;align-items:center;gap:4px;font-size:.7rem;font-weight:600;color:var(--muted);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:2px 8px;text-decoration:none">' +
               '<i class="fas fa-download" style="font-size:.65rem"></i> Download' +
@@ -12769,7 +12744,7 @@ window.toggleRefDropdown = function() {
       } else {
         statusIcon.className = 'fas fa-info-circle';
         statusIcon.style.color = '#6b7280';
-        statusText.textContent = 'No voice forged yet — upload a sample below.';
+        statusText.textContent = 'No voice created yet — upload a sample below.';
         statusBar.style.borderColor = 'rgba(255,255,255,.08)';
         deleteBtn.style.display = 'none';
         if (createSec) createSec.style.display = '';
@@ -12853,7 +12828,7 @@ window.toggleRefDropdown = function() {
         window.clearVoiceFile();
         setTimeout(function() { window.loadVoiceStatus(); }, 800);
       } else {
-        showVoiceMsg(msg, 'error', data.error || 'VoiceForge failed. Please try again.');
+        showVoiceMsg(msg, 'error', data.error || 'Voice generation failed. Please try again.');
       }
     } catch (e) {
       showVoiceMsg(msg, 'error', 'Network error. Please try again.');

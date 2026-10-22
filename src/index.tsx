@@ -12382,7 +12382,6 @@ function homePage() {
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-expand-arrows-alt" style="color:#4e9fff;font-size:.75rem"></i> Song Extend</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
-            <li><i class="fas fa-check"></i> <i class="fas fa-fingerprint" style="color:#10b981;font-size:.75rem"></i> VoiceForge (clone &amp; generate)</li>
             <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro Artist only)</li>
           </ul>
           <button class="btn btn--primary btn--full home-plan-btn" data-plan="creator">Start Creator</button>
@@ -12407,7 +12406,6 @@ function homePage() {
             <li><i class="fas fa-check"></i> WAV download + commercial use</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-guitar" style="color:#a855f7;font-size:.75rem"></i> AI Cover Song</li>
-            <li><i class="fas fa-check"></i> <i class="fas fa-fingerprint" style="color:#10b981;font-size:.75rem"></i> VoiceForge (clone &amp; generate)</li>
             <li><i class="fas fa-check"></i> Priority queue</li>
           </ul>
           <button class="btn btn--outline btn--full home-plan-btn" data-plan="pro">Start Pro Artist</button>
@@ -13412,12 +13410,12 @@ function generatorPage() {
     <!-- ══ VOICES TAB ════════════════════════════════════════════════ -->
     <div id="create-tab-voices" class="create-tab-panel" style="display:none">
 
-      <!-- ── VoiceForge panel ── -->
+      <!-- ── Voice Studio panel ── -->
       <div id="voice-inline-panel">
         <div class="suno-card" style="border:1px solid rgba(16,185,129,.3);background:rgba(16,185,129,.05)">
           <div class="suno-card__header" style="padding-bottom:10px">
             <i class="fas fa-fingerprint" style="color:#10b981;font-size:1rem"></i>
-            <span class="suno-card__title" style="color:#34d399">VoiceForge</span>
+            <span class="suno-card__title" style="color:#34d399">Voice Studio</span>
           </div>
           <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
 
@@ -13495,7 +13493,7 @@ function generatorPage() {
                   onfocus="this.style.borderColor='#10b981'" onblur="this.style.borderColor='rgba(16,185,129,.2)'"/>
                 <button id="voice-clone-btn" onclick="createVoicePersona()"
                   style="padding:11px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.88rem;font-weight:700;transition:opacity .2s">
-                  <i class="fas fa-fingerprint" style="margin-right:6px"></i>Forge My Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 10 pts</span>
+                  <i class="fas fa-fingerprint" style="margin-right:6px"></i>Create Voice &nbsp;<span style="opacity:.6;font-size:.75rem">— 10 pts</span>
                 </button>
                 <div id="voice-clone-msg" style="display:none;padding:9px 12px;border-radius:8px;font-size:.82rem"></div>
               </div>
@@ -13567,6 +13565,7 @@ function generatorPage() {
     #sf-cube-stage {
       position: relative;
       width: 100%;
+      max-width: 520px;
       height: 420px;
       flex: none;
       flex-shrink: 0;
@@ -13575,6 +13574,7 @@ function generatorPage() {
       justify-content: center;
       background: transparent !important;
       overflow: visible;
+      margin: 0 auto;
     }
     @media (max-width: 768px) {
       #sf-cube-stage { height: 300px; }
