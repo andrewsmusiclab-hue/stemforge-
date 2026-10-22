@@ -1617,13 +1617,13 @@ document.addEventListener('DOMContentLoaded', () => {
         selector: '#mixbtn-remix',
         title: '🪄 Remix',
         body: '<b>Remix</b> lets you upload an MP3 or WAV and completely reinvent it — new style, new energy, same soul. Great for giving old tracks a fresh makeover.',
-        pos: 'bottom',
+        pos: 'right',
       },
       {
         selector: '#mixbtn-cover',
         title: '🎤 Cover Song',
         body: '<b>Cover Song</b> transforms any audio into an AI cover in a style you choose. Upload the audio, pick a direction, and StemForge does the rest.',
-        pos: 'bottom',
+        pos: 'right',
       },
       {
         selector: '#cptab-create',
@@ -1752,6 +1752,29 @@ document.addEventListener('DOMContentLoaded', () => {
         top = Math.max(pad, Math.min(top, vh - ph - pad));
         popup.style.left = left + 'px';
         popup.style.top  = top  + 'px';
+      } else if (pos === 'bottom') {
+        var left = rect.left + rect.width/2 - pw/2;
+        var top  = rect.top + rect.height + 16;
+        // If below viewport, flip above
+        if (top + ph > vh - pad) top = rect.top - ph - 16;
+        if (left + pw > vw - pad) left = vw - pw - pad;
+        if (left < pad) left = pad;
+        top = Math.max(pad, Math.min(top, vh - ph - pad));
+        popup.style.left = left + 'px';
+        popup.style.top  = top  + 'px';
+      } else if (pos === 'top') {
+        var left = rect.left + rect.width/2 - pw/2;
+        var top  = rect.top - ph - 16;
+        if (top < pad) top = rect.top + rect.height + 16;
+        if (left + pw > vw - pad) left = vw - pw - pad;
+        if (left < pad) left = pad;
+        top = Math.max(pad, Math.min(top, vh - ph - pad));
+        popup.style.left = left + 'px';
+        popup.style.top  = top  + 'px';
+      } else {
+        // fallback: center
+        popup.style.left = Math.max(pad, Math.min(vw/2 - pw/2, vw - pw - pad)) + 'px';
+        popup.style.top  = Math.max(pad, Math.min(vh/2 - ph/2, vh - ph - pad)) + 'px';
       }
     }
 
