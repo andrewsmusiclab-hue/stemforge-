@@ -6306,6 +6306,16 @@ app.get('/api/projects', async (c) => {
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
+    } else if (tab === 'voice') {
+      // VoiceForge songs — jobs generated with a voice clone (voice_forge_id set in data JSON)
+      const res = await c.env.DB.prepare(
+        `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
+         WHERE user_id = ? AND deleted_at IS NULL
+         AND json_extract(data,'$.voice_forge_id') IS NOT NULL
+         AND json_extract(data,'$.status') = 'ready'
+         ORDER BY created_at DESC LIMIT 100`
+      ).bind(user.id).all<any>()
+      rows = res.results || []
     } else {
       // beats tab: regular beats (not one-shots, not extended, not remixes, not covers), not deleted
       // Note: song_generate ext_type is a relic of the old two-song feature — those are valid beats
@@ -13240,6 +13250,9 @@ function generatorPage() {
           <i class="fas fa-chevron-down" id="lyrics-collapse-icon"></i>
         </button>
         <span class="suno-card__title">Lyrics</span>
+      </div>
+      <!-- Sub-tabs row: Write / Instrumental / One Shot — below the card header -->
+      <div style="padding:0 14px 10px;border-bottom:1px solid rgba(255,255,255,.06)">
         <div class="suno-tab-group" id="lyrics-tabs">
           <button class="suno-tab active" data-tab="write" data-tooltip="Write your own lyrics — use [Verse], [Chorus] tags">Write</button>
           <button class="suno-tab" data-tab="instrumental" data-tooltip="No vocals — generate a pure instrumental beat">Instrumental</button>

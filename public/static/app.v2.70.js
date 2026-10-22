@@ -4514,6 +4514,11 @@ document.addEventListener('DOMContentLoaded', () => {
         e.stopPropagation();
         const isOpen = body.style.display !== 'none';
         body.style.display = isOpen ? 'none' : 'block';
+        // Also hide/show the lyrics tab strip when lyrics card collapses
+        if (id === 'lyrics') {
+          const tabStrip = document.getElementById('lyrics-tabs');
+          if (tabStrip && tabStrip.parentElement) tabStrip.parentElement.style.display = isOpen ? 'none' : '';
+        }
         if (icon) icon.className = isOpen ? 'fas fa-chevron-right' : 'fas fa-chevron-down';
       });
     }
