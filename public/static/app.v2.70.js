@@ -1360,6 +1360,26 @@ document.addEventListener('DOMContentLoaded', () => {
   // so every new entry automatically alerts ALL users with the NEW badge.
   window._sfWhatsNewEntries = [
     {
+      id: 'oct2026-voiceforge-live',
+      date: 'October 2026',
+      title: '🎤 VoiceForge Is Now Live — Clone Your Voice & Generate Songs',
+      tag: 'NEW FEATURE',
+      tagColor: '#10b981',
+      body: `<div style="margin:10px 0 0;font-size:.81rem;color:#94a3b8;line-height:1.7">
+        <p style="margin-bottom:12px"><b style="color:#34d399">VoiceForge is fully live</b> — you can now clone your voice and generate original AI songs in your own voice directly from the Create page.</p>
+        <ul style="margin:0 0 14px;padding:0 0 0 16px">
+          <li><b style="color:#10b981">Step 1 — Forge Your Voice</b> — Upload a 10–60 second MP3 or WAV clip of your solo vocals. We'll clone your voice for <b style="color:#fcd34d">5 pts</b> (one-time).</li>
+          <li><b style="color:#10b981">Trim tool built-in</b> — Got a longer recording? Use the interactive trim sliders with live waveform preview to select the perfect clip.</li>
+          <li><b style="color:#8b5cf6">Step 2 — Generate In Your Voice</b> — Once forged, write your own lyrics or let AI write them. Generate full songs in your voice for <b style="color:#fcd34d">25 pts</b> each.</li>
+          <li><b style="color:#a78bfa">Creator &amp; Pro plans</b> — Voice generation (Step 2) is available on Creator and Pro Artist plans. Forging your voice (Step 1) works on all plans.</li>
+          <li><b style="color:#fbbf24">VoiceForge tab</b> — Click the <b>VoiceForge</b> button in the creator tools row at the top of the Create page to get started.</li>
+        </ul>
+        <button onclick="window._sfStartTour&&window._sfStartTour(true)" style="margin-top:4px;padding:10px 20px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:.83rem;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
+          <i class="fas fa-map-signs"></i> Start Walkthrough Tour
+        </button>
+      </div>`
+    },
+    {
       id: 'oct2026-v174-update',
       date: 'October 2026',
       title: 'Big Update: New Navigation, Shop, VoiceForge & More',
@@ -1371,7 +1391,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <li><b style="color:#a78bfa">Shop &amp; My Collection</b> — A brand-new Shop is now in the sidebar (coming soon with full inventory). Your personal Collection page is live too.</li>
           <li><b style="color:#a78bfa">VoiceForge tab in Library</b> — All your VoiceForge generated songs now live in the Library under the Voices tab.</li>
           <li><b style="color:#a78bfa">Cube Skin System</b> — 5 unique cube skins to collect: The Forge, Obsidian, Gold Rush, Neon Ghost, and Blood Diamond. Everyone gets The Forge free.</li>
-          <li><b style="color:#a78bfa">Voices tab locked</b> — VoiceForge is coming very soon. You'll see it in the Create tab as a preview.</li>
+          <li><b style="color:#10b981">VoiceForge tab on Create page</b> — Click the <b>VoiceForge</b> button in the creator tools row to forge your voice (5 pts) and generate songs in your voice (25 pts, Creator/Pro).</li>
           <li><b style="color:#fbbf24">Point cost updates</b> — Beat Generation, Remix, and AI Cover Song are now 35 pts. Song Extend is 25 pts.</li>
           <li><b style="color:#f87171">Stem Splitter is now Pro Artist only</b> — Creator plan members can no longer access the Stem Splitter. Creator plan retains all other features.</li>
         </ul>
@@ -1585,63 +1605,75 @@ document.addEventListener('DOMContentLoaded', () => {
   // ══════════════════════════════════════════════════════════════════════
   // ── sfTour — Interactive Site Walkthrough ─────────────────────────────
   // Highlights elements one by one with a backdrop + popup + Next/Skip.
-  // Shows automatically once (localStorage key sf_tour_v174_seen).
+  // Shows automatically once (localStorage key sf_tour_v175_seen).
   // "Don't show again" = same localStorage key set to '1'.
   // Can be replayed via window._sfStartTour(true).
   // ══════════════════════════════════════════════════════════════════════
   (function sfTour() {
-    var LS_KEY = 'sf_tour_v174_seen';
+    var LS_KEY = 'sf_tour_v175_seen';
     var TOUR_ID = 'sf-tour-overlay';
 
     // ── Tour step definitions ────────────────────────────────────
     var steps = [
       {
         selector: '.gs-sidebar',
-        title: '👋 Welcome to the New StemForge',
-        body: "We've made some big changes to the layout. This quick tour will show you what's new and where everything lives. It only takes about 30 seconds!",
+        title: '👋 Welcome to StemForge',
+        body: "We've made some major upgrades including a fully live <b>VoiceForge</b> feature. This tour takes about 60 seconds and shows you exactly where everything lives.",
         pos: 'right',
         highlight: false,
       },
       {
         selector: 'a[href="/generator"]',
-        title: '🎵 Create Tab',
-        body: 'The <b>Create</b> tab is your music studio. Generate beats, remix tracks, extend songs, create AI covers, and explore VoiceForge — all in one place.',
+        title: '🎵 Create Tab — Your Music Studio',
+        body: 'The <b>Create</b> tab is where you generate beats, remix tracks, extend songs, create AI covers, and now — <b>clone your voice and generate songs in your own voice</b> with VoiceForge.',
+        pos: 'right',
+      },
+      {
+        selector: '#ctab-voice',
+        title: '🎤 VoiceForge — Now Live!',
+        body: 'Click <b>VoiceForge</b> in the creator tools row to open the voice studio. <b>Step 1</b>: upload 10–60s of your solo vocals to clone your voice (5 pts). <b>Step 2</b>: generate full songs in your voice (25 pts, Creator/Pro).',
+        pos: 'right',
+      },
+      {
+        selector: '#ctab-remix',
+        title: '🎛️ Remix, Extend & More',
+        body: 'The creator tools row also has <b>Remix</b> (upload + AI restyle), <b>Song Extend</b> (continue any track), <b>One Shot Creator</b> (drum hits &amp; FX), and <b>Cover Song</b> (Pro plan).',
         pos: 'right',
       },
       {
         selector: 'a[href="/dashboard"]',
-        title: '📚 Library Tab',
-        body: 'Your <b>Library</b> now has even more tabs — Beats, Remixes, Extended, Covers, One Shots, Uploads, Trash, and the new <b>Voices</b> tab for VoiceForge songs.',
+        title: '📚 Library — All Your Tracks',
+        body: 'Your <b>Library</b> organises everything you make — Beats, Remixes, Extended, Covers, One Shots, Uploads, Trash, and the brand-new <b>Voices tab</b> for all your VoiceForge songs.',
         pos: 'right',
       },
       {
         selector: '#sidebar-get-credits-btn',
         title: '🛒 Shop & Credits',
-        body: 'The new <b>Shop</b> is where you\'ll buy point packs and unlock cube skins to personalise your forge. It\'s launching very soon!',
+        body: 'The <b>Shop</b> is where you\'ll top up points and unlock exclusive cube skins to personalise your 3D forge on the Create page. Cube skins are exclusive drops — grab them before they sell out.',
         pos: 'right',
       },
       {
         selector: 'a[href="/collection"]',
         title: '💎 My Collection',
-        body: '<b>My Collection</b> shows all the cube skins you own. Equip any skin to change your 3D forge theme on the Create page. Everyone starts with <b>The Forge</b> skin free.',
+        body: '<b>My Collection</b> shows all the cube skins you own. Equip any skin to change your forge theme live on the Create page. Everyone starts with <b>The Forge</b> skin free — no purchase needed.',
         pos: 'right',
       },
       {
         selector: '#sidebar-whats-new-btn',
         title: '⭐ What\'s New',
-        body: 'The <b>What\'s New</b> button keeps you updated on every feature, update, and change. You can replay this tour anytime from there.',
+        body: 'The <b>What\'s New</b> button shows every update, new feature, and change on StemForge. A purple badge appears whenever there\'s something fresh. You can also replay this tour from there anytime.',
         pos: 'right',
       },
       {
         selector: '#gs-user-block',
         title: '👤 Your Profile Menu',
-        body: 'Click your <b>avatar / name</b> to open the profile menu — access your Profile, Shop, Collection, Subscription, and Account settings all in one place.',
+        body: 'Click your <b>avatar or name</b> to open the profile dropdown — access your Profile, Shop, Collection, Subscription, and Account settings all in one place.',
         pos: 'right',
       },
       {
         selector: null,
-        title: '🚀 You\'re All Set!',
-        body: 'That\'s the tour! If you ever need a refresher, open <b>What\'s New</b> from the sidebar and hit "Start Tour". Now go make something great.',
+        title: '🚀 You\'re All Set — Go Make Something!',
+        body: "That's the tour! Head to the <b>Create</b> tab and try VoiceForge first — upload 10–60 seconds of your voice, forge it, then generate a full song in your own voice. If you need a refresher, open <b>What's New</b> and hit 'Start Walkthrough Tour'.",
         pos: 'center',
         isLast: true,
       }
@@ -1831,7 +1863,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Shows once per user per feature. Key matches the What's New entry id.
   // Dismissed forever the moment user closes it — localStorage prevents re-show.
   (function sfFeaturePopup() {
-    var FEAT_ID  = 'oct2026-lyrics-panel';
+    var FEAT_ID  = 'oct2026-voiceforge-live';
     var LS_KEY   = 'sf_feat_seen_' + FEAT_ID;
 
     // Already seen — never show again
@@ -1868,30 +1900,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
           '<div style="padding:28px 28px 26px">' +
 
-            // NEW badge + heading
+            // NOW LIVE badge + heading
             '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">' +
-              '<span style="font-size:.6rem;font-weight:800;letter-spacing:.08em;background:rgba(168,85,247,.18);color:#c084fc;border:1px solid rgba(168,85,247,.35);padding:3px 10px;border-radius:999px;white-space:nowrap">NEW FEATURE</span>' +
+              '<span style="font-size:.6rem;font-weight:800;letter-spacing:.08em;background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.35);padding:3px 10px;border-radius:999px;white-space:nowrap">🎤 NOW LIVE</span>' +
               '<span style="font-size:.72rem;color:rgba(255,255,255,.35)">October 2026</span>' +
             '</div>' +
 
-            '<h2 style="margin:0 0 8px;font-size:1.15rem;font-weight:800;color:#fff;line-height:1.3">Lyrics Panel — See Your Lyrics While You Play</h2>' +
-            '<p style="margin:0 0 16px;font-size:.84rem;color:rgba(255,255,255,.55);line-height:1.6">Hit play on any track with lyrics and the panel slides in from the right, formatted with section headers as you listen.</p>' +
-
-            // Screenshot
-            '<img src="https://www.genspark.ai/api/files/s/eZaQMyA1" alt="Lyrics panel" ' +
-              'style="width:100%;border-radius:10px;border:1px solid rgba(168,85,247,.2);display:block;margin-bottom:18px"/>' +
+            '<h2 style="margin:0 0 8px;font-size:1.15rem;font-weight:800;color:#fff;line-height:1.3">VoiceForge Is Live — Clone Your Voice & Make Songs</h2>' +
+            '<p style="margin:0 0 16px;font-size:.84rem;color:rgba(255,255,255,.55);line-height:1.6">Upload 10–60 seconds of your voice, forge your unique voice clone, then generate full AI songs in <em>your</em> voice — directly from the Create page.</p>' +
 
             // Bullet points
             '<ul style="margin:0 0 22px;padding:0 0 0 0;list-style:none;display:flex;flex-direction:column;gap:8px">' +
-              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">All library tabs</b> — Beats, Remixes, Extended &amp; Covers.</span></li>' +
-              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">Section headers</b> — <code style="color:#c084fc;font-size:.76rem">[Verse]</code> <code style="color:#c084fc;font-size:.76rem">[Chorus]</code> <code style="color:#c084fc;font-size:.76rem">[Hook]</code> render as coloured labels.</span></li>' +
-              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">Auto-closes</b> — closes when you close the player or switch to a non-lyric track.</span></li>' +
+              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#10b981;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">Step 1 — Forge</b>: Upload solo vocals, trim to 10–60s. Clone costs just <b style="color:#fcd34d">5 pts</b> (one-time).</span></li>' +
+              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#8b5cf6;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">Step 2 — Generate</b>: Write your lyrics or let AI write them. Full song in your voice for <b style="color:#fcd34d">25 pts</b> (Creator/Pro).</span></li>' +
+              '<li style="display:flex;gap:9px;align-items:flex-start;font-size:.82rem;color:rgba(255,255,255,.65);line-height:1.5"><span style="color:#a78bfa;flex-shrink:0;margin-top:1px">✦</span><span><b style="color:#e2e8f0">VoiceForge button</b>: In the creator tools row at the top of the Create page.</span></li>' +
             '</ul>' +
 
             // CTA
-            '<button id="sf-feat-cta-' + FEAT_ID + '" style="display:block;width:100%;padding:13px 24px;background:linear-gradient(135deg,hsl(270,65%,50%),hsl(310,75%,55%));color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;letter-spacing:.01em;transition:opacity .15s" ' +
+            '<button id="sf-feat-cta-' + FEAT_ID + '" style="display:block;width:100%;padding:13px 24px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:12px;font-weight:700;font-size:.95rem;cursor:pointer;letter-spacing:.01em;transition:opacity .15s" ' +
               'onmouseenter="this.style.opacity=\'.88\'" onmouseleave="this.style.opacity=\'1\'">' +
-              'Got it — try it now' +
+              '🎤 Try VoiceForge Now' +
             '</button>' +
 
           '</div>' +
@@ -1949,15 +1977,14 @@ document.addEventListener('DOMContentLoaded', () => {
       // ── 3D Logo Cube — admin-only, generator page ────────────────
       if (typeof window._sfInitCube === 'function') window._sfInitCube(user);
 
-      // ── VoiceForge button — beta, admin-only visibility ─────────
-      // The button is hidden by default (display:none in the HTML).
-      // Only reveal it for the admin account used for testing.
+      // ── VoiceForge button — visible to all logged-in users ──────
+      // ctab-voice is now live. All plans can forge a voice (5 pts).
+      // Voice generation (Step 2) requires Creator or Pro plan.
       (function() {
         var voiceBtn = document.getElementById('ctab-voice');
-        if (voiceBtn && user.is_admin) {
+        if (voiceBtn) {
           voiceBtn.style.display = '';
         }
-        // VoiceForge library tab — visible to all logged-in users (tab already shown in HTML)
       })();
 
       // ── TikTok identify — link this session to the known user ─
@@ -12727,13 +12754,22 @@ window.toggleRefDropdown = function() {
   };
 
   window.openVoicePanel = function() {
-    // In the new layout, VoiceForge is always visible in Voices tab
-    if (typeof window.switchCreateTab === 'function') window.switchCreateTab('voices');
+    // Show the voice inline panel, hide generator main sections + cover panel
+    var vp   = document.getElementById('voice-inline-panel');
+    var cp   = document.getElementById('cover-inline-panel');
+    var main = document.getElementById('generator-main-sections');
+    if (cp)   cp.style.display   = 'none';
+    if (vp)   vp.style.display   = 'block';
+    if (main) main.style.display = 'none';
+    // Load voice status to update Step 1/Step 2 state
     window.loadVoiceStatus();
   };
 
   window.closeVoicePanel = function() {
-    // No-op — Voices tab panel is always visible when tab is active
+    var vp   = document.getElementById('voice-inline-panel');
+    var main = document.getElementById('generator-main-sections');
+    if (vp)   vp.style.display   = 'none';
+    if (main) main.style.display = '';
   };
 
   window.deleteVoicePersona = async function() {
