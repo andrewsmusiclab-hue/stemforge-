@@ -1375,8 +1375,8 @@ document.addEventListener('DOMContentLoaded', () => {
           <li><b style="color:#10b981">Song Extend now on Creator plan</b> — Creator plan members can now use Song Extend.</li>
         </ul>
         <p style="font-size:.79rem;color:#6b7280">New to the layout? Hit the button below for a quick walkthrough of everything.</p>
-        <button onclick="window._sfStartTour&&window._sfStartTour(true)" style="margin-top:8px;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:.83rem;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
-          <i class="fas fa-map-signs"></i> Start Site Tour
+        <button onclick="if(window._sfCloseWhatsNew)window._sfCloseWhatsNew();setTimeout(function(){if(window._sfStartTour)window._sfStartTour(true);},350)" style="margin-top:8px;padding:10px 20px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border:none;border-radius:8px;font-weight:700;font-size:.83rem;cursor:pointer;display:inline-flex;align-items:center;gap:8px">
+          <i class="fas fa-map-signs"></i> Start Walkthrough Tour
         </button>
       </div>`
     },
@@ -1650,6 +1650,14 @@ document.addEventListener('DOMContentLoaded', () => {
         switchTab: 'create',
       },
       {
+        selector: '#oneshot-inline-row',
+        title: '⚡ One Shot Creator',
+        body: '<b>One Shot Creator</b> sits right below the Instrumental toggle. Flip the switch to generate isolated sounds — kicks, snares, 808s, FX — anything you can describe. Available on Creator &amp; Pro Artist plans.',
+        pos: 'right',
+        switchTab: 'create',
+        switchSubTab: 'instrumental',
+      },
+      {
         selector: 'a[href="/dashboard"]',
         title: '📚 Library — All Your Tracks',
         body: 'Your <b>Library</b> keeps everything you create — Beats, Remixes, Extended tracks, Covers, One Shots, Uploads, and Voice songs. Never lose a track.',
@@ -1717,7 +1725,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!sel) return null;
       var el = document.querySelector(sel);
       if (!el) return null;
+      // Scroll element into view if it's outside the viewport
       var r = el.getBoundingClientRect();
+      if (r.top < 0 || r.bottom > window.innerHeight || r.width < 2 || r.height < 2) {
+        el.scrollIntoView({ behavior: 'instant', block: 'center' });
+        r = el.getBoundingClientRect();
+      }
       return { top: r.top, left: r.left, width: r.width, height: r.height, el: el };
     }
 
@@ -1804,7 +1817,14 @@ document.addEventListener('DOMContentLoaded', () => {
       // Switch create tab if this step requires it, then wait for animation before measuring
       if (step.switchTab && typeof window.switchCreateTab === 'function') {
         window.switchCreateTab(step.switchTab);
-        setTimeout(function() { _doShowStep(idx); }, 280);
+        setTimeout(function() {
+          // Also switch inner sub-tab if needed (e.g. Instrumental panel for One Shot)
+          if (step.switchSubTab) {
+            var subTabBtn = document.querySelector('.suno-tab[data-tab="' + step.switchSubTab + '"]');
+            if (subTabBtn) subTabBtn.click();
+          }
+          _doShowStep(idx);
+        }, 280);
         return;
       }
       _doShowStep(idx);
