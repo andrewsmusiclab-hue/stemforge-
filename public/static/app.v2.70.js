@@ -1622,6 +1622,13 @@ document.addEventListener('DOMContentLoaded', () => {
         switchTab: 'mix',
       },
       {
+        selector: '#mixbtn-extend',
+        title: '🔁 Song Extend',
+        body: '<b>Song Extend</b> picks up where your track ends and keeps it going — same vibe, seamlessly continued. Perfect for turning a short beat into a full-length song.',
+        pos: 'right',
+        switchTab: 'mix',
+      },
+      {
         selector: '#mixbtn-cover',
         title: '🎤 Cover Song',
         body: '<b>Cover Song</b> transforms any audio into an AI cover in a style you choose. Upload the audio, pick a direction, and StemForge does the rest.',
