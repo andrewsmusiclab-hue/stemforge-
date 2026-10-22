@@ -1612,30 +1612,35 @@ document.addEventListener('DOMContentLoaded', () => {
         title: '🎛️ Mix Tab',
         body: 'The <b>Mix</b> tab gives you three tools: <b>Remix</b> — upload audio and AI-restyle it. <b>Song Extend</b> — continue any track from where it ends. <b>Cover Song</b> — turn any audio into an AI cover in a new style.',
         pos: 'right',
+        switchTab: 'mix',
       },
       {
         selector: '#mixbtn-remix',
         title: '🪄 Remix',
         body: '<b>Remix</b> lets you upload an MP3 or WAV and completely reinvent it — new style, new energy, same soul. Great for giving old tracks a fresh makeover.',
         pos: 'right',
+        switchTab: 'mix',
       },
       {
         selector: '#mixbtn-cover',
         title: '🎤 Cover Song',
         body: '<b>Cover Song</b> transforms any audio into an AI cover in a style you choose. Upload the audio, pick a direction, and StemForge does the rest.',
         pos: 'right',
+        switchTab: 'mix',
       },
       {
         selector: '#cptab-create',
         title: '🎹 Create Tab',
         body: 'The <b>Create</b> tab is where you generate original beats from scratch. Add a <b>Prompt</b>, write <b>Lyrics</b>, choose your <b>Style</b>, set <b>BPM & Key</b>, and hit Create.',
         pos: 'right',
+        switchTab: 'create',
       },
       {
         selector: '#card-prompt',
         title: '✍️ Prompt',
         body: 'Describe your beat in the <b>Prompt</b> box — mood, genre, instruments, energy. Use the <b>magic wand</b> to auto-suggest a prompt based on your style settings.',
         pos: 'right',
+        switchTab: 'create',
       },
       {
         selector: 'a[href="/dashboard"]',
@@ -1783,11 +1788,24 @@ document.addEventListener('DOMContentLoaded', () => {
       var step = steps[idx];
       if (!step) { markSeen(); cleanup(); return; }
 
-      // Remove old popup
+      // Remove old popup and highlight immediately
       var oldPop = document.getElementById('sf-tour-popup');
       if (oldPop) oldPop.remove();
       var oldHl = document.getElementById('sf-tour-highlight');
       if (oldHl) oldHl.remove();
+
+      // Switch create tab if this step requires it, then wait for animation before measuring
+      if (step.switchTab && typeof window.switchCreateTab === 'function') {
+        window.switchCreateTab(step.switchTab);
+        setTimeout(function() { _doShowStep(idx); }, 280);
+        return;
+      }
+      _doShowStep(idx);
+    }
+
+    function _doShowStep(idx) {
+      var step = steps[idx];
+      if (!step) { markSeen(); cleanup(); return; }
 
       var rect = getRect(step.selector);
 
