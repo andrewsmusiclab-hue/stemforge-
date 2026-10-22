@@ -13406,16 +13406,19 @@ function generatorPage() {
           <div class="suno-card__body" style="display:flex;flex-direction:column;gap:14px">
 
             <!-- Step 1: Current voice status -->
-            <div id="voice-status-bar" style="padding:10px 12px;border-radius:8px;border:1px solid rgba(16,185,129,.25);background:rgba(16,185,129,.04);display:flex;align-items:center;gap:10px">
+            <div id="voice-status-bar" style="padding:10px 12px;border-radius:8px;border:1px solid rgba(16,185,129,.25);background:rgba(16,185,129,.04);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
               <i class="fas fa-circle-notch fa-spin" style="color:#10b981;font-size:.9rem" id="voice-status-icon"></i>
-              <span id="voice-status-text" style="font-size:.83rem;color:var(--muted)">Loading voice status…</span>
-              <button id="voice-delete-btn" onclick="deleteVoicePersona()" style="display:none;margin-left:auto;background:none;border:1px solid rgba(239,68,68,.4);color:#f87171;cursor:pointer;font-size:.75rem;padding:3px 9px;border-radius:6px">Remove</button>
+              <span id="voice-status-text" style="font-size:.83rem;color:var(--muted);flex:1;min-width:0">Loading voice status…</span>
+              <div style="display:flex;gap:6px;flex-shrink:0">
+                <button id="voice-reforge-btn" onclick="toggleVoiceReforge()" style="display:none;background:none;border:1px solid rgba(16,185,129,.4);color:#34d399;cursor:pointer;font-size:.75rem;padding:3px 9px;border-radius:6px;font-weight:600"><i class="fas fa-sync-alt" style="margin-right:4px"></i>Replace Voice</button>
+                <button id="voice-delete-btn" onclick="deleteVoicePersona()" style="display:none;background:none;border:1px solid rgba(239,68,68,.4);color:#f87171;cursor:pointer;font-size:.75rem;padding:3px 9px;border-radius:6px">Remove</button>
+              </div>
             </div>
 
-            <!-- Step 1: Create voice -->
+            <!-- Step 1: Create / Re-forge voice -->
             <div id="voice-create-section">
               <div style="margin-bottom:8px">
-                <span style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — FORGE YOUR VOICE</span>
+                <span id="voice-step1-label" style="font-size:.8rem;font-weight:700;color:#34d399;letter-spacing:.04em">STEP 1 — FORGE YOUR VOICE</span>
               </div>
               <div style="font-size:.78rem;color:var(--muted);line-height:1.55;margin-bottom:10px">
                 Upload a clean MP3 or WAV of your voice (10–60 seconds, solo vocals, no music). If your clip is longer than 30 seconds you can trim it below before cloning.

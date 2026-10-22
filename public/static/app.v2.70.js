@@ -12814,13 +12814,15 @@ window.toggleRefDropdown = function() {
   // ── Voice status ──────────────────────────────────────────────────────────
 
   window.loadVoiceStatus = async function() {
-    var statusIcon = document.getElementById('voice-status-icon');
-    var statusText = document.getElementById('voice-status-text');
-    var statusBar  = document.getElementById('voice-status-bar');
-    var deleteBtn  = document.getElementById('voice-delete-btn');
-    var createSec  = document.getElementById('voice-create-section');
-    var genLocked  = document.getElementById('voice-gen-locked');
-    var genForm    = document.getElementById('voice-gen-form');
+    var statusIcon  = document.getElementById('voice-status-icon');
+    var statusText  = document.getElementById('voice-status-text');
+    var statusBar   = document.getElementById('voice-status-bar');
+    var deleteBtn   = document.getElementById('voice-delete-btn');
+    var reforgeBtn  = document.getElementById('voice-reforge-btn');
+    var createSec   = document.getElementById('voice-create-section');
+    var stepLabel   = document.getElementById('voice-step1-label');
+    var genLocked   = document.getElementById('voice-gen-locked');
+    var genForm     = document.getElementById('voice-gen-form');
     if (!statusText) return;
 
     statusIcon.className = 'fas fa-circle-notch fa-spin';
@@ -12831,21 +12833,29 @@ window.toggleRefDropdown = function() {
       var res = await fetch('/api/voice/status');
       var data = await res.json();
       if (data.persona_id) {
+        // Voice is forged — show status, keep STEP 1 collapsed, unlock STEP 2
         statusIcon.className = 'fas fa-check-circle';
         statusIcon.style.color = '#10b981';
-        statusText.innerHTML = '<b style="color:#34d399">' + (data.persona_label || 'Voice') + '</b> — ready to generate';
+        statusText.innerHTML = '<b style="color:#34d399">' + (data.persona_label || 'My Voice') + '</b> — ready to generate';
         statusBar.style.borderColor = 'rgba(16,185,129,.4)';
-        deleteBtn.style.display = '';
+        if (reforgeBtn) reforgeBtn.style.display = '';
+        if (deleteBtn)  deleteBtn.style.display  = '';
+        // Collapse STEP 1 upload (voice exists, no need to show by default)
         if (createSec) createSec.style.display = 'none';
+        if (stepLabel) stepLabel.textContent = 'STEP 1 — RE-FORGE YOUR VOICE';
+        // Unlock STEP 2
         if (genLocked) genLocked.style.display = 'none';
         if (genForm)   genForm.style.display   = 'flex';
       } else {
+        // No voice — show STEP 1 open, lock STEP 2
         statusIcon.className = 'fas fa-info-circle';
         statusIcon.style.color = '#6b7280';
         statusText.textContent = 'No voice forged yet — upload a sample below.';
         statusBar.style.borderColor = 'rgba(255,255,255,.08)';
-        deleteBtn.style.display = 'none';
+        if (reforgeBtn) reforgeBtn.style.display = 'none';
+        if (deleteBtn)  deleteBtn.style.display  = 'none';
         if (createSec) createSec.style.display = '';
+        if (stepLabel) stepLabel.textContent = 'STEP 1 — FORGE YOUR VOICE';
         if (genLocked) genLocked.style.display = '';
         if (genForm)   genForm.style.display   = 'none';
       }
@@ -12855,8 +12865,23 @@ window.toggleRefDropdown = function() {
     }
   };
 
+  // Toggle STEP 1 upload section visibility (for re-forging when voice exists)
+  window.toggleVoiceReforge = function() {
+    var createSec  = document.getElementById('voice-create-section');
+    var reforgeBtn = document.getElementById('voice-reforge-btn');
+    if (!createSec) return;
+    var isHidden = createSec.style.display === 'none';
+    if (isHidden) {
+      createSec.style.display = 'block';
+      if (reforgeBtn) reforgeBtn.innerHTML = '<i class="fas fa-chevron-up" style="margin-right:4px"></i>Hide Upload';
+      setTimeout(function() { createSec.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 50);
+    } else {
+      createSec.style.display = 'none';
+      if (reforgeBtn) reforgeBtn.innerHTML = '<i class="fas fa-sync-alt" style="margin-right:4px"></i>Replace Voice';
+    }
+  };
+
   window.openVoicePanel = function() {
-    // Switch to Voices tab in the 3-tab layout, then load voice status
     if (typeof window.switchCreateTab === 'function') window.switchCreateTab('voices');
     window.loadVoiceStatus();
   };
