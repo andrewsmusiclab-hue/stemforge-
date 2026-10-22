@@ -1411,7 +1411,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <li><b style="color:#c084fc">What is AI Cover Song?</b> — Upload any song (MP3, WAV, etc.) and StemForge will recreate it in a completely new AI-generated voice. The melody, lyrics, and structure stay the same — only the voice changes. It's like having any artist perform your favourite song.</li>
         <li><b style="color:#e2e8f0">How it works</b> — Head to the <b style="color:#c084fc">Create</b> page and click <b>Cover Song</b>. Upload your audio file, choose a vocal style (or let AI detect it for you), and hit Generate. Your cover appears in your <b>Library → Covers</b> tab.</li>
         <li><b style="color:#e2e8f0">Auto style detection</b> — StemForge automatically analyses your uploaded track and suggests a genre/mood description for the vocal style field. You can edit it freely before generating.</li>
-        <li><b style="color:#e2e8f0">Pro Artist plan</b> — AI Cover Song is available to <b style="color:#c084fc">Pro Artist</b> subscribers. Each cover costs <b>25 pts</b>.</li>
+        <li><b style="color:#e2e8f0">Pro Artist plan</b> — AI Cover Song is available to <b style="color:#c084fc">Pro Artist</b> subscribers. Each cover costs <b>35 pts</b>.</li>
         <li><b style="color:#e2e8f0">Your covers library</b> — All generated covers are saved to the <b>Covers</b> tab in your library, separate from your beats and remixes.</li>
         <li><b style="color:#e2e8f0">Downloading covers</b> — Download your covers directly from the <b>Library → Covers</b> tab via the ⋯ menu. Covers are downloaded as high-quality MP3.</li>
       </ul>`
@@ -3178,7 +3178,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <h3 style="font-size:1.25rem;font-weight:700;margin-bottom:8px">Upgrade to access</h3>
           <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
           <div style="display:flex;flex-direction:column;gap:10px">
-            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 800 pts</a>
+            <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown"></i> Creator — $10/mo · 900 pts</a>
             <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star"></i> Pro Artist — $26/mo · 2,000 pts</a>
           </div>
           <p style="color:var(--muted);font-size:.78rem;margin-top:16px">Your beats are saved — upgrade anytime to download them.</p>
@@ -4782,7 +4782,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <p style="color:var(--muted);font-size:.9rem;margin-bottom:24px;line-height:1.5">Free accounts can listen to your beat, but downloads require a <strong>Creator</strong> or <strong>Pro Artist</strong> plan.</p>
                     <div style="display:flex;flex-direction:column;gap:10px">
                       <a href="/pricing?plan=creator" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#4e9fff,#6366f1);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
-                        <i class="fas fa-crown"></i> Creator — $10/mo · 800 pts
+                        <i class="fas fa-crown"></i> Creator — $10/mo · 900 pts
                       </a>
                       <a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#8b5cf6,#ec4899);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem">
                         <i class="fas fa-star"></i> Pro Artist — $26/mo · 2,000 pts
@@ -7639,9 +7639,9 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
   //  OPEN / CLOSE
   // ─────────────────────────────────────────────────────────────────────────
   window.openStemsPanel = function (jobId, stereoUrl, title, userPlan) {
-    // Gate: stem splitting — Free is fully blocked; Creator can use Auto Split only
+    // Gate: stem splitting — Free and Creator are blocked; Pro Artist only
     var _resolvedPlan = userPlan || (window._sfUser && window._sfUser.plan) || 'free';
-    if (_resolvedPlan === 'free') {
+    if (_resolvedPlan === 'free' || _resolvedPlan === 'creator') {
       // Show a targeted upgrade prompt
       var existingGate = document.getElementById('sf-stem-gate-modal');
       if (existingGate) existingGate.remove();
@@ -7653,10 +7653,10 @@ async function saveReferenceUpload(fileId, filename, duration, analysis) {
           '<div style="width:56px;height:56px;border-radius:14px;background:linear-gradient(135deg,#6c3aff,#a855f7);display:flex;align-items:center;justify-content:center;margin:0 auto 18px">',
             '<i class="fas fa-scissors" style="color:white;font-size:1.3rem"></i>',
           '</div>',
-          '<h3 style="margin:0 0 8px;font-size:1.2rem;font-weight:800;color:#e2e8f0">Stem Splitting is Creator+</h3>',
-          '<p style="margin:0 0 24px;font-size:.88rem;color:#94a3b8;line-height:1.6">Upgrade to <strong style="color:#38bdf8">Creator</strong> to split your beats with Auto Split, or go <strong style="color:#c084fc">Pro Artist</strong> for Vocals &amp; Instrumental separation too.</p>',
+          '<h3 style="margin:0 0 8px;font-size:1.2rem;font-weight:800;color:#e2e8f0">Stem Splitter is Pro Artist</h3>',
+          '<p style="margin:0 0 24px;font-size:.88rem;color:#94a3b8;line-height:1.6">Stem Splitter is exclusive to <strong style="color:#c084fc">Pro Artist</strong>. Upgrade to split your beats, isolate vocals, and download individual stems.</p>',
           '<div style="display:flex;flex-direction:column;gap:10px">',
-            '<a href="/pricing" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-crown" style="margin-right:6px"></i>View Plans</a>',
+            '<a href="/pricing?plan=pro" style="display:block;padding:12px 24px;background:linear-gradient(135deg,#6c3aff,#a855f7);color:#fff;border-radius:12px;font-weight:700;text-decoration:none;font-size:.95rem"><i class="fas fa-star" style="margin-right:6px"></i>Upgrade to Pro Artist</a>',
             '<button onclick="document.getElementById(\'sf-stem-gate-modal\').remove()" style="padding:10px 24px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#94a3b8;border-radius:12px;font-size:.88rem;cursor:pointer;font-weight:600">Maybe later</button>',
           '</div>',
         '</div>'

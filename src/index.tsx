@@ -1984,10 +1984,10 @@ async function autoNoticeServerError(db: D1Database, userId: string | null, jobI
       ''
     ).run()
 
-    // Refund the 25 points for this failed job
-    await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
+    // Refund the 35 points for this failed job
+    await db.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`)
       .bind(userId).run()
-    await logTx(db, userId, 'refund', `Refund — server error (${jobId})`, 25, jobId)
+    await logTx(db, userId, 'refund', `Refund — server error (${jobId})`, 35, jobId)
   } catch (e: any) {
     console.warn('[auto-notice] failed to insert notice:', e?.message)
   }
@@ -2486,8 +2486,8 @@ app.post('/api/generate', async (c) => {
   }
 
   // Enforce per-plan generation limit (bonus_credits consumed first)
-  const totalAvailable25 = (authUser.gens_limit - authUser.gens_used) + authUser.bonus_credits
-  if (totalAvailable25 < 25) {
+  const totalAvailable35 = (authUser.gens_limit - authUser.gens_used) + authUser.bonus_credits
+  if (totalAvailable35 < 35) {
     return c.json({
       error: `Points limit reached. You have used all your points for this month. Upgrade your plan or get more credits to continue.`,
       limit_reached: true
@@ -2497,17 +2497,17 @@ app.post('/api/generate', async (c) => {
   const userId: string = authUser.id
   const userPlan: string = authUser.plan
 
-  // Deduct 25 pts — consume bonus_credits first, then gens_used
-  if (authUser.bonus_credits >= 25) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 25 WHERE id = ?`).bind(authUser.id).run()
+  // Deduct 35 pts — consume bonus_credits first, then gens_used
+  if (authUser.bonus_credits >= 35) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 35 WHERE id = ?`).bind(authUser.id).run()
   } else if (authUser.bonus_credits > 0) {
     const fromBonus = authUser.bonus_credits
-    const fromMain = 25 - fromBonus
+    const fromMain = 35 - fromBonus
     await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id = ?`).bind(fromMain, authUser.id).run()
   } else {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 25 WHERE id = ?`).bind(authUser.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 35 WHERE id = ?`).bind(authUser.id).run()
   }
-  await logTx(c.env.DB, authUser.id, 'deduct', 'Beat Generation', 25, null)
+  await logTx(c.env.DB, authUser.id, 'deduct', 'Beat Generation', 35, null)
 
   // Build enriched prompt from all UI inputs
   // NOTE: The frontend already prefixes the prompt with the genre/style chip value,
@@ -2622,9 +2622,9 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
 
       if (pollData.type === 'failed') {
         job.status = 'error'
-        job.error  = 'Generation failed on music server — 25 points refunded.'
+        job.error  = 'Generation failed on music server — 35 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 25, row.id) }
+        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 35, row.id) }
         console.log(`[lazy-rescue] marked_error_refunded job=${row.id}`)
         continue
       }
@@ -2637,10 +2637,10 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         if (ageMs > timeoutMs) {
           job.status = 'error'
           job.error  = isExtend
-            ? 'Song Extend expired on music server — 20 points refunded.'
-            : 'Stemforge generation timed out — 25 points refunded.'
+            ? 'Song Extend expired on music server — 25 points refunded.'
+            : 'Stemforge generation timed out — 35 points refunded.'
           await setJob(env.DB, job)
-          if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, isExtend ? 20 : 25, row.id) }
+          if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, isExtend ? 25 : 35, row.id) }
           console.log(`[lazy-rescue] expired_refunded job=${row.id} isExtend=${isExtend} age_min=${Math.round(ageMs/60000)}`)
         }
         continue
@@ -2667,15 +2667,15 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error  = 'Generation failed on music server — 25 points refunded.'
+        job.error  = 'Generation failed on music server — 35 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 25, row.id) }
+        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 35, row.id) }
         console.log(`[lazy-rescue] failed+refunded job=${row.id}`)
       } else if (ageMs > FIFTEEN_MIN) {
         job.status = 'error'
         job.error  = 'Stemforge generation timed out after 15 minutes'
         await setJob(env.DB, job)
-        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, 25, row.id) }
+        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, 35, row.id) }
         console.log(`[lazy-rescue] timed_out state=${clip.state} job=${row.id}`)
       }
     } catch (err: any) {
@@ -2849,9 +2849,9 @@ app.post('/api/job/stems', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
 
-  // Stem splitting is locked on the free plan — Creator and Pro Artist have access
-  if (user.plan === 'free') {
-    return c.json({ error: 'Stem splitting is a Pro Artist feature. Upgrade to unlock all split modes.', locked: true, upgrade: true }, 403)
+  // Stem splitting is locked on free and creator plans — Pro Artist only
+  if (user.plan === 'free' || user.plan === 'creator') {
+    return c.json({ error: 'Stem Splitter is a Pro Artist feature. Upgrade to unlock.', locked: true, upgrade: true }, 403)
   }
 
   const body = await c.req.json<{
@@ -3707,7 +3707,7 @@ app.get('/api/job/regen-stem/:jobId', async (c) => {
 //  Uploads the beat's stereo_url to MusicAPI /sonic/upload,
 //  calls MusicAPI Producer /producer/create with reference_clip_id.
 //  Creates a NEW Job in D1 so the result appears in the library.
-//  Costs 25 pts. Available to creator/pro/developer plans.
+//  Costs 35 pts. Pro Artist/developer plans only.
 //  Frontend polls the new job via existing POST /api/poll/:id.
 // ═══════════════════════════════════════════════════════════════
 app.post('/api/job/remix', async (c) => {
@@ -3744,21 +3744,21 @@ app.post('/api/job/remix', async (c) => {
     return c.json({ error: 'job_id or audio_url required' }, 400)
   }
 
-  // Deduct 25 points — bonus_credits consumed first
+  // Deduct 35 points — bonus_credits consumed first
   const fresh = await c.env.DB.prepare(`SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id=?`).bind(user.id).first<{gens_used:number,gens_limit:number,bonus_credits:number}>()
   const freshBonus = fresh?.bonus_credits ?? 0
   const freshMain = fresh ? (fresh.gens_limit - fresh.gens_used) : 0
-  if (!fresh || freshMain + freshBonus < 25) {
-    return c.json({ error: `Not enough points. Stemforge Remix costs 25 points and you only have ${Math.max(0, freshMain + freshBonus)} remaining.`, limit_reached: true }, 403)
+  if (!fresh || freshMain + freshBonus < 35) {
+    return c.json({ error: `Not enough points. Stemforge Remix costs 35 points and you only have ${Math.max(0, freshMain + freshBonus)} remaining.`, limit_reached: true }, 403)
   }
-  if (freshBonus >= 25) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 25 WHERE id=?`).bind(user.id).run()
+  if (freshBonus >= 35) {
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = bonus_credits - 35 WHERE id=?`).bind(user.id).run()
   } else if (freshBonus > 0) {
-    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(25 - freshBonus, user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET bonus_credits = 0, gens_used = gens_used + ? WHERE id=?`).bind(35 - freshBonus, user.id).run()
   } else {
-    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 25 WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = gens_used + 35 WHERE id=?`).bind(user.id).run()
   }
-  await logTx(c.env.DB, user.id, 'deduct', 'Remix', 25, job_id ?? null)
+  await logTx(c.env.DB, user.id, 'deduct', 'Remix', 35, job_id ?? null)
 
   // Build style tags from the source job's blueprint for Sonic /upload-cover
   const bp = srcJob.blueprint
@@ -3823,7 +3823,7 @@ app.post('/api/job/remix', async (c) => {
     const coverText = await coverRes.text()
     console.log(`[remix] /sonic/upload-cover HTTP ${coverRes.status}: ${coverText.slice(0,600)}`)
     if (!coverRes.ok) {
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id=?`).bind(user.id).run()
       let coverErrData: any = {}
       try { coverErrData = JSON.parse(coverText) } catch {}
       const apiErrMsg = coverErrData.message || coverErrData.error || coverText.slice(0, 200)
@@ -3839,13 +3839,13 @@ app.post('/api/job/remix', async (c) => {
     genTaskId = coverData.task_id || coverData.steps?.cover?.task_id || coverData.data?.[0]?.id || ''
     if (!genTaskId) {
       console.error(`[remix] upload-cover returned no task_id: ${coverText.slice(0,200)}`)
-      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id=?`).bind(user.id).run()
+      await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id=?`).bind(user.id).run()
       return c.json({ error: 'Remix failed to start — please try again. Please try again.' }, 500)
     }
     console.log(`[remix] upload-cover task started: ${genTaskId}`)
   } catch (err: any) {
     console.error(`[remix] unexpected error: ${err?.message}`)
-    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id=?`).bind(user.id).run()
+    await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id=?`).bind(user.id).run()
     return c.json({ error: `Something went wrong starting your remix: ${err?.message || 'unknown error'}` }, 500)
   }
 
@@ -5718,7 +5718,7 @@ app.post('/api/job/extend-upload', async (c) => {
   await ensureTable(c.env.DB)
 
   // ── credit deduction ──────────────────────────────────────────────────
-  const EXTEND_COST = 20
+  const EXTEND_COST = 25
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
@@ -5946,7 +5946,7 @@ app.post('/api/job/extend', async (c) => {
   if (!sourceJob.stereo_url) return c.json({ error: 'Source track has no audio URL' }, 400)
 
   // ── credit deduction ──────────────────────────────────────────────────
-  const EXTEND_COST = 20
+  const EXTEND_COST = 25
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
   ).bind(user.id).first<{ gens_used: number; gens_limit: number; bonus_credits: number }>()
@@ -6768,11 +6768,11 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
       const clips = Array.isArray(pollData) ? pollData : (pollData.data || [])
       const clip = clips[0]
 
-      // Helper: refund 25 pts to the job owner
+      // Helper: refund 35 pts to the job owner
       const refundUser = async () => {
         if (row.user_id) {
           try {
-            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`).bind(row.user_id).run()
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run()
           } catch (e: any) { console.warn(`[rescue] refund failed user=${row.user_id}:`, e?.message) }
         }
       }
@@ -6782,8 +6782,8 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
         const isExtend = job.extend_task_type === 'song_extend'
         job.status = 'error'
         job.error = isExtend
-          ? 'Song Extend expired on music server — 20 points refunded.'
-          : 'Stemforge task expired — 25 points refunded.'
+          ? 'Song Extend expired on music server — 25 points refunded.'
+          : 'Stemforge task expired — 35 points refunded.'
         await setJob(c.env.DB, job)
         await refundUser()
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: 'no_clip_data', task_id: job.stereo_task_id })
@@ -6806,14 +6806,14 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
           results.push({ id: row.id, title: job.title, action: 'marked_ready', url_prefix: url.slice(0, 60), task_id: job.stereo_task_id })
         } else {
           job.status = 'error'
-          job.error = 'Task succeeded but no audio_url — 25 points refunded.'
+          job.error = 'Task succeeded but no audio_url — 35 points refunded.'
           await setJob(c.env.DB, job)
           await refundUser()
           results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: 'succeeded_no_url', task_id: job.stereo_task_id })
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error = 'Generation failed on music server — 25 points refunded.'
+        job.error = 'Generation failed on music server — 35 points refunded.'
         await setJob(c.env.DB, job)
         await refundUser()
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: clip.error || 'task_failed', task_id: job.stereo_task_id })
@@ -6823,7 +6823,7 @@ app.get('/api/admin/rescue-stuck-jobs', async (c) => {
         const timeoutMs = isExtend ? 60 * 60 * 1000 : 30 * 60 * 1000
         if (ageMs > timeoutMs) {
           job.status = 'error'
-          job.error = `Timed out after ${Math.round(ageMs / 60000)} minutes — 25 points refunded.`
+          job.error = `Timed out after ${Math.round(ageMs / 60000)} minutes — 35 points refunded.`
           await setJob(c.env.DB, job)
           await refundUser()
           results.push({ id: row.id, title: job.title, action: 'timed_out_refunded', state: clip.state, task_id: job.stereo_task_id })
@@ -10687,7 +10687,7 @@ app.post('/api/job/cover-song', async (c) => {
   const { audio_url, title, style_prompt, make_instrumental, lyrics } = await c.req.json()
   if (!audio_url) return c.json({ error: 'audio_url is required' }, 400)
 
-  const COVER_COST = 25
+  const COVER_COST = 35
   // Use the standard gens_used/gens_limit/bonus_credits system
   const freshUser = await c.env.DB.prepare(
     `SELECT gens_used, gens_limit, bonus_credits FROM users WHERE id = ?`
@@ -10965,7 +10965,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261021-121n'
+const ASSET_VER = '20261022-130a'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -11607,8 +11607,8 @@ function homePage() {
           <div class="plan-card__price"><span class="plan-card__amount">$10</span><span>/month</span></div>
           <p class="plan-card__desc">For artists, writers, and content creators.</p>
           <ul class="plan-card__features">
-            <li><i class="fas fa-check"></i> 900 points monthly</li>
-            <li><i class="fas fa-check"></i> Auto Split (up to 5 stems)</li>
+            <li><i class="fas fa-check"></i> 900 points monthly (35 pts/gen)</li>
+            <li><i class="fas fa-check"></i> Auto Split (up to 5 stems, 70 pts)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
@@ -13011,10 +13011,11 @@ function pricingPage() {
         <p class="plan-card__desc">For artists, writers, and content creators.</p>
         <div class="plan-card__credits"><i class="fas fa-music"></i> 900 points monthly</div>
         <ul class="plan-card__features plan-card__features--full">
-          <li><i class="fas fa-check"></i> Full StemForge beat generation</li>
+          <li><i class="fas fa-check"></i> Full StemForge beat generation (35 pts)</li>
           <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (70 pts)</li>
           <li><i class="fas fa-check"></i> WAV download — commercial use</li>
           <li><i class="fas fa-check"></i> Top-up point packs available</li>
+          <li class="muted"><i class="fas fa-times"></i> Stem Splitter (Pro only)</li>
           <li class="muted"><i class="fas fa-times"></i> Vocals &amp; Instrumental split</li>
           <li class="muted"><i class="fas fa-times"></i> Extend song</li>
           <li class="muted"><i class="fas fa-times"></i> Priority queue</li>
@@ -13068,15 +13069,15 @@ function pricingPage() {
       </div>
       <div class="credit-table">
         <div class="credit-table__row credit-table__row--header"><span>What you get</span><span>Points cost</span><span>Plan</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-music"></i> 1 StemForge beat</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--free">All plans</span></div>
         <div class="credit-table__row"><span><i class="fas fa-cut"></i> Auto Split (up to 5 stems)</span><span class="credit-val">70 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">40 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">20 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-microphone"></i> Vocals &amp; Instrumental</span><span class="credit-val">40 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-expand-arrows-alt"></i> Extend song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-wand-magic-sparkles" style="color:#a855f7"></i> <span style="color:#c084fc;font-weight:600">Stemforge Remix</span></span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
 
         <div class="credit-table__row"><span><i class="fas fa-download"></i> WAV download</span><span class="credit-val">Included</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
         <div class="credit-table__row"><span><i class="fas fa-bolt" style="color:#f59e0b"></i> One Shot Creator (SFX)</span><span class="credit-val">15 pts</span><span class="tier-badge tier-badge--creator">Creator+ &amp; Pro Artist</span></div>
-        <div class="credit-table__row"><span><i class="fas fa-guitar" style="color:#a855f7"></i> AI Cover Song</span><span class="credit-val">25 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
+        <div class="credit-table__row"><span><i class="fas fa-guitar" style="color:#a855f7"></i> AI Cover Song</span><span class="credit-val">35 pts</span><span class="tier-badge tier-badge--pro">Pro Artist</span></div>
       </div>
     </div>
 
@@ -14574,8 +14575,8 @@ function subscriptionPage(user: User, env: Bindings, pendingDowngrade: string | 
             <div class="sub-plan-card__price">$10<span>/mo</span></div>
           </div>
           <ul>
-            <li><i class="fas fa-check"></i> 900 points monthly</li>
-            <li><i class="fas fa-check"></i> Auto Split — up to 5 stems</li>
+            <li><i class="fas fa-check"></i> 900 points monthly (35 pts/gen)</li>
+            <li><i class="fas fa-check"></i> Auto Split — up to 5 stems (70 pts)</li>
             <li><i class="fas fa-check"></i> WAV download</li>
             <li><i class="fas fa-check"></i> Commercial use rights</li>
             <li><i class="fas fa-check"></i> <i class="fas fa-bolt" style="color:#f59e0b;font-size:.75rem"></i> One Shot Creator (SFX)</li>
@@ -17356,11 +17357,11 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
       // MusicAPI failed shape: { type: 'failed', error: '...', already_refunded: true }
       if (pollData.type === 'failed') {
         job.status = 'error'
-        job.error = `Generation failed on music server — 25 points refunded.`
+        job.error = `Generation failed on music server — 35 points refunded.`
         await setJob(c.env.DB, job)
-        // Refund 25 points to the user
+        // Refund 35 points to the user
         if (row.user_id) {
-          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
+          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`)
             .bind(row.user_id).run()
         }
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: pollData.error })
@@ -17374,7 +17375,7 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
           job.error = 'Stemforge generation timed out after 15 minutes'
           await setJob(c.env.DB, job)
           if (row.user_id) {
-            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`)
               .bind(row.user_id).run()
           }
           results.push({ id: row.id, title: job.title, action: 'timed_out_refunded' })
@@ -17407,10 +17408,10 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error = 'Generation failed on music server — 25 points refunded.'
+        job.error = 'Generation failed on music server — 35 points refunded.'
         await setJob(c.env.DB, job)
         if (row.user_id) {
-          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
+          await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`)
             .bind(row.user_id).run()
         }
         results.push({ id: row.id, title: job.title, action: 'marked_error_refunded', reason: clip.error })
@@ -17421,7 +17422,7 @@ app.get('/api/cron/recover-stuck-jobs', async (c) => {
           job.error = 'Stemforge generation timed out after 15 minutes'
           await setJob(c.env.DB, job)
           if (row.user_id) {
-            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 25) WHERE id = ?`)
+            await c.env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`)
               .bind(row.user_id).run()
           }
           results.push({ id: row.id, title: job.title, action: 'timed_out_refunded', state: clip.state })
