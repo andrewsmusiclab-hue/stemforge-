@@ -1316,7 +1316,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('payment') === 'success') {
       const banner = document.createElement('div');
-      banner.style.cssText = 'position:fixed;top:16px;right:16px;background:#10b981;color:#fff;padding:14px 20px;border-radius:10px;font-weight:600;z-index:9999;box-shadow:0 4px 20px rgba(16,185,129,.4);display:flex;align-items:center;gap:10px';
+      banner.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#059669,#10b981);color:#fff;padding:14px 22px;border-radius:14px;font-weight:600;z-index:99999;box-shadow:0 8px 28px rgba(16,185,129,.45);display:flex;align-items:center;gap:10px;white-space:nowrap';
       banner.innerHTML = '<i class="fas fa-check-circle"></i> Subscription activated! Welcome to StemForge.';
       document.body.appendChild(banner);
       setTimeout(() => banner.remove(), 5000);
@@ -6713,13 +6713,24 @@ window.selectBarPreset = function(btn, bars) {
     // Lock all interactive controls while the extend job runs
     function _extLockUI() {
       if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+      // Lock tab pills + type buttons
       ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';} });
       document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';});
+      // Lock the Play button and waveform scrubber
+      var playBtn = document.getElementById('ext-play-btn');
+      if (playBtn) { playBtn.disabled=true; playBtn.style.opacity='.4'; playBtn.style.pointerEvents='none'; }
+      var wave = document.getElementById('ext-waveform-canvas');
+      if (wave) { wave.style.pointerEvents='none'; wave.style.opacity='.5'; }
     }
     function _extUnlockUI() {
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
       ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';} });
       document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';});
+      // Restore Play button and waveform
+      var playBtn = document.getElementById('ext-play-btn');
+      if (playBtn) { playBtn.disabled=false; playBtn.style.opacity=''; playBtn.style.pointerEvents=''; }
+      var wave = document.getElementById('ext-waveform-canvas');
+      if (wave) { wave.style.pointerEvents=''; wave.style.opacity=''; }
     }
     _extLockUI();
     if (status) { status.style.display = 'block'; var _stxt2 = document.getElementById('ext-submit-status-text'); if (_stxt2) _stxt2.textContent = 'Stemforge is forging your track…'; }
@@ -10761,11 +10772,21 @@ window.renderEditInstrumentPills = function (bp) {
       if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
       ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';} });
       document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';});
+      // Lock the Play button and waveform scrubber
+      var playBtn2 = document.getElementById('ext-play-btn');
+      if (playBtn2) { playBtn2.disabled=true; playBtn2.style.opacity='.4'; playBtn2.style.pointerEvents='none'; }
+      var wave2 = document.getElementById('ext-waveform-canvas');
+      if (wave2) { wave2.style.pointerEvents='none'; wave2.style.opacity='.5'; }
     }
     function _extUnlockUI2() {
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
       ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';} });
       document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';});
+      // Restore Play button and waveform
+      var playBtn2 = document.getElementById('ext-play-btn');
+      if (playBtn2) { playBtn2.disabled=false; playBtn2.style.opacity=''; playBtn2.style.pointerEvents=''; }
+      var wave2 = document.getElementById('ext-waveform-canvas');
+      if (wave2) { wave2.style.pointerEvents=''; wave2.style.opacity=''; }
     }
     _extLockUI2();
     if (status) { status.style.display = 'block'; var _stxt = document.getElementById('ext-submit-status-text'); if (_stxt) _stxt.textContent = 'Submitting extend job…'; }
@@ -12516,6 +12537,11 @@ window.toggleRefDropdown = function() {
           _setCoverMsg('🎉 Your cover is ready!');
           // Invalidate covers cache so next tab switch re-fetches
           if (typeof window._libLoaded !== 'undefined') window._libLoaded.covers = false;
+          // Reset the Create Cover button and hide status label
+          var _coverBtnOk = document.getElementById('cover-create-btn');
+          if (_coverBtnOk) { _coverBtnOk.disabled = false; _coverBtnOk.innerHTML = '<i class="fas fa-microphone-alt"></i> Create Cover'; }
+          var _coverStatusOk = document.getElementById('cover-status');
+          if (_coverStatusOk) _coverStatusOk.style.display = 'none';
           // Dismiss overlay, show persistent banner — user must dismiss or navigate away
           window.dismissCoverOverlay();
           showCompletionBanner('<i class="fas fa-record-vinyl" style="margin-right:4px"></i>Cover ready', 'covers');

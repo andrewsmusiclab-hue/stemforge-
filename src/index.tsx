@@ -2111,11 +2111,18 @@ async function pollSongExtendStatus(taskId: string, apiKey: string): Promise<{ u
   const res = await fetch(`${MUSICAPI_SONIC}/task/${taskId}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` }
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    console.warn(`[pollSongExtendStatus] task=${taskId} HTTP ${res.status}`)
+    return null
+  }
   const data = await res.json() as any
   const clips = Array.isArray(data) ? data : (data.data || [])
-  if (!clips.length) return null
+  if (!clips.length) {
+    console.warn(`[pollSongExtendStatus] task=${taskId} no clips in response`)
+    return null
+  }
   const clip = clips[0]
+  console.log(`[pollSongExtendStatus] task=${taskId} clip.state=${clip.state} clip.id=${clip.id}`)
   if (clip.state === 'succeeded') {
     const url = clip.audio_url || null
     if (!url) return null
@@ -2329,12 +2336,13 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     const result = await pollSongExtendStatus(job.stereo_task_id, env.MUSICAPI_KEY)
 
     if (!result) {
-      // Not ready yet — check timeout (15 min max for chained extends)
+      // Not ready yet — check timeout (unified 30 min for extends to match lazyRescueStuckJobs)
       const ageMs = Date.now() - job.created_at
-      const timeoutMs = (job as any).chain_target_ms ? 15 * 60 * 1000 : 20 * 60 * 1000
+      const timeoutMs = 30 * 60 * 1000  // 30 min — lazyRescueStuckJobs will refund at this same threshold
       if (ageMs > timeoutMs) {
+        console.warn(`[advancePipeline] job=${jobId} timed out after ${Math.round(ageMs/60000)}m`)
         job.status = 'error'
-        job.error = 'Stemforge generation timed out'
+        job.error = 'Extend timed out — points refunded. Please try again.'
         await setJob(db, { ...job })
       }
       return job
@@ -11862,7 +11870,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-177'
+const ASSET_VER = '20261022-178'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13131,10 +13139,9 @@ function generatorPage() {
         <i class="fas fa-music"></i> Create
       </button>
       <button class="create-page-tab create-page-tab--locked" id="cptab-voices" onclick="switchCreateTab('voices')"
-        style="opacity:.45;cursor:not-allowed;pointer-events:none;position:relative">
-        <i class="fas fa-lock" style="font-size:.65rem;vertical-align:middle;margin-right:2px"></i>
+        style="opacity:.7;cursor:not-allowed;pointer-events:none;position:relative">
         <i class="fas fa-microphone"></i> Voices
-        <span style="position:absolute;top:-7px;right:-4px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.5rem;font-weight:700;padding:1px 6px;border-radius:10px;letter-spacing:.03em;line-height:1.7;white-space:nowrap">Coming Soon</span>
+        <span style="position:absolute;top:-8px;right:-6px;background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;font-size:.52rem;font-weight:800;padding:2px 7px;border-radius:10px;letter-spacing:.04em;line-height:1.7;white-space:nowrap;box-shadow:0 2px 8px rgba(249,115,22,.5)">Coming Soon</span>
       </button>
     </div>
 
@@ -13534,13 +13541,13 @@ function generatorPage() {
         <div style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(139,92,246,.22));border:1px solid rgba(139,92,246,.35);display:flex;align-items:center;justify-content:center;margin-bottom:20px;box-shadow:0 0 28px rgba(139,92,246,.18)">
           <i class="fas fa-lock" style="font-size:1.7rem;color:#a78bfa"></i>
         </div>
-        <div style="font-size:1.15rem;font-weight:700;color:#e2e8f0;margin-bottom:8px;letter-spacing:.01em">VoiceForge — Coming Soon</div>
+        <div style="font-size:1.15rem;font-weight:800;color:#fff;margin-bottom:8px;letter-spacing:.01em">VoiceForge <span style="background:linear-gradient(135deg,#f59e0b,#f97316);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">— Coming Soon</span></div>
         <div style="font-size:.84rem;color:var(--muted);line-height:1.65;max-width:340px;margin-bottom:22px">
           Clone your voice and generate songs that sound like <em>you</em>. VoiceForge is finishing its final tuning — we'll let you know the moment it drops.
         </div>
-        <div style="display:inline-flex;align-items:center;gap:8px;background:linear-gradient(135deg,rgba(99,102,241,.15),rgba(139,92,246,.15));border:1px solid rgba(139,92,246,.3);border-radius:20px;padding:8px 18px">
-          <i class="fas fa-bell" style="color:#a78bfa;font-size:.85rem"></i>
-          <span style="font-size:.8rem;font-weight:600;color:#c4b5fd;letter-spacing:.03em">Stay tuned for updates</span>
+        <div style="display:inline-flex;align-items:center;gap:8px;background:linear-gradient(135deg,rgba(245,158,11,.18),rgba(249,115,22,.18));border:1px solid rgba(249,115,22,.45);border-radius:20px;padding:8px 18px;box-shadow:0 0 16px rgba(249,115,22,.2)">
+          <i class="fas fa-bell" style="color:#fbbf24;font-size:.85rem"></i>
+          <span style="font-size:.8rem;font-weight:700;color:#fed7aa;letter-spacing:.03em">Stay tuned — launching soon!</span>
         </div>
       </div>
 
@@ -14733,10 +14740,9 @@ function dashboardPage() {
       <i class="fas fa-trash-alt"></i> Trash
     </button>
     <button class="lib-tab lib-tab--voice lib-tab--locked" data-tab="voice" onclick="switchLibTab('voice')"
-      style="opacity:.4;cursor:not-allowed;pointer-events:none;position:relative">
-      <i class="fas fa-lock" style="font-size:.6rem;vertical-align:middle;margin-right:2px;color:#9ca3af"></i>
-      <i class="fas fa-fingerprint" style="color:#6b7280"></i> <span style="color:#9ca3af">VoiceForge</span>
-      <span style="position:absolute;top:-6px;right:-4px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;font-size:.48rem;font-weight:700;padding:1px 6px;border-radius:10px;letter-spacing:.03em;line-height:1.7;white-space:nowrap">Coming Soon</span>
+      style="opacity:.8;cursor:not-allowed;pointer-events:none;position:relative">
+      <i class="fas fa-fingerprint" style="color:#a78bfa"></i> <span style="color:#c4b5fd">VoiceForge</span>
+      <span style="position:absolute;top:-7px;right:-5px;background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;font-size:.48rem;font-weight:800;padding:2px 7px;border-radius:10px;letter-spacing:.04em;line-height:1.7;white-space:nowrap;box-shadow:0 2px 8px rgba(249,115,22,.5)">Coming Soon</span>
     </button>
   </div>
 
@@ -14798,13 +14804,13 @@ function dashboardPage() {
       <div style="width:60px;height:60px;border-radius:50%;background:linear-gradient(135deg,rgba(99,102,241,.18),rgba(139,92,246,.22));border:1px solid rgba(139,92,246,.35);display:flex;align-items:center;justify-content:center;margin-bottom:16px;box-shadow:0 0 22px rgba(139,92,246,.15)">
         <i class="fas fa-lock" style="font-size:1.4rem;color:#a78bfa"></i>
       </div>
-      <div style="font-size:1.05rem;font-weight:700;color:#e2e8f0;margin-bottom:7px">VoiceForge Library — Coming Soon</div>
+      <div style="font-size:1.05rem;font-weight:800;color:#fff;margin-bottom:7px">VoiceForge Library <span style="background:linear-gradient(135deg,#f59e0b,#f97316);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">— Coming Soon</span></div>
       <div style="font-size:.82rem;color:var(--muted);line-height:1.6;max-width:300px;margin-bottom:18px">
         Your voice-cloned tracks will appear here once VoiceForge launches. We're putting the finishing touches on it now.
       </div>
-      <div style="display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(139,92,246,.12));border:1px solid rgba(139,92,246,.28);border-radius:18px;padding:7px 16px">
-        <i class="fas fa-bell" style="color:#a78bfa;font-size:.8rem"></i>
-        <span style="font-size:.78rem;font-weight:600;color:#c4b5fd;letter-spacing:.03em">Coming soon</span>
+      <div style="display:inline-flex;align-items:center;gap:7px;background:linear-gradient(135deg,rgba(245,158,11,.18),rgba(249,115,22,.18));border:1px solid rgba(249,115,22,.45);border-radius:18px;padding:7px 16px;box-shadow:0 0 14px rgba(249,115,22,.2)">
+        <i class="fas fa-bell" style="color:#fbbf24;font-size:.8rem"></i>
+        <span style="font-size:.78rem;font-weight:700;color:#fed7aa;letter-spacing:.03em">Launching soon!</span>
       </div>
     </div>
     <!-- hidden grid kept for future activation -->
