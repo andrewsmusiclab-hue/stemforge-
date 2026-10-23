@@ -2968,6 +2968,10 @@ body.light .legal-body td {
   aspect-ratio: 1/1;
   overflow: hidden;
   background: #0d0d1a;
+  /* Hard lock — no video can push or reshape this container */
+  min-height: 0;
+  max-height: 100%;
+  contain: strict;
 }
 
 /* Video fills the art area, cropped to cover */

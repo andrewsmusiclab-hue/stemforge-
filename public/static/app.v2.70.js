@@ -5054,6 +5054,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window._lastGenVideo = _picked;
     var genVid = document.getElementById('pipeline-gen-video');
     if (genVid) {
+      genVid.loop = true;   // belt-and-suspenders: enforce loop even after src swap
       genVid.src = _picked;
       genVid.load();
       genVid.play().catch(function() {});
