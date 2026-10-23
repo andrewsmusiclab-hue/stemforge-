@@ -6380,13 +6380,25 @@ app.get('/api/projects', async (c) => {
       ).bind(user.id).all<any>()
       rows = res.results || []
     } else if (tab === 'extended') {
-      // Extended tracks: jobs with extend_task_type = 'song_extend', not deleted.
-      // Include both 'ready' AND 'generating' so in-progress extends show as spinner cards.
+      // Auto-purge stuck extended jobs: any 'generating' job older than 4 min or any 'error' job
+      // These will never have audio — remove them silently so they don't litter the library.
+      const stuckCutoff = Date.now() - 4 * 60 * 1000  // 4 min — matches server timeout
+      await c.env.DB.prepare(
+        `UPDATE jobs SET deleted_at = ?
+         WHERE user_id = ? AND deleted_at IS NULL
+         AND json_extract(data,'$.extend_task_type') = 'song_extend'
+         AND (
+           json_extract(data,'$.status') = 'error'
+           OR (json_extract(data,'$.status') = 'generating' AND created_at < ?)
+         )`
+      ).bind(Date.now(), user.id, stuckCutoff).run()
+
+      // Now return only ready extended tracks
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
          AND json_extract(data,'$.extend_task_type') = 'song_extend'
-         AND json_extract(data,'$.status') IN ('ready','generating','error')
+         AND json_extract(data,'$.status') = 'ready'
          ORDER BY created_at DESC LIMIT 100`
       ).bind(user.id).all<any>()
       rows = res.results || []
@@ -11870,7 +11882,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-182'
+const ASSET_VER = '20261022-183'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
