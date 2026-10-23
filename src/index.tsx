@@ -2697,10 +2697,12 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         continue
       }
 
+      const isExtend = job.extend_task_type === 'song_extend'
+      const refundAmt = isExtend ? 25 : 35
+
       if (!clip) {
         // No clip returned — either task expired at MusicAPI or never started
         // Extend jobs get a longer window (30 min) since chaining takes longer
-        const isExtend = job.extend_task_type === 'song_extend'
         const timeoutMs = isExtend ? 30 * 60 * 1000 : FIFTEEN_MIN
         if (ageMs > timeoutMs) {
           job.status = 'error'
@@ -2708,7 +2710,10 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
             ? 'Song Extend expired on music server — 25 points refunded.'
             : 'Stemforge generation timed out — 35 points refunded.'
           await setJob(env.DB, job)
-          if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, isExtend ? 25 : 35, row.id) }
+          if (row.user_id) {
+            await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(refundAmt, row.user_id).run()
+            await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, refundAmt, row.id)
+          }
           console.log(`[lazy-rescue] expired_refunded job=${row.id} isExtend=${isExtend} age_min=${Math.round(ageMs/60000)}`)
         }
         continue
@@ -2718,6 +2723,27 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         const url    = clip.audio_url || clip.wav_url || null
         const clipId = clip.clip_id || clip.id || null
         if (url) {
+          // For chain-extend jobs that still need more steps, fire the next extend
+          const chainTargetMs: number = job.chain_target_ms || 0
+          const chainStep: number = job.chain_step || 0
+          const chainMaxSteps: number = job.chain_max_steps || 8
+          const resultDurationMs: number = typeof clip.duration === 'number' ? Math.round(clip.duration * 1000) : 0
+          const currentDurationMs = resultDurationMs > 0 ? resultDurationMs : (job.chain_last_duration_ms || 0)
+          const shouldChain = isExtend && chainTargetMs > 0 && currentDurationMs > 0
+            && currentDurationMs < chainTargetMs && chainStep < chainMaxSteps
+          if (shouldChain && clipId) {
+            try {
+              const nextTaskId = await fireNextChainExtend(url, currentDurationMs, job, env, clipId)
+              const updatedJob = { ...job, stereo_task_id: nextTaskId, stereo_url: null,
+                chain_step: chainStep + 1, chain_last_duration_ms: currentDurationMs, chain_clip_id: clipId, status: 'generating' }
+              await setJob(env.DB, updatedJob)
+              console.log(`[lazy-rescue] chained step=${chainStep+1} job=${row.id}`)
+              continue
+            } catch (ce: any) {
+              console.warn(`[lazy-rescue] chain failed step=${chainStep+1}:`, ce?.message?.slice(0, 80))
+              // Fall through — save what we have as ready
+            }
+          }
           job.stereo_url = url
           if (clipId) job.clip_id = clipId
           job.status = 'ready'
@@ -2735,15 +2761,23 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
         }
       } else if (clip.state === 'failed') {
         job.status = 'error'
-        job.error  = 'Generation failed on music server — 35 points refunded.'
+        job.error  = `Generation failed on music server — ${refundAmt} points refunded.`
         await setJob(env.DB, job)
-        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, 35, row.id) }
+        if (row.user_id) {
+          await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(refundAmt, row.user_id).run()
+          await logTx(env.DB, row.user_id, 'refund', `Refund — failed generation (${job.title || row.id})`, refundAmt, row.id)
+        }
         console.log(`[lazy-rescue] failed+refunded job=${row.id}`)
-      } else if (ageMs > FIFTEEN_MIN) {
+      } else if (ageMs > (isExtend ? 30 * 60 * 1000 : FIFTEEN_MIN)) {
         job.status = 'error'
-        job.error  = 'Stemforge generation timed out after 15 minutes'
+        job.error  = isExtend
+          ? 'Song Extend timed out — 25 points refunded.'
+          : 'Stemforge generation timed out after 15 minutes — 35 points refunded.'
         await setJob(env.DB, job)
-        if (row.user_id) { await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - 35) WHERE id = ?`).bind(row.user_id).run(); await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, 35, row.id) }
+        if (row.user_id) {
+          await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(refundAmt, row.user_id).run()
+          await logTx(env.DB, row.user_id, 'refund', `Refund — timed out (${job.title || row.id})`, refundAmt, row.id)
+        }
         console.log(`[lazy-rescue] timed_out state=${clip.state} job=${row.id}`)
       }
     } catch (err: any) {
@@ -11732,15 +11766,18 @@ app.get('/api/poll-cover/:id', async (c) => {
         }
 
         // Detect commercially-published track rejection (MusicAPI fingerprint/catalog check)
-        const userErrMsg = (
-          rawLower.includes('upload failed') ||
-          rawLower.includes('catalog') ||
-          rawLower.includes('published') ||
-          rawLower.includes('copyright') ||
-          rawLower.includes('fingerprint') ||
-          rawLower.includes('commercial') ||
-          rawLower.includes('licensed')
-        )
+        // Strong phrases that unambiguously indicate a catalog/fingerprint rejection:
+        const strongCatalogPhrases = [
+          'existing recording', 'already published', 'matches an existing',
+          'cannot process', 'upload failed', 'audio fingerprint',
+          'copyright protected', 'rights holder', 'content id'
+        ]
+        // Weaker phrases — require at least 2 to fire (avoids false-positives on generic error text)
+        const weakCatalogPhrases = ['catalog', 'fingerprint', 'licensed', 'copyright', 'commercial']
+        const strongMatch = strongCatalogPhrases.some(p => rawLower.includes(p))
+        const weakCount = weakCatalogPhrases.filter(p => rawLower.includes(p)).length
+        const isCatalogRejection = strongMatch || weakCount >= 2
+        const userErrMsg = isCatalogRejection
           ? 'This track appears to be a commercially published song — StemForge cannot create a cover of a published track due to copyright restrictions. Please upload an original or royalty-free track.'
           : `Cover generation error: ${rawErrMsg}`
         const errData = JSON.stringify({ ...job, status: 'error', error: userErrMsg })
@@ -11825,7 +11862,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-176'
+const ASSET_VER = '20261022-177'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

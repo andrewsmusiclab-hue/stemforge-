@@ -3081,6 +3081,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // ── Switch active tab ───────────────────────────────────────
   window.switchLibTab = function(tab) {
+    // Dismiss any floating completion banner when the user switches library tabs
+    if (window._sfDismissCompletionBanner) window._sfDismissCompletionBanner();
     _libActive = tab;
     // Update tab buttons
     document.querySelectorAll('.lib-tab').forEach(btn => {
@@ -5052,10 +5054,13 @@ document.addEventListener('DOMContentLoaded', () => {
       '/api/gen-video/10',
     ];
     // Shuffle: pick one at random, but not the same as last time
+    // Persist across page reloads via sessionStorage so the same clip doesn't repeat on reload
     var _lastGenVideo = window._lastGenVideo || null;
+    if (!_lastGenVideo) { try { _lastGenVideo = sessionStorage.getItem('_sfLastGenVideo') || null; } catch(e) {} }
     var _pool = GEN_PLAYER_VIDEOS.filter(function(v) { return v !== _lastGenVideo; });
     var _picked = _pool[Math.floor(Math.random() * _pool.length)];
     window._lastGenVideo = _picked;
+    try { sessionStorage.setItem('_sfLastGenVideo', _picked); } catch(e) {}
     var genVid = document.getElementById('pipeline-gen-video');
     if (genVid) {
       genVid.loop = true;   // belt-and-suspenders: enforce loop even after src swap
@@ -10514,6 +10519,8 @@ window.renderEditInstrumentPills = function (bp) {
       }
 
       window.switchLibTab = function(tab) {
+        // Dismiss any floating completion banner when the user switches library tabs
+        if (window._sfDismissCompletionBanner) window._sfDismissCompletionBanner();
         if (tab === 'extended') {
           manualSwitchUI('extended');
           reloadExtendedTab();
