@@ -6352,6 +6352,19 @@ app.get('/api/projects', async (c) => {
       `DELETE FROM jobs WHERE user_id = ? AND deleted_at IS NOT NULL AND deleted_at < ?`
     ).bind(user.id, cutoff).run()
 
+    // Auto-purge stuck extended jobs on every tab load — fires silently regardless of which tab
+    // Removes: any error-status extend, or any generating extend older than 4 min (will never finish)
+    const stuckCutoff = Date.now() - 4 * 60 * 1000
+    await c.env.DB.prepare(
+      `UPDATE jobs SET deleted_at = ?
+       WHERE user_id = ? AND deleted_at IS NULL
+       AND json_extract(data,'$.extend_task_type') = 'song_extend'
+       AND (
+         json_extract(data,'$.status') = 'error'
+         OR (json_extract(data,'$.status') = 'generating' AND created_at < ?)
+       )`
+    ).bind(Date.now(), user.id, stuckCutoff).run().catch(() => {})
+
     let rows: { id: string; data: string; created_at: number; deleted_at: number | null; is_oneshot: number }[] = []
     if (tab === 'trash') {
       const res = await c.env.DB.prepare(
@@ -6380,20 +6393,7 @@ app.get('/api/projects', async (c) => {
       ).bind(user.id).all<any>()
       rows = res.results || []
     } else if (tab === 'extended') {
-      // Auto-purge stuck extended jobs: any 'generating' job older than 4 min or any 'error' job
-      // These will never have audio — remove them silently so they don't litter the library.
-      const stuckCutoff = Date.now() - 4 * 60 * 1000  // 4 min — matches server timeout
-      await c.env.DB.prepare(
-        `UPDATE jobs SET deleted_at = ?
-         WHERE user_id = ? AND deleted_at IS NULL
-         AND json_extract(data,'$.extend_task_type') = 'song_extend'
-         AND (
-           json_extract(data,'$.status') = 'error'
-           OR (json_extract(data,'$.status') = 'generating' AND created_at < ?)
-         )`
-      ).bind(Date.now(), user.id, stuckCutoff).run()
-
-      // Now return only ready extended tracks
+      // Return only ready extended tracks (stuck ones already purged above)
       const res = await c.env.DB.prepare(
         `SELECT id, data, created_at, deleted_at, is_oneshot FROM jobs
          WHERE user_id = ? AND is_oneshot = 0 AND deleted_at IS NULL
