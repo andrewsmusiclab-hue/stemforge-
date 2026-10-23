@@ -11340,6 +11340,35 @@ app.get('/api/download-mp3/:id', async (c) => {
 // GET /api/download-wav-url — proxy any audio URL as a download (one shots, covers)
 // ?url=<encoded>&name=<filename>&fmt=wav|mp3 (default: wav)
 // WAV/MP3 source → convert as needed; M4A → served as-is with correct MIME.
+// GET /api/audio-wave-proxy — server-side proxy for fetching audio bytes for waveform decoding.
+// Avoids CORS issues with external CDN audio URLs. Returns raw audio (mp3/m4a) with CORS headers.
+// Auth: must be logged in. No WAV conversion — just a passthrough fetch.
+app.get('/api/audio-wave-proxy', async (c) => {
+  const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
+  const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
+  if (!user) return c.json({ error: 'Unauthorized' }, 401)
+  const url = c.req.query('url')
+  if (!url) return c.json({ error: 'Missing url' }, 400)
+  try {
+    const upstream = await fetch(decodeURIComponent(url), {
+      headers: { 'User-Agent': 'StemForge/1.0' }
+    })
+    if (!upstream.ok) return c.json({ error: 'Upstream fetch failed' }, 502)
+    const buf = await upstream.arrayBuffer()
+    const ct = upstream.headers.get('content-type') || 'audio/mpeg'
+    return new Response(buf, {
+      headers: {
+        'Content-Type': ct,
+        'Content-Length': String(buf.byteLength),
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'private, max-age=300',
+      }
+    })
+  } catch(e: any) {
+    return c.json({ error: 'Proxy error: ' + (e?.message || 'Unknown') }, 502)
+  }
+})
+
 app.get('/api/download-wav-url', async (c) => {
   const token = c.env.SESSION_SECRET ? getSessionCookie(c.req.raw) : null
   const user = (token && c.env.DB) ? await getSessionUser(c.env.DB, token) : null
@@ -11796,7 +11825,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-175'
+const ASSET_VER = '20261022-176'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -13426,6 +13455,7 @@ function generatorPage() {
           <button class="suno-icon-btn suno-icon-btn--blue" id="style-magic-btn" title="Auto-suggest style"><i class="fas fa-magic"></i></button>
           <button class="suno-chips-arrow" id="chips-arrow-left" aria-label="Scroll left"><i class="fas fa-chevron-left"></i></button>
           <div class="suno-style-chips" id="style-chips-scroll">
+            <button class="suno-chip" data-style="pop">Pop</button>
             <button class="suno-chip" data-style="hip hop">Hip Hop</button>
             <button class="suno-chip" data-style="R&B">R&B</button>
             <button class="suno-chip" data-style="soca">Soca</button>
@@ -13917,7 +13947,7 @@ function generatorPage() {
         <div id="ext-upload-idle" style="display:flex;flex-direction:column;align-items:center">
           <i class="fas fa-cloud-upload-alt" style="font-size:1.5rem;color:var(--primary);margin-bottom:6px"></i>
           <p style="margin:0;font-weight:600;font-size:.88rem">Upload Audio to Extend</p>
-          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3 or WAV — output delivered as WAV</p>
+          <p style="margin:3px 0 0;color:var(--muted);font-size:.76rem">MP3 or WAV</p>
         </div>
         <div id="ext-upload-loading" style="display:none;flex-direction:column;align-items:center">
           <i class="fas fa-spinner fa-spin" style="font-size:1.3rem;color:var(--primary);margin-bottom:6px"></i>

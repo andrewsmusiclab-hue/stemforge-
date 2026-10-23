@@ -4864,6 +4864,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (genResult) genResult.style.display = 'none';
     if (genError) genError.style.display = 'none';
     currentJobId = null;
+    // Dismiss any completion banner when user explicitly cancels
+    if (window._sfDismissCompletionBanner) window._sfDismissCompletionBanner();
   };
 
   // ── Scrubber time formatter ───────────────────────────────────
@@ -5036,6 +5038,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (oldDual) oldDual.remove();
     if (pipelineStatus) { pipelineStatus.style.display = 'block'; pipelineStatus.style.opacity = '1'; }
     if (bpBlueprint) bpBlueprint.style.display = 'none';
+    // Dismiss any previous completion banner when a new generation starts
+    if (window._sfDismissCompletionBanner) window._sfDismissCompletionBanner();
 
     // ── Hide cube stage, pick a random gen-player video ──────────
     const cubeStage = document.getElementById('sf-cube-stage');
@@ -6701,7 +6705,18 @@ window.selectBarPreset = function(btn, bars) {
       extendAt = parseInt((document.getElementById('ext-custom-ms-val') || {}).value || '0', 10);
     }
 
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+    // Lock all interactive controls while the extend job runs
+    function _extLockUI() {
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+      ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';} });
+      document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';});
+    }
+    function _extUnlockUI() {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';} });
+      document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';});
+    }
+    _extLockUI();
     if (status) { status.style.display = 'block'; var _stxt2 = document.getElementById('ext-submit-status-text'); if (_stxt2) _stxt2.textContent = 'Stemforge is forging your track…'; }
 
     try {
@@ -6715,8 +6730,8 @@ window.selectBarPreset = function(btn, bars) {
       if (data.error) throw new Error(data.error + (data.raw ? ' | API: ' + data.raw.slice(0, 200) : ''));
       var extJobId = data.job_id;
 
-      // Reset button so user can submit again if they want
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      // Unlock UI once the job is submitted (job runs in background, user may close popup)
+      _extUnlockUI();
 
       // Show in-popup notification: track saved in Extend tab
       if (status) {
@@ -6794,7 +6809,7 @@ window.selectBarPreset = function(btn, bars) {
 
     } catch(e) {
       if (status) { status.style.display = 'block'; var _stxtE = document.getElementById('ext-submit-status-text'); if (_stxtE) { _stxtE.textContent = 'Error: ' + (e.message || 'Unknown error'); _stxtE.style.color = '#f87171'; } }
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      _extUnlockUI();
     }
   };
 
@@ -10036,7 +10051,8 @@ window.renderEditInstrumentPills = function (bp) {
   window.extDrawFlatWaveform = extDrawFlatWaveform;
 
   // ── Draw REAL waveform by fetching & decoding audio URL via Web Audio API ──
-  // Falls back to flat waveform if fetch fails (CORS, network, etc.)
+  // External CDN URLs are proxied through /api/audio-wave-proxy to avoid CORS blocks.
+  // Falls back to flat waveform if fetch/decode fails.
   function extDrawWaveformFromUrl(url) {
     var canvas = document.getElementById('ext-waveform-canvas');
     if (!canvas || !url || (!window.AudioContext && !window.webkitAudioContext)) {
@@ -10045,7 +10061,15 @@ window.renderEditInstrumentPills = function (bp) {
     }
     // Show flat placeholder immediately so canvas isn't blank while fetching
     extDrawFlatWaveform();
-    fetch(url)
+    // Route external URLs through the server proxy to avoid CORS issues
+    var fetchUrl = url;
+    try {
+      var parsed = new URL(url, window.location.href);
+      if (parsed.hostname !== window.location.hostname) {
+        fetchUrl = '/api/audio-wave-proxy?url=' + encodeURIComponent(url);
+      }
+    } catch(e) {}
+    fetch(fetchUrl)
       .then(function(r) { return r.arrayBuffer(); })
       .then(function(buf) {
         var actx = new (window.AudioContext || window.webkitAudioContext)();
@@ -10725,7 +10749,18 @@ window.renderEditInstrumentPills = function (bp) {
     var btn     = document.getElementById('ext-submit-btn');
     var lyrics  = (document.getElementById('ext-lyrics') || {}).value || '';
 
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+    // Lock all controls while submitting
+    function _extLockUI2() {
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extending…'; }
+      ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';} });
+      document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=true;el.style.opacity='.4';el.style.pointerEvents='none';});
+    }
+    function _extUnlockUI2() {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      ['ext-tab-upload','ext-tab-library'].forEach(function(id){ var el=document.getElementById(id); if(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';} });
+      document.querySelectorAll('.ext-type-btn').forEach(function(el){el.disabled=false;el.style.opacity='';el.style.pointerEvents='';});
+    }
+    _extLockUI2();
     if (status) { status.style.display = 'block'; var _stxt = document.getElementById('ext-submit-status-text'); if (_stxt) _stxt.textContent = 'Submitting extend job…'; }
 
     try {
@@ -10775,7 +10810,7 @@ window.renderEditInstrumentPills = function (bp) {
       setTimeout(function() {
         window.closeCreatorPopup && window.closeCreatorPopup('extend');
       }, 1500);
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      _extUnlockUI2();
       if (status) { setTimeout(function() { status.style.display = 'none'; }, 1500); }
 
       // ── Drive the creator-page pipeline UI (same as a normal generation) ──
@@ -10813,7 +10848,7 @@ window.renderEditInstrumentPills = function (bp) {
 
     } catch(e) {
       if (status) { status.style.display = 'block'; var _stxtE2 = document.getElementById('ext-submit-status-text'); if (_stxtE2) { _stxtE2.textContent = 'Error: ' + (e.message || 'Unknown error'); _stxtE2.style.color = '#f87171'; } }
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
+      _extUnlockUI2();
     }
   };
 
@@ -11695,6 +11730,8 @@ function showProUpgradeModal(featureName) {
   window.closePipelinePlayer = function() {
     var pipelineEl = document.getElementById('pipeline-status');
     if (!pipelineEl) return;
+    // Dismiss any lingering completion banner when user explicitly closes the player
+    if (window._sfDismissCompletionBanner) window._sfDismissCompletionBanner();
     // Pause any playing audio
     [1, 2].forEach(function(n) {
       var a = document.getElementById('pipeline-audio-' + n);
@@ -12476,9 +12513,14 @@ window.toggleRefDropdown = function() {
           window.dismissCoverOverlay();
           showCompletionBanner('<i class="fas fa-record-vinyl" style="margin-right:4px"></i>Cover ready', 'covers');
         } else if (data.status === 'error') {
-          // Generation failed — show the exact error message from Suno/MusicAPI
+          // Generation failed — dismiss overlay and fully reset the cover panel UI
           clearInterval(_coverPollTimer);
           window.dismissCoverOverlay();
+          // Reset the Create Cover button back to its default state
+          var _coverBtn2 = document.getElementById('cover-create-btn');
+          if (_coverBtn2) { _coverBtn2.disabled = false; _coverBtn2.innerHTML = '<i class="fas fa-microphone-alt"></i> Create Cover'; }
+          var _coverStatusEl = document.getElementById('cover-status');
+          if (_coverStatusEl) _coverStatusEl.style.display = 'none';
           var errMsg = data.error || 'Cover generation failed. Please try a different track.';
           // Check for "already published" / catalog match error
           var isCatalogError = errMsg.toLowerCase().includes('catalog') ||
