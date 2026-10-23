@@ -11870,7 +11870,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-179'
+const ASSET_VER = '20261022-180'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14052,6 +14052,9 @@ function generatorPage() {
         <div id="ext-scrub-tooltip" style="position:absolute;top:4px;background:rgba(0,0,0,.75);color:#fff;font-size:.7rem;padding:2px 6px;border-radius:4px;pointer-events:none;display:none;z-index:3;transform:translateX(-50%)">0:00</div>
       </div>
 
+      <!-- Collapsible form body: Play → Extend button. Hidden while generating. -->
+      <div id="ext-form-body">
+
       <!-- Play/pause + duration display -->
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
         <button id="ext-play-btn" onclick="extTogglePlay()" style="background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.3);border-radius:8px;padding:5px 14px;color:var(--primary);cursor:pointer;font-size:.82rem;display:flex;align-items:center;gap:6px">
@@ -14087,6 +14090,8 @@ function generatorPage() {
       <button id="ext-submit-btn" onclick="submitSongExtendUpload()" class="btn btn--primary" style="width:100%;padding:11px;font-size:.9rem;font-weight:700">
         <i class="fas fa-expand-arrows-alt"></i> Extend Track
       </button>
+
+      </div><!-- /ext-form-body -->
       <div id="ext-submit-status" style="display:none;margin-top:10px;position:relative;border-radius:10px;overflow:hidden;background:#0d0d1a;padding:12px 14px;text-align:center">
         <video class="forge-video-bg" autoplay loop muted playsinline preload="auto" src="/static/forge-bg.mp4" style="opacity:.7"></video>
         <div style="position:absolute;inset:0;background:rgba(5,5,20,.5);border-radius:inherit"></div>

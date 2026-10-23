@@ -6721,6 +6721,9 @@ window.selectBarPreset = function(btn, bars) {
       if (playBtn) { playBtn.disabled=true; playBtn.style.opacity='.4'; playBtn.style.pointerEvents='none'; }
       var wave = document.getElementById('ext-waveform-canvas');
       if (wave) { wave.style.pointerEvents='none'; wave.style.opacity='.5'; }
+      // Collapse the form body while generating
+      var fb = document.getElementById('ext-form-body');
+      if (fb) { fb.style.display='none'; }
     }
     function _extUnlockUI() {
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
@@ -6731,6 +6734,9 @@ window.selectBarPreset = function(btn, bars) {
       if (playBtn) { playBtn.disabled=false; playBtn.style.opacity=''; playBtn.style.pointerEvents=''; }
       var wave = document.getElementById('ext-waveform-canvas');
       if (wave) { wave.style.pointerEvents=''; wave.style.opacity=''; }
+      // Re-expand the form body
+      var fb = document.getElementById('ext-form-body');
+      if (fb) { fb.style.display=''; }
     }
     _extLockUI();
     if (status) { status.style.display = 'block'; var _stxt2 = document.getElementById('ext-submit-status-text'); if (_stxt2) _stxt2.textContent = 'Stemforge is forging your track…'; }
@@ -10777,6 +10783,9 @@ window.renderEditInstrumentPills = function (bp) {
       if (playBtn2) { playBtn2.disabled=true; playBtn2.style.opacity='.4'; playBtn2.style.pointerEvents='none'; }
       var wave2 = document.getElementById('ext-waveform-canvas');
       if (wave2) { wave2.style.pointerEvents='none'; wave2.style.opacity='.5'; }
+      // Collapse the form body while generating
+      var fb2 = document.getElementById('ext-form-body');
+      if (fb2) { fb2.style.display='none'; }
     }
     function _extUnlockUI2() {
       if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-expand-arrows-alt"></i> Extend Track'; }
@@ -10787,6 +10796,9 @@ window.renderEditInstrumentPills = function (bp) {
       if (playBtn2) { playBtn2.disabled=false; playBtn2.style.opacity=''; playBtn2.style.pointerEvents=''; }
       var wave2 = document.getElementById('ext-waveform-canvas');
       if (wave2) { wave2.style.pointerEvents=''; wave2.style.opacity=''; }
+      // Re-expand the form body
+      var fb2 = document.getElementById('ext-form-body');
+      if (fb2) { fb2.style.display=''; }
     }
     _extLockUI2();
     if (status) { status.style.display = 'block'; var _stxt = document.getElementById('ext-submit-status-text'); if (_stxt) _stxt.textContent = 'Submitting extend job…'; }
