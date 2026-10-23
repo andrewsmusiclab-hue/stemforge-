@@ -3645,10 +3645,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // ── 3. Poll until ready, then replace placeholder with real card ──
       var pollCount = 0;
+      var _cardPollStart = Date.now();
       var pollInterval = setInterval(async function() {
-        if (++pollCount > 84) { // 7 min max
+        if (Date.now() - _cardPollStart > 3 * 60 * 1000) { // 3 min hard cap
           clearInterval(pollInterval);
           placeholder.remove();
+          showCompletionBanner('\u26a0\ufe0f Generation timed out after 3 minutes — your points have been refunded. Please try again.', null);
           return;
         }
         try {
@@ -5179,7 +5181,15 @@ document.addEventListener('DOMContentLoaded', () => {
       // While status=generating, use POST /api/poll/:id (advances Mureka check each call)
       // For all other statuses, GET /api/job/:id is fine (read-only)
       let lastStatus = '';
+      const _genPollStart = Date.now();
+      const _GEN_TIMEOUT_MS = 3 * 60 * 1000; // 3 min hard cap
       pollInterval = setInterval(async () => {
+        // ── 3-minute hard timeout ────────────────────────────────
+        if (Date.now() - _genPollStart > _GEN_TIMEOUT_MS) {
+          clearInterval(pollInterval);
+          showError('Generation timed out after 3 minutes. Your points have been refunded — please try again.');
+          return;
+        }
         try {
           const usePost = (lastStatus === 'generating' || lastStatus === 'pending' || lastStatus === 'blueprint' || lastStatus === '');
           const pollRes = usePost
@@ -6791,8 +6801,15 @@ window.selectBarPreset = function(btn, bars) {
 
       // Background poll — reveals mini player when job is ready, also refreshes Extended tab
       if (extJobId) {
+        var _libExtPollStart = Date.now();
+        var _LIB_EXT_TIMEOUT_MS = 3 * 60 * 1000; // 3 min hard cap
         (function pollExtendResult(attempts) {
-          if (attempts > 180) return;
+          // ── 3-minute hard timeout ──────────────────────────────
+          if (Date.now() - _libExtPollStart > _LIB_EXT_TIMEOUT_MS) {
+            reloadExtendedTab();
+            showCompletionBanner('\u26a0\ufe0f Extend timed out after 3 minutes — your points have been refunded. Please try again.', null);
+            return;
+          }
           setTimeout(function() {
             fetch('/api/poll/' + extJobId, { method: 'POST', credentials: 'include' })
               .then(function(r) { return r.json(); })
@@ -6805,10 +6822,10 @@ window.selectBarPreset = function(btn, bars) {
                     aud.src = job.stereo_url;
                     mini.style.display = 'block';
                   }
-                  // Show persistent completion banner
                   showCompletionBanner('<i class="fas fa-expand-arrows-alt" style="margin-right:4px"></i>Extended track ready', 'extended');
                 } else if (job.status === 'error') {
                   reloadExtendedTab();
+                  showCompletionBanner('\u26a0\ufe0f Extend failed — your points have been refunded. Please try again.', null);
                 } else {
                   pollExtendResult(attempts + 1);
                 }
@@ -10659,7 +10676,8 @@ window.renderEditInstrumentPills = function (bp) {
   })();
 
   function _extPollJob(jobId, ui) {
-    var maxAttempts = 180; // 15 min max (~900s) — chaining can take up to 15 min
+    var _extPollStart = Date.now();
+    var _EXT_TIMEOUT_MS = 3 * 60 * 1000; // 3 min hard cap
     var attempts    = 0;
     ui = ui || {};
 
@@ -10669,11 +10687,12 @@ window.renderEditInstrumentPills = function (bp) {
     if (extBtnInit) extBtnInit.click();
 
     function doPoll() {
-      if (attempts++ >= maxAttempts) {
-        // Timeout — reset creator UI
+      // ── 3-minute hard timeout ──────────────────────────────────
+      if (Date.now() - _extPollStart > _EXT_TIMEOUT_MS) {
         if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
         if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
         if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
+        showCompletionBanner('\u26a0\ufe0f Extend timed out after 3 minutes — your points have been refunded. Please try again.', null);
         return;
       }
 
@@ -11871,11 +11890,13 @@ function showProUpgradeModal(featureName) {
 
         // ── Poll until ready — stays on Create page the whole time ──────────────
         var pollCount = 0;
+        var _remixPollStart = Date.now();
         var pollInterval = setInterval(function() {
-          if (++pollCount > 84) { // 7 min max
+          if (Date.now() - _remixPollStart > 3 * 60 * 1000) { // 3 min hard cap
             clearInterval(pollInterval);
             if (pipelineEl) pipelineEl.style.display = 'none';
             if (cancelBtnEl) cancelBtnEl.style.display = '';
+            _remixShowError('Generation timed out after 3 minutes — your points have been refunded. Please try again.');
             return;
           }
           fetch('/api/poll/' + newJobId, { method: 'POST', credentials: 'include' })
@@ -12515,7 +12536,8 @@ window.toggleRefDropdown = function() {
   function _startCoverPoll(jobId, taskId) {
     if (_coverPollTimer) clearInterval(_coverPollTimer);
     var attempts = 0;
-    var maxAttempts = 60; // 5 min at 5s intervals
+    var maxAttempts = 36; // 3 min at 5s intervals
+    var _coverPollStart = Date.now();
     _coverPollTimer = setInterval(async function() {
       attempts++;
       // Advance through stage messages as attempts increase
@@ -12530,11 +12552,14 @@ window.toggleRefDropdown = function() {
       _setCoverPct(Math.round(estPct));
       var shortLabel = _coverStages[stageStep].msg.replace(/…$/, '').split(' ').slice(0,2).join(' ');
       _setCoverStage(shortLabel);
-      if (attempts > maxAttempts) {
+      if (Date.now() - _coverPollStart > 3 * 60 * 1000) {
         clearInterval(_coverPollTimer);
-        _animateCoverProgress(92);
-        _setCoverMsg('Taking longer than expected — check Library → Covers in a few minutes.');
-        _setCoverStage('Still working…');
+        // Reset cover button
+        var _cb = document.getElementById('cover-create-btn');
+        if (_cb) { _cb.disabled = false; _cb.innerHTML = '<i class="fas fa-microphone-alt"></i> Create Cover'; }
+        var _cs = document.getElementById('cover-status');
+        if (_cs) _cs.style.display = 'none';
+        showCompletionBanner('\u26a0\ufe0f Cover generation timed out after 3 minutes — your points have been refunded. Please try again.', null);
         return;
       }
       try {

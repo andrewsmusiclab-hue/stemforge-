@@ -2336,13 +2336,13 @@ async function advancePipeline(jobId: string, env: Bindings, skipStems = true): 
     const result = await pollSongExtendStatus(job.stereo_task_id, env.MUSICAPI_KEY)
 
     if (!result) {
-      // Not ready yet — check timeout (unified 30 min for extends to match lazyRescueStuckJobs)
+      // Not ready yet — check timeout (4 min server-side, just above 3-min client cap)
       const ageMs = Date.now() - job.created_at
-      const timeoutMs = 30 * 60 * 1000  // 30 min — lazyRescueStuckJobs will refund at this same threshold
+      const timeoutMs = 4 * 60 * 1000  // 4 min — server marks error just after client 3-min timeout
       if (ageMs > timeoutMs) {
         console.warn(`[advancePipeline] job=${jobId} timed out after ${Math.round(ageMs/60000)}m`)
         job.status = 'error'
-        job.error = 'Extend timed out — points refunded. Please try again.'
+        job.error = 'Job timed out — your points have been refunded. Please try again.'
         await setJob(db, { ...job })
       }
       return job
@@ -2664,8 +2664,8 @@ app.post('/api/generate', async (c) => {
 async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<void> {
   if (!env.DB || !env.MUSICAPI_KEY) return
 
-  const FIVE_MIN   = 5  * 60 * 1000
-  const FIFTEEN_MIN = 15 * 60 * 1000
+  const FIVE_MIN   = 3  * 60 * 1000  // minimum age before rescue kicks in (matches client timeout)
+  const FIFTEEN_MIN = 4  * 60 * 1000  // server hard cancel — just above 3-min client cap
 
   let rows: { results: { id: string; user_id: string; data: string }[] }
   try {
@@ -2711,12 +2711,12 @@ async function lazyRescueStuckJobs(env: Bindings, skipJobId: string): Promise<vo
       if (!clip) {
         // No clip returned — either task expired at MusicAPI or never started
         // Extend jobs get a longer window (30 min) since chaining takes longer
-        const timeoutMs = isExtend ? 30 * 60 * 1000 : FIFTEEN_MIN
+        const timeoutMs = FIFTEEN_MIN  // 4 min for all job types — matches client 3-min hard cap
         if (ageMs > timeoutMs) {
           job.status = 'error'
           job.error  = isExtend
-            ? 'Song Extend expired on music server — 25 points refunded.'
-            : 'Stemforge generation timed out — 35 points refunded.'
+            ? 'Extend timed out — your points have been refunded. Please try again.'
+            : 'Generation timed out — your points have been refunded. Please try again.'
           await setJob(env.DB, job)
           if (row.user_id) {
             await env.DB.prepare(`UPDATE users SET gens_used = MAX(0, gens_used - ?) WHERE id = ?`).bind(refundAmt, row.user_id).run()
@@ -11870,7 +11870,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-181'
+const ASSET_VER = '20261022-182'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
