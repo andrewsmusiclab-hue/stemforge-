@@ -1911,6 +1911,9 @@ function loadMaintenanceSettings(forceReload) {
     }).catch(function(err){ showMaintMsg('Could not load settings: ' + (err.message || err), false); });
 }
 function updateToggleUI(id, on) {
+  // Keep hidden checkbox in sync so subsequent reads of .checked are accurate
+  var toggle = document.getElementById(id + '-toggle');
+  if (toggle) toggle.checked = !!on;
   var slider = document.getElementById(id + '-slider');
   var knob   = document.getElementById(id + '-knob');
   if (slider) slider.style.background = on ? (id === 'maint-lock' ? '#ef4444' : '#f97316') : '#334155';
@@ -1957,9 +1960,15 @@ function saveMaintSetting(type) {
     })
     .then(function(){
       showMaintMsg('Saved and published', true);
-      // Read current lock state from the toggle (we didn't change it)
-      var lt = document.getElementById('maint-lock-toggle');
-      showMaintStatus(bannerOn, lt ? lt.checked : false);
+      // Re-fetch live state from server to guarantee toggle reflects truth
+      return fetch('/api/admin/draft', { credentials: 'include' }).then(function(r){ return r.json(); }).then(function(d){
+        var live = d.live || {};
+        var livebannerOn = live.maintenance_banner === '1';
+        var liveLockOn   = live.maintenance_mode   === '1';
+        updateToggleUI('maint-banner', livebannerOn);
+        updateToggleUI('maint-lock',   liveLockOn);
+        showMaintStatus(livebannerOn, liveLockOn);
+      });
     })
     .catch(function(err){ showMaintMsg('Error: ' + (err.message || err), false); });
 }

@@ -11870,7 +11870,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-178'
+const ASSET_VER = '20261022-179'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -16479,7 +16479,7 @@ function adminPage(user: User) {
       <button class="admin-tab" data-tab="security" onclick="adminTab('security')"><i class="fas fa-lock" style="color:#f59e0b"></i> Security</button>
       <button class="admin-tab" data-tab="pointlog" onclick="adminTab('pointlog');loadPointLog()"><i class="fas fa-coins" style="color:#f59e0b"></i> Point Log</button>
       <button class="admin-tab" data-tab="maintenance" onclick="adminTab('maintenance');loadMaintenanceSettings()"><i class="fas fa-hard-hat" style="color:#f97316"></i> Maintenance</button>
-      <button class="admin-tab" data-tab="publish" onclick="adminTab('publish')" id="pp-tab-btn"><i class="fas fa-rocket" style="color:#10b981"></i> Preview &amp; Publish <span id="pp-badge" style="display:none;background:#f59e0b;color:#000;border-radius:99px;padding:1px 7px;font-size:.72rem;font-weight:800;margin-left:4px">!</span></button>
+
     </div>
 
     <!-- ANALYTICS TAB -->
@@ -17455,148 +17455,9 @@ function adminPage(user: User) {
     </div>
     <!-- ── /MAINTENANCE TAB ────────────────────────────────────────────────── -->
 
-    <!-- ── PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
-    <div id="admin-tab-publish" style="display:none">
+    <!-- Preview & Publish tab removed -->
 
-      <!-- How it works explainer -->
-      <div style="background:rgba(78,159,255,.06);border:1px solid rgba(78,159,255,.18);border-radius:12px;padding:14px 18px;margin-bottom:20px;display:flex;gap:14px;align-items:flex-start">
-        <i class="fas fa-info-circle" style="color:#4e9fff;margin-top:2px;flex-shrink:0"></i>
-        <div style="font-size:.82rem;color:#94a3b8;line-height:1.7">
-          <strong style="color:#e2e8f0">How this works:</strong>
-          All your code changes go to <strong style="color:#4e9fff">Staging</strong> first — users never see them.
-          Review staging, then click <strong style="color:#10b981">Publish to Live</strong> to make changes visible to everyone.
-          <br><strong style="color:#f59e0b">⚠️ One-time setup required:</strong> Add a <code style="background:rgba(255,255,255,.08);padding:1px 5px;border-radius:4px">GITHUB_TOKEN</code> secret to Cloudflare Pages (both projects) to enable the Publish button.
-        </div>
-      </div>
 
-      <!-- Deploy pipeline: Staging → Live -->
-      <div style="display:grid;grid-template-columns:1fr auto 1fr;gap:16px;align-items:start;margin-bottom:24px">
-
-        <!-- STAGING card -->
-        <div class="pp-card" style="border-color:rgba(78,159,255,.3)">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-            <div style="width:36px;height:36px;border-radius:10px;background:rgba(78,159,255,.12);border:1px solid rgba(78,159,255,.3);display:flex;align-items:center;justify-content:center">
-              <i class="fas fa-flask" style="color:#4e9fff"></i>
-            </div>
-            <div>
-              <div style="font-size:.95rem;font-weight:700">Staging</div>
-              <div style="font-size:.73rem;color:var(--muted)">Your private preview — only you see this</div>
-            </div>
-            <div id="pp-staging-status-dot" style="margin-left:auto;width:10px;height:10px;border-radius:50%;background:#334155"></div>
-          </div>
-          <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Latest deploy:</div>
-          <div id="pp-staging-run" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.78rem;min-height:48px">
-            <span style="color:var(--muted)">Loading…</span>
-          </div>
-          <div style="margin-top:14px;display:flex;gap:8px">
-            <a href="https://stemforge-staging-4q9.pages.dev" target="_blank" rel="noopener"
-              style="flex:1;display:block;text-align:center;padding:9px 14px;background:rgba(78,159,255,.1);border:1px solid rgba(78,159,255,.3);border-radius:8px;color:#4e9fff;font-size:.83rem;font-weight:600;text-decoration:none">
-              <i class="fas fa-external-link-alt" style="margin-right:5px"></i>Open Staging
-            </a>
-          </div>
-        </div>
-
-        <!-- Arrow -->
-        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;padding-top:60px">
-          <div style="font-size:.72rem;color:var(--muted);text-align:center">Publish<br>pushes</div>
-          <i class="fas fa-arrow-right" style="color:#334155;font-size:1.3rem"></i>
-        </div>
-
-        <!-- LIVE card -->
-        <div class="pp-card" style="border-color:rgba(16,185,129,.3)">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-            <div style="width:36px;height:36px;border-radius:10px;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.3);display:flex;align-items:center;justify-content:center">
-              <i class="fas fa-globe" style="color:#10b981"></i>
-            </div>
-            <div>
-              <div style="font-size:.95rem;font-weight:700">Live — stemforge.studio</div>
-              <div style="font-size:.73rem;color:var(--muted)">What your users see right now</div>
-            </div>
-            <div id="pp-live-status-dot" style="margin-left:auto;width:10px;height:10px;border-radius:50%;background:#334155"></div>
-          </div>
-          <div style="font-size:.78rem;color:var(--muted);margin-bottom:10px">Latest deploy:</div>
-          <div id="pp-live-run" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.78rem;min-height:48px">
-            <span style="color:var(--muted)">Loading…</span>
-          </div>
-          <div style="margin-top:14px">
-            <a href="https://stemforge.studio" target="_blank" rel="noopener"
-              style="display:block;text-align:center;padding:9px 14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;color:#10b981;font-size:.83rem;font-weight:600;text-decoration:none">
-              <i class="fas fa-external-link-alt" style="margin-right:5px"></i>Open Live Site
-            </a>
-          </div>
-        </div>
-      </div>
-
-      <!-- THE PUBLISH BUTTON — centrepiece -->
-      <div style="text-align:center;margin-bottom:24px">
-        <button id="pp-publish-btn" onclick="ppPublish()"
-          style="display:inline-flex;align-items:center;gap:10px;padding:14px 40px;background:linear-gradient(135deg,#059669,#10b981);border:none;border-radius:50px;color:#fff;font-size:1rem;font-weight:800;cursor:pointer;box-shadow:0 8px 32px rgba(16,185,129,.35);letter-spacing:.2px;transition:transform .15s,box-shadow .15s"
-          onmouseover="this.style.transform='scale(1.03)';this.style.boxShadow='0 12px 40px rgba(16,185,129,.45)'"
-          onmouseout="this.style.transform='';this.style.boxShadow='0 8px 32px rgba(16,185,129,.35)'">
-          <i class="fas fa-rocket"></i>
-          Publish Staging → Live
-        </button>
-        <div style="margin-top:10px;font-size:.76rem;color:var(--muted)">
-          Fast-forwards <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">main</code> to match
-          <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">staging</code> and triggers a production deploy (~2 min).
-          Users see the change when the deploy completes.
-        </div>
-      </div>
-
-      <div id="pp-msg" style="display:none;margin-bottom:20px;padding:12px 16px;border-radius:10px;font-size:.85rem;font-weight:600;text-align:center"></div>
-
-      <!-- Staging preview iframe -->
-      <div class="pp-card" style="padding:16px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-          <div style="font-size:.82rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px">
-            <i class="fas fa-desktop" style="margin-right:6px;color:#4e9fff"></i>Staging Preview
-          </div>
-          <div style="display:flex;gap:6px">
-            <button onclick="ppSetViewport('desktop')" id="pp-vp-desktop"
-              style="padding:5px 10px;border-radius:6px;background:rgba(78,159,255,.15);border:1px solid rgba(78,159,255,.4);color:#4e9fff;font-size:.75rem;cursor:pointer;font-weight:600">
-              <i class="fas fa-desktop"></i> Desktop
-            </button>
-            <button onclick="ppSetViewport('mobile')" id="pp-vp-mobile"
-              style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
-              <i class="fas fa-mobile-alt"></i> Mobile
-            </button>
-            <button onclick="ppReloadPreview()" title="Reload preview"
-              style="padding:5px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--muted);font-size:.75rem;cursor:pointer">
-              <i class="fas fa-sync-alt"></i>
-            </button>
-          </div>
-        </div>
-        <div id="pp-iframe-wrap" style="border:1px solid var(--border);border-radius:10px;overflow:hidden;background:#0b0e17;height:700px;transition:all .3s">
-          <iframe id="pp-iframe" src="https://stemforge-staging-4q9.pages.dev"
-            style="width:100%;height:100%;border:none;display:block" title="Staging preview"></iframe>
-        </div>
-        <div style="margin-top:8px;font-size:.73rem;color:var(--muted);text-align:center">
-          Showing <strong style="color:#4e9fff">stemforge-staging-4q9.pages.dev</strong> — 
-          this is your private staging environment. Users only see <strong style="color:#10b981">stemforge.studio</strong>.
-        </div>
-      </div>
-
-      <!-- Setup guide: GitHub Token -->
-      <div class="pp-card" style="margin-top:20px;border-color:rgba(245,158,11,.2)">
-        <div class="pp-card-header">
-          <i class="fab fa-github" style="color:#f59e0b"></i>
-          <span>One-Time Setup: GitHub Token</span>
-          <span id="pp-gh-status" style="margin-left:auto;font-size:.75rem;font-weight:700;color:#64748b">Checking…</span>
-        </div>
-        <div style="margin-top:12px;font-size:.82rem;color:#94a3b8;line-height:1.8">
-          The Publish button needs a GitHub token to fast-forward <code style="background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px">main</code> and trigger the production deploy.<br>
-          <strong style="color:#e2e8f0">Steps:</strong>
-          <ol style="margin:8px 0 0 18px;padding:0;color:#94a3b8">
-            <li>Go to <a href="https://github.com/settings/tokens/new?scopes=repo,workflow&description=StemForge+Admin+Deploy" target="_blank" style="color:#4e9fff">GitHub → Settings → Personal Access Tokens</a> — create a token with <code>repo</code> + <code>workflow</code> scopes</li>
-            <li>In <a href="https://dash.cloudflare.com" target="_blank" style="color:#4e9fff">Cloudflare Pages → stemforge → Settings → Environment Variables</a> — add secret <code>GITHUB_TOKEN</code> = your token</li>
-            <li>Repeat for the <strong>stemforge-staging</strong> project too</li>
-            <li>Done — the Publish button will work immediately after the next deploy</li>
-          </ol>
-        </div>
-      </div>
-
-    </div>
-    <!-- ── /PREVIEW & PUBLISH TAB ──────────────────────────────────────────── -->
 
   </div>
 </main>
@@ -17614,19 +17475,7 @@ function adminPage(user: User) {
 .ts-pill{padding:3px 10px;border-radius:99px;border:1px solid var(--border);background:var(--bg);color:var(--muted);font-size:.75rem;font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap}
 .ts-pill:hover{border-color:var(--primary);color:var(--primary)}
 .ts-pill--active{background:var(--primary);border-color:var(--primary);color:#fff}
-/* ── Preview & Publish tab ── */
-.pp-card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 20px}
-.pp-card-header{display:flex;align-items:center;gap:8px;font-size:.92rem;font-weight:700;color:var(--text)}
-.pp-label{font-size:.78rem;color:var(--muted);display:block;margin-bottom:5px;font-weight:600;letter-spacing:.3px}
-.pp-input{width:100%;padding:8px 11px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.87rem;box-sizing:border-box;outline:none;transition:border-color .15s}
-.pp-input:focus{border-color:var(--primary)}
-.pp-toggle{position:relative;display:inline-block;width:38px;height:22px;flex-shrink:0}
-.pp-toggle input{opacity:0;width:0;height:0}
-.pp-toggle-slider{position:absolute;inset:0;background:#334155;border-radius:22px;cursor:pointer;transition:.2s}
-.pp-toggle-slider:before{content:'';position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
-.pp-toggle input:checked+.pp-toggle-slider{background:#10b981}
-.pp-toggle input:checked+.pp-toggle-slider--red{background:#ef4444}
-.pp-toggle input:checked+.pp-toggle-slider:before{transform:translateX(16px)}
+
 @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 <script src="/static/admin.v2.js?v=${ASSET_VER}"></script>
