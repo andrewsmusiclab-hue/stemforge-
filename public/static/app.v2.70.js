@@ -6752,8 +6752,7 @@ window.selectBarPreset = function(btn, bars) {
       if (data.error) throw new Error(data.error + (data.raw ? ' | API: ' + data.raw.slice(0, 200) : ''));
       var extJobId = data.job_id;
 
-      // Unlock UI once the job is submitted (job runs in background, user may close popup)
-      _extUnlockUI();
+      // Job submitted — form stays collapsed, status banner visible
 
       // Show in-popup notification: track saved in Extend tab
       if (status) {
@@ -6831,7 +6830,7 @@ window.selectBarPreset = function(btn, bars) {
 
     } catch(e) {
       if (status) { status.style.display = 'block'; var _stxtE = document.getElementById('ext-submit-status-text'); if (_stxtE) { _stxtE.textContent = 'Error: ' + (e.message || 'Unknown error'); _stxtE.style.color = '#f87171'; } }
-      _extUnlockUI();
+      _extUnlockUI(true);
     }
   };
 
@@ -10847,10 +10846,10 @@ window.renderEditInstrumentPills = function (bp) {
       }
 
       // Close the extend popup after a brief delay so user sees the confirmation
+      // Form stays collapsed — popup is closing anyway
       setTimeout(function() {
         window.closeCreatorPopup && window.closeCreatorPopup('extend');
       }, 1500);
-      _extUnlockUI2();
       if (status) { setTimeout(function() { status.style.display = 'none'; }, 1500); }
 
       // ── Drive the creator-page pipeline UI (same as a normal generation) ──
@@ -10888,7 +10887,7 @@ window.renderEditInstrumentPills = function (bp) {
 
     } catch(e) {
       if (status) { status.style.display = 'block'; var _stxtE2 = document.getElementById('ext-submit-status-text'); if (_stxtE2) { _stxtE2.textContent = 'Error: ' + (e.message || 'Unknown error'); _stxtE2.style.color = '#f87171'; } }
-      _extUnlockUI2();
+      _extUnlockUI2(true);
     }
   };
 

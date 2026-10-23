@@ -11870,7 +11870,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-180'
+const ASSET_VER = '20261022-181'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
