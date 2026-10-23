@@ -4587,6 +4587,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const genResult     = document.getElementById('gen-result');
   const genEmpty      = document.getElementById('gen-empty');
   const genError      = document.getElementById('gen-error');
+
+  // Helper: restore cube stage visibility (called whenever pipeline hides)
+  window._sfRestoreCubeStage = function() {
+    var cs = document.getElementById('sf-cube-stage');
+    if (cs) cs.style.display = '';
+    // Pause gen video to free resources
+    var gv = document.getElementById('pipeline-gen-video');
+    if (gv) { gv.pause(); gv.src = ''; }
+  };
   const genErrorMsg   = document.getElementById('gen-error-msg');
   const trackList     = document.getElementById('track-list');
   const stereoPlayer  = document.getElementById('stereo-player');
@@ -4759,6 +4768,7 @@ document.addEventListener('DOMContentLoaded', () => {
     genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
     genBtn.disabled = false;
     if (pipelineStatus) pipelineStatus.style.display = 'none';
+    if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
     if (genEmpty) genEmpty.style.display = 'none';
     if (genResult) genResult.style.display = 'none';
     if (pollInterval) clearInterval(pollInterval);
@@ -4848,6 +4858,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.cancelGeneration = function() {
     if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     if (pipelineStatus) { pipelineStatus.style.display = 'none'; }
+    if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
     if (genBtn) { genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; genBtn.disabled = false; }
     if (genEmpty) genEmpty.style.display = 'block';
     if (genResult) genResult.style.display = 'none';
@@ -5026,6 +5037,28 @@ document.addEventListener('DOMContentLoaded', () => {
     if (pipelineStatus) { pipelineStatus.style.display = 'block'; pipelineStatus.style.opacity = '1'; }
     if (bpBlueprint) bpBlueprint.style.display = 'none';
 
+    // ── Hide cube stage, pick a random gen-player video ──────────
+    const cubeStage = document.getElementById('sf-cube-stage');
+    if (cubeStage) cubeStage.style.display = 'none';
+    const GEN_PLAYER_VIDEOS = [
+      '/static/forge-beat1.mp4',
+      '/api/gen-video/1',  '/api/gen-video/2',  '/api/gen-video/3',
+      '/api/gen-video/4',  '/api/gen-video/5',  '/api/gen-video/6',
+      '/api/gen-video/7',  '/api/gen-video/8',  '/api/gen-video/9',
+      '/api/gen-video/10',
+    ];
+    // Shuffle: pick one at random, but not the same as last time
+    var _lastGenVideo = window._lastGenVideo || null;
+    var _pool = GEN_PLAYER_VIDEOS.filter(function(v) { return v !== _lastGenVideo; });
+    var _picked = _pool[Math.floor(Math.random() * _pool.length)];
+    window._lastGenVideo = _picked;
+    var genVid = document.getElementById('pipeline-gen-video');
+    if (genVid) {
+      genVid.src = _picked;
+      genVid.load();
+      genVid.play().catch(function() {});
+    }
+
     // ── Reset pipeline cards to spinner state ─────────────────
     window._pipelineAudioUrl = [null, null, null];
     [1, 2].forEach(n => {
@@ -5093,6 +5126,7 @@ document.addEventListener('DOMContentLoaded', () => {
           genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
           genBtn.disabled = false;
           if (pipelineStatus) pipelineStatus.style.display = 'none';
+          if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
           const loginMsg = document.createElement('div');
           loginMsg.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-top:16px;text-align:center';
           loginMsg.innerHTML = `<i class="fas fa-user-lock" style="font-size:1.5rem;color:var(--accent);margin-bottom:10px;display:block"></i>
@@ -5109,6 +5143,7 @@ document.addEventListener('DOMContentLoaded', () => {
           genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
           genBtn.disabled = false;
           if (pipelineStatus) pipelineStatus.style.display = 'none';
+          if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
           const limitMsg = document.createElement('div');
           limitMsg.style.cssText = 'background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin-top:16px;text-align:center';
           limitMsg.innerHTML = `<i class="fas fa-lock" style="font-size:1.5rem;color:var(--accent);margin-bottom:10px;display:block"></i>
@@ -5610,6 +5645,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 (cleanMsg || 'Our generation server is at capacity right now.') +
                 ' <button onclick="cancelGeneration()" style="margin-left:10px;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.4);color:#fcd34d;padding:4px 14px;border-radius:6px;cursor:pointer;font-size:.82rem;font-weight:600">Try Again</button>';
               if (pipelineStatus) pipelineStatus.style.display = 'none';
+              if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
               genBtn.innerHTML = '<i class="fas fa-music"></i> Create';
               genBtn.disabled = false;
               if (pollInterval) clearInterval(pollInterval);
@@ -10588,6 +10624,7 @@ window.renderEditInstrumentPills = function (bp) {
       if (attempts++ >= maxAttempts) {
         // Timeout — reset creator UI
         if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
+        if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
         if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
         return;
       }
@@ -10620,6 +10657,7 @@ window.renderEditInstrumentPills = function (bp) {
               setTimeout(function() {
                 ui.pipelineStatus.style.display = 'none';
                 ui.pipelineStatus.style.opacity = '1';
+                if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
               }, 400);
             }
             if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
@@ -10656,6 +10694,7 @@ window.renderEditInstrumentPills = function (bp) {
 
           } else if (job.status === 'error') {
             if (ui.pipelineStatus) ui.pipelineStatus.style.display = 'none';
+            if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
             if (ui.genBtn) { ui.genBtn.disabled = false; ui.genBtn.innerHTML = '<i class="fas fa-music"></i> Create'; }
             // Show error toast
             var toast = document.createElement('div');
@@ -11670,6 +11709,7 @@ function showProUpgradeModal(featureName) {
       pipelineEl.style.display = 'none';
       pipelineEl.style.opacity = '';
       pipelineEl.style.transition = '';
+      if (window._sfRestoreCubeStage) window._sfRestoreCubeStage();
       // Reset cards for next generation
       [1, 2].forEach(function(n) {
         var card = document.getElementById('pipeline-card-' + n);

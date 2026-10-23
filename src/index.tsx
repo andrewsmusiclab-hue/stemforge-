@@ -4337,6 +4337,56 @@ app.get('/api/broadcast-asset/*', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  GET /api/gen-video/:n
+//  Serve gen-player-N.mp4 from R2 with range-request support for smooth video streaming.
+//  Auth: none (files are generic animation clips, not user data).
+//  n must be 1–10.
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/gen-video/:n', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const n = parseInt(c.req.param('n'), 10)
+  if (!n || n < 1 || n > 10) return c.json({ error: 'Not found' }, 404)
+
+  const key = `gen-player-${n}.mp4`
+  const rangeHeader = c.req.header('range')
+
+  if (rangeHeader) {
+    // Range request — browser video seeks need this
+    const obj = await c.env.IMAGES.get(key)
+    if (!obj) return c.json({ error: 'Not found' }, 404)
+    const full = await obj.arrayBuffer()
+    const total = full.byteLength
+    const [, rangeVal] = rangeHeader.split('=')
+    const [startStr, endStr] = rangeVal.split('-')
+    const start = parseInt(startStr, 10)
+    const end   = endStr ? parseInt(endStr, 10) : total - 1
+    const chunk = full.slice(start, end + 1)
+    return new Response(chunk, {
+      status: 206,
+      headers: {
+        'Content-Type': 'video/mp4',
+        'Content-Range': `bytes ${start}-${end}/${total}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': String(chunk.byteLength),
+        'Cache-Control': 'public, max-age=86400',
+      },
+    })
+  }
+
+  // Full request
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Not found' }, 404)
+  const data = await obj.arrayBuffer()
+  return new Response(data, {
+    headers: {
+      'Content-Type': 'video/mp4',
+      'Accept-Ranges': 'bytes',
+      'Content-Length': String(data.byteLength),
+      'Cache-Control': 'public, max-age=86400',
+    },
+  })
+})
+
 //  GET /api/cover-art/:jobId
 //  Serve the cover JPEG directly from R2 with long-lived cache headers.
 //  This avoids needing a public R2 bucket — the worker proxies the bytes.
@@ -13661,7 +13711,8 @@ function generatorPage() {
         <div class="project-card pipeline-gen-card" id="pipeline-card-1">
           <!-- Art / Video section (top half) -->
           <div class="project-card__art pipeline-gen-card__art">
-            <video class="pipeline-gen-video" src="/static/forge-beat1.mp4" autoplay muted loop playsinline></video>
+            <!-- src set to "" — JS picks a random clip from GEN_PLAYER_VIDEOS on each generation -->
+            <video class="pipeline-gen-video" id="pipeline-gen-video" src="" autoplay muted loop playsinline preload="auto"></video>
             <!-- Spinner overlay (shown during generation, display:flex by default) -->
             <div class="pipeline-gen-card__spinner-overlay" id="pipeline-card-1-overlay" style="display:flex">
               <div class="pipeline-spinner"></div>
