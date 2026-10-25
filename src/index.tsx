@@ -12344,7 +12344,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-203'
+const ASSET_VER = '20261022-204'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12749,6 +12749,20 @@ function globalSidebar() {
       </div>
       <div class="gs-credits__bonus-val" id="gs-bonus-val">0 <small>bonus</small></div>
     </div>
+    <!-- Get Points button -->
+    <a href="/shop" style="
+      display:flex;align-items:center;justify-content:center;gap:7px;
+      margin-top:10px;padding:9px 12px;border-radius:10px;
+      background:linear-gradient(135deg,#7c3aed,#6d28d9);
+      color:#fff;font-size:.82rem;font-weight:700;
+      text-decoration:none;letter-spacing:.2px;
+      box-shadow:0 2px 12px rgba(124,58,237,.35);
+      transition:opacity .15s;
+    " onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+      <i class="fas fa-coins" style="font-size:.85rem"></i>
+      <span class="nav-label-full">Get Points</span>
+      <span class="nav-label-short">Points</span>
+    </a>
   </div>
 
   <!-- Bottom links -->
