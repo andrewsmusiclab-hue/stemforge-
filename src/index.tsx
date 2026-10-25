@@ -982,10 +982,10 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   // Each item is the COMBINED cube + hammer together as one set
   const shopItems = [
     { id: 'set_stemforge', type: 'cube_hammer', name: 'StemForge Cube & Hammer', description: 'The original StemForge set. Steel chrome cube with forge-fire glow and matching hammer. Every creator starts here — yours forever, free.',                        price_cents: 0,   rarity: 'standard', sort_order: 1, preview_colors: JSON.stringify({ primary: '#00e5ff',  secondary: '#ff8c20', cubeBody: '#070e1c', edgeGlow: '#00e5ff',  accent: '#ff8c20' }) },
-    { id: 'set_inferno',   type: 'cube_hammer', name: 'Inferno Cube & Hammer',   description: 'Volcanic obsidian cube with ember-cracked edges and a scorched iron hammer. For producers who forge in the dark.',                                           price_cents: 199, rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ primary: '#ff4400',  secondary: '#ff6600', cubeBody: '#0a0404', edgeGlow: '#ff2200',  accent: '#ff6600' }) },
-    { id: 'set_neon',      type: 'cube_hammer', name: 'Neon Cube & Hammer',      description: 'Frosted glass cube with electric cyan pulse lines and a neon-lit chrome hammer. Invisible in daylight. Unstoppable at night.',                                price_cents: 199, rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ primary: '#00ffff',  secondary: '#0088ff', cubeBody: '#020d18', edgeGlow: '#00ffff',  accent: '#0088ff' }) },
-    { id: 'set_gold',      type: 'cube_hammer', name: 'Gold Cube & Hammer',      description: '24k brushed gold cube with warm amber glow and a gilded hammer. Luxury aesthetics for the chart-topping producer.',                                           price_cents: 199, rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ primary: '#ffd700',  secondary: '#ff8800', cubeBody: '#1a1000', edgeGlow: '#ffd700',  accent: '#ff8800' }) },
-    { id: 'set_diamond',   type: 'cube_hammer', name: 'Diamond Cube & Hammer',   description: 'Crimson diamond-faceted cube with a crystal hammer dripping in red. A rare collector set — only the sharpest producers carry this.',                        price_cents: 199, rarity: 'standard', sort_order: 5, preview_colors: JSON.stringify({ primary: '#ff0055',  secondary: '#ff4488', cubeBody: '#1a0008', edgeGlow: '#ff0055',  accent: '#ff4488' }) },
+    { id: 'set_inferno',   type: 'cube_hammer', name: 'Inferno Cube & Hammer',   description: 'Volcanic obsidian cube with ember-cracked edges and a scorched iron hammer. For producers who forge in the dark.',                                           price_cents: 0, rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ primary: '#ff4400',  secondary: '#ff6600', cubeBody: '#0a0404', edgeGlow: '#ff2200',  accent: '#ff6600' }) },
+    { id: 'set_neon',      type: 'cube_hammer', name: 'Neon Cube & Hammer',      description: 'Frosted glass cube with electric cyan pulse lines and a neon-lit chrome hammer. Invisible in daylight. Unstoppable at night.',                                price_cents: 0, rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ primary: '#00ffff',  secondary: '#0088ff', cubeBody: '#020d18', edgeGlow: '#00ffff',  accent: '#0088ff' }) },
+    { id: 'set_gold',      type: 'cube_hammer', name: 'Gold Cube & Hammer',      description: '24k brushed gold cube with warm amber glow and a gilded hammer. Luxury aesthetics for the chart-topping producer.',                                           price_cents: 0, rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ primary: '#ffd700',  secondary: '#ff8800', cubeBody: '#1a1000', edgeGlow: '#ffd700',  accent: '#ff8800' }) },
+    { id: 'set_diamond',   type: 'cube_hammer', name: 'Diamond Cube & Hammer',   description: 'Crimson diamond-faceted cube with a crystal hammer dripping in red. A rare collector set -- only the sharpest producers carry this.',                        price_cents: 0, rarity: 'standard', sort_order: 5, preview_colors: JSON.stringify({ primary: '#ff0055',  secondary: '#ff4488', cubeBody: '#1a0008', edgeGlow: '#ff0055',  accent: '#ff4488' }) },
   ]
   for (const item of shopItems) {
     await db.prepare(`INSERT OR IGNORE INTO shop_items (id, type, name, description, price_cents, rarity, max_supply, sort_order, preview_colors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -5740,8 +5740,8 @@ ${globalSidebar()}
     grid.innerHTML = items.map(function(item, idx){
       var colors = {};
       try { colors = JSON.parse(item.preview_colors||'{}'); } catch(e){}
-      var isFree   = item.price_cents === 0;
-      var isOwned  = isFree || !!ownedIds[item.id];
+      var isFree   = true;
+      var isOwned  = true;
       var isActive = item.id === activeSetId;
       var bgFrom   = colors.cubeBody || '#070e1c';
       var badgeHtml = isActive
@@ -6422,12 +6422,17 @@ app.post('/api/shop/equip/:itemId', async (c) => {
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
   const itemId = c.req.param('itemId')
+  const item = await c.env.DB.prepare(`SELECT id, type, price_cents FROM shop_items WHERE id = ?`).bind(itemId).first<any>()
+  if (!item) return c.json({ error: 'Item not found' }, 404)
   const owned = await c.env.DB.prepare(
     `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = ?`
   ).bind(user.id, itemId).first<any>()
-  if (!owned) return c.json({ error: 'Item not owned' }, 403)
-  const item = await c.env.DB.prepare(`SELECT type FROM shop_items WHERE id = ?`).bind(itemId).first<any>()
-  if (!item) return c.json({ error: 'Item not found' }, 404)
+  if (!owned) {
+    const autoId = `auto_${user.id}_${itemId}`
+    await c.env.DB.prepare(
+      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, ?, 0, 0)`
+    ).bind(autoId, user.id, itemId).run()
+  }
   if (item.type === 'cube' || item.type === 'cube_hammer') {
     await c.env.DB.prepare(`UPDATE users SET active_cube_id = ?, active_set_id = ? WHERE id = ?`).bind(itemId, itemId, user.id).run()
   }
@@ -12324,7 +12329,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-193'
+const ASSET_VER = '20261022-194'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
