@@ -5453,38 +5453,48 @@ ${globalSidebar()}
     el.className = 'sf-toast ' + (type||'info');
     el.innerHTML = '<i class="fas fa-'+(type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle')+'"></i> ' + msg;
     el.style.display = 'flex';
-    clearTimeout(el._timer);
-    el._timer = setTimeout(function(){ el.style.display='none'; }, dur||4000);
+    clearTimeout(el._sfTimer);
+    el._sfTimer = setTimeout(function(){ el.style.display='none'; }, dur||4000);
   }
 
-  // ── Colour helpers ─────────────────────────────────────────────────────────
-  function cubeHammerHtml(colors) {
-    var c = colors || {};
-    var body  = c.cubeBody || '#070e1c';
-    var edge  = c.primary  || '#00e5ff';
-    var acc   = c.secondary|| '#ff8c20';
-    var s = '';
-    // Cube (CSS 3D)
-    s += '<div style="perspective:180px;width:58px;height:58px;position:absolute;left:8px;bottom:8px">';
-    s += '<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:sfCubeFloat 4s ease-in-out infinite">';
+  // ── Cube + Hammer preview (pure CSS/SVG, no broken gradient refs) ──────────
+  function cubeHammerHtml(colors, idx) {
+    var c    = colors || {};
+    var body = c.cubeBody  || '#070e1c';
+    var edge = c.primary   || '#00e5ff';
+    var acc  = c.secondary || '#ff8c20';
+    var uid  = 'sf' + (idx||0);   // unique per card — avoids SVG gradient ID collisions
     var faces = ['translateZ(29px)','rotateY(180deg) translateZ(29px)','rotateY(-90deg) translateZ(29px)','rotateY(90deg) translateZ(29px)','rotateX(90deg) translateZ(29px)','rotateX(-90deg) translateZ(29px)'];
-    faces.forEach(function(t){
-      s += '<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t+';box-shadow:inset 0 0 8px rgba(0,0,0,.35),0 0 6px '+edge+'55"></div>';
-    });
-    s += '</div></div>';
-    // Hammer (SVG on top of cube)
-    s += '<div style="position:absolute;right:4px;top:6px;animation:sfHammerSwing 3s ease-in-out infinite;transform-origin:bottom right">';
-    s += '<svg width="40" height="44" viewBox="0 0 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">';
-    // Handle
-    s += '<rect x="19" y="18" width="5" height="24" rx="2" fill="'+acc+'"/>';
-    // Head
-    s += '<rect x="6" y="6" width="28" height="16" rx="4" fill="'+edge+'"/>';
-    s += '<rect x="6" y="6" width="28" height="16" rx="4" fill="url(#hg'+edge.replace('#','')+')"/>';
-    s += '<defs><linearGradient id="hg'+edge.replace('#','')+'" x1="6" y1="6" x2="34" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="'+edge+'" stop-opacity="1"/><stop offset="1" stop-color="'+body+'" stop-opacity=".6"/></linearGradient></defs>';
-    s += '<rect x="14" y="6" width="12" height="16" rx="2" fill="'+acc+'" opacity=".55"/>';
-    s += '</svg>';
-    s += '</div>';
-    return s;
+    var faceHtml = faces.map(function(t){
+      return '<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t+';box-shadow:inset 0 0 10px rgba(0,0,0,.4),0 0 8px '+edge+'44"></div>';
+    }).join('');
+    return '<div style="position:relative;width:90px;height:90px">'
+      // Cube
+      + '<div style="perspective:180px;width:58px;height:58px;position:absolute;left:4px;bottom:4px">'
+      +   '<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:sfCubeFloat 4s ease-in-out infinite">'
+      +     faceHtml
+      +   '</div>'
+      + '</div>'
+      // Hammer
+      + '<div style="position:absolute;right:0;top:4px;animation:sfHammerSwing 3s ease-in-out infinite;transform-origin:80% 90%">'
+      +   '<svg width="42" height="46" viewBox="0 0 42 46" fill="none" xmlns="http://www.w3.org/2000/svg">'
+      // defs FIRST — gradient must be declared before use
+      +     '<defs>'
+      +       '<linearGradient id="'+uid+'h" x1="0" y1="0" x2="1" y2="1">'
+      +         '<stop stop-color="'+edge+'"/>'
+      +         '<stop offset="1" stop-color="'+acc+'" stop-opacity=".7"/>'
+      +       '</linearGradient>'
+      +     '</defs>'
+      // Handle
+      +     '<rect x="18" y="20" width="6" height="24" rx="3" fill="'+acc+'"/>'
+      // Head — single solid fill (no url() ref needed, gradient as fill attr works everywhere)
+      +     '<rect x="4" y="4" width="34" height="18" rx="5" fill="url(#'+uid+'h)"/>'
+      +     '<rect x="4" y="4" width="34" height="18" rx="5" fill="'+edge+'" opacity=".15"/>'
+      // Face plate
+      +     '<rect x="14" y="4" width="14" height="18" rx="3" fill="'+acc+'" opacity=".4"/>'
+      +   '</svg>'
+      + '</div>'
+      + '</div>';
   }
 
   // ── Render grid ────────────────────────────────────────────────────────────
@@ -5496,33 +5506,33 @@ ${globalSidebar()}
       grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-store"></i><p>No items available.</p></div>';
       return;
     }
-    grid.innerHTML = items.map(function(item){
+    grid.innerHTML = items.map(function(item, idx){
       var colors = {};
       try { colors = JSON.parse(item.preview_colors||'{}'); } catch(e){}
-      var isFree  = item.price_cents === 0;
-      var isOwned = !!ownedIds[item.id];
+      var isFree   = item.price_cents === 0;
+      var isOwned  = isFree || !!ownedIds[item.id];  // free items always "owned"
       var isActive = item.id === activeSetId;
-      var priceLabel = isFree ? 'Free' : '$' + (item.price_cents/100).toFixed(2);
-      var bgFrom = colors.cubeBody || '#070e1c';
-      var bgTo   = '#050a14';
-      var badgeHtml = isFree
-        ? '<span class="sf-item__badge sf-item__badge--free">Free</span>'
-        : isOwned
-          ? '<span class="sf-item__badge sf-item__badge--owned"><i class="fas fa-check" style="margin-right:3px"></i>Owned</span>'
-          : '<span class="sf-item__badge sf-item__badge--locked"><i class="fas fa-lock" style="margin-right:3px"></i>$'+( item.price_cents/100).toFixed(2)+'</span>';
+      var bgFrom   = colors.cubeBody || '#070e1c';
+      // Badge
+      var badgeHtml = isActive
+        ? '<span class="sf-item__badge sf-item__badge--owned"><i class="fas fa-check" style="margin-right:3px"></i>Equipped</span>'
+        : isFree
+          ? '<span class="sf-item__badge sf-item__badge--free">Free</span>'
+          : isOwned
+            ? '<span class="sf-item__badge sf-item__badge--owned"><i class="fas fa-check" style="margin-right:3px"></i>Owned</span>'
+            : '<span class="sf-item__badge sf-item__badge--locked"><i class="fas fa-lock" style="margin-right:3px"></i>$'+(item.price_cents/100).toFixed(2)+'</span>';
+      // Button
       var btnHtml;
-      if (isOwned && isActive) {
+      if (isActive) {
         btnHtml = '<button class="sf-item__btn sf-item__btn--owned" disabled><i class="fas fa-check"></i> Equipped</button>';
       } else if (isOwned) {
         btnHtml = '<button class="sf-item__btn sf-item__btn--equip" onclick="window.sfEquip(\''+item.id+'\',this)"><i class="fas fa-wand-magic-sparkles"></i> Equip</button>';
-      } else if (isFree) {
-        btnHtml = '<button class="sf-item__btn sf-item__btn--free" onclick="window.sfClaim(\''+item.id+'\',this)"><i class="fas fa-gift"></i> Claim Free</button>';
       } else {
-        btnHtml = '<button class="sf-item__btn sf-item__btn--buy" onclick="window.sfBuy(\''+item.id+'\',this)"><i class="fas fa-shopping-cart"></i> Buy — $'+(item.price_cents/100).toFixed(2)+'</button>';
+        btnHtml = '<button class="sf-item__btn sf-item__btn--buy" onclick="window.sfBuy(\''+item.id+'\',this)"><i class="fas fa-shopping-cart"></i> Buy &mdash; $'+(item.price_cents/100).toFixed(2)+'</button>';
       }
       return '<div class="sf-item'+(isOwned?' owned':'')+'" id="sf-card-'+item.id+'">'
-        + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+','+bgTo+')">'
-        +   cubeHammerHtml(colors)
+        + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);display:flex;align-items:center;justify-content:center">'
+        +   cubeHammerHtml(colors, idx)
         +   badgeHtml
         + '</div>'
         + '<div class="sf-item__body">'
@@ -5535,37 +5545,27 @@ ${globalSidebar()}
     }).join('');
   }
 
-  // ── API calls ──────────────────────────────────────────────────────────────
+  // ── Load shop ──────────────────────────────────────────────────────────────
   function loadShop() {
     Promise.all([
       fetch('/api/shop/items').then(function(r){ return r.json(); }),
       fetch('/api/shop/collection').then(function(r){ return r.json(); })
     ]).then(function(res){
       var itemsData = res[0]; var collData = res[1];
-      renderGrid(itemsData.items||[], collData.owned||[], collData.active_set_id||'set_stemforge');
-      // Show post-purchase toast
+      var activeSet = collData.active_set_id || collData.active_cube_id || 'set_stemforge';
+      renderGrid(itemsData.items||[], collData.owned||[], activeSet);
       if (PURCHASE_STATUS === 'success' && PURCHASED_ITEM) {
         var found = (itemsData.items||[]).find(function(i){ return i.id===PURCHASED_ITEM; });
-        toast((found ? found.name : 'Item') + ' unlocked! Head to My Collection to equip it.', 'success', 5000);
+        toast((found ? found.name : 'Item') + ' unlocked! You can now equip it below.', 'success', 5000);
       } else if (PURCHASE_STATUS === 'cancel') {
         toast('Purchase cancelled — no charge was made.', 'info', 4000);
       }
-    }).catch(function(){
-      document.getElementById('sf-shop-grid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-exclamation-triangle"></i><p>Failed to load shop. <button onclick="loadShop()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-weight:700">Retry</button></p></div>';
+    }).catch(function(err){
+      console.error('Shop load error:', err);
+      document.getElementById('sf-shop-grid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-exclamation-triangle"></i><p style="margin:12px 0">Failed to load shop.</p><button onclick="loadShop()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-weight:700;font-size:.9rem">Retry</button></div>';
     });
   }
   loadShop();
-
-  // ── Claim free item ────────────────────────────────────────────────────────
-  window.sfClaim = function(itemId, btn) {
-    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Claiming…';
-    fetch('/api/shop/purchase/'+itemId, {method:'POST'})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        if (d.ok) { toast('Claimed! Head to My Collection to equip it.','success'); setTimeout(function(){ loadShop(); },600); }
-        else { btn.disabled=false; btn.innerHTML='<i class="fas fa-gift"></i> Claim Free'; toast(d.error||'Error','error'); }
-      }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-gift"></i> Claim Free'; toast('Network error — please try again.','error'); });
-  };
 
   // ── Buy paid item via Stripe ───────────────────────────────────────────────
   window.sfBuy = function(itemId, btn) {
@@ -5574,7 +5574,7 @@ ${globalSidebar()}
       .then(function(r){ return r.json(); })
       .then(function(d){
         if (d.checkout_url) { window.location.href = d.checkout_url; }
-        else if (d.error === 'Already owned') { toast('You already own this item!','info'); setTimeout(function(){ loadShop(); },400); }
+        else if (d.error === 'Already owned') { toast('You already own this item!','info'); setTimeout(function(){ loadShop(); },300); }
         else { btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast(d.error||'Unable to start checkout.','error'); }
       }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast('Network error — please try again.','error'); });
   };
@@ -5585,7 +5585,7 @@ ${globalSidebar()}
     fetch('/api/shop/equip/'+itemId, {method:'POST'})
       .then(function(r){ return r.json(); })
       .then(function(d){
-        if (d.ok) { toast('Set equipped! Head to Create to see it.','success',4000); setTimeout(function(){ loadShop(); },400); }
+        if (d.ok) { toast('Set equipped! Head to Create to see it.','success',4000); setTimeout(function(){ loadShop(); },300); }
         else { btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Equip'; toast(d.error||'Error','error'); }
       }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Equip'; toast('Network error.','error'); });
   };
@@ -5649,28 +5649,29 @@ ${globalSidebar()}
 </style>
 <script>
 (function(){
-  function chPreviewHtml(colors){
+  function chPreviewHtml(colors, idx){
     var c=colors||{};
     var body=c.cubeBody||'#070e1c';
     var edge=c.primary||c.edgeGlow||'#00e5ff';
     var acc=c.secondary||c.accent||'#ff8c20';
-    var s='<div style="position:relative;width:90px;height:90px;margin:auto">';
-    // Cube
-    s+='<div style="perspective:160px;width:58px;height:58px;position:absolute;left:6px;bottom:6px">';
-    s+='<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:collCubeFloat 4s ease-in-out infinite">';
-    [['translateZ(29px)'],['rotateY(180deg) translateZ(29px)'],['rotateY(-90deg) translateZ(29px)'],['rotateY(90deg) translateZ(29px)'],['rotateX(90deg) translateZ(29px)'],['rotateX(-90deg) translateZ(29px)']].forEach(function(t){
-      s+='<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t[0]+';box-shadow:inset 0 0 8px rgba(0,0,0,.35),0 0 5px '+edge+'44"></div>';
-    });
-    s+='</div></div>';
-    // Hammer
-    s+='<div style="position:absolute;right:2px;top:4px;animation:collHammerSwing 3s ease-in-out infinite;transform-origin:bottom right">';
-    s+='<svg width="40" height="44" viewBox="0 0 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">';
-    s+='<rect x="19" y="18" width="5" height="24" rx="2" fill="'+acc+'"/>';
-    s+='<rect x="6" y="6" width="28" height="16" rx="4" fill="'+edge+'" opacity=".9"/>';
-    s+='<rect x="14" y="6" width="12" height="16" rx="2" fill="'+acc+'" opacity=".55"/>';
-    s+='</svg></div>';
-    s+='</div>';
-    return s;
+    var uid='cl'+(idx||0);
+    var faces=['translateZ(29px)','rotateY(180deg) translateZ(29px)','rotateY(-90deg) translateZ(29px)','rotateY(90deg) translateZ(29px)','rotateX(90deg) translateZ(29px)','rotateX(-90deg) translateZ(29px)'];
+    var faceHtml=faces.map(function(t){
+      return '<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t+';box-shadow:inset 0 0 10px rgba(0,0,0,.4),0 0 8px '+edge+'44"></div>';
+    }).join('');
+    return '<div style="position:relative;width:90px;height:90px;margin:auto">'
+      +'<div style="perspective:160px;width:58px;height:58px;position:absolute;left:4px;bottom:4px">'
+      +'<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:collCubeFloat 4s ease-in-out infinite">'
+      +faceHtml+'</div></div>'
+      +'<div style="position:absolute;right:0;top:4px;animation:collHammerSwing 3s ease-in-out infinite;transform-origin:80% 90%">'
+      +'<svg width="42" height="46" viewBox="0 0 42 46" fill="none" xmlns="http://www.w3.org/2000/svg">'
+      +'<defs><linearGradient id="'+uid+'h" x1="0" y1="0" x2="1" y2="1"><stop stop-color="'+edge+'"/><stop offset="1" stop-color="'+acc+'" stop-opacity=".7"/></linearGradient></defs>'
+      +'<rect x="18" y="20" width="6" height="24" rx="3" fill="'+acc+'"/>'
+      +'<rect x="4" y="4" width="34" height="18" rx="5" fill="url(#'+uid+'h)"/>'
+      +'<rect x="4" y="4" width="34" height="18" rx="5" fill="'+edge+'" opacity=".15"/>'
+      +'<rect x="14" y="4" width="14" height="18" rx="3" fill="'+acc+'" opacity=".4"/>'
+      +'</svg></div>'
+      +'</div>';
   }
 
   Promise.all([
@@ -5691,14 +5692,14 @@ ${globalSidebar()}
     if(sets.length){
       html+='<div class="coll-section-title"><i class="fas fa-cube"></i> Cube &amp; Hammer Sets ('+sets.length+')</div>';
       html+='<div class="coll-grid" id="coll-set-grid">';
-      sets.forEach(function(o){
+      sets.forEach(function(o, idx){
         var it=itemMap[o.item_id]||{name:o.name||o.item_id,preview_colors:'{}',rarity:'standard'};
         var colors={};try{colors=JSON.parse(it.preview_colors||'{}');}catch(e){}
         var isEquipped=o.item_id===activeSet;
         var date=o.purchased_at?new Date(o.purchased_at).toLocaleDateString():'';
         var bgFrom=colors.cubeBody||'#070e1c';
         html+='<div class="coll-card'+(isEquipped?' equipped':'')+'" id="coll-card-'+o.item_id+'">';
-        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14)">'+chPreviewHtml(colors)+'</div>';
+        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);display:flex;align-items:center;justify-content:center">'+chPreviewHtml(colors,idx)+'</div>';
         html+='<div class="coll-body">';
         html+='<div class="coll-name">'+it.name+(isEquipped?' <i class="fas fa-check" style="color:#a78bfa;font-size:.75rem"></i>':'')+'</div>';
         if(date) html+='<div class="coll-date">Owned since '+date+'</div>';
@@ -12092,7 +12093,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-187'
+const ASSET_VER = '20261022-188'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
