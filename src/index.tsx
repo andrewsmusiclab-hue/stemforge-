@@ -12344,7 +12344,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-202'
+const ASSET_VER = '20261022-203'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -16915,7 +16915,12 @@ function adminPage(user: User) {
         <h1 style="display:flex;align-items:center;gap:10px"><i class="fas fa-shield-alt" style="color:#a78bfa"></i> Admin Panel</h1>
         <p style="color:var(--muted)">Logged in as ${user.email}</p>
       </div>
-      <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <a href="/shop" class="btn btn--sm" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;border:none;display:inline-flex;align-items:center;gap:7px;font-weight:700">
+          <i class="fas fa-store"></i> Manage Shop
+        </a>
+        <a href="/dashboard" class="btn btn--outline btn--sm"><i class="fas fa-arrow-left"></i> Back to Dashboard</a>
+      </div>
     </div>
 
     <!-- Diagnostic strip — always visible, shows live API test results -->
