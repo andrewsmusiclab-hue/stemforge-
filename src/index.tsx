@@ -12344,7 +12344,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-201'
+const ASSET_VER = '20261022-202'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12591,10 +12591,10 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="display:none!important">
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" data-page="shop" style="display:none!important">
       <i class="fas fa-store"></i><span class="nav-label-full">Shop</span><span class="nav-label-short">Shop</span>
     </a>
-    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none!important">
+    <a href="/collection" class="gs-sidebar__nav-item" data-page="collection" style="display:none!important">
       <i class="fas fa-gem"></i><span class="nav-label-full">My Collection</span><span class="nav-label-short">Collection</span>
     </a>
 
