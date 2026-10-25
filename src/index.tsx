@@ -4360,17 +4360,31 @@ app.get('/api/cover-image/:jobId', async (c) => {
   }
 })
 
-// TEMP diagnostic — admin only
+// TEMP diagnostic — tests multiple R2 keys
 app.get('/api/r2-debug', async (c) => {
   if (!c.env.IMAGES) return c.json({ error: 'no IMAGES binding' })
-  const key = 'skins/set_stone.glb'
-  try {
-    const obj = await c.env.IMAGES.get(key)
-    if (!obj) return c.json({ found: false, key, tried: key })
-    return c.json({ found: true, key, size: obj.size, etag: obj.etag, httpMetadata: obj.httpMetadata })
-  } catch(e: any) {
-    return c.json({ error: e?.message, key })
+  const keysToTest = [
+    'skins/set_stone.glb',
+    'skins/set_stone.GLB',
+    'set_stone.glb',
+  ]
+  const results: any = {}
+  for (const key of keysToTest) {
+    try {
+      const obj = await c.env.IMAGES.get(key)
+      results[key] = obj ? { found: true, size: obj.size } : { found: false }
+    } catch(e: any) {
+      results[key] = { error: e?.message }
+    }
   }
+  // Also try listing via head on a known working key
+  try {
+    const list = await (c.env.IMAGES as any).list({ prefix: 'skins/', limit: 10 })
+    results['__list_skins'] = list?.objects?.map((o: any) => o.key) || []
+  } catch(e: any) {
+    results['__list_error'] = e?.message
+  }
+  return c.json(results)
 })
 
 // ═══════════════════════════════════════════════════════════════
@@ -12510,7 +12524,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-209'
+const ASSET_VER = '20261022-210'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
