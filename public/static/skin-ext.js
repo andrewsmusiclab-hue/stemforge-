@@ -1,4 +1,4 @@
-/* StemForge skin-ext.js v5
+/* StemForge skin-ext.js v6
    Each set_* skin has its OWN complete cube + hammer builder.
    Loaded BEFORE app.v2.70.js.
    Strategy: wrap _sfInitCube — for set_* skins, skip the original cube builder
@@ -339,7 +339,9 @@
     var strip = new T.Mesh(new T.BoxGeometry(0.008, HH * 0.9, 0.005), stripMat);
     strip.position.set(-HW / 2 - 0.004, 0, 0); hammerG.add(strip);
     /* Collar */
-    hammerG.add(Object.assign(new T.Mesh(new T.CylinderGeometry(0.055, 0.05, 0.10, 20), chromeMat), { position: new T.Vector3(0, HH/2 + 0.05, 0) }));
+    var neonColl = new T.Mesh(new T.CylinderGeometry(0.055, 0.05, 0.10, 20), chromeMat);
+    neonColl.position.set(0, HH/2 + 0.05, 0);
+    hammerG.add(neonColl);
 
     /* Dark metal handle — no leather, with cyan neon seam strip */
     var HANG = 35 * Math.PI / 180;
@@ -358,9 +360,10 @@
     }
     /* Pommel — dark with cyan face */
     var pomPos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen + 0.035));
-    hammerG.add(Object.assign(new T.Mesh(new T.CylinderGeometry(0.038, 0.044, 0.055, 20), chromeMat), { position: pomPos.clone(), rotation: new T.Euler(0,0,-HANG) }));
-    hammerG.children[hammerG.children.length-1].rotation.z = -HANG;
-    hammerG.children[hammerG.children.length-1].position.copy(pomPos);
+    var neonPommel = new T.Mesh(new T.CylinderGeometry(0.038, 0.044, 0.055, 20), chromeMat);
+    neonPommel.rotation.z = -HANG;
+    neonPommel.position.copy(pomPos);
+    hammerG.add(neonPommel);
 
     hammerG.position.set(0.04, SIZE/2 + HH/2 + 0.08, 0.02);
     hammerG.rotation.set(0.14, -0.28, -0.06);
@@ -752,7 +755,9 @@
         /* Lights */
         var SKIN = PHOTO_SKIN_CONFIGS[skinId];
         scene.add(new T.AmbientLight(0xffffff, 0.25));
-        scene.add(Object.assign(new T.DirectionalLight(0xffffff, 0.8), { position: new T.Vector3(4,7,5) }));
+        var dirLight = new T.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(4, 7, 5);
+        scene.add(dirLight);
         var fill=new T.PointLight(SKIN.fillLight,SKIN.fillInt,30); fill.position.set(-4,3,4); scene.add(fill);
         var rim=new T.PointLight(SKIN.rimLight,SKIN.rimInt,22); rim.position.set(1,6,-4); scene.add(rim);
         var bot=new T.PointLight(SKIN.botLight,SKIN.botInt,14); bot.position.set(0,-5,3); scene.add(bot);
@@ -762,8 +767,14 @@
         cubeGroup.position.y = -0.3;
         scene.add(cubeGroup);
 
-        /* Call skin-specific builder */
-        builder(T, scene, cubeGroup, envMap);
+        /* Call skin-specific builder — wrapped in try/catch so errors don't silently kill the cube */
+        try {
+          builder(T, scene, cubeGroup, envMap);
+        } catch (builderErr) {
+          console.error('[skin-ext] builder error:', builderErr);
+          window._sfCubeActive = false;
+          return;
+        }
 
         /* Rotation animation loop */
         var clock = new T.Clock();
