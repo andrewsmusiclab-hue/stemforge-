@@ -6591,7 +6591,7 @@ app.post('/api/shop/equip/:itemId', async (c) => {
       `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, ?, 0, 0)`
     ).bind(autoId, user.id, itemId).run()
   }
-  if (item.type === 'cube' || item.type === 'cube_hammer') {
+  if (item.type === 'cube' || item.type === 'cube_hammer' || item.type === 'cube_set') {
     await c.env.DB.prepare(`UPDATE users SET active_cube_id = ?, active_set_id = ? WHERE id = ?`).bind(itemId, itemId, user.id).run()
   }
   return c.json({ ok: true, active_set_id: itemId, active_cube_id: itemId })
@@ -12487,7 +12487,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-206'
+const ASSET_VER = '20261022-207'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
