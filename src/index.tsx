@@ -5456,7 +5456,254 @@ ${globalSidebar()}
     el._sfTimer = setTimeout(function(){ el.style.display='none'; }, dur||4000);
   }
 
-  function cubeHammerHtml(colors, idx) {
+  function sfCubeWrap(faceHtml, hammerHtml) {
+    return '<div style="position:relative;width:90px;height:90px">'
+      + '<div style="perspective:200px;width:58px;height:58px;position:absolute;left:4px;bottom:4px">'
+      +   '<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:sfCubeFloat 4s ease-in-out infinite">'
+      +     faceHtml
+      +   '</div>'
+      + '</div>'
+      + '<div style="position:absolute;right:0;top:4px;animation:sfHammerSwing 3s ease-in-out infinite;transform-origin:80% 90%">'
+      +   hammerHtml
+      + '</div>'
+      + '</div>';
+  }
+
+  function infernoHtml(idx) {
+    var u = 'inf' + (idx||0);
+    var front = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:translateZ(29px);overflow:hidden;box-shadow:inset 0 0 14px rgba(0,0,0,.7),0 0 12px #ff220066">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(160deg,#1a0300,#0a0404)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58" preserveAspectRatio="none">'
+      + '<defs><linearGradient id="'+u+'f1" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ff4400" stop-opacity=".9"/><stop offset="1" stop-color="#ff6600" stop-opacity=".2"/></linearGradient>'
+      + '<linearGradient id="'+u+'f2" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#cc1100" stop-opacity=".8"/><stop offset="1" stop-color="#ff2200" stop-opacity=".15"/></linearGradient>'
+      + '<linearGradient id="'+u+'f3" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ff6600" stop-opacity=".7"/><stop offset="1" stop-color="#cc3300" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f4" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#881100" stop-opacity=".9"/><stop offset="1" stop-color="#ff2200" stop-opacity=".2"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="0" y="0" width="58" height="14" fill="#1a0000" opacity=".9"/>'
+      + '<rect x="0" y="14" width="58" height="14" fill="#150000" opacity=".9"/>'
+      + '<rect x="0" y="28" width="58" height="15" fill="#100000" opacity=".9"/>'
+      + '<rect x="0" y="43" width="58" height="15" fill="#0a0000" opacity=".9"/>'
+      + '<path d="M0 12 Q5 8 10 12 Q15 16 20 10 Q25 4 30 10 Q35 16 40 10 Q45 4 50 9 Q55 14 58 11 L58 14 L0 14 Z" fill="url(#'+u+'f1)"/>'
+      + '<path d="M0 24 Q6 20 12 24 Q18 28 24 21 Q30 14 36 21 Q42 28 48 22 Q54 16 58 23 L58 28 L0 28 Z" fill="url(#'+u+'f2)"/>'
+      + '<path d="M0 40 Q7 35 14 40 Q21 45 28 37 Q35 29 42 37 Q49 45 58 39 L58 43 L0 43 Z" fill="url(#'+u+'f3)"/>'
+      + '<path d="M0 54 Q8 48 16 54 Q24 60 32 51 Q40 42 50 52 Q54 57 58 53 L58 58 L0 58 Z" fill="url(#'+u+'f4)"/>'
+      + '<line x1="0" y1="14" x2="58" y2="14" stroke="#ff220033" stroke-width="0.5"/>'
+      + '<line x1="0" y1="28" x2="58" y2="28" stroke="#ff220033" stroke-width="0.5"/>'
+      + '<line x1="0" y1="43" x2="58" y2="43" stroke="#ff220033" stroke-width="0.5"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #ff2200;border-radius:6px;box-shadow:inset 0 0 6px #ff220055"></div>'
+      + '</div>';
+    var right = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(90deg) translateZ(29px);background:linear-gradient(160deg,#120200,#0a0404);border:1.5px solid #cc110066;box-shadow:inset 0 0 12px rgba(0,0,0,.8),0 0 6px #cc110044"></div>';
+    var top   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(-90deg) translateZ(29px);overflow:hidden;box-shadow:0 0 16px #ff440088">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(180deg,#3d0a00,#1a0300)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58">'
+      + '<defs><radialGradient id="'+u+'t" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ff6600" stop-opacity=".8"/><stop offset="1" stop-color="#ff2200" stop-opacity="0"/></radialGradient></defs>'
+      + '<ellipse cx="29" cy="29" rx="22" ry="22" fill="url(#'+u+'t)"/>'
+      + '<ellipse cx="29" cy="29" rx="12" ry="12" fill="#ff4400" opacity=".5"/>'
+      + '<ellipse cx="29" cy="29" rx="5" ry="5" fill="#ffaa00" opacity=".9"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #ff4400cc;border-radius:6px"></div>'
+      + '</div>';
+    var back  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(180deg) translateZ(29px);background:#080202;border:1.5px solid #661100"></div>';
+    var left  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(-90deg) translateZ(29px);background:#0a0202;border:1.5px solid #551100"></div>';
+    var bot   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(90deg) translateZ(29px);background:#060100;border:1.5px solid #440e00"></div>';
+    var hammer = '<svg width="42" height="46" viewBox="0 0 42 46" fill="none">'
+      + '<defs>'
+      + '<linearGradient id="'+u+'hd" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#2a2a2a"/><stop offset=".5" stop-color="#1a1a1a"/><stop offset="1" stop-color="#333"/></linearGradient>'
+      + '<linearGradient id="'+u+'he" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ff4400" stop-opacity=".9"/><stop offset="1" stop-color="#ff2200" stop-opacity=".3"/></linearGradient>'
+      + '<linearGradient id="'+u+'hh" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#3d1800"/><stop offset="1" stop-color="#1a0a00"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="18" y="20" width="6" height="24" rx="3" fill="url(#'+u+'hh)"/>'
+      + '<rect x="19" y="20" width="2" height="24" rx="1" fill="#ff440033" opacity=".6"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="4" fill="url(#'+u+'hd)"/>'
+      + '<rect x="4" y="4" width="34" height="4" rx="2" fill="url(#'+u+'he)" opacity=".7"/>'
+      + '<rect x="4" y="18" width="34" height="4" rx="2" fill="url(#'+u+'he)" opacity=".5"/>'
+      + '<rect x="4" y="4" width="4" height="18" rx="2" fill="#ff2200" opacity=".3"/>'
+      + '<rect x="34" y="4" width="4" height="18" rx="2" fill="#ff2200" opacity=".3"/>'
+      + '<rect x="14" y="6" width="14" height="14" rx="2" fill="#111" opacity=".5"/>'
+      + '</svg>';
+    return sfCubeWrap(front+right+top+back+left+bot, hammer);
+  }
+
+  function neonHtml(idx) {
+    var u = 'neo' + (idx||0);
+    var front = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:translateZ(29px);overflow:hidden;box-shadow:inset 0 0 14px rgba(0,0,0,.6),0 0 14px #00ffff55">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(160deg,#031820,#020d18)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58" preserveAspectRatio="none">'
+      + '<defs><linearGradient id="'+u+'f1" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#00ffff" stop-opacity=".9"/><stop offset="1" stop-color="#00eeff" stop-opacity=".15"/></linearGradient>'
+      + '<linearGradient id="'+u+'f2" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#00ccff" stop-opacity=".8"/><stop offset="1" stop-color="#0088ff" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f3" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#00eedd" stop-opacity=".7"/><stop offset="1" stop-color="#00bbcc" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f4" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#44ffff" stop-opacity=".8"/><stop offset="1" stop-color="#00ddff" stop-opacity=".1"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="0" y="0" width="58" height="14" fill="#001a1a" opacity=".9"/>'
+      + '<rect x="0" y="14" width="58" height="14" fill="#001218" opacity=".9"/>'
+      + '<rect x="0" y="28" width="58" height="15" fill="#001016" opacity=".9"/>'
+      + '<rect x="0" y="43" width="58" height="15" fill="#000e14" opacity=".9"/>'
+      + '<path d="M0 12 Q5 9 10 12 Q15 15 20 9 Q25 3 30 9 Q35 15 40 9 Q45 3 50 8 Q55 13 58 10 L58 14 L0 14 Z" fill="url(#'+u+'f1)"/>'
+      + '<path d="M0 25 Q6 21 12 25 Q18 29 24 22 Q30 15 36 22 Q42 29 48 23 Q54 17 58 24 L58 28 L0 28 Z" fill="url(#'+u+'f2)"/>'
+      + '<path d="M0 40 Q7 36 14 40 Q21 44 28 36 Q35 28 42 37 Q49 46 58 40 L58 43 L0 43 Z" fill="url(#'+u+'f3)"/>'
+      + '<path d="M0 54 Q8 49 16 54 Q24 59 32 50 Q40 41 50 51 Q54 56 58 53 L58 58 L0 58 Z" fill="url(#'+u+'f4)"/>'
+      + '<line x1="0" y1="14" x2="58" y2="14" stroke="#00ffff22" stroke-width="0.5"/>'
+      + '<line x1="0" y1="28" x2="58" y2="28" stroke="#00ffff22" stroke-width="0.5"/>'
+      + '<line x1="0" y1="43" x2="58" y2="43" stroke="#00ffff22" stroke-width="0.5"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #00ffff;border-radius:6px;box-shadow:inset 0 0 8px #00ffff44,0 0 10px #00ffff55"></div>'
+      + '</div>';
+    var right = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(90deg) translateZ(29px);background:linear-gradient(160deg,#011014,#020d18);border:1.5px solid #00aabb66;box-shadow:inset 0 0 12px rgba(0,0,0,.8)"></div>';
+    var top   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(-90deg) translateZ(29px);overflow:hidden;box-shadow:0 0 20px #00ffff99">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(180deg,#0a2a2a,#020d18)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58">'
+      + '<defs><radialGradient id="'+u+'t" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#00ffff" stop-opacity=".9"/><stop offset="1" stop-color="#0088ff" stop-opacity="0"/></radialGradient></defs>'
+      + '<ellipse cx="29" cy="29" rx="24" ry="24" fill="url(#'+u+'t)"/>'
+      + '<ellipse cx="29" cy="29" rx="14" ry="14" fill="#00ffff" opacity=".3"/>'
+      + '<ellipse cx="29" cy="29" rx="5" ry="5" fill="#ffffff" opacity=".8"/>'
+      + '<line x1="0" y1="29" x2="58" y2="29" stroke="#00ffff33" stroke-width="0.5"/>'
+      + '<line x1="29" y1="0" x2="29" y2="58" stroke="#00ffff33" stroke-width="0.5"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #00ffffaa;border-radius:6px"></div>'
+      + '</div>';
+    var back  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(180deg) translateZ(29px);background:#010a0d;border:1.5px solid #006677"></div>';
+    var left  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(-90deg) translateZ(29px);background:#010c10;border:1.5px solid #005566"></div>';
+    var bot   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(90deg) translateZ(29px);background:#010b0e;border:1.5px solid #004455"></div>';
+    var hammer = '<svg width="42" height="46" viewBox="0 0 42 46" fill="none">'
+      + '<defs>'
+      + '<linearGradient id="'+u+'hd" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#cccccc"/><stop offset=".5" stop-color="#eeeeee"/><stop offset="1" stop-color="#aaaaaa"/></linearGradient>'
+      + '<linearGradient id="'+u+'hg" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#00ffff" stop-opacity=".9"/><stop offset="1" stop-color="#0088ff" stop-opacity=".2"/></linearGradient>'
+      + '<linearGradient id="'+u+'hh" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#223344"/><stop offset="1" stop-color="#0d1a22"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="18" y="20" width="6" height="24" rx="3" fill="url(#'+u+'hh)"/>'
+      + '<rect x="19.5" y="20" width="1.5" height="24" rx="1" fill="#00ffff" opacity=".3"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="4" fill="url(#'+u+'hd)"/>'
+      + '<rect x="4" y="4" width="34" height="3" rx="2" fill="url(#'+u+'hg)" opacity=".8"/>'
+      + '<rect x="4" y="19" width="34" height="3" rx="2" fill="url(#'+u+'hg)" opacity=".6"/>'
+      + '<rect x="4" y="4" width="3" height="18" rx="1" fill="url(#'+u+'hg)" opacity=".6"/>'
+      + '<rect x="35" y="4" width="3" height="18" rx="1" fill="url(#'+u+'hg)" opacity=".6"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="4" fill="#00ffff" opacity=".07"/>'
+      + '</svg>';
+    return sfCubeWrap(front+right+top+back+left+bot, hammer);
+  }
+
+  function goldHtml(idx) {
+    var u = 'gld' + (idx||0);
+    var front = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:translateZ(29px);overflow:hidden;box-shadow:inset 0 0 14px rgba(0,0,0,.6),0 0 12px #ffd70055">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(160deg,#1a1000,#0e0a00)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58" preserveAspectRatio="none">'
+      + '<defs><linearGradient id="'+u+'f1" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ffd700" stop-opacity=".9"/><stop offset="1" stop-color="#ffaa00" stop-opacity=".15"/></linearGradient>'
+      + '<linearGradient id="'+u+'f2" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ffcc00" stop-opacity=".8"/><stop offset="1" stop-color="#ff9900" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f3" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#eebb00" stop-opacity=".75"/><stop offset="1" stop-color="#cc8800" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f4" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ffdd44" stop-opacity=".8"/><stop offset="1" stop-color="#ffaa00" stop-opacity=".1"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="0" y="0" width="58" height="14" fill="#1a0e00" opacity=".9"/>'
+      + '<rect x="0" y="14" width="58" height="14" fill="#160c00" opacity=".9"/>'
+      + '<rect x="0" y="28" width="58" height="15" fill="#120a00" opacity=".9"/>'
+      + '<rect x="0" y="43" width="58" height="15" fill="#0e0800" opacity=".9"/>'
+      + '<path d="M0 12 Q5 8 10 13 Q15 18 20 11 Q25 4 30 10 Q35 16 40 10 Q45 4 50 9 Q55 14 58 11 L58 14 L0 14 Z" fill="url(#'+u+'f1)"/>'
+      + '<path d="M0 25 Q6 20 12 25 Q18 30 24 22 Q30 14 36 22 Q42 30 48 23 Q54 16 58 24 L58 28 L0 28 Z" fill="url(#'+u+'f2)"/>'
+      + '<path d="M0 40 Q7 35 14 41 Q21 47 28 38 Q35 29 42 37 Q49 45 58 40 L58 43 L0 43 Z" fill="url(#'+u+'f3)"/>'
+      + '<path d="M0 54 Q8 48 16 54 Q24 60 32 51 Q40 42 50 52 Q54 57 58 54 L58 58 L0 58 Z" fill="url(#'+u+'f4)"/>'
+      + '<line x1="0" y1="14" x2="58" y2="14" stroke="#ffd70022" stroke-width="0.5"/>'
+      + '<line x1="0" y1="28" x2="58" y2="28" stroke="#ffd70022" stroke-width="0.5"/>'
+      + '<line x1="0" y1="43" x2="58" y2="43" stroke="#ffd70022" stroke-width="0.5"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #ffd700;border-radius:6px;box-shadow:inset 0 0 8px #ffd70033"></div>'
+      + '</div>';
+    var right = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(90deg) translateZ(29px);background:linear-gradient(160deg,#120c00,#0a0800);border:1.5px solid #cc990066;box-shadow:inset 0 0 12px rgba(0,0,0,.8)"></div>';
+    var top   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(-90deg) translateZ(29px);overflow:hidden;box-shadow:0 0 18px #ffd70088">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(180deg,#3d2800,#1a1000)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58">'
+      + '<defs><radialGradient id="'+u+'t" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ffe066" stop-opacity=".95"/><stop offset=".5" stop-color="#ffd700" stop-opacity=".5"/><stop offset="1" stop-color="#ff8800" stop-opacity="0"/></radialGradient></defs>'
+      + '<ellipse cx="29" cy="29" rx="24" ry="24" fill="url(#'+u+'t)"/>'
+      + '<polygon points="29,10 33,23 47,23 36,31 40,44 29,36 18,44 22,31 11,23 25,23" fill="#ffd700" opacity=".2"/>'
+      + '<ellipse cx="29" cy="29" rx="6" ry="6" fill="#ffe566" opacity=".9"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #ffd700cc;border-radius:6px"></div>'
+      + '</div>';
+    var back  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(180deg) translateZ(29px);background:#0c0900;border:1.5px solid #886600"></div>';
+    var left  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(-90deg) translateZ(29px);background:#0e0a00;border:1.5px solid #775500"></div>';
+    var bot   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(90deg) translateZ(29px);background:#0a0700;border:1.5px solid #664400"></div>';
+    var hammer = '<svg width="42" height="46" viewBox="0 0 42 46" fill="none">'
+      + '<defs>'
+      + '<linearGradient id="'+u+'hd" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffd700"/><stop offset=".5" stop-color="#ffcc00"/><stop offset="1" stop-color="#cc9900"/></linearGradient>'
+      + '<linearGradient id="'+u+'ht" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffe566" stop-opacity=".8"/><stop offset="1" stop-color="#ffd700" stop-opacity=".2"/></linearGradient>'
+      + '<linearGradient id="'+u+'hh" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#3d2800"/><stop offset="1" stop-color="#1a0f00"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="18" y="20" width="6" height="24" rx="3" fill="url(#'+u+'hh)"/>'
+      + '<rect x="20" y="20" width="2" height="5" rx="1" fill="#ffd700" opacity=".4"/>'
+      + '<rect x="20" y="38" width="2" height="5" rx="1" fill="#ffd700" opacity=".4"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="4" fill="url(#'+u+'hd)"/>'
+      + '<rect x="4" y="4" width="34" height="5" rx="2" fill="url(#'+u+'ht)"/>'
+      + '<rect x="14" y="5" width="14" height="16" rx="3" fill="#cc8800" opacity=".4"/>'
+      + '<rect x="14" y="5" width="14" height="16" rx="3" fill="#ffe566" opacity=".1"/>'
+      + '</svg>';
+    return sfCubeWrap(front+right+top+back+left+bot, hammer);
+  }
+
+  function diamondHtml(idx) {
+    var u = 'dia' + (idx||0);
+    var front = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:translateZ(29px);overflow:hidden;box-shadow:inset 0 0 14px rgba(0,0,0,.6),0 0 14px #ff005566">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(160deg,#1a0008,#0d0005)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58" preserveAspectRatio="none">'
+      + '<defs><linearGradient id="'+u+'f1" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ff0055" stop-opacity=".9"/><stop offset="1" stop-color="#cc0033" stop-opacity=".15"/></linearGradient>'
+      + '<linearGradient id="'+u+'f2" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ff3366" stop-opacity=".8"/><stop offset="1" stop-color="#dd0044" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f3" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ff0044" stop-opacity=".7"/><stop offset="1" stop-color="#aa0033" stop-opacity=".1"/></linearGradient>'
+      + '<linearGradient id="'+u+'f4" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#ff2255" stop-opacity=".8"/><stop offset="1" stop-color="#cc0033" stop-opacity=".1"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="0" y="0" width="58" height="14" fill="#1a0008" opacity=".9"/>'
+      + '<rect x="0" y="14" width="58" height="14" fill="#150006" opacity=".9"/>'
+      + '<rect x="0" y="28" width="58" height="15" fill="#100005" opacity=".9"/>'
+      + '<rect x="0" y="43" width="58" height="15" fill="#0c0004" opacity=".9"/>'
+      + '<path d="M0 12 Q5 8 10 12 Q15 16 20 9 Q25 2 30 9 Q35 16 40 9 Q45 2 50 8 Q55 14 58 10 L58 14 L0 14 Z" fill="url(#'+u+'f1)"/>'
+      + '<path d="M0 25 Q6 21 12 25 Q18 29 24 21 Q30 13 36 21 Q42 29 48 22 Q54 15 58 23 L58 28 L0 28 Z" fill="url(#'+u+'f2)"/>'
+      + '<path d="M0 40 Q7 35 14 40 Q21 45 28 36 Q35 27 42 36 Q49 45 58 39 L58 43 L0 43 Z" fill="url(#'+u+'f3)"/>'
+      + '<path d="M0 54 Q8 48 16 54 Q24 60 32 50 Q40 40 50 51 Q54 57 58 52 L58 58 L0 58 Z" fill="url(#'+u+'f4)"/>'
+      + '<line x1="0" y1="14" x2="58" y2="14" stroke="#ff005522" stroke-width="0.5"/>'
+      + '<line x1="0" y1="28" x2="58" y2="28" stroke="#ff005522" stroke-width="0.5"/>'
+      + '<line x1="0" y1="43" x2="58" y2="43" stroke="#ff005522" stroke-width="0.5"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #ff0055;border-radius:6px;box-shadow:inset 0 0 8px #ff005544"></div>'
+      + '</div>';
+    var right = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(90deg) translateZ(29px);background:linear-gradient(160deg,#110004,#0a0003);border:1.5px solid #aa003366;box-shadow:inset 0 0 12px rgba(0,0,0,.8)"></div>';
+    var top   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(-90deg) translateZ(29px);overflow:hidden;box-shadow:0 0 20px #ff005599">'
+      + '<div style="position:absolute;inset:0;background:linear-gradient(180deg,#3d0015,#1a0008)"></div>'
+      + '<svg style="position:absolute;inset:0" width="58" height="58" viewBox="0 0 58 58">'
+      + '<defs><radialGradient id="'+u+'t" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#ff88aa" stop-opacity=".95"/><stop offset=".4" stop-color="#ff0055" stop-opacity=".6"/><stop offset="1" stop-color="#cc0033" stop-opacity="0"/></radialGradient></defs>'
+      + '<ellipse cx="29" cy="29" rx="24" ry="24" fill="url(#'+u+'t)"/>'
+      + '<polygon points="29,8 35,20 48,22 39,32 42,46 29,38 16,46 19,32 10,22 23,20" fill="#ff0055" opacity=".15"/>'
+      + '<polygon points="29,14 33,23 43,24 36,31 38,42 29,36 20,42 22,31 15,24 25,23" fill="#ff88aa" opacity=".2"/>'
+      + '<ellipse cx="29" cy="29" rx="6" ry="6" fill="#ffffff" opacity=".7"/>'
+      + '</svg>'
+      + '<div style="position:absolute;inset:0;border:1.5px solid #ff0055cc;border-radius:6px"></div>'
+      + '</div>';
+    var back  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(180deg) translateZ(29px);background:#0d0004;border:1.5px solid #660022"></div>';
+    var left  = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateY(-90deg) translateZ(29px);background:#0f0005;border:1.5px solid #550020"></div>';
+    var bot   = '<div style="position:absolute;width:58px;height:58px;border-radius:6px;transform:rotateX(90deg) translateZ(29px);background:#0a0003;border:1.5px solid #44001a"></div>';
+    var hammer = '<svg width="42" height="46" viewBox="0 0 42 46" fill="none">'
+      + '<defs>'
+      + '<linearGradient id="'+u+'hd" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ddeeff"/><stop offset=".4" stop-color="#aaccdd"/><stop offset="1" stop-color="#8899bb"/></linearGradient>'
+      + '<linearGradient id="'+u+'hg" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ff88aa" stop-opacity=".9"/><stop offset="1" stop-color="#ff0055" stop-opacity=".2"/></linearGradient>'
+      + '<linearGradient id="'+u+'hh" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#222222"/><stop offset="1" stop-color="#111111"/></linearGradient>'
+      + '<linearGradient id="'+u+'hdr" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ff0055" stop-opacity=".8"/><stop offset="1" stop-color="#cc0033" stop-opacity="0"/></linearGradient>'
+      + '</defs>'
+      + '<rect x="18" y="20" width="6" height="24" rx="3" fill="url(#'+u+'hh)"/>'
+      + '<rect x="19" y="38" width="2" height="6" rx="1" fill="#ff0055" opacity=".5"/>'
+      + '<rect x="19" y="30" width="2" height="4" rx="1" fill="#ff0055" opacity=".3"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="4" fill="url(#'+u+'hd)"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="4" fill="url(#'+u+'hg)" opacity=".25"/>'
+      + '<line x1="4" y1="9" x2="38" y2="4" stroke="#ffffff" stroke-width="0.8" stroke-opacity=".4"/>'
+      + '<line x1="4" y1="14" x2="38" y2="9" stroke="#ffffff" stroke-width="0.5" stroke-opacity=".25"/>'
+      + '<line x1="4" y1="4" x2="38" y2="22" stroke="#ffffff" stroke-width="0.5" stroke-opacity=".15"/>'
+      + '<rect x="14" y="4" width="14" height="18" rx="2" fill="#ff0055" opacity=".15"/>'
+      + '<rect x="4" y="4" width="34" height="3" rx="2" fill="url(#'+u+'hg)" opacity=".6"/>'
+      + '<rect x="4" y="19" width="34" height="3" rx="2" fill="url(#'+u+'hg)" opacity=".4"/>'
+      + '</svg>';
+    return sfCubeWrap(front+right+top+back+left+bot, hammer);
+  }
+
+  function cubeHammerHtml(colors, idx, itemId) {
+    if (itemId === 'set_inferno')  return infernoHtml(idx);
+    if (itemId === 'set_neon')     return neonHtml(idx);
+    if (itemId === 'set_gold')     return goldHtml(idx);
+    if (itemId === 'set_diamond')  return diamondHtml(idx);
     var c    = colors || {};
     var body = c.cubeBody  || '#070e1c';
     var edge = c.primary   || '#00e5ff';
@@ -5466,27 +5713,20 @@ ${globalSidebar()}
     var faceHtml = faces.map(function(t){
       return '<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t+';box-shadow:inset 0 0 10px rgba(0,0,0,.4),0 0 8px '+edge+'44"></div>';
     }).join('');
-    return '<div style="position:relative;width:90px;height:90px">'
-      + '<div style="perspective:180px;width:58px;height:58px;position:absolute;left:4px;bottom:4px">'
-      +   '<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:sfCubeFloat 4s ease-in-out infinite">'
-      +     faceHtml
-      +   '</div>'
-      + '</div>'
-      + '<div style="position:absolute;right:0;top:4px;animation:sfHammerSwing 3s ease-in-out infinite;transform-origin:80% 90%">'
-      +   '<svg width="42" height="46" viewBox="0 0 42 46" fill="none" xmlns="http://www.w3.org/2000/svg">'
-      +     '<defs>'
-      +       '<linearGradient id="'+uid+'h" x1="0" y1="0" x2="1" y2="1">'
-      +         '<stop stop-color="'+edge+'"/>'
-      +         '<stop offset="1" stop-color="'+acc+'" stop-opacity=".7"/>'
-      +       '</linearGradient>'
-      +     '</defs>'
-      +     '<rect x="18" y="20" width="6" height="24" rx="3" fill="'+acc+'"/>'
-      +     '<rect x="4" y="4" width="34" height="18" rx="5" fill="url(#'+uid+'h)"/>'
-      +     '<rect x="4" y="4" width="34" height="18" rx="5" fill="'+edge+'" opacity=".15"/>'
-      +     '<rect x="14" y="4" width="14" height="18" rx="3" fill="'+acc+'" opacity=".4"/>'
-      +   '</svg>'
-      + '</div>'
-      + '</div>';
+    return sfCubeWrap(faceHtml,
+      '<svg width="42" height="46" viewBox="0 0 42 46" fill="none" xmlns="http://www.w3.org/2000/svg">'
+      + '<defs>'
+      + '<linearGradient id="'+uid+'h" x1="0" y1="0" x2="1" y2="1">'
+      + '<stop stop-color="'+edge+'"/>'
+      + '<stop offset="1" stop-color="'+acc+'" stop-opacity=".7"/>'
+      + '</linearGradient>'
+      + '</defs>'
+      + '<rect x="18" y="20" width="6" height="24" rx="3" fill="'+acc+'"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="5" fill="url(#'+uid+'h)"/>'
+      + '<rect x="4" y="4" width="34" height="18" rx="5" fill="'+edge+'" opacity=".15"/>'
+      + '<rect x="14" y="4" width="14" height="18" rx="3" fill="'+acc+'" opacity=".4"/>'
+      + '</svg>'
+    );
   }
 
   function renderGrid(items, owned, activeSetId) {
@@ -5521,7 +5761,7 @@ ${globalSidebar()}
       }
       return '<div class="sf-item'+(isOwned?' owned':'')+'" id="sf-card-'+item.id+'">'
         + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);display:flex;align-items:center;justify-content:center">'
-        +   cubeHammerHtml(colors, idx)
+        +   cubeHammerHtml(colors, idx, item.id)
         +   badgeHtml
         + '</div>'
         + '<div class="sf-item__body">'
@@ -12084,7 +12324,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-192'
+const ASSET_VER = '20261022-193'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
