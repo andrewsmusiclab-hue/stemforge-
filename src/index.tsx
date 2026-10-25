@@ -5547,19 +5547,25 @@ ${globalSidebar()}
 
   // ── Load shop ──────────────────────────────────────────────────────────────
   function loadShop() {
-    Promise.all([
-      fetch('/api/shop/items').then(function(r){ return r.json(); }),
-      fetch('/api/shop/collection').then(function(r){ return r.json(); })
-    ]).then(function(res){
-      var itemsData = res[0]; var collData = res[1];
-      var activeSet = collData.active_set_id || collData.active_cube_id || 'set_stemforge';
-      renderGrid(itemsData.items||[], collData.owned||[], activeSet);
-      if (PURCHASE_STATUS === 'success' && PURCHASED_ITEM) {
-        var found = (itemsData.items||[]).find(function(i){ return i.id===PURCHASED_ITEM; });
-        toast((found ? found.name : 'Item') + ' unlocked! You can now equip it below.', 'success', 5000);
-      } else if (PURCHASE_STATUS === 'cancel') {
-        toast('Purchase cancelled — no charge was made.', 'info', 4000);
+    // Fetch items and collection independently — items alone is enough to render
+    var itemsP = fetch('/api/shop/items').then(function(r){ return r.json(); });
+    var collP  = fetch('/api/shop/collection').then(function(r){ return r.json(); }).catch(function(){ return {}; });
+    itemsP.then(function(itemsData){
+      if (!itemsData || !itemsData.items) {
+        document.getElementById('sf-shop-grid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-exclamation-triangle"></i><p style="margin:12px 0">Failed to load items.</p><button onclick="loadShop()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-weight:700;font-size:.9rem">Retry</button></div>';
+        return;
       }
+      collP.then(function(collData){
+        var cd = (collData && !collData.error) ? collData : {};
+        var activeSet = cd.active_set_id || cd.active_cube_id || 'set_stemforge';
+        renderGrid(itemsData.items, cd.owned||[], activeSet);
+        if (PURCHASE_STATUS === 'success' && PURCHASED_ITEM) {
+          var found = itemsData.items.find(function(i){ return i.id===PURCHASED_ITEM; });
+          toast((found ? found.name : 'Item') + ' unlocked! You can now equip it below.', 'success', 5000);
+        } else if (PURCHASE_STATUS === 'cancel') {
+          toast('Purchase cancelled — no charge was made.', 'info', 4000);
+        }
+      });
     }).catch(function(err){
       console.error('Shop load error:', err);
       document.getElementById('sf-shop-grid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-exclamation-triangle"></i><p style="margin:12px 0">Failed to load shop.</p><button onclick="loadShop()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-weight:700;font-size:.9rem">Retry</button></div>';
@@ -12093,7 +12099,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-188'
+const ASSET_VER = '20261022-189'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
