@@ -5424,6 +5424,83 @@ ${globalSidebar()}
     <p>Personalise your forge with exclusive Cube &amp; Hammer sets. Each set includes the matching cube and hammer as one combined item.</p>
   </div>
 
+  <!-- ── POINT PACKS SECTION ─────────────────────────────────── -->
+  <div class="sf-shop__section-title" style="margin-top:8px">
+    <i class="fas fa-coins" style="color:#f59e0b"></i> Point Packs
+    <span style="margin-left:auto;font-size:.76rem;color:rgba(255,255,255,.35);text-transform:none;letter-spacing:0">One-time top-ups &mdash; stack on top of your plan</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin-bottom:48px" id="points-packs-grid">
+
+    <!-- 150 pts -->
+    <div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:16px;padding:22px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;transition:border-color .2s,transform .2s,box-shadow .2s" onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(245,158,11,.4)';this.style.boxShadow='0 8px 28px rgba(245,158,11,.1)'" onmouseout="this.style.transform='';this.style.borderColor='rgba(255,255,255,.08)';this.style.boxShadow=''">
+      <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,rgba(245,158,11,.2),rgba(245,158,11,.08));border:1px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-coins" style="color:#f59e0b;font-size:1.2rem"></i>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.8rem;font-weight:900;color:#fff;line-height:1">150</div>
+        <div style="font-size:.78rem;color:var(--muted);font-weight:600;letter-spacing:.04em;margin-top:2px">POINTS</div>
+      </div>
+      <div style="font-size:1.1rem;font-weight:800;color:#f59e0b">$4.99</div>
+      <button class="credit-pack-btn" data-pack="pack_150" style="width:100%;padding:9px;border-radius:9px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;font-size:.85rem;font-weight:700;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:opacity .15s" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+        <i class="fas fa-cart-plus"></i> Buy
+      </button>
+    </div>
+
+    <!-- 600 pts — Best Value -->
+    <div style="background:rgba(124,58,237,.08);border:1.5px solid rgba(124,58,237,.4);border-radius:16px;padding:22px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;position:relative;transition:border-color .2s,transform .2s,box-shadow .2s" onmouseover="this.style.transform='translateY(-3px)';this.style.boxShadow='0 8px 28px rgba(124,58,237,.2)'" onmouseout="this.style.transform='';this.style.boxShadow=''">
+      <div style="position:absolute;top:-11px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;font-size:.65rem;font-weight:800;padding:3px 12px;border-radius:999px;white-space:nowrap;letter-spacing:.06em">
+        <i class="fas fa-star" style="font-size:.6rem;margin-right:4px"></i>BEST VALUE
+      </div>
+      <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,rgba(124,58,237,.3),rgba(139,92,246,.15));border:1px solid rgba(139,92,246,.4);display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-coins" style="color:#a78bfa;font-size:1.2rem"></i>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.8rem;font-weight:900;color:#fff;line-height:1">600</div>
+        <div style="font-size:.78rem;color:var(--muted);font-weight:600;letter-spacing:.04em;margin-top:2px">POINTS</div>
+      </div>
+      <div style="font-size:1.1rem;font-weight:800;color:#a78bfa">$9.99</div>
+      <button class="credit-pack-btn" data-pack="pack_600" style="width:100%;padding:9px;border-radius:9px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;font-size:.85rem;font-weight:700;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:opacity .15s" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+        <i class="fas fa-cart-plus"></i> Buy
+      </button>
+    </div>
+
+    <!-- 1000 pts -->
+    <div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:16px;padding:22px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;transition:border-color .2s,transform .2s,box-shadow .2s" onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(245,158,11,.4)';this.style.boxShadow='0 8px 28px rgba(245,158,11,.1)'" onmouseout="this.style.transform='';this.style.borderColor='rgba(255,255,255,.08)';this.style.boxShadow=''">
+      <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,rgba(245,158,11,.2),rgba(245,158,11,.08));border:1px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-coins" style="color:#f59e0b;font-size:1.2rem"></i>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.8rem;font-weight:900;color:#fff;line-height:1">1,000</div>
+        <div style="font-size:.78rem;color:var(--muted);font-weight:600;letter-spacing:.04em;margin-top:2px">POINTS</div>
+      </div>
+      <div style="font-size:1.1rem;font-weight:800;color:#f59e0b">$17.99</div>
+      <button class="credit-pack-btn" data-pack="pack_1000" style="width:100%;padding:9px;border-radius:9px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;font-size:.85rem;font-weight:700;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:opacity .15s" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+        <i class="fas fa-cart-plus"></i> Buy
+      </button>
+    </div>
+
+    <!-- 1500 pts -->
+    <div style="background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:16px;padding:22px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;transition:border-color .2s,transform .2s,box-shadow .2s" onmouseover="this.style.transform='translateY(-3px)';this.style.borderColor='rgba(245,158,11,.4)';this.style.boxShadow='0 8px 28px rgba(245,158,11,.1)'" onmouseout="this.style.transform='';this.style.borderColor='rgba(255,255,255,.08)';this.style.boxShadow=''">
+      <div style="width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,rgba(245,158,11,.2),rgba(245,158,11,.08));border:1px solid rgba(245,158,11,.3);display:flex;align-items:center;justify-content:center">
+        <i class="fas fa-coins" style="color:#f59e0b;font-size:1.2rem"></i>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:1.8rem;font-weight:900;color:#fff;line-height:1">1,500</div>
+        <div style="font-size:.78rem;color:var(--muted);font-weight:600;letter-spacing:.04em;margin-top:2px">POINTS</div>
+      </div>
+      <div style="font-size:1.1rem;font-weight:800;color:#f59e0b">$29.99</div>
+      <button class="credit-pack-btn" data-pack="pack_1500" style="width:100%;padding:9px;border-radius:9px;background:linear-gradient(135deg,#d97706,#f59e0b);color:#fff;font-size:.85rem;font-weight:700;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:7px;transition:opacity .15s" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
+        <i class="fas fa-cart-plus"></i> Buy
+      </button>
+    </div>
+
+  </div>
+  <p style="text-align:center;font-size:.78rem;color:var(--muted);margin:-36px 0 48px">
+    <i class="fas fa-shield-alt" style="color:#a78bfa;margin-right:4px"></i>Secure checkout powered by Stripe &mdash; points are added instantly after payment
+  </p>
+
+  <!-- ── CUBE & HAMMER SETS ──────────────────────────────────── -->
   <div class="sf-shop__section-title">
     <i class="fas fa-cube"></i> Cube &amp; Hammer Sets
     <span style="margin-left:auto;font-size:.76rem;color:rgba(255,255,255,.35);text-transform:none;letter-spacing:0">5 sets total &mdash; 1 free, 4 at $1.99</span>
@@ -5835,6 +5912,25 @@ ${globalSidebar()}
         else { btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Equip'; toast(d.error||'Error','error'); }
       }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Equip'; toast('Network error.','error'); });
   };
+
+  /* ── Credit pack buy buttons ── */
+  document.querySelectorAll('.credit-pack-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var packId = btn.dataset.pack;
+      if (!packId) return;
+      var orig = btn.innerHTML;
+      btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Loading...';
+      fetch('/api/credit-packs/purchase', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ pack_id: packId })
+      }).then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d.url) { window.location.href = d.url; }
+          else { btn.disabled=false; btn.innerHTML=orig; toast(d.error||'Could not start purchase.','error'); }
+        }).catch(function(){ btn.disabled=false; btn.innerHTML=orig; toast('Network error - please try again.','error'); });
+    });
+  });
 })();
 </script>
 <script src="/static/app.v2.70.js?v=${ASSET_VER_SHOP}"></script>
@@ -12344,7 +12440,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-204'
+const ASSET_VER = '20261022-205'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12749,17 +12845,9 @@ function globalSidebar() {
       </div>
       <div class="gs-credits__bonus-val" id="gs-bonus-val">0 <small>bonus</small></div>
     </div>
-    <!-- Get Points button -->
-    <a href="/shop" style="
-      display:flex;align-items:center;justify-content:center;gap:7px;
-      margin-top:10px;padding:9px 12px;border-radius:10px;
-      background:linear-gradient(135deg,#7c3aed,#6d28d9);
-      color:#fff;font-size:.82rem;font-weight:700;
-      text-decoration:none;letter-spacing:.2px;
-      box-shadow:0 2px 12px rgba(124,58,237,.35);
-      transition:opacity .15s;
-    " onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
-      <i class="fas fa-coins" style="font-size:.85rem"></i>
+    <!-- Get Points button — hidden until shop goes live -->
+    <a href="/shop" style="display:none">
+      <i class="fas fa-coins"></i>
       <span class="nav-label-full">Get Points</span>
       <span class="nav-label-short">Points</span>
     </a>
