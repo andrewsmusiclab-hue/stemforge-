@@ -4361,6 +4361,53 @@ app.get('/api/cover-image/:jobId', async (c) => {
 })
 
 // ═══════════════════════════════════════════════════════════════
+//  GET /api/skin-glb/:id
+//  Serve skin GLB 3D model files from R2 under skins/ prefix.
+//  Auth: none — GLB files are public shop assets.
+//  Range-request support for large files (GLBs can be 50-70 MB).
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/skin-glb/:id', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
+  const id = c.req.param('id').replace(/[^a-zA-Z0-9_-]/g, '')
+  const key = `skins/${id}.glb`
+  const rangeHeader = c.req.header('range')
+
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Skin GLB not found' }, 404)
+  const full = await obj.arrayBuffer()
+  const total = full.byteLength
+
+  if (rangeHeader) {
+    const [, rangeVal] = rangeHeader.split('=')
+    const [startStr, endStr] = rangeVal.split('-')
+    const start = parseInt(startStr, 10)
+    const end = endStr ? parseInt(endStr, 10) : total - 1
+    const chunk = full.slice(start, end + 1)
+    return new Response(chunk, {
+      status: 206,
+      headers: {
+        'Content-Type': 'model/gltf-binary',
+        'Content-Range': `bytes ${start}-${end}/${total}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': String(chunk.byteLength),
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+      },
+    })
+  }
+
+  return new Response(full, {
+    headers: {
+      'Content-Type': 'model/gltf-binary',
+      'Accept-Ranges': 'bytes',
+      'Content-Length': String(total),
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+    },
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════
 //  GET /api/broadcast-asset/*
 //  Serve broadcast assets (thumbnails, images) from R2 broadcast/ prefix.
 //  Auth: none — URLs are not guessable and assets are public-safe.
@@ -5779,7 +5826,8 @@ ${globalSidebar()}
     set_inferno:   '/static/skins/set_inferno.png',
     set_neon:      '/static/skins/set_neon.png',
     set_gold:      '/static/skins/set_gold.png',
-    set_diamond:   '/static/skins/set_diamond.png'
+    set_diamond:   '/static/skins/set_diamond.png',
+    set_stone:     '/static/skins/set_stone.png'
   };
 
   function cubeHammerHtml(colors, idx, itemId) {
@@ -5849,8 +5897,7 @@ ${globalSidebar()}
         + '</div>'
         + '<div class="sf-item__body">'
         +   '<div class="sf-item__name">'+item.name+'</div>'
-        +   '<button data-desc="'+descId+'" onclick="sfToggleDesc(this)" style="background:none;border:none;color:var(--muted);font-size:.72rem;font-weight:600;cursor:pointer;padding:0 0 4px;text-align:left;letter-spacing:.03em">Description +</button>'
-        +   '<div id="'+descId+'" class="sf-item__desc" style="display:none">'+item.description+'</div>'
+        +   '<div class="sf-item__desc" style="font-size:.74rem;color:var(--muted);line-height:1.55;margin-bottom:10px">'+item.description+'</div>'
         +   (!isFree && !isOwned ? '<div class="sf-item__price">One-time purchase</div>' : '')
         +   btnHtml
         + '</div>'
@@ -12440,7 +12487,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-205'
+const ASSET_VER = '20261022-206'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>

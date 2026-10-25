@@ -9,7 +9,7 @@
   var BASE = '/static/skins/faces/';
 
   /* ── Merge photo skin configs into _CUBE_SKINS so skinId resolves ── */
-  var PHOTO_SKIN_IDS = ['set_stemforge','set_inferno','set_neon','set_gold','set_diamond'];
+  var PHOTO_SKIN_IDS = ['set_stemforge','set_inferno','set_neon','set_gold','set_diamond','set_stone'];
   var PHOTO_SKIN_CONFIGS = {
     set_stemforge: {
       cubeBody:0x070e1c,cubeEmissive:0x001a33,emissiveInt:0.12,
@@ -64,6 +64,17 @@
         {bg:'#150006',wc:'#ff3366',wc2:'#dd0044',amp:38,density:150},
         {bg:'#100005',wc:'#ff0044',wc2:'#aa0033',amp:28,density:140},
         {bg:'#0c0004',wc:'#ff2255',wc2:'#cc0033',amp:18,density:120}
+      ]
+    },
+    set_stone: {
+      cubeBody:0x2a3a4a,cubeEmissive:0x001a33,emissiveInt:0.15,
+      edgeGlow:0x4a9fff,edgeOpacity:0.85,shellColor:0x4a9fff,shellOpacity:0.05,
+      fillLight:0x88aacc,fillInt:1.4,rimLight:0xffffff,rimInt:1.0,botLight:0x224466,botInt:0.6,
+      waveformTiers:[
+        {bg:'#1a2a3a',wc:'#4a9fff',wc2:'#2266aa',amp:52,density:160},
+        {bg:'#162030',wc:'#3388ee',wc2:'#1a5599',amp:38,density:150},
+        {bg:'#121a26',wc:'#2277dd',wc2:'#114488',amp:28,density:140},
+        {bg:'#0e1620',wc:'#3399ff',wc2:'#1a4477',amp:18,density:120}
       ]
     }
   };
@@ -662,13 +673,173 @@
     cubeGroup.add(hammerG);
   }
 
+  /* ── buildStone ── GLB-based granite cube + Mjolnir loaded from R2 ── */
+  function buildStone(T, scene, cubeGroup, envMap) {
+    /* Load GLTFLoader dynamically — it's already been injected into the scripts array */
+    var GLTFLoader = window.THREE && window.THREE.GLTFLoader
+      ? window.THREE.GLTFLoader
+      : (window.GLTFLoader || null);
+
+    if (!GLTFLoader) {
+      /* Fallback: procedural stone cube if GLTFLoader unavailable */
+      _buildStoneFallback(T, scene, cubeGroup, envMap);
+      return;
+    }
+
+    var loader = new GLTFLoader();
+    /* Serve from R2 via our proxy endpoint */
+    var glbUrl = '/api/skin-glb/set_stone';
+
+    loader.load(
+      glbUrl,
+      function (gltf) {
+        /* Center and scale the loaded model to fit nicely in the scene */
+        var model = gltf.scene;
+
+        /* Compute bounding box to auto-scale */
+        var box = new T.Box3().setFromObject(model);
+        var size = new T.Vector3();
+        box.getSize(size);
+        var maxDim = Math.max(size.x, size.y, size.z);
+        var scale = maxDim > 0 ? 2.2 / maxDim : 1.0;
+        model.scale.set(scale, scale, scale);
+
+        /* Re-center after scale */
+        var box2 = new T.Box3().setFromObject(model);
+        var center = new T.Vector3();
+        box2.getCenter(center);
+        model.position.sub(center);
+
+        /* Apply environment map to all meshes for nice reflections */
+        model.traverse(function (child) {
+          if (child.isMesh) {
+            if (child.material) {
+              var mats = Array.isArray(child.material) ? child.material : [child.material];
+              mats.forEach(function (mat) {
+                mat.envMap = envMap;
+                mat.envMapIntensity = 1.2;
+                mat.needsUpdate = true;
+              });
+            }
+          }
+        });
+
+        cubeGroup.add(model);
+      },
+      undefined, /* onProgress */
+      function (err) {
+        /* If GLB load fails, fall back to procedural stone cube */
+        console.warn('[skin-ext] set_stone GLB load failed, using fallback:', err);
+        _buildStoneFallback(T, scene, cubeGroup, envMap);
+      }
+    );
+  }
+
+  /* Procedural stone fallback — granite cube + iron Mjolnir with blue rune glow */
+  function _buildStoneFallback(T, scene, cubeGroup, envMap) {
+    var SKIN = PHOTO_SKIN_CONFIGS.set_stone;
+    var SIZE = 1.2, RADIUS = 0.028;
+
+    /* Stone granite body — rough grey with subtle blue emissive */
+    var stoneMat = new T.MeshPhysicalMaterial({
+      color: new T.Color(0x3a4a58), metalness: 0.1, roughness: 0.85,
+      emissive: new T.Color(0x001a33), emissiveIntensity: 0.15,
+      envMap: envMap, envMapIntensity: 0.6
+    });
+    cubeGroup.add(new T.Mesh(new T.RoundedBoxGeometry(SIZE, SIZE, SIZE, 4, RADIUS), stoneMat));
+
+    /* Blue rune edge glow */
+    cubeGroup.add(new T.LineSegments(
+      new T.EdgesGeometry(new T.BoxGeometry(SIZE, SIZE, SIZE)),
+      new T.LineBasicMaterial({ color: 0x4a9fff, transparent: true, opacity: 0.85 })
+    ));
+
+    /* Subtle blue shell bloom */
+    cubeGroup.add(new T.Mesh(
+      new T.RoundedBoxGeometry(SIZE + 0.18, SIZE + 0.18, SIZE + 0.18, 4, RADIUS + 0.04),
+      new T.MeshBasicMaterial({ color: 0x4a9fff, transparent: true, opacity: 0.04, side: T.BackSide })
+    ));
+
+    /* Waveform faces using canvas */
+    var FO = SIZE / 2 + 0.008, PS = SIZE - RADIUS * 2;
+    [0, 1, 2, 3].forEach(function (v) {
+      var positions = [
+        [0, 0, FO,  0],
+        [0, 0, -FO, Math.PI],
+        [FO, 0, 0,  -Math.PI / 2],
+        [-FO, 0, 0,  Math.PI / 2]
+      ];
+      var pd = positions[v];
+      var cvs = makeWaveFace(SKIN, v, v === 0);
+      var tex = new T.CanvasTexture(cvs); tex.needsUpdate = true;
+      var mat = new T.MeshStandardMaterial({ map: tex, emissiveMap: tex, emissive: new T.Color(0xffffff), emissiveIntensity: 1.0, roughness: 0.55, metalness: 0.0, side: T.DoubleSide });
+      var plane = new T.Mesh(new T.PlaneGeometry(PS, PS), mat);
+      plane.position.set(pd[0], pd[1], pd[2]); plane.rotation.y = pd[3];
+      cubeGroup.add(plane);
+    });
+
+    /* ── STONE HAMMER — dark iron Mjolnir with blue runic glow ── */
+    var hammerG = new T.Group();
+    var ironMat = new T.MeshPhysicalMaterial({
+      color: 0x2a3540, metalness: 0.7, roughness: 0.6,
+      emissive: new T.Color(0x001a33), emissiveIntensity: 0.2,
+      envMap: envMap, envMapIntensity: 1.0
+    });
+    var runeMat = new T.MeshStandardMaterial({
+      color: 0x4a9fff, emissive: new T.Color(0x4a9fff), emissiveIntensity: 2.5,
+      roughness: 0.1, metalness: 0.0
+    });
+    var stonHandleMat = new T.MeshPhysicalMaterial({ color: 0x2a2a2a, roughness: 0.9, metalness: 0.0 });
+
+    var HW = 0.50, HH = 0.28, HD = 0.22;
+    hammerG.add(new T.Mesh(new T.BoxGeometry(HW, HH, HD), ironMat));
+    /* Chamfers */
+    var chT = 0.018, chD = 0.018, chW = HW + 0.01;
+    [[0,HH/2+chT/2,HD/2+chD/2],[0,HH/2+chT/2,-HD/2-chD/2],[0,-HH/2-chT/2,HD/2+chD/2],[0,-HH/2-chT/2,-HD/2-chD/2]].forEach(function(p){
+      var m = new T.Mesh(new T.BoxGeometry(chW, chT, chD), ironMat); m.position.set(p[0],p[1],p[2]); hammerG.add(m);
+    });
+    /* Blue runic insets */
+    [-0.05, 0.05].forEach(function (yo) {
+      var crack = new T.Mesh(new T.BoxGeometry(HW + 0.002, 0.016, 0.008), runeMat);
+      crack.position.set(0, yo, HD / 2 + 0.001); hammerG.add(crack);
+    });
+    /* Blue rune collar */
+    var coll = new T.Mesh(new T.CylinderGeometry(0.055, 0.050, 0.10, 20), runeMat);
+    coll.position.set(0, HH/2 + 0.05, 0); hammerG.add(coll);
+
+    /* Handle — dark stone/wrapped */
+    var HANG = 35 * Math.PI / 180;
+    var hDir = new T.Vector3(Math.sin(HANG), Math.cos(HANG), 0);
+    var handleLen = 1.05;
+    var handleBase = new T.Vector3(0, HH/2 + 0.09, 0);
+    var handle = new T.Mesh(new T.CylinderGeometry(0.036, 0.028, handleLen, 18), stonHandleMat);
+    handle.rotation.z = -HANG;
+    handle.position.copy(handleBase.clone().add(hDir.clone().multiplyScalar(handleLen * 0.5)));
+    hammerG.add(handle);
+    /* Blue rune rings */
+    for (var ri = 0; ri < 5; ri++) {
+      var rp = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen * (ri * 0.18 + 0.1)));
+      var ring = new T.Mesh(new T.CylinderGeometry(0.042, 0.042, 0.016, 18), runeMat);
+      ring.rotation.z = -HANG; ring.position.copy(rp); hammerG.add(ring);
+    }
+    /* Iron pommel */
+    var pomPos = handleBase.clone().add(hDir.clone().multiplyScalar(handleLen + 0.035));
+    var pommel = new T.Mesh(new T.CylinderGeometry(0.038, 0.044, 0.055, 20), ironMat);
+    pommel.rotation.z = -HANG; pommel.position.copy(pomPos); hammerG.add(pommel);
+
+    hammerG.position.set(0.04, SIZE/2 + HH/2 + 0.08, 0.02);
+    hammerG.rotation.set(0.14, -0.28, -0.06);
+    cubeGroup.add(hammerG);
+  }
+
   /* ── Skin ID → builder map ── */
   var SKIN_BUILDERS = {
     set_inferno:   buildInferno,
     set_neon:      buildNeon,
     set_gold:      buildGold,
     set_diamond:   buildDiamond,
-    set_stemforge: buildStemForge
+    set_stemforge: buildStemForge,
+    set_stone:     buildStone
   };
 
   /* ══════════════════════════════════════════════════════════════════════════
@@ -702,7 +873,8 @@
       var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
       var scripts = [
         BASE128 + 'build/three.min.js',
-        BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js'
+        BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js',
+        BASE128 + 'examples/js/loaders/GLTFLoader.js'
       ];
 
       function loadNext(i, done) {
