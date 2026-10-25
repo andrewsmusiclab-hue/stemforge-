@@ -5367,11 +5367,11 @@ app.get('/shop', async (c) => {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Shop — StemForge</title>
+  <title>Shop - StemForge</title>
   <link href="/static/style.css?v=${ASSET_VER_SHOP}" rel="stylesheet"/>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
   <style>
-    /* ── Shop page ── */
+    /* Shop page */
     .sf-shop { max-width: 1020px; margin: 0 auto; padding: 32px 20px 80px; }
     .sf-shop__hero { margin-bottom: 36px; }
     .sf-shop__hero h1 { font-size: 1.8rem; font-weight: 800; display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
@@ -5550,7 +5550,7 @@ ${globalSidebar()}
           var found = itemsData.items.find(function(i){ return i.id===PURCHASED_ITEM; });
           toast((found ? found.name : 'Item') + ' unlocked! You can now equip it below.', 'success', 5000);
         } else if (PURCHASE_STATUS === 'cancel') {
-          toast('Purchase cancelled — no charge was made.', 'info', 4000);
+          toast('Purchase cancelled - no charge was made.', 'info', 4000);
         }
       });
     }).catch(function(err){
@@ -5561,14 +5561,14 @@ ${globalSidebar()}
   loadShop();
 
   window.sfBuy = function(itemId, btn) {
-    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Loading…';
+    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Loading...';
     fetch('/api/shop/purchase/'+itemId, {method:'POST'})
       .then(function(r){ return r.json(); })
       .then(function(d){
         if (d.checkout_url) { window.location.href = d.checkout_url; }
         else if (d.error === 'Already owned') { toast('You already own this item!','info'); setTimeout(function(){ loadShop(); },300); }
         else { btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast(d.error||'Unable to start checkout.','error'); }
-      }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast('Network error — please try again.','error'); });
+      }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast('Network error - please try again.','error'); });
   };
 
   window.sfEquip = function(itemId, btn) {
@@ -5599,7 +5599,7 @@ app.get('/collection', async (c) => {
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>My Collection — StemForge</title>
+  <title>My Collection - StemForge</title>
   <link href="/static/style.css?v=${ASSET_VER_COLL}" rel="stylesheet"/>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
   <style>
@@ -5632,7 +5632,7 @@ ${globalSidebar()}
     <h1><i class="fas fa-gem" style="color:#8b5cf6"></i> My Collection</h1>
     <p>Every Cube &amp; Hammer set you own. Equip one to make your forge uniquely yours.</p>
   </div>
-  <div id="coll-content"><div style="color:var(--muted);text-align:center;padding:48px"><i class="fas fa-circle-notch fa-spin"></i> Loading your collection…</div></div>
+  <div id="coll-content"><div style="color:var(--muted);text-align:center;padding:48px"><i class="fas fa-circle-notch fa-spin"></i> Loading your collection...</div></div>
 </main>
 <style>
   @keyframes collCubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-28deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-28deg) translateY(-5px)}}
@@ -12084,7 +12084,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-190'
+const ASSET_VER = '20261022-191'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
