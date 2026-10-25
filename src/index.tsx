@@ -12497,7 +12497,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-212'
+const ASSET_VER = '20261022-213'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -14342,14 +14342,15 @@ function generatorPage() {
       flex: none;
       flex-shrink: 0;
       display: flex;
+      flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
       background: transparent !important;
       overflow: visible;
       margin: 0 auto;
     }
     @media (max-width: 768px) {
-      #sf-cube-stage { height: 300px; }
+      #sf-cube-stage { height: 340px; }
     }
     #sf-cube-wrap {
       display: none;
@@ -14372,8 +14373,9 @@ function generatorPage() {
       z-index: 2;
       background: transparent !important;
       text-align: center;
-      padding: 20px 16px;
+      padding: 18px 16px 0;
       pointer-events: none;
+      width: 100%;
     }
     #gen-empty h3 {
       font-size: 1.3rem;

@@ -853,7 +853,7 @@
         /* Scene + Camera */
         var scene  = new T.Scene();
         var camera = new T.PerspectiveCamera(38, W / H, 0.1, 100);
-        camera.position.set(0, 0.4, 5.8);
+        camera.position.set(0, 0.3, 5.8);
 
         /* IBL env */
         var envCvs = document.createElement('canvas'); envCvs.width=512; envCvs.height=256;
@@ -879,7 +879,7 @@
 
         /* Cube group */
         var cubeGroup = new T.Group();
-        cubeGroup.position.y = -0.3;
+        cubeGroup.position.y = 0;
         scene.add(cubeGroup);
 
         /* Call skin-specific builder — wrapped in try/catch so errors don't silently kill the cube */
@@ -891,16 +891,71 @@
           return;
         }
 
-        /* Rotation animation loop */
+        /* ── Interaction — mouse + touch drag with velocity + auto-spin ── */
+        var rotX = -0.20, rotY = 0.55, velX = 0, velY = 0;
+        var dragging = false, lastMX = 0, lastMY = 0;
+        var autoSpin = true, idleTimer = null;
+        function resetIdle() {
+          autoSpin = false;
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(function () { autoSpin = true; velX = 0; velY = 0; }, 3500);
+        }
+        canvas.addEventListener('mousedown', function (e) {
+          dragging = true; autoSpin = false; velX = 0; velY = 0;
+          lastMX = e.clientX; lastMY = e.clientY; e.preventDefault();
+        });
+        window.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          velY = (e.clientX - lastMX) * 0.007; velX = (e.clientY - lastMY) * 0.007;
+          rotY += velY; rotX += velX;
+          rotX = Math.max(-1.1, Math.min(1.1, rotX));
+          lastMX = e.clientX; lastMY = e.clientY;
+        });
+        window.addEventListener('mouseup', function () { if (dragging) { dragging = false; resetIdle(); } });
+        canvas.addEventListener('touchstart', function (e) {
+          if (e.touches.length !== 1) return;
+          dragging = true; autoSpin = false; velX = 0; velY = 0;
+          lastMX = e.touches[0].clientX; lastMY = e.touches[0].clientY; e.preventDefault();
+        }, { passive: false });
+        canvas.addEventListener('touchmove', function (e) {
+          if (!dragging || e.touches.length !== 1) return;
+          velY = (e.touches[0].clientX - lastMX) * 0.007; velX = (e.touches[0].clientY - lastMY) * 0.007;
+          rotY += velY; rotX += velX;
+          rotX = Math.max(-1.1, Math.min(1.1, rotX));
+          lastMX = e.touches[0].clientX; lastMY = e.touches[0].clientY; e.preventDefault();
+        }, { passive: false });
+        canvas.addEventListener('touchend', function () { dragging = false; resetIdle(); });
+
+        /* Resize handler */
+        window.addEventListener('resize', function () {
+          var st = document.getElementById('sf-cube-stage');
+          var nw = (st ? st.clientWidth : wrap.clientWidth) || 420;
+          var nh = window.innerWidth <= 768 ? 320 : 420;
+          camera.aspect = nw / nh; camera.updateProjectionMatrix();
+          renderer.setSize(nw, nh, false);
+        });
+
+        /* ── Render loop with bob + drag inertia ── */
         var clock = new T.Clock();
-        function animate() {
-          requestAnimationFrame(animate);
-          var dt = clock.getDelta();
-          cubeGroup.rotation.y += 0.004;
+        (function loop() {
+          requestAnimationFrame(loop);
+          var t = clock.getElapsedTime();
+          if (!dragging) {
+            if (autoSpin) {
+              rotY += 0.0032;
+            } else {
+              velX *= 0.93; velY *= 0.93;
+              rotX += velX; rotY += velY;
+              rotX = Math.max(-1.1, Math.min(1.1, rotX));
+            }
+          }
+          var bob = Math.sin(t * 0.65) * 0.06;
+          cubeGroup.rotation.x = rotX;
+          cubeGroup.rotation.y = rotY;
+          cubeGroup.position.y = bob;
           renderer.clear();
           renderer.render(scene, camera);
-        }
-        animate();
+        })();
       });
     };
 
