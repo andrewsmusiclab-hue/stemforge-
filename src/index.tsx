@@ -61,14 +61,12 @@ app.use('*', async (c, next) => {
     const row = await c.env.DB.prepare(
       `SELECT value FROM site_drafts WHERE key='maintenance_mode' AND status='live'`
     ).first<{ value: string }>()
-    if (row?.value === '1') {
+    if (false && row?.value === '1') {
       const token = getSessionCookie(c.req.raw)
       if (token && c.env.SESSION_SECRET) {
         const user = await getSessionUser(c.env.DB, token)
         if (user && isAdmin(user, c.env)) return next()
       }
-      // Not logged in as admin — check if request carries an admin session cookie
-      // by email hint in query (e.g. /admin direct link) — show maintenance page
       return c.html(maintenancePage(), 503)
     }
   } catch { /* DB error — don't block the site */ }
@@ -12346,7 +12344,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-200'
+const ASSET_VER = '20261022-201'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12554,8 +12552,8 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
-      <a href="/shop" class="gs-user-dropdown__item"><i class="fas fa-store"></i> Shop</a>
-      <a href="/collection" class="gs-user-dropdown__item"><i class="fas fa-gem"></i> My Collection</a>
+      <a href="/shop" class="gs-user-dropdown__item" style="display:none"><i class="fas fa-store"></i> Shop</a>
+      <a href="/collection" class="gs-user-dropdown__item" style="display:none"><i class="fas fa-gem"></i> My Collection</a>
       <a href="/subscription" class="gs-user-dropdown__item">
         <i class="fas fa-credit-card"></i> Subscription
       </a>
@@ -12593,10 +12591,10 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="display:none">
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="display:none!important">
       <i class="fas fa-store"></i><span class="nav-label-full">Shop</span><span class="nav-label-short">Shop</span>
     </a>
-    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none">
+    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none!important">
       <i class="fas fa-gem"></i><span class="nav-label-full">My Collection</span><span class="nav-label-short">Collection</span>
     </a>
 
