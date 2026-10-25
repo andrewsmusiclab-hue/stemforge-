@@ -985,7 +985,7 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
     { id: 'set_inferno',   type: 'cube_hammer', name: 'Inferno Cube & Hammer',   description: 'Volcanic obsidian cube with ember-cracked edges and a scorched iron hammer. For producers who forge in the dark.',                                           price_cents: 0, rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ primary: '#ff4400',  secondary: '#ff6600', cubeBody: '#0a0404', edgeGlow: '#ff2200',  accent: '#ff6600' }) },
     { id: 'set_neon',      type: 'cube_hammer', name: 'Neon Cube & Hammer',      description: 'Frosted glass cube with electric cyan pulse lines and a neon-lit chrome hammer. Invisible in daylight. Unstoppable at night.',                                price_cents: 0, rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ primary: '#00ffff',  secondary: '#0088ff', cubeBody: '#020d18', edgeGlow: '#00ffff',  accent: '#0088ff' }) },
     { id: 'set_gold',      type: 'cube_hammer', name: 'Gold Cube & Hammer',      description: '24k brushed gold cube with warm amber glow and a gilded hammer. Luxury aesthetics for the chart-topping producer.',                                           price_cents: 0, rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ primary: '#ffd700',  secondary: '#ff8800', cubeBody: '#1a1000', edgeGlow: '#ffd700',  accent: '#ff8800' }) },
-    { id: 'set_diamond',   type: 'cube_hammer', name: 'Diamond Cube & Hammer',   description: 'Crimson diamond-faceted cube with a crystal hammer dripping in red. A rare collector set -- only the sharpest producers carry this.',                        price_cents: 0, rarity: 'standard', sort_order: 5, preview_colors: JSON.stringify({ primary: '#ff0055',  secondary: '#ff4488', cubeBody: '#1a0008', edgeGlow: '#ff0055',  accent: '#ff4488' }) },
+    { id: 'set_diamond',   type: 'cube_hammer', name: 'Diamond Pink Cube & Hammer', description: 'Crimson diamond-faceted cube with a crystal hammer dripping in red. A rare collector set -- only the sharpest producers carry this.',                        price_cents: 0, rarity: 'standard', sort_order: 5, preview_colors: JSON.stringify({ primary: '#ff0055',  secondary: '#ff4488', cubeBody: '#1a0008', edgeGlow: '#ff0055',  accent: '#ff4488' }) },
   ]
   for (const item of shopItems) {
     await db.prepare(`INSERT OR IGNORE INTO shop_items (id, type, name, description, price_cents, rarity, max_supply, sort_order, preview_colors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -5699,11 +5699,19 @@ ${globalSidebar()}
     return sfCubeWrap(front+right+top+back+left+bot, hammer);
   }
 
+  var SKIN_IMGS = {
+    set_inferno: '/static/skins/set_inferno.png',
+    set_neon:    '/static/skins/set_neon.png',
+    set_gold:    '/static/skins/set_gold.png',
+    set_diamond: '/static/skins/set_diamond.png'
+  };
+
   function cubeHammerHtml(colors, idx, itemId) {
-    if (itemId === 'set_inferno')  return infernoHtml(idx);
-    if (itemId === 'set_neon')     return neonHtml(idx);
-    if (itemId === 'set_gold')     return goldHtml(idx);
-    if (itemId === 'set_diamond')  return diamondHtml(idx);
+    if (SKIN_IMGS[itemId]) {
+      return '<div style="position:relative;width:120px;height:120px;animation:sfCubeFloat 4s ease-in-out infinite;display:flex;align-items:center;justify-content:center">'
+        + '<img src="'+SKIN_IMGS[itemId]+'" style="width:120px;height:120px;object-fit:contain;image-rendering:auto;filter:drop-shadow(0 0 8px currentColor)" />'
+        + '</div>';
+    }
     var c    = colors || {};
     var body = c.cubeBody  || '#070e1c';
     var edge = c.primary   || '#00e5ff';
@@ -12329,7 +12337,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-194'
+const ASSET_VER = '20261022-195'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12483,6 +12491,7 @@ ${body}
   </div>
 </div>
 
+<script src="/static/skin-ext.js?v=${ASSET_VER}"></script>
 <script src="/static/app.v2.70.js?v=${ASSET_VER}"></script>
 <script src="/static/stems.v4.js?v=${ASSET_VER}"></script>
 <script>
