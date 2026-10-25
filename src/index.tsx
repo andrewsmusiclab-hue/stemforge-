@@ -978,21 +978,23 @@ async function ensureAuthTables(db: D1Database): Promise<void> {
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_user ON user_purchases (user_id)`).run() } catch {}
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_user_purchases_item ON user_purchases (item_id)`).run() } catch {}
 
-  // Seed default cube skins (idempotent)
+  // Seed shop items — 5 Cube & Hammer sets (1 free + 4 paid at $1.99)
+  // Each item is the COMBINED cube + hammer together as one set
   const shopItems = [
-    { id: 'cube_forge',    type: 'cube', name: 'The Forge',       description: 'The original StemForge cube. Steel chrome with forge-fire faces. Every creator starts here.',      price_cents: 0,    rarity: 'standard', sort_order: 1, preview_colors: JSON.stringify({ cubeBody: '#070e1c', edgeGlow: '#00e5ff', fillLight: '#00d2ff', rimLight: '#ff8c20', botLight: '#0040ff', shellColor: '#00aaff', waveformTiers: [['#ffaa00','#ff4400'],['#00ff88','#00ffcc'],['#dd00ff','#8800ff'],['#00d4ff','#0066ff']] }) },
-    { id: 'cube_obsidian', type: 'cube', name: 'Obsidian',        description: 'Volcanic black glass with ember-cracked edges. For producers who forge in the dark.',              price_cents: 499,  rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ cubeBody: '#0a0404', edgeGlow: '#ff2200', fillLight: '#cc1100', rimLight: '#ff6600', botLight: '#660000', shellColor: '#ff3300', waveformTiers: [['#ff4400','#ff2200'],['#ff6600','#ff3300'],['#cc2200','#881100'],['#ff5500','#cc3300']] }) },
-    { id: 'cube_goldrush', type: 'cube', name: 'Gold Rush',       description: '24k brushed gold with warm amber glow. Luxury aesthetics for the chart-topping producer.',         price_cents: 499,  rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ cubeBody: '#1a1000', edgeGlow: '#ffd700', fillLight: '#ffaa00', rimLight: '#ff8800', botLight: '#cc7700', shellColor: '#ffcc00', waveformTiers: [['#ffd700','#ffaa00'],['#ffcc00','#ff9900'],['#eebb00','#cc8800'],['#ffdd44','#ffaa00']] }) },
-    { id: 'cube_neon',     type: 'cube', name: 'Neon Ghost',      description: 'Frosted glass cube with electric cyan pulse lines. Invisible in daylight. Unstoppable at night.',  price_cents: 499,  rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ cubeBody: '#020d18', edgeGlow: '#00ffff', fillLight: '#00eeff', rimLight: '#0088ff', botLight: '#00aaff', shellColor: '#00ffee', waveformTiers: [['#00ffff','#00eeff'],['#00ccff','#0088ff'],['#00eedd','#00bbcc'],['#44ffff','#00ddff']] }) },
-    { id: 'cube_diamond',  type: 'cube', name: 'Blood Diamond',   description: 'Crimson faceted gem. Only 500 ever forged — each one numbered. The rarest cube in existence.',   price_cents: 1499, rarity: 'limited', max_supply: 500, sort_order: 5, preview_colors: JSON.stringify({ cubeBody: '#1a0008', edgeGlow: '#ff0055', fillLight: '#cc0044', rimLight: '#ff0077', botLight: '#880033', shellColor: '#ff0055', waveformTiers: [['#ff0055','#cc0033'],['#ff3366','#dd0044'],['#ff0044','#aa0033'],['#ff2255','#cc0033']] }) },
+    { id: 'set_stemforge', type: 'cube_hammer', name: 'StemForge Cube & Hammer', description: 'The original StemForge set. Steel chrome cube with forge-fire glow and matching hammer. Every creator starts here — yours forever, free.',                        price_cents: 0,   rarity: 'standard', sort_order: 1, preview_colors: JSON.stringify({ primary: '#00e5ff',  secondary: '#ff8c20', cubeBody: '#070e1c', edgeGlow: '#00e5ff',  accent: '#ff8c20' }) },
+    { id: 'set_inferno',   type: 'cube_hammer', name: 'Inferno Cube & Hammer',   description: 'Volcanic obsidian cube with ember-cracked edges and a scorched iron hammer. For producers who forge in the dark.',                                           price_cents: 199, rarity: 'standard', sort_order: 2, preview_colors: JSON.stringify({ primary: '#ff4400',  secondary: '#ff6600', cubeBody: '#0a0404', edgeGlow: '#ff2200',  accent: '#ff6600' }) },
+    { id: 'set_neon',      type: 'cube_hammer', name: 'Neon Cube & Hammer',      description: 'Frosted glass cube with electric cyan pulse lines and a neon-lit chrome hammer. Invisible in daylight. Unstoppable at night.',                                price_cents: 199, rarity: 'standard', sort_order: 3, preview_colors: JSON.stringify({ primary: '#00ffff',  secondary: '#0088ff', cubeBody: '#020d18', edgeGlow: '#00ffff',  accent: '#0088ff' }) },
+    { id: 'set_gold',      type: 'cube_hammer', name: 'Gold Cube & Hammer',      description: '24k brushed gold cube with warm amber glow and a gilded hammer. Luxury aesthetics for the chart-topping producer.',                                           price_cents: 199, rarity: 'standard', sort_order: 4, preview_colors: JSON.stringify({ primary: '#ffd700',  secondary: '#ff8800', cubeBody: '#1a1000', edgeGlow: '#ffd700',  accent: '#ff8800' }) },
+    { id: 'set_diamond',   type: 'cube_hammer', name: 'Diamond Cube & Hammer',   description: 'Crimson diamond-faceted cube with a crystal hammer dripping in red. A rare collector set — only the sharpest producers carry this.',                        price_cents: 199, rarity: 'standard', sort_order: 5, preview_colors: JSON.stringify({ primary: '#ff0055',  secondary: '#ff4488', cubeBody: '#1a0008', edgeGlow: '#ff0055',  accent: '#ff4488' }) },
   ]
   for (const item of shopItems) {
     await db.prepare(`INSERT OR IGNORE INTO shop_items (id, type, name, description, price_cents, rarity, max_supply, sort_order, preview_colors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(item.id, item.type, item.name, item.description, item.price_cents, item.rarity, (item as any).max_supply ?? null, item.sort_order, item.preview_colors).run()
   }
 
-  // active_cube_id on users
-  try { await db.prepare(`ALTER TABLE users ADD COLUMN active_cube_id TEXT DEFAULT 'cube_forge'`).run() } catch {}
+  // active_set_id on users (tracks equipped Cube & Hammer set)
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN active_cube_id TEXT DEFAULT 'set_stemforge'`).run() } catch {}
+  try { await db.prepare(`ALTER TABLE users ADD COLUMN active_set_id TEXT DEFAULT 'set_stemforge'`).run() } catch {}
 
   // ── Performance indexes (idempotent) ──
   try { await db.prepare(`CREATE INDEX IF NOT EXISTS idx_page_views_created_at ON page_views (created_at)`).run() } catch {}
@@ -4963,13 +4965,24 @@ app.post('/api/stripe/webhook', async (c) => {
       const customerId = session.customer
       const metaType = session.metadata?.type
 
+      // Shop item (one-time purchase — Cube & Hammer set)
+      if (metaType === 'shop_item' && userId && session.metadata?.item_id) {
+        const itemId = session.metadata.item_id
+        const stripePI = session.payment_intent || session.id
+        const purchaseId = `stripe_${stripePI}`
+        await c.env.DB.prepare(
+          `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, stripe_pi, equipped) VALUES (?, ?, ?, ?, ?, 0)`
+        ).bind(purchaseId, userId, itemId, session.amount_total || 199, stripePI).run()
+        await c.env.DB.prepare(`UPDATE shop_items SET sold_count = sold_count + 1 WHERE id = ?`).bind(itemId).run().catch(() => {})
+      }
+
       // Credit pack one-time purchase
       if (metaType === 'credit_pack' && userId) {
         const credits = parseInt(session.metadata?.credits || '0', 10)
         if (credits > 0) {
           await c.env.DB.prepare(`UPDATE users SET bonus_credits=bonus_credits+? WHERE id=?`).bind(credits, userId).run()
         }
-      } else if (userId && subId) {
+      } else if (metaType !== 'shop_item' && userId && subId) {
         // Subscription purchase
         const sub = await stripeRequest('GET', `/subscriptions/${subId}`, {}, c.env.STRIPE_SECRET_KEY)
         const priceId = sub.items?.data?.[0]?.price?.id
@@ -5339,13 +5352,16 @@ app.get('/profile', async (c) => {
   return c.html(profilePage(user))
 })
 
-// ── /shop — Coming Soon placeholder (full shop restoring later) ──────────
+// ── /shop — StemForge Shop ────────────────────────────────────────────────
 app.get('/shop', async (c) => {
   if (!c.env.DB || !c.env.SESSION_SECRET) return c.redirect('/login?next=/shop')
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.redirect('/login?next=/shop')
   const ASSET_VER_SHOP = ASSET_VER
+  // Detect purchase success/cancel query params
+  const purchaseStatus = new URL(c.req.url).searchParams.get('purchase') || ''
+  const purchasedItem  = new URL(c.req.url).searchParams.get('item') || ''
   return c.html(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5355,53 +5371,226 @@ app.get('/shop', async (c) => {
   <link href="/static/style.css?v=${ASSET_VER_SHOP}" rel="stylesheet"/>
   <link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
   <style>
-    .shop-cs-page { max-width: 680px; margin: 80px auto; padding: 0 20px 80px; text-align: center; }
-    .shop-cs-icon { font-size: 4rem; margin-bottom: 24px; display: block; }
-    .shop-cs-title { font-size: 2rem; font-weight: 800; margin-bottom: 12px; background: linear-gradient(135deg,#a78bfa,#8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-    .shop-cs-sub { color: var(--muted); font-size: 1rem; line-height: 1.7; margin-bottom: 32px; max-width: 460px; margin-left: auto; margin-right: auto; }
-    .shop-cs-badge { display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg,rgba(139,92,246,.18),rgba(167,139,250,.08)); border: 1px solid rgba(139,92,246,.4); border-radius: 999px; padding: 8px 20px; font-size: .88rem; font-weight: 700; color: #c4b5fd; margin-bottom: 32px; }
-    .shop-cs-features { display: grid; grid-template-columns: repeat(auto-fill,minmax(180px,1fr)); gap: 14px; margin-bottom: 36px; text-align: left; }
-    .shop-cs-feat { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: 16px; }
-    .shop-cs-feat i { color: #8b5cf6; margin-bottom: 8px; font-size: 1.2rem; display: block; }
-    .shop-cs-feat span { font-size: .82rem; color: #e2e8f0; font-weight: 600; }
-    .shop-cs-feat p { font-size: .76rem; color: var(--muted); margin: 4px 0 0; line-height: 1.5; }
+    /* ── Shop page ── */
+    .sf-shop { max-width: 1020px; margin: 0 auto; padding: 32px 20px 80px; }
+    .sf-shop__hero { margin-bottom: 36px; }
+    .sf-shop__hero h1 { font-size: 1.8rem; font-weight: 800; display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .sf-shop__hero p { color: var(--muted); font-size: .9rem; max-width: 560px; }
+    .sf-shop__section-title { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #a78bfa; margin: 0 0 18px; display: flex; align-items: center; gap: 8px; }
+    /* Grid */
+    .sf-shop__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 18px; margin-bottom: 48px; }
+    /* Item card */
+    .sf-item { background: rgba(255,255,255,.04); border: 1.5px solid rgba(255,255,255,.08); border-radius: 16px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .2s, transform .2s, box-shadow .2s; cursor: default; }
+    .sf-item:hover { transform: translateY(-3px); border-color: rgba(139,92,246,.35); box-shadow: 0 8px 32px rgba(139,92,246,.08); }
+    .sf-item.owned { border-color: rgba(139,92,246,.5); box-shadow: 0 0 24px rgba(139,92,246,.08); }
+    /* Preview area */
+    .sf-item__preview { height: 140px; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; flex-shrink: 0; }
+    .sf-item__badge { position: absolute; top: 10px; right: 10px; font-size: .68rem; font-weight: 800; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .05em; }
+    .sf-item__badge--free   { background: rgba(16,185,129,.2); border: 1px solid rgba(16,185,129,.4); color: #6ee7b7; }
+    .sf-item__badge--owned  { background: rgba(139,92,246,.2); border: 1px solid rgba(139,92,246,.45); color: #c4b5fd; }
+    .sf-item__badge--locked { background: rgba(0,0,0,.3); border: 1px solid rgba(255,255,255,.1); color: rgba(255,255,255,.4); }
+    /* Body */
+    .sf-item__body { padding: 12px 14px 14px; display: flex; flex-direction: column; flex: 1; }
+    .sf-item__name { font-weight: 700; font-size: .88rem; margin-bottom: 5px; line-height: 1.3; }
+    .sf-item__desc { font-size: .74rem; color: var(--muted); line-height: 1.55; flex: 1; margin-bottom: 12px; }
+    /* CTA button */
+    .sf-item__btn { width: 100%; padding: 8px; border-radius: 9px; font-size: .82rem; font-weight: 700; cursor: pointer; border: none; display: flex; align-items: center; justify-content: center; gap: 7px; transition: opacity .15s, transform .1s; }
+    .sf-item__btn:hover:not(:disabled) { opacity: .9; transform: scale(1.02); }
+    .sf-item__btn:disabled { cursor: default; transform: none; }
+    .sf-item__btn--free    { background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.35); color: #6ee7b7; }
+    .sf-item__btn--owned   { background: rgba(139,92,246,.12); border: 1px solid rgba(139,92,246,.3); color: #a78bfa; }
+    .sf-item__btn--buy     { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
+    .sf-item__btn--equip   { background: linear-gradient(135deg,#7c3aed,#8b5cf6); color: #fff; }
+    /* Price tag */
+    .sf-item__price { font-size: .75rem; font-weight: 700; color: rgba(255,255,255,.55); margin-bottom: 8px; }
+    /* Toast */
+    .sf-toast { position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%); padding: 13px 24px; border-radius: 12px; font-weight: 600; font-size: .88rem; z-index: 9999; display: none; align-items: center; gap: 10px; }
+    .sf-toast.success { background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.4); color: #6ee7b7; }
+    .sf-toast.error   { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.35); color: #fca5a5; }
+    .sf-toast.info    { background: rgba(139,92,246,.15); border: 1px solid rgba(139,92,246,.4); color: #c4b5fd; }
+    /* Cube+Hammer preview SVG wrapper */
+    .sf-ch-preview { width: 90px; height: 90px; position: relative; }
+    @keyframes sfCubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-28deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-28deg) translateY(-5px)}}
+    @keyframes sfHammerSwing{0%,80%,100%{transform:rotate(-12deg)}40%{transform:rotate(8deg)}}
+    /* Collection link */
+    .sf-coll-link { display: inline-flex; align-items: center; gap: 8px; color: var(--primary); font-size: .88rem; font-weight: 600; text-decoration: none; padding: 10px 0; }
+    .sf-coll-link:hover { opacity: .8; }
   </style>
 </head>
 <body>
 ${globalSidebar()}
-<main class="shop-cs-page">
-  <span class="shop-cs-icon">🛒</span>
-  <h1 class="shop-cs-title">Shop — Coming Soon</h1>
-  <p class="shop-cs-sub">We're building something special for you. The StemForge Shop will let you personalise your forge, top up points, and unlock exclusive skins.</p>
-  <div class="shop-cs-badge">
-    <i class="fas fa-clock"></i> Launching very soon
+<div id="sf-toast" class="sf-toast"></div>
+<main class="sf-shop">
+  <div class="sf-shop__hero">
+    <h1><i class="fas fa-store" style="color:#8b5cf6;font-size:1.5rem"></i> StemForge Shop</h1>
+    <p>Personalise your forge with exclusive Cube &amp; Hammer sets. Each set includes the matching cube and hammer as one combined item.</p>
   </div>
-  <div class="shop-cs-features">
-    <div class="shop-cs-feat">
-      <i class="fas fa-palette"></i>
-      <span>Exclusive Themes</span>
-      <p>Unlock unique visual themes and personalisation options for your forge.</p>
-    </div>
-    <div class="shop-cs-feat">
-      <i class="fas fa-bolt"></i>
-      <span>Point Packs</span>
-      <p>One-time credit top-ups that stack on your monthly plan.</p>
-    </div>
-    <div class="shop-cs-feat">
-      <i class="fas fa-star"></i>
-      <span>Plan Upgrades</span>
-      <p>Upgrade to Creator or Pro Artist directly from the Shop.</p>
-    </div>
-    <div class="shop-cs-feat">
-      <i class="fas fa-gem"></i>
-      <span>Collectibles</span>
-      <p>Limited-edition items. Once they're gone, they're gone.</p>
+
+  <div class="sf-shop__section-title">
+    <i class="fas fa-cube"></i> Cube &amp; Hammer Sets
+    <span style="margin-left:auto;font-size:.76rem;color:rgba(255,255,255,.35);text-transform:none;letter-spacing:0">5 sets total &mdash; 1 free, 4 at $1.99</span>
+  </div>
+
+  <div class="sf-shop__grid" id="sf-shop-grid">
+    <div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)">
+      <i class="fas fa-circle-notch fa-spin" style="font-size:1.5rem"></i>
     </div>
   </div>
-  <a href="/subscription" style="display:inline-flex;align-items:center;gap:8px;padding:12px 24px;background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff;border-radius:10px;font-weight:700;text-decoration:none;font-size:.9rem">
-    <i class="fas fa-credit-card"></i> Manage Subscription
-  </a>
+
+  <div style="text-align:center;margin-top:8px">
+    <a href="/collection" class="sf-coll-link"><i class="fas fa-gem"></i> View My Collection</a>
+  </div>
 </main>
+
+<script>
+(function(){
+  var PURCHASE_STATUS = '${purchaseStatus}';
+  var PURCHASED_ITEM  = '${purchasedItem}';
+
+  // ── Toast ──────────────────────────────────────────────────────────────────
+  function toast(msg, type, dur) {
+    var el = document.getElementById('sf-toast');
+    el.className = 'sf-toast ' + (type||'info');
+    el.innerHTML = '<i class="fas fa-'+(type==='success'?'check-circle':type==='error'?'exclamation-circle':'info-circle')+'"></i> ' + msg;
+    el.style.display = 'flex';
+    clearTimeout(el._timer);
+    el._timer = setTimeout(function(){ el.style.display='none'; }, dur||4000);
+  }
+
+  // ── Colour helpers ─────────────────────────────────────────────────────────
+  function cubeHammerHtml(colors) {
+    var c = colors || {};
+    var body  = c.cubeBody || '#070e1c';
+    var edge  = c.primary  || '#00e5ff';
+    var acc   = c.secondary|| '#ff8c20';
+    var s = '';
+    // Cube (CSS 3D)
+    s += '<div style="perspective:180px;width:58px;height:58px;position:absolute;left:8px;bottom:8px">';
+    s += '<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:sfCubeFloat 4s ease-in-out infinite">';
+    var faces = ['translateZ(29px)','rotateY(180deg) translateZ(29px)','rotateY(-90deg) translateZ(29px)','rotateY(90deg) translateZ(29px)','rotateX(90deg) translateZ(29px)','rotateX(-90deg) translateZ(29px)'];
+    faces.forEach(function(t){
+      s += '<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t+';box-shadow:inset 0 0 8px rgba(0,0,0,.35),0 0 6px '+edge+'55"></div>';
+    });
+    s += '</div></div>';
+    // Hammer (SVG on top of cube)
+    s += '<div style="position:absolute;right:4px;top:6px;animation:sfHammerSwing 3s ease-in-out infinite;transform-origin:bottom right">';
+    s += '<svg width="40" height="44" viewBox="0 0 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">';
+    // Handle
+    s += '<rect x="19" y="18" width="5" height="24" rx="2" fill="'+acc+'"/>';
+    // Head
+    s += '<rect x="6" y="6" width="28" height="16" rx="4" fill="'+edge+'"/>';
+    s += '<rect x="6" y="6" width="28" height="16" rx="4" fill="url(#hg'+edge.replace('#','')+')"/>';
+    s += '<defs><linearGradient id="hg'+edge.replace('#','')+'" x1="6" y1="6" x2="34" y2="22" gradientUnits="userSpaceOnUse"><stop stop-color="'+edge+'" stop-opacity="1"/><stop offset="1" stop-color="'+body+'" stop-opacity=".6"/></linearGradient></defs>';
+    s += '<rect x="14" y="6" width="12" height="16" rx="2" fill="'+acc+'" opacity=".55"/>';
+    s += '</svg>';
+    s += '</div>';
+    return s;
+  }
+
+  // ── Render grid ────────────────────────────────────────────────────────────
+  function renderGrid(items, owned, activeSetId) {
+    var ownedIds = {};
+    (owned||[]).forEach(function(o){ ownedIds[o.item_id] = true; });
+    var grid = document.getElementById('sf-shop-grid');
+    if (!items || !items.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-store"></i><p>No items available.</p></div>';
+      return;
+    }
+    grid.innerHTML = items.map(function(item){
+      var colors = {};
+      try { colors = JSON.parse(item.preview_colors||'{}'); } catch(e){}
+      var isFree  = item.price_cents === 0;
+      var isOwned = !!ownedIds[item.id];
+      var isActive = item.id === activeSetId;
+      var priceLabel = isFree ? 'Free' : '$' + (item.price_cents/100).toFixed(2);
+      var bgFrom = colors.cubeBody || '#070e1c';
+      var bgTo   = '#050a14';
+      var badgeHtml = isFree
+        ? '<span class="sf-item__badge sf-item__badge--free">Free</span>'
+        : isOwned
+          ? '<span class="sf-item__badge sf-item__badge--owned"><i class="fas fa-check" style="margin-right:3px"></i>Owned</span>'
+          : '<span class="sf-item__badge sf-item__badge--locked"><i class="fas fa-lock" style="margin-right:3px"></i>$'+( item.price_cents/100).toFixed(2)+'</span>';
+      var btnHtml;
+      if (isOwned && isActive) {
+        btnHtml = '<button class="sf-item__btn sf-item__btn--owned" disabled><i class="fas fa-check"></i> Equipped</button>';
+      } else if (isOwned) {
+        btnHtml = '<button class="sf-item__btn sf-item__btn--equip" onclick="window.sfEquip(\''+item.id+'\',this)"><i class="fas fa-wand-magic-sparkles"></i> Equip</button>';
+      } else if (isFree) {
+        btnHtml = '<button class="sf-item__btn sf-item__btn--free" onclick="window.sfClaim(\''+item.id+'\',this)"><i class="fas fa-gift"></i> Claim Free</button>';
+      } else {
+        btnHtml = '<button class="sf-item__btn sf-item__btn--buy" onclick="window.sfBuy(\''+item.id+'\',this)"><i class="fas fa-shopping-cart"></i> Buy — $'+(item.price_cents/100).toFixed(2)+'</button>';
+      }
+      return '<div class="sf-item'+(isOwned?' owned':'')+'" id="sf-card-'+item.id+'">'
+        + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+','+bgTo+')">'
+        +   cubeHammerHtml(colors)
+        +   badgeHtml
+        + '</div>'
+        + '<div class="sf-item__body">'
+        +   '<div class="sf-item__name">'+item.name+'</div>'
+        +   '<div class="sf-item__desc">'+item.description+'</div>'
+        +   (!isFree && !isOwned ? '<div class="sf-item__price">One-time purchase</div>' : '')
+        +   btnHtml
+        + '</div>'
+        + '</div>';
+    }).join('');
+  }
+
+  // ── API calls ──────────────────────────────────────────────────────────────
+  function loadShop() {
+    Promise.all([
+      fetch('/api/shop/items').then(function(r){ return r.json(); }),
+      fetch('/api/shop/collection').then(function(r){ return r.json(); })
+    ]).then(function(res){
+      var itemsData = res[0]; var collData = res[1];
+      renderGrid(itemsData.items||[], collData.owned||[], collData.active_set_id||'set_stemforge');
+      // Show post-purchase toast
+      if (PURCHASE_STATUS === 'success' && PURCHASED_ITEM) {
+        var found = (itemsData.items||[]).find(function(i){ return i.id===PURCHASED_ITEM; });
+        toast((found ? found.name : 'Item') + ' unlocked! Head to My Collection to equip it.', 'success', 5000);
+      } else if (PURCHASE_STATUS === 'cancel') {
+        toast('Purchase cancelled — no charge was made.', 'info', 4000);
+      }
+    }).catch(function(){
+      document.getElementById('sf-shop-grid').innerHTML='<div style="grid-column:1/-1;text-align:center;padding:48px;color:var(--muted)"><i class="fas fa-exclamation-triangle"></i><p>Failed to load shop. <button onclick="loadShop()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-weight:700">Retry</button></p></div>';
+    });
+  }
+  loadShop();
+
+  // ── Claim free item ────────────────────────────────────────────────────────
+  window.sfClaim = function(itemId, btn) {
+    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Claiming…';
+    fetch('/api/shop/purchase/'+itemId, {method:'POST'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.ok) { toast('Claimed! Head to My Collection to equip it.','success'); setTimeout(function(){ loadShop(); },600); }
+        else { btn.disabled=false; btn.innerHTML='<i class="fas fa-gift"></i> Claim Free'; toast(d.error||'Error','error'); }
+      }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-gift"></i> Claim Free'; toast('Network error — please try again.','error'); });
+  };
+
+  // ── Buy paid item via Stripe ───────────────────────────────────────────────
+  window.sfBuy = function(itemId, btn) {
+    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Loading…';
+    fetch('/api/shop/purchase/'+itemId, {method:'POST'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.checkout_url) { window.location.href = d.checkout_url; }
+        else if (d.error === 'Already owned') { toast('You already own this item!','info'); setTimeout(function(){ loadShop(); },400); }
+        else { btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast(d.error||'Unable to start checkout.','error'); }
+      }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-shopping-cart"></i> Buy'; toast('Network error — please try again.','error'); });
+  };
+
+  // ── Equip owned item ───────────────────────────────────────────────────────
+  window.sfEquip = function(itemId, btn) {
+    btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i>';
+    fetch('/api/shop/equip/'+itemId, {method:'POST'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.ok) { toast('Set equipped! Head to Create to see it.','success',4000); setTimeout(function(){ loadShop(); },400); }
+        else { btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Equip'; toast(d.error||'Error','error'); }
+      }).catch(function(){ btn.disabled=false; btn.innerHTML='<i class="fas fa-wand-magic-sparkles"></i> Equip'; toast('Network error.','error'); });
+  };
+})();
+</script>
 <script src="/static/app.v2.70.js?v=${ASSET_VER_SHOP}"></script>
 </body>
 </html>`)
@@ -5450,42 +5639,71 @@ ${globalSidebar()}
 <main class="coll-page">
   <div class="coll-hero">
     <h1><i class="fas fa-gem" style="color:#8b5cf6"></i> My Collection</h1>
-    <p>Everything you own. Equip a cube to make your forge uniquely yours.</p>
+    <p>Every Cube &amp; Hammer set you own. Equip one to make your forge uniquely yours.</p>
   </div>
   <div id="coll-content"><div style="color:var(--muted);text-align:center;padding:48px"><i class="fas fa-circle-notch fa-spin"></i> Loading your collection…</div></div>
 </main>
+<style>
+  @keyframes collCubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-28deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-28deg) translateY(-5px)}}
+  @keyframes collHammerSwing{0%,80%,100%{transform:rotate(-12deg)}40%{transform:rotate(8deg)}}
+</style>
 <script>
 (function(){
+  function chPreviewHtml(colors){
+    var c=colors||{};
+    var body=c.cubeBody||'#070e1c';
+    var edge=c.primary||c.edgeGlow||'#00e5ff';
+    var acc=c.secondary||c.accent||'#ff8c20';
+    var s='<div style="position:relative;width:90px;height:90px;margin:auto">';
+    // Cube
+    s+='<div style="perspective:160px;width:58px;height:58px;position:absolute;left:6px;bottom:6px">';
+    s+='<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:collCubeFloat 4s ease-in-out infinite">';
+    [['translateZ(29px)'],['rotateY(180deg) translateZ(29px)'],['rotateY(-90deg) translateZ(29px)'],['rotateY(90deg) translateZ(29px)'],['rotateX(90deg) translateZ(29px)'],['rotateX(-90deg) translateZ(29px)']].forEach(function(t){
+      s+='<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t[0]+';box-shadow:inset 0 0 8px rgba(0,0,0,.35),0 0 5px '+edge+'44"></div>';
+    });
+    s+='</div></div>';
+    // Hammer
+    s+='<div style="position:absolute;right:2px;top:4px;animation:collHammerSwing 3s ease-in-out infinite;transform-origin:bottom right">';
+    s+='<svg width="40" height="44" viewBox="0 0 40 44" fill="none" xmlns="http://www.w3.org/2000/svg">';
+    s+='<rect x="19" y="18" width="5" height="24" rx="2" fill="'+acc+'"/>';
+    s+='<rect x="6" y="6" width="28" height="16" rx="4" fill="'+edge+'" opacity=".9"/>';
+    s+='<rect x="14" y="6" width="12" height="16" rx="2" fill="'+acc+'" opacity=".55"/>';
+    s+='</svg></div>';
+    s+='</div>';
+    return s;
+  }
+
   Promise.all([
-    fetch('/api/shop/collection').then(r=>r.json()),
-    fetch('/api/shop/items').then(r=>r.json())
+    fetch('/api/shop/collection').then(function(r){return r.json();}),
+    fetch('/api/shop/items').then(function(r){return r.json();})
   ]).then(function(res){
     var coll=res[0]; var allItems=res[1].items||[];
-    var owned=coll.owned||[]; var activeCube=coll.active_cube_id||'cube_forge';
+    var owned=coll.owned||[]; var activeSet=coll.active_set_id||coll.active_cube_id||'set_stemforge';
     var itemMap={};
     allItems.forEach(function(it){itemMap[it.id]=it;});
     if(!owned.length){
       document.getElementById('coll-content').innerHTML=
-        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem">Exclusive items will be available in the Shop soon!</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
+        '<div class="coll-empty"><i class="fas fa-gem"></i><p>Your collection is empty.</p><p style="font-size:.82rem;margin-top:4px">Visit the shop to pick up a Cube &amp; Hammer set!</p><a href="/shop" class="coll-shop-link"><i class="fas fa-store"></i> Visit Shop</a></div>';
       return;
     }
-    var cubes=owned.filter(function(o){return o.type==='cube';});
+    var sets=owned.filter(function(o){return o.type==='cube_hammer'||o.type==='cube';});
     var html='';
-    if(cubes.length){
-      html+='<div class="coll-section-title"><i class="fas fa-cube"></i> Cube Skins ('+cubes.length+')</div>';
-      html+='<div class="coll-grid" id="coll-cube-grid">';
-      cubes.forEach(function(o){
+    if(sets.length){
+      html+='<div class="coll-section-title"><i class="fas fa-cube"></i> Cube &amp; Hammer Sets ('+sets.length+')</div>';
+      html+='<div class="coll-grid" id="coll-set-grid">';
+      sets.forEach(function(o){
         var it=itemMap[o.item_id]||{name:o.name||o.item_id,preview_colors:'{}',rarity:'standard'};
         var colors={};try{colors=JSON.parse(it.preview_colors||'{}');}catch(e){}
-        var isEquipped=o.item_id===activeCube;
+        var isEquipped=o.item_id===activeSet;
         var date=o.purchased_at?new Date(o.purchased_at).toLocaleDateString():'';
+        var bgFrom=colors.cubeBody||'#070e1c';
         html+='<div class="coll-card'+(isEquipped?' equipped':'')+'" id="coll-card-'+o.item_id+'">';
-        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+darken(colors.cubeBody||'#070e1c')+',#050a14)">'+cubePreviewHtml(colors)+'</div>';
+        html+='<div class="coll-preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14)">'+chPreviewHtml(colors)+'</div>';
         html+='<div class="coll-body">';
         html+='<div class="coll-name">'+it.name+(isEquipped?' <i class="fas fa-check" style="color:#a78bfa;font-size:.75rem"></i>':'')+'</div>';
         if(date) html+='<div class="coll-date">Owned since '+date+'</div>';
         if(isEquipped) html+='<button class="coll-equip-btn coll-equip-btn--active" disabled><i class="fas fa-check" style="margin-right:4px"></i>Equipped</button>';
-        else           html+='<button class="coll-equip-btn coll-equip-btn--equip" onclick="equipCube(\\'' + o.item_id + '\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip</button>';
+        else           html+='<button class="coll-equip-btn coll-equip-btn--equip" onclick="equipSet(\\''+ o.item_id +'\\',this)"><i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip</button>';
         html+='</div></div>';
       });
       html+='</div>';
@@ -5495,28 +5713,17 @@ ${globalSidebar()}
   }).catch(function(){
     document.getElementById('coll-content').innerHTML='<div class="coll-empty"><i class="fas fa-exclamation-triangle"></i><p>Failed to load collection.</p><button onclick="location.reload()" style="background:none;border:none;color:var(--primary);cursor:pointer;font-size:.88rem">Try again</button></div>';
   });
-  function cubePreviewHtml(colors){
-    var c=colors||{};var body=c.cubeBody||'#070e1c';var edge=c.edgeGlow||'#00e5ff';
-    return '<div style="perspective:200px;width:70px;height:70px;margin:auto">'+
-      '<div style="width:70px;height:70px;position:relative;transform-style:preserve-3d;animation:cubeFloat 4s ease-in-out infinite;border-radius:8px">'+
-      [['translateZ(35px)'],['rotateY(180deg) translateZ(35px)'],['rotateY(-90deg) translateZ(35px)'],['rotateY(90deg) translateZ(35px)'],['rotateX(90deg) translateZ(35px)'],['rotateX(-90deg) translateZ(35px)']].map(function(t){
-        return '<div style="position:absolute;width:70px;height:70px;background:'+body+';border:1.5px solid '+edge+';border-radius:7px;transform:'+t[0]+';box-shadow:inset 0 0 10px rgba(0,0,0,.3)"></div>';
-      }).join('')+'</div></div>';
-  }
-  function darken(hex){
-    hex=hex.replace('#','');var n=parseInt(hex,16);
-    return 'rgb('+Math.max(0,((n>>16)&255)-20)+','+Math.max(0,((n>>8)&255)-20)+','+Math.max(0,(n&255)-20)+')';
-  }
-  window.equipCube=function(itemId,btn){
+
+  window.equipSet=function(itemId,btn){
     btn.disabled=true;btn.innerHTML='<i class="fas fa-circle-notch fa-spin"></i>';
     fetch('/api/shop/equip/'+itemId,{method:'POST'})
       .then(function(r){return r.json();})
       .then(function(d){
         if(d.ok){
           var t=document.createElement('div');
-          t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#c4b5fd;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999';
-          t.innerHTML='<i class="fas fa-check" style="margin-right:8px"></i>Cube equipped! Head to Create to see it.';
-          document.body.appendChild(t);setTimeout(function(){t.remove();},3000);
+          t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:rgba(139,92,246,.15);border:1px solid rgba(139,92,246,.4);color:#c4b5fd;padding:12px 22px;border-radius:12px;font-weight:600;font-size:.88rem;z-index:9999;display:flex;align-items:center;gap:8px';
+          t.innerHTML='<i class="fas fa-check"></i> Set equipped! Head to Create to see it.';
+          document.body.appendChild(t);setTimeout(function(){t.remove();},3500);
           setTimeout(function(){location.reload();},500);
         }else{btn.disabled=false;btn.innerHTML='<i class="fas fa-wand-magic-sparkles" style="margin-right:4px"></i>Equip';alert(d.error||'Error');}
       }).catch(function(){btn.disabled=false;btn.innerHTML='Equip';});
@@ -5955,14 +6162,14 @@ app.get('/api/shop/collection', async (c) => {
   const token = getSessionCookie(c.req.raw)
   const user = token ? await getSessionUser(c.env.DB, token) : null
   if (!user) return c.json({ error: 'Not authenticated' }, 401)
-  // Auto-grant The Forge (free) if not already owned
+  // Auto-grant the free StemForge set if not already owned
   const forgeOwned = await c.env.DB.prepare(
-    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = 'cube_forge'`
+    `SELECT id FROM user_purchases WHERE user_id = ? AND item_id = 'set_stemforge'`
   ).bind(user.id).first<any>()
   if (!forgeOwned) {
-    const grantId = `grant_${user.id}_cube_forge`
+    const grantId = `grant_${user.id}_set_stemforge`
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, 'cube_forge', 0, 1)`
+      `INSERT OR IGNORE INTO user_purchases (id, user_id, item_id, price_paid, equipped) VALUES (?, ?, 'set_stemforge', 0, 1)`
     ).bind(grantId, user.id).run()
   }
   const purchases = await c.env.DB.prepare(
@@ -5971,9 +6178,9 @@ app.get('/api/shop/collection', async (c) => {
      JOIN shop_items si ON si.id = up.item_id
      WHERE up.user_id = ? ORDER BY up.purchased_at ASC`
   ).bind(user.id).all<any>()
-  const userData = await c.env.DB.prepare(`SELECT active_cube_id FROM users WHERE id = ?`).bind(user.id).first<any>()
-  const activeCubeId = userData?.active_cube_id || 'cube_forge'
-  return c.json({ owned: purchases.results || [], active_cube_id: activeCubeId })
+  const userData = await c.env.DB.prepare(`SELECT active_set_id, active_cube_id FROM users WHERE id = ?`).bind(user.id).first<any>()
+  const activeSetId = userData?.active_set_id || userData?.active_cube_id || 'set_stemforge'
+  return c.json({ owned: purchases.results || [], active_set_id: activeSetId, active_cube_id: activeSetId })
 })
 
 // POST /api/shop/equip/:itemId — equip an owned item
@@ -5989,10 +6196,10 @@ app.post('/api/shop/equip/:itemId', async (c) => {
   if (!owned) return c.json({ error: 'Item not owned' }, 403)
   const item = await c.env.DB.prepare(`SELECT type FROM shop_items WHERE id = ?`).bind(itemId).first<any>()
   if (!item) return c.json({ error: 'Item not found' }, 404)
-  if (item.type === 'cube') {
-    await c.env.DB.prepare(`UPDATE users SET active_cube_id = ? WHERE id = ?`).bind(itemId, user.id).run()
+  if (item.type === 'cube' || item.type === 'cube_hammer') {
+    await c.env.DB.prepare(`UPDATE users SET active_cube_id = ?, active_set_id = ? WHERE id = ?`).bind(itemId, itemId, user.id).run()
   }
-  return c.json({ ok: true, active_cube_id: itemId })
+  return c.json({ ok: true, active_set_id: itemId, active_cube_id: itemId })
 })
 
 // POST /api/shop/purchase/:itemId — buy an item (free items instant; paid via Stripe)
@@ -6026,7 +6233,7 @@ app.post('/api/shop/purchase/:itemId', async (c) => {
     'mode': 'payment',
     'payment_method_types[]': 'card',
     'line_items[0][price_data][currency]': 'usd',
-    'line_items[0][price_data][product_data][name]': item.name + ' — StemForge Cube',
+    'line_items[0][price_data][product_data][name]': item.name + ' — StemForge Shop',
     'line_items[0][price_data][product_data][description]': item.description || '',
     'line_items[0][price_data][unit_amount]': String(item.price_cents),
     'line_items[0][quantity]': '1',
@@ -11885,7 +12092,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-183'
+const ASSET_VER = '20261022-187'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
@@ -12092,9 +12299,8 @@ function globalSidebar() {
       <a href="/profile" class="gs-user-dropdown__item">
         <i class="fas fa-user"></i> Profile
       </a>
-      <!-- Shop & Collection hidden permanently -->
-      <!-- <a href="/shop" class="gs-user-dropdown__item"><i class="fas fa-store"></i> Shop &amp; Credits</a> -->
-      <!-- <a href="/collection" class="gs-user-dropdown__item"><i class="fas fa-gem"></i> My Collection</a> -->
+      <a href="/shop" class="gs-user-dropdown__item"><i class="fas fa-store"></i> Shop</a>
+      <a href="/collection" class="gs-user-dropdown__item"><i class="fas fa-gem"></i> My Collection</a>
       <a href="/subscription" class="gs-user-dropdown__item">
         <i class="fas fa-credit-card"></i> Subscription
       </a>
@@ -12132,12 +12338,11 @@ function globalSidebar() {
       <i class="fas fa-comment-alt"></i>
       <span class="nav-label-full">Give Us Feedback</span><span class="nav-label-short">Feedback</span>
     </a>
-    <!-- Shop & Collection permanently hidden -->
-    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item" data-page="shop" style="display:none!important" aria-hidden="true">
-      <i class="fas fa-store"></i><span class="nav-label-full">Shop &amp; Credits</span>
+    <a href="/shop" id="sidebar-get-credits-btn" class="gs-sidebar__nav-item gs-auth-nav" data-page="shop" style="display:none">
+      <i class="fas fa-store"></i><span class="nav-label-full">Shop</span><span class="nav-label-short">Shop</span>
     </a>
-    <a href="/collection" class="gs-sidebar__nav-item" data-page="collection" style="display:none!important" aria-hidden="true">
-      <i class="fas fa-gem"></i><span class="nav-label-full">My Collection</span>
+    <a href="/collection" class="gs-sidebar__nav-item gs-auth-nav" data-page="collection" style="display:none">
+      <i class="fas fa-gem"></i><span class="nav-label-full">My Collection</span><span class="nav-label-short">Collection</span>
     </a>
 
   </nav>
