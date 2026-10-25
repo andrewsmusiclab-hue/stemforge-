@@ -13127,10 +13127,6 @@ function maintenancePage() {
   <div class="time-badge"><i class="fas fa-clock"></i><span>Come back in a couple of hours</span></div>
   <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
   <p class="footer">stemforge.studio &nbsp;·&nbsp; Thank you for your patience</p>
-  <!-- Admin bypass: always visible so admin can sign in and regain access -->
-  <a href="/auth/google" style="position:fixed;bottom:16px;right:20px;color:#334155;font-size:.72rem;text-decoration:none;opacity:.4;transition:opacity .2s" onmouseover="this.style.opacity='.9'" onmouseout="this.style.opacity='.4'">
-    <i class="fas fa-lock" style="margin-right:4px"></i>Admin
-  </a>
 </body>
 </html>`
 }
