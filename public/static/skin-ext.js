@@ -673,66 +673,10 @@
     cubeGroup.add(hammerG);
   }
 
-  /* ── buildStone ── GLB-based granite cube + Mjolnir loaded from R2 ── */
+  /* ── buildStone ── procedural granite cube + iron Mjolnir with blue rune glow ── */
+  /* Renders instantly; GLB (69MB) is too large to stream in-browser */
   function buildStone(T, scene, cubeGroup, envMap) {
-    /* Load GLTFLoader dynamically — it's already been injected into the scripts array */
-    var GLTFLoader = window.THREE && window.THREE.GLTFLoader
-      ? window.THREE.GLTFLoader
-      : (window.GLTFLoader || null);
-
-    if (!GLTFLoader) {
-      /* Fallback: procedural stone cube if GLTFLoader unavailable */
-      _buildStoneFallback(T, scene, cubeGroup, envMap);
-      return;
-    }
-
-    var loader = new GLTFLoader();
-    /* Serve from R2 via our proxy endpoint */
-    var glbUrl = '/api/skin-glb/set_stone';
-
-    loader.load(
-      glbUrl,
-      function (gltf) {
-        /* Center and scale the loaded model to fit nicely in the scene */
-        var model = gltf.scene;
-
-        /* Compute bounding box to auto-scale */
-        var box = new T.Box3().setFromObject(model);
-        var size = new T.Vector3();
-        box.getSize(size);
-        var maxDim = Math.max(size.x, size.y, size.z);
-        var scale = maxDim > 0 ? 2.2 / maxDim : 1.0;
-        model.scale.set(scale, scale, scale);
-
-        /* Re-center after scale */
-        var box2 = new T.Box3().setFromObject(model);
-        var center = new T.Vector3();
-        box2.getCenter(center);
-        model.position.sub(center);
-
-        /* Apply environment map to all meshes for nice reflections */
-        model.traverse(function (child) {
-          if (child.isMesh) {
-            if (child.material) {
-              var mats = Array.isArray(child.material) ? child.material : [child.material];
-              mats.forEach(function (mat) {
-                mat.envMap = envMap;
-                mat.envMapIntensity = 1.2;
-                mat.needsUpdate = true;
-              });
-            }
-          }
-        });
-
-        cubeGroup.add(model);
-      },
-      undefined, /* onProgress */
-      function (err) {
-        /* If GLB load fails, fall back to procedural stone cube */
-        console.warn('[skin-ext] set_stone GLB load failed, using fallback:', err);
-        _buildStoneFallback(T, scene, cubeGroup, envMap);
-      }
-    );
+    _buildStoneFallback(T, scene, cubeGroup, envMap);
   }
 
   /* Procedural stone fallback — granite cube + iron Mjolnir with blue rune glow */
@@ -873,8 +817,7 @@
       var BASE128 = 'https://cdn.jsdelivr.net/npm/three@0.128.0/';
       var scripts = [
         BASE128 + 'build/three.min.js',
-        BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js',
-        BASE128 + 'examples/js/loaders/GLTFLoader.js'
+        BASE128 + 'examples/js/geometries/RoundedBoxGeometry.js'
       ];
 
       function loadNext(i, done) {
