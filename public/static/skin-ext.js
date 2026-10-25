@@ -1,16 +1,19 @@
-/* StemForge skin-ext.js v3
-   Loaded BEFORE app.v2.70.js.
-   Strategy: patch _sfInitCube WRAPPER that intercepts THREE.js script loading,
-   waits for Three to load, hooks Group.prototype.add to capture face planes
-   as they are created, then swaps their textures with PNG images.
+/* StemForge skin-ext.js v4
+   Intercepts THREE.js script loading via document.head.appendChild patch.
+   When three.min.js finishes loading we immediately hook Group.prototype.add
+   BEFORE _sfRunCube() fires — so every cubeGroup.add(plane) call is captured.
+   Also recolors hammer materials per skin.
 */
 (function () {
 
   var BASE = '/static/skins/faces/';
 
+  /* Per-skin face PNG paths + Three.js skin properties */
   var PHOTO_SKINS = {
     set_stemforge: {
       faces: { front: BASE+'stemforge_front.png', back: BASE+'stemforge_back.png', left: BASE+'stemforge_side.png', right: BASE+'stemforge_right.png', top: BASE+'stemforge_top.png', bot: BASE+'stemforge_back.png' },
+      hammerHead: 0x2a3a4a, hammerEdge: 0x00e5ff, hammerGlow: '#00e5ff',
+      leatherColor: 0x1a2a3a, ringColor: 0x00ccff,
       cubeBody: 0x070e1c, cubeEmissive: 0x001a33, emissiveInt: 0.12,
       edgeGlow: 0x00e5ff, edgeOpacity: 0.85,
       shellColor: 0x00aaff, shellOpacity: 0.05,
@@ -26,6 +29,8 @@
     },
     set_inferno: {
       faces: { front: BASE+'inferno_front.png', back: BASE+'inferno_back.png', left: BASE+'inferno_side.png', right: BASE+'inferno_right.png', top: BASE+'inferno_top.png', bot: BASE+'inferno_back.png' },
+      hammerHead: 0x1a0800, hammerEdge: 0xff3300, hammerGlow: '#ff4400',
+      leatherColor: 0x3a1000, ringColor: 0xff4400,
       cubeBody: 0x0a0404, cubeEmissive: 0x1a0000, emissiveInt: 0.22,
       edgeGlow: 0xff2200, edgeOpacity: 0.90,
       shellColor: 0xff3300, shellOpacity: 0.06,
@@ -41,6 +46,8 @@
     },
     set_neon: {
       faces: { front: BASE+'neon_front.png', back: BASE+'neon_back.png', left: BASE+'neon_side.png', right: BASE+'neon_right.png', top: BASE+'neon_top.png', bot: BASE+'neon_back.png' },
+      hammerHead: 0x002a2a, hammerEdge: 0x00ffff, hammerGlow: '#00ffff',
+      leatherColor: 0x001a2a, ringColor: 0x00eeff,
       cubeBody: 0x020d18, cubeEmissive: 0x001a1a, emissiveInt: 0.20,
       edgeGlow: 0x00ffff, edgeOpacity: 0.95,
       shellColor: 0x00ffee, shellOpacity: 0.07,
@@ -56,6 +63,8 @@
     },
     set_gold: {
       faces: { front: BASE+'gold_front.png', back: BASE+'gold_back.png', left: BASE+'gold_side.png', right: BASE+'gold_right.png', top: BASE+'gold_top.png', bot: BASE+'gold_back.png' },
+      hammerHead: 0x3a2a00, hammerEdge: 0xffd700, hammerGlow: '#ffd700',
+      leatherColor: 0x2a1800, ringColor: 0xffcc00,
       cubeBody: 0x1a1000, cubeEmissive: 0x1a0a00, emissiveInt: 0.15,
       edgeGlow: 0xffd700, edgeOpacity: 0.88,
       shellColor: 0xffcc00, shellOpacity: 0.06,
@@ -71,6 +80,8 @@
     },
     set_diamond: {
       faces: { front: BASE+'diamond_front.png', back: BASE+'diamond_back.png', left: BASE+'diamond_side.png', right: BASE+'diamond_right.png', top: BASE+'diamond_top.png', bot: BASE+'diamond_back.png' },
+      hammerHead: 0x2a0018, hammerEdge: 0xff0055, hammerGlow: '#ff0077',
+      leatherColor: 0x1a0010, ringColor: 0xff0055,
       cubeBody: 0x1a0008, cubeEmissive: 0x1a0010, emissiveInt: 0.20,
       edgeGlow: 0xff0055, edgeOpacity: 0.92,
       shellColor: 0xff0055, shellOpacity: 0.07,
@@ -86,7 +97,7 @@
     }
   };
 
-  /* Merge photo skins into _CUBE_SKINS whenever it is set */
+  /* Merge photo skins into _CUBE_SKINS on assignment */
   try {
     Object.defineProperty(window, '_CUBE_SKINS', {
       configurable: true,
@@ -100,8 +111,7 @@
     });
   } catch (e) { /* ignore */ }
 
-  /* face plane rotation Y values from app.v2.70.js faceDefs:
-     front=0, back=PI, right=-PI/2, left=+PI/2  */
+  /* face key from rotation.y — matches app.v2.70.js faceDefs exactly */
   function faceKeyFromRotY(ry) {
     if (Math.abs(ry) < 0.1) return 'front';
     if (Math.abs(Math.abs(ry) - Math.PI) < 0.1) return 'back';
@@ -110,13 +120,65 @@
     return null;
   }
 
-  /* Apply PNG textures to a set of captured face plane meshes */
-  function applyFaceTextures(facePlanes, photoSkin, T) {
+  /* State for current patch session */
+  var facePlanes = [];
+  var capturedGroup = null;
+  var hammerMeshes = [];
+  var hookActive = false;
+  var origGroupAdd = null;
+  var origHeadAppend = null;
+  var activePhotoSkin = null;
+  var T = null;
+
+  /* Install Group.prototype.add hook — captures face planes AND hammer meshes */
+  function hookGroupAdd() {
+    if (hookActive || !window.THREE || !window.THREE.Group) return;
+    T = window.THREE;
+    hookActive = true;
+    origGroupAdd = T.Group.prototype.add;
+
+    T.Group.prototype.add = function () {
+      var result = origGroupAdd.apply(this, arguments);
+      for (var i = 0; i < arguments.length; i++) {
+        var obj = arguments[i];
+        if (!obj || !obj.isMesh) continue;
+
+        /* Face planes: PlaneGeometry + CanvasTexture */
+        if (obj.geometry && obj.geometry.type === 'PlaneGeometry') {
+          if (obj.material && obj.material.map && obj.material.map.isCanvasTexture) {
+            facePlanes.push(obj);
+            capturedGroup = this;
+          }
+        }
+
+        /* Hammer body meshes: BoxGeometry or CylinderGeometry with chrome/leather/ring materials */
+        if (obj.geometry) {
+          var gtype = obj.geometry.type;
+          if (gtype === 'BoxGeometry' || gtype === 'CylinderGeometry' || gtype === 'TubeGeometry') {
+            hammerMeshes.push(obj);
+          }
+        }
+      }
+      return result;
+    };
+  }
+
+  /* Restore Group.prototype.add to original */
+  function unhookGroupAdd() {
+    if (!hookActive || !origGroupAdd || !T || !T.Group) return;
+    T.Group.prototype.add = origGroupAdd;
+    origGroupAdd = null;
+    hookActive = false;
+  }
+
+  /* Swap face plane CanvasTextures for PNG textures */
+  function applyFaceTextures(skin) {
+    if (!T || !T.TextureLoader) return;
     var loader = new T.TextureLoader();
     facePlanes.forEach(function (plane) {
-      var faceKey = faceKeyFromRotY(plane.rotation.y);
-      if (!faceKey) return;
-      var url = photoSkin.faces[faceKey];
+      var key = faceKeyFromRotY(plane.rotation.y);
+      if (!key) return;
+      var url = skin.faces[key];
       if (!url) return;
       loader.load(url, function (tex) {
         tex.needsUpdate = true;
@@ -124,22 +186,23 @@
         mat.map = tex;
         mat.emissiveMap = tex;
         mat.emissive = new T.Color(0xffffff);
-        mat.emissiveIntensity = 1.4;
+        mat.emissiveIntensity = 1.6;
         mat.needsUpdate = true;
       });
     });
   }
 
-  /* Add a top-face plane overlay to cubeGroup */
-  function applyTopFace(cubeGroup, photoSkin, T) {
-    var topUrl = photoSkin.faces['top'];
-    if (!topUrl) return;
+  /* Add PNG top-face plane to cubeGroup */
+  function applyTopFace(skin) {
+    if (!T || !capturedGroup) return;
+    var url = skin.faces['top'];
+    if (!url) return;
     var SIZE = 1.2, RADIUS = 0.032;
     var FO = SIZE / 2 + 0.008, PS = SIZE - RADIUS * 2;
     var loader = new T.TextureLoader();
-    loader.load(topUrl, function (tex) {
+    loader.load(url, function (tex) {
       tex.needsUpdate = true;
-      var existing = cubeGroup.getObjectByName('_sfExtTopPlane');
+      var existing = capturedGroup.getObjectByName('_sfExtTopPlane');
       if (existing) {
         existing.material.map = tex;
         existing.material.emissiveMap = tex;
@@ -148,98 +211,153 @@
       }
       var mat = new T.MeshStandardMaterial({
         map: tex, emissiveMap: tex,
-        emissive: new T.Color(0xffffff), emissiveIntensity: 1.4,
+        emissive: new T.Color(0xffffff), emissiveIntensity: 1.6,
         roughness: 0.55, metalness: 0.0, side: T.DoubleSide
       });
       var mesh = new T.Mesh(new T.PlaneGeometry(PS, PS), mat);
       mesh.name = '_sfExtTopPlane';
       mesh.position.set(0, FO, 0);
       mesh.rotation.x = -Math.PI / 2;
-      cubeGroup.add(mesh);
+      capturedGroup.add(mesh);
     });
   }
 
-  /* Main patch installer — runs once _sfInitCube exists */
+  /* Recolor hammer meshes based on skin — head, leather, rings all get skin color */
+  function applyHammerColors(skin) {
+    if (!T || !hammerMeshes.length) return;
+    /* Hammer meshes captured in order from app.v2.70.js:
+       0 = head (BoxGeometry, chromeMat)
+       1-4 = top/bottom chamfers (BoxGeometry, chamferMat)
+       5-8 = side vertical chamfers (BoxGeometry, chamferMat)
+       9-10 = groove notches (BoxGeometry, grooveMat)
+       11 = left side panel (PlaneGeometry, engraveMat) — skip
+       12 = right side panel (PlaneGeometry, engraveMat) — skip
+       13 = handle collar (CylinderGeometry, chamferMat)
+       14 = handle core (CylinderGeometry, leatherMat)
+       15-34 = leather strips + rings (CylinderGeometry, leatherMat/ringMat alternating)
+       35 = pommel (CylinderGeometry, pommelMat)
+       36 = wrist strap (TubeGeometry, leatherMat)
+    */
+    hammerMeshes.forEach(function (mesh, i) {
+      var mat = mesh.material;
+      if (!mat || !mat.color) return;
+      var gtype = mesh.geometry ? mesh.geometry.type : '';
+
+      /* Head + chamfers: tint to skin hammerHead dark base with edge glow */
+      if (gtype === 'BoxGeometry') {
+        var col = new T.Color(skin.hammerHead);
+        mat.color.set(col);
+        mat.emissive = new T.Color(skin.hammerEdge);
+        mat.emissiveIntensity = 0.35;
+        mat.needsUpdate = true;
+      }
+
+      /* Cylinder: distinguish leather (darker, matte) from rings (bright, metal) */
+      if (gtype === 'CylinderGeometry') {
+        var origMetalness = mat.metalness !== undefined ? mat.metalness : 0;
+        if (origMetalness >= 0.9) {
+          /* Metal ring or collar or pommel */
+          mat.color.set(new T.Color(skin.ringColor));
+          mat.emissive = new T.Color(skin.hammerEdge);
+          mat.emissiveIntensity = 0.25;
+          mat.needsUpdate = true;
+        } else {
+          /* Leather handle */
+          mat.color.set(new T.Color(skin.leatherColor));
+          mat.emissive = new T.Color(skin.hammerEdge);
+          mat.emissiveIntensity = 0.08;
+          mat.needsUpdate = true;
+        }
+      }
+
+      /* Strap tube */
+      if (gtype === 'TubeGeometry') {
+        mat.color.set(new T.Color(skin.leatherColor));
+        mat.emissive = new T.Color(skin.hammerEdge);
+        mat.emissiveIntensity = 0.08;
+        mat.needsUpdate = true;
+      }
+    });
+  }
+
+  /* Intercept document.head.appendChild to detect when three.min.js finishes loading.
+     This runs SYNCHRONOUSLY on the script's onload — before _sfRunCube() fires — so
+     Group.prototype.add is hooked before any cubeGroup.add(plane) call. */
+  function patchHeadAppend() {
+    if (origHeadAppend) return;
+    origHeadAppend = document.head.appendChild.bind(document.head);
+    document.head.appendChild = function (el) {
+      var result = origHeadAppend(el);
+      if (el && el.tagName === 'SCRIPT' && el.src && el.src.indexOf('three.min.js') !== -1) {
+        var origOnload = el.onload;
+        el.onload = function () {
+          /* THREE just loaded — hook Group.add immediately */
+          hookGroupAdd();
+          if (typeof origOnload === 'function') origOnload.apply(this, arguments);
+        };
+      }
+      return result;
+    };
+  }
+
+  /* Main patch: wrap _sfInitCube to reset state and inject the head.appendChild hook */
   function installPatch() {
     if (!window._sfInitCube || window._sfInitCube._sfExtPatched) return;
     var _orig = window._sfInitCube;
 
     window._sfInitCube = function (user) {
       var skinId = (user && user.active_cube_id) ? user.active_cube_id : 'cube_forge';
-      var photoSkin = PHOTO_SKINS[skinId];
+      activePhotoSkin = PHOTO_SKINS[skinId];
 
-      /* Not a photo skin — pass through unchanged */
-      if (!photoSkin) {
+      /* Non-photo skin: pass through */
+      if (!activePhotoSkin) {
+        unhookGroupAdd();
         return _orig.call(this, user);
       }
 
-      /* Photo skin path:
-         1. Call original — it dynamically loads THREE.js then builds the cube.
-         2. After THREE loads (poll window.THREE), hook Group.prototype.add
-            to intercept the face planes as cubeGroup.add(plane) is called.
-         3. Once we have 4 face planes + cubeGroup, apply PNG textures.
-      */
-      var facePlanes = [];
-      var capturedCubeGroup = null;
-      var addHookInstalled = false;
-      var origGroupAdd = null;
-      var T = null;
+      /* Reset capture state for fresh cube build */
+      facePlanes = [];
+      capturedGroup = null;
+      hammerMeshes = [];
 
-      function hookGroupAdd() {
-        if (addHookInstalled) return;
-        T = window.THREE;
-        if (!T || !T.Group) return;
-        addHookInstalled = true;
-        origGroupAdd = T.Group.prototype.add;
+      /* Install head.appendChild intercept so we hook Group.add the instant THREE loads */
+      patchHeadAppend();
 
-        T.Group.prototype.add = function () {
-          var result = origGroupAdd.apply(this, arguments);
-          /* Detect face planes: PlaneGeometry + CanvasTexture map */
-          for (var ai = 0; ai < arguments.length; ai++) {
-            var obj = arguments[ai];
-            if (obj && obj.isMesh && obj.geometry && obj.geometry.type === 'PlaneGeometry') {
-              if (obj.material && obj.material.map && obj.material.map.isCanvasTexture) {
-                facePlanes.push(obj);
-                capturedCubeGroup = this;
-              }
-            }
-          }
-          return result;
-        };
-      }
+      /* Call original — loads THREE dynamically, builds cube, calls cubeGroup.add() */
+      _orig.call(this, user);
 
-      /* Poll for THREE to appear (it's loaded dynamically inside _sfInitCube) */
-      var pollCount = 0;
-      var pollIv = setInterval(function () {
-        pollCount++;
-        if (pollCount > 200) { clearInterval(pollIv); restoreGroupAdd(); return; }
-        if (window.THREE && window.THREE.Group && !addHookInstalled) {
-          hookGroupAdd();
+      /* After original fires, poll until face planes are captured then apply textures.
+         This handles cases where THREE was already loaded (cached script, second equip). */
+      var waited = 0;
+      var applyIv = setInterval(function () {
+        waited++;
+
+        /* If THREE is available but hook not yet installed, install it now */
+        if (window.THREE && !hookActive) hookGroupAdd();
+
+        /* Once we have face planes captured, apply everything */
+        if (facePlanes.length >= 4 && capturedGroup) {
+          clearInterval(applyIv);
+          unhookGroupAdd();
+          applyFaceTextures(activePhotoSkin);
+          applyTopFace(activePhotoSkin);
+          /* Give hammer meshes 300ms extra to all be added */
+          setTimeout(function () { applyHammerColors(activePhotoSkin); }, 300);
+          return;
         }
-        /* Once we have 4 face planes, apply textures and clean up */
-        if (facePlanes.length >= 4 && capturedCubeGroup) {
-          clearInterval(pollIv);
-          restoreGroupAdd();
-          applyFaceTextures(facePlanes, photoSkin, T);
-          applyTopFace(capturedCubeGroup, photoSkin, T);
+
+        /* Timeout after 15 seconds */
+        if (waited > 500) {
+          clearInterval(applyIv);
+          unhookGroupAdd();
         }
       }, 30);
-
-      function restoreGroupAdd() {
-        if (origGroupAdd && T && T.Group) {
-          T.Group.prototype.add = origGroupAdd;
-          origGroupAdd = null;
-        }
-      }
-
-      /* Call original — this triggers THREE.js loading and cube construction */
-      _orig.call(this, user);
     };
 
     window._sfInitCube._sfExtPatched = true;
   }
 
-  /* Poll for _sfInitCube to be defined, then patch it */
+  /* Poll for _sfInitCube to be defined */
   var patchIv = setInterval(function () {
     if (window._sfInitCube && !window._sfInitCube._sfExtPatched) {
       installPatch();
@@ -247,16 +365,16 @@
     }
   }, 50);
 
-  /* Runtime skin reload helper */
+  /* Runtime skin-switch helper */
   window._sfReloadCube = function (newSkinId) {
     window._sfCubeActive = false;
-    window._sfCubeScene = null;
     if (window._sfUser) {
       window._sfUser.active_cube_id = newSkinId;
-      /* Remove patched flag so it re-installs for new skin */
-      if (window._sfInitCube) delete window._sfInitCube._sfExtPatched;
-      installPatch();
-      window._sfInitCube(window._sfUser);
+      if (window._sfInitCube) {
+        delete window._sfInitCube._sfExtPatched;
+        installPatch();
+        window._sfInitCube(window._sfUser);
+      }
     }
   };
 
