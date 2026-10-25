@@ -5700,17 +5700,16 @@ ${globalSidebar()}
   }
 
   var SKIN_IMGS = {
-    set_inferno: '/static/skins/set_inferno.png',
-    set_neon:    '/static/skins/set_neon.png',
-    set_gold:    '/static/skins/set_gold.png',
-    set_diamond: '/static/skins/set_diamond.png'
+    set_stemforge: '/static/skins/set_stemforge.png',
+    set_inferno:   '/static/skins/set_inferno.png',
+    set_neon:      '/static/skins/set_neon.png',
+    set_gold:      '/static/skins/set_gold.png',
+    set_diamond:   '/static/skins/set_diamond.png'
   };
 
   function cubeHammerHtml(colors, idx, itemId) {
     if (SKIN_IMGS[itemId]) {
-      return '<div style="position:relative;width:120px;height:120px;animation:sfCubeFloat 4s ease-in-out infinite;display:flex;align-items:center;justify-content:center">'
-        + '<img src="'+SKIN_IMGS[itemId]+'" style="width:120px;height:120px;object-fit:contain;image-rendering:auto;filter:drop-shadow(0 0 8px currentColor)" />'
-        + '</div>';
+      return '<img src="'+SKIN_IMGS[itemId]+'" style="width:100%;height:100%;object-fit:cover;display:block;border-radius:0" />';
     }
     var c    = colors || {};
     var body = c.cubeBody  || '#070e1c';
@@ -5767,14 +5766,16 @@ ${globalSidebar()}
       } else {
         btnHtml = '<button class="sf-item__btn sf-item__btn--buy" data-id="'+item.id+'" onclick="window.sfBuy(this.dataset.id,this)"><i class="fas fa-shopping-cart"></i> Buy - $'+(item.price_cents/100).toFixed(2)+'</button>';
       }
+      var descId = 'sfdesc'+item.id;
       return '<div class="sf-item'+(isOwned?' owned':'')+'" id="sf-card-'+item.id+'">'
-        + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);display:flex;align-items:center;justify-content:center">'
+        + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);padding:0;overflow:hidden;position:relative">'
         +   cubeHammerHtml(colors, idx, item.id)
-        +   badgeHtml
+        +   '<div style="position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none">'+badgeHtml+'</div>'
         + '</div>'
         + '<div class="sf-item__body">'
         +   '<div class="sf-item__name">'+item.name+'</div>'
-        +   '<div class="sf-item__desc">'+item.description+'</div>'
+        +   '<button data-desc="'+descId+'" onclick="sfToggleDesc(this)" style="background:none;border:none;color:var(--muted);font-size:.72rem;font-weight:600;cursor:pointer;padding:0 0 4px;text-align:left;letter-spacing:.03em">Description +</button>'
+        +   '<div id="'+descId+'" class="sf-item__desc" style="display:none">'+item.description+'</div>'
         +   (!isFree && !isOwned ? '<div class="sf-item__price">One-time purchase</div>' : '')
         +   btnHtml
         + '</div>'
@@ -5807,6 +5808,14 @@ ${globalSidebar()}
     });
   }
   loadShop();
+
+  window.sfToggleDesc = function(btn) {
+    var d = document.getElementById(btn.dataset.desc);
+    if (!d) return;
+    var hidden = d.style.display === 'none' || d.style.display === '';
+    d.style.display = hidden ? 'block' : 'none';
+    btn.textContent = hidden ? 'Description -' : 'Description +';
+  };
 
   window.sfBuy = function(itemId, btn) {
     btn.disabled = true; btn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Loading...';
@@ -12337,7 +12346,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-195'
+const ASSET_VER = '20261022-196'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
