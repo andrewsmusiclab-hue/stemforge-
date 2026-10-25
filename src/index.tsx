@@ -5515,9 +5515,9 @@ ${globalSidebar()}
       if (isActive) {
         btnHtml = '<button class="sf-item__btn sf-item__btn--owned" disabled><i class="fas fa-check"></i> Equipped</button>';
       } else if (isOwned) {
-        btnHtml = '<button class="sf-item__btn sf-item__btn--equip" onclick="window.sfEquip(\''+item.id+'\',this)"><i class="fas fa-wand-magic-sparkles"></i> Equip</button>';
+        btnHtml = '<button class="sf-item__btn sf-item__btn--equip" data-id="'+item.id+'" onclick="window.sfEquip(this.dataset.id,this)"><i class="fas fa-wand-magic-sparkles"></i> Equip</button>';
       } else {
-        btnHtml = '<button class="sf-item__btn sf-item__btn--buy" onclick="window.sfBuy(\''+item.id+'\',this)"><i class="fas fa-shopping-cart"></i> Buy &mdash; $'+(item.price_cents/100).toFixed(2)+'</button>';
+        btnHtml = '<button class="sf-item__btn sf-item__btn--buy" data-id="'+item.id+'" onclick="window.sfBuy(this.dataset.id,this)"><i class="fas fa-shopping-cart"></i> Buy - $'+(item.price_cents/100).toFixed(2)+'</button>';
       }
       return '<div class="sf-item'+(isOwned?' owned':'')+'" id="sf-card-'+item.id+'">'
         + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);display:flex;align-items:center;justify-content:center">'
@@ -12084,7 +12084,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-191'
+const ASSET_VER = '20261022-192'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
