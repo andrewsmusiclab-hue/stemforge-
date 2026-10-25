@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Shop Test</title>
+<link href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" rel="stylesheet"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#070e1c;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;padding:32px 20px}
+  :root{--primary:#8b5cf6;--muted:rgba(255,255,255,.4)}
+  .sf-shop{max-width:1020px;margin:0 auto}
+  .sf-shop__hero{margin-bottom:36px}
+  .sf-shop__hero h1{font-size:1.9rem;font-weight:800;display:flex;align-items:center;gap:12px;margin-bottom:8px}
+  .sf-shop__hero p{color:var(--muted);font-size:.9rem}
+  .sf-shop__section-header{display:flex;align-items:center;gap:10px;margin-bottom:20px;font-size:.82rem;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:.08em}
+  .sf-shop__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:20px}
+  .sf-item{background:rgba(255,255,255,.04);border:1.5px solid rgba(255,255,255,.08);border-radius:16px;overflow:hidden;transition:border-color .2s,transform .2s;display:flex;flex-direction:column}
+  .sf-item.owned{border-color:rgba(139,92,246,.3)}
+  .sf-item:hover{transform:translateY(-2px);border-color:rgba(139,92,246,.25)}
+  .sf-item__preview{height:140px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;flex-shrink:0}
+  .sf-item__badge{position:absolute;top:10px;right:10px;font-size:.68rem;font-weight:800;padding:3px 9px;border-radius:999px;text-transform:uppercase;letter-spacing:.05em}
+  .sf-item__badge--free{background:rgba(16,185,129,.2);border:1px solid rgba(16,185,129,.4);color:#6ee7b7}
+  .sf-item__badge--owned{background:rgba(139,92,246,.2);border:1px solid rgba(139,92,246,.45);color:#c4b5fd}
+  .sf-item__badge--locked{background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.4)}
+  .sf-item__body{padding:12px 14px 14px;display:flex;flex-direction:column;flex:1}
+  .sf-item__name{font-weight:700;font-size:.88rem;margin-bottom:5px;line-height:1.3}
+  .sf-item__desc{font-size:.74rem;color:var(--muted);line-height:1.55;flex:1;margin-bottom:12px}
+  .sf-item__price{font-size:.75rem;font-weight:700;color:rgba(255,255,255,.55);margin-bottom:8px}
+  .sf-item__btn{width:100%;padding:8px;border-radius:9px;font-size:.82rem;font-weight:700;cursor:pointer;border:none;display:flex;align-items:center;justify-content:center;gap:7px;transition:opacity .15s,transform .1s}
+  .sf-item__btn:hover:not(:disabled){opacity:.9;transform:scale(1.02)}
+  .sf-item__btn:disabled{cursor:default;transform:none}
+  .sf-item__btn--owned{background:rgba(139,92,246,.12);border:1px solid rgba(139,92,246,.3);color:#a78bfa}
+  .sf-item__btn--buy{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff}
+  .sf-item__btn--equip{background:linear-gradient(135deg,#7c3aed,#8b5cf6);color:#fff}
+  @keyframes sfCubeFloat{0%,100%{transform:rotateX(18deg) rotateY(-28deg) translateY(0)}50%{transform:rotateX(18deg) rotateY(-28deg) translateY(-5px)}}
+  @keyframes sfHammerSwing{0%,80%,100%{transform:rotate(-12deg)}40%{transform:rotate(8deg)}}
+</style>
+</head>
+<body>
+<div class="sf-shop">
+  <div class="sf-shop__hero">
+    <h1><i class="fas fa-store" style="color:#8b5cf6"></i> StemForge Shop</h1>
+    <p>Personalise your forge with exclusive Cube &amp; Hammer sets. Each set includes the matching cube and hammer as one combined item.</p>
+  </div>
+  <div class="sf-shop__section-header">
+    <i class="fas fa-cube"></i> Cube &amp; Hammer Sets
+    <span style="margin-left:auto;font-size:.76rem;color:rgba(255,255,255,.35);text-transform:none;letter-spacing:0">5 sets total &mdash; 1 free, 4 at $1.99</span>
+  </div>
+  <div class="sf-shop__grid" id="sf-shop-grid"></div>
+</div>
+<script>
+var ITEMS = [
+  {id:'set_stemforge',name:'StemForge Cube & Hammer',description:'The original StemForge set. Steel chrome cube with forge-fire glow and matching hammer.',price_cents:0,preview_colors:'{"primary":"#00e5ff","secondary":"#ff8c20","cubeBody":"#070e1c","edgeGlow":"#00e5ff","accent":"#ff8c20"}'},
+  {id:'set_inferno',name:'Inferno Cube & Hammer',description:'Volcanic obsidian cube with ember-cracked edges and a scorched iron hammer.',price_cents:199,preview_colors:'{"primary":"#ff4400","secondary":"#ff6600","cubeBody":"#0a0404","edgeGlow":"#ff2200","accent":"#ff6600"}'},
+  {id:'set_neon',name:'Neon Cube & Hammer',description:'Frosted glass cube with electric cyan pulse lines and a neon-lit chrome hammer.',price_cents:199,preview_colors:'{"primary":"#00ffff","secondary":"#0088ff","cubeBody":"#020d18","edgeGlow":"#00ffff","accent":"#0088ff"}'},
+  {id:'set_gold',name:'Gold Cube & Hammer',description:'24k brushed gold cube with warm amber glow and a gilded hammer.',price_cents:199,preview_colors:'{"primary":"#ffd700","secondary":"#ff8800","cubeBody":"#1a1000","edgeGlow":"#ffd700","accent":"#ff8800"}'},
+  {id:'set_diamond',name:'Diamond Cube & Hammer',description:'Crimson diamond-faceted cube with a crystal hammer dripping in red.',price_cents:199,preview_colors:'{"primary":"#ff0055","secondary":"#ff4488","cubeBody":"#1a0008","edgeGlow":"#ff0055","accent":"#ff4488"}'}
+];
+var ACTIVE = 'set_stemforge';
+var OWNED  = {'set_stemforge':true};
+
+function cubeHammerHtml(colors, idx) {
+  var c    = colors || {};
+  var body = c.cubeBody  || '#070e1c';
+  var edge = c.primary   || '#00e5ff';
+  var acc  = c.secondary || '#ff8c20';
+  var uid  = 'sf' + (idx||0);
+  var faces = ['translateZ(29px)','rotateY(180deg) translateZ(29px)','rotateY(-90deg) translateZ(29px)','rotateY(90deg) translateZ(29px)','rotateX(90deg) translateZ(29px)','rotateX(-90deg) translateZ(29px)'];
+  var faceHtml = faces.map(function(t){
+    return '<div style="position:absolute;width:58px;height:58px;background:'+body+';border:1.5px solid '+edge+';border-radius:6px;transform:'+t+';box-shadow:inset 0 0 10px rgba(0,0,0,.4),0 0 8px '+edge+'44"></div>';
+  }).join('');
+  return '<div style="position:relative;width:90px;height:90px">'
+    + '<div style="perspective:180px;width:58px;height:58px;position:absolute;left:4px;bottom:4px">'
+    +   '<div style="width:58px;height:58px;position:relative;transform-style:preserve-3d;animation:sfCubeFloat 4s ease-in-out infinite">'
+    +     faceHtml
+    +   '</div>'
+    + '</div>'
+    + '<div style="position:absolute;right:0;top:4px;animation:sfHammerSwing 3s ease-in-out infinite;transform-origin:80% 90%">'
+    +   '<svg width="42" height="46" viewBox="0 0 42 46" fill="none" xmlns="http://www.w3.org/2000/svg">'
+    +     '<defs>'
+    +       '<linearGradient id="'+uid+'h" x1="0" y1="0" x2="1" y2="1">'
+    +         '<stop stop-color="'+edge+'"/>'
+    +         '<stop offset="1" stop-color="'+acc+'" stop-opacity=".7"/>'
+    +       '</linearGradient>'
+    +     '</defs>'
+    +     '<rect x="18" y="20" width="6" height="24" rx="3" fill="'+acc+'"/>'
+    +     '<rect x="4" y="4" width="34" height="18" rx="5" fill="url(#'+uid+'h)"/>'
+    +     '<rect x="4" y="4" width="34" height="18" rx="5" fill="'+edge+'" opacity=".15"/>'
+    +     '<rect x="14" y="4" width="14" height="18" rx="3" fill="'+acc+'" opacity=".4"/>'
+    +   '</svg>'
+    + '</div>'
+    + '</div>';
+}
+
+function renderGrid(items, ownedMap, activeSetId) {
+  var grid = document.getElementById('sf-shop-grid');
+  grid.innerHTML = items.map(function(item, idx){
+    var colors = {};
+    try { colors = JSON.parse(item.preview_colors||'{}'); } catch(e){}
+    var isFree   = item.price_cents === 0;
+    var isOwned  = isFree || !!ownedMap[item.id];
+    var isActive = item.id === activeSetId;
+    var bgFrom   = colors.cubeBody || '#070e1c';
+    var badgeHtml = isActive
+      ? '<span class="sf-item__badge sf-item__badge--owned"><i class="fas fa-check" style="margin-right:3px"></i>Equipped</span>'
+      : isFree
+        ? '<span class="sf-item__badge sf-item__badge--free">Free</span>'
+        : isOwned
+          ? '<span class="sf-item__badge sf-item__badge--owned"><i class="fas fa-check" style="margin-right:3px"></i>Owned</span>'
+          : '<span class="sf-item__badge sf-item__badge--locked"><i class="fas fa-lock" style="margin-right:3px"></i>$'+(item.price_cents/100).toFixed(2)+'</span>';
+    var btnHtml;
+    if (isActive) {
+      btnHtml = '<button class="sf-item__btn sf-item__btn--owned" disabled><i class="fas fa-check"></i> Equipped</button>';
+    } else if (isOwned) {
+      btnHtml = '<button class="sf-item__btn sf-item__btn--equip" data-id="'+item.id+'" onclick="alert(\'Equip: \'+this.dataset.id)"><i class="fas fa-wand-magic-sparkles"></i> Equip</button>';
+    } else {
+      btnHtml = '<button class="sf-item__btn sf-item__btn--buy" data-id="'+item.id+'" onclick="alert(\'Buy: \'+this.dataset.id)"><i class="fas fa-shopping-cart"></i> Buy - $'+(item.price_cents/100).toFixed(2)+'</button>';
+    }
+    return '<div class="sf-item'+(isOwned?' owned':'')+'\" id="sf-card-'+item.id+'">'
+      + '<div class="sf-item__preview" style="background:linear-gradient(135deg,'+bgFrom+',#050a14);display:flex;align-items:center;justify-content:center">'
+      +   cubeHammerHtml(colors, idx)
+      +   badgeHtml
+      + '</div>'
+      + '<div class="sf-item__body">'
+      +   '<div class="sf-item__name">'+item.name+'</div>'
+      +   '<div class="sf-item__desc">'+item.description+'</div>'
+      +   (!isFree && !isOwned ? '<div class="sf-item__price">One-time purchase</div>' : '')
+      +   btnHtml
+      + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+renderGrid(ITEMS, OWNED, ACTIVE);
+</script>
+</body>
+</html>
