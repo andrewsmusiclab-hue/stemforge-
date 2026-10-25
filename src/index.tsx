@@ -4363,8 +4363,9 @@ app.get('/api/cover-image/:jobId', async (c) => {
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/skin-glb/:id
 //  Serve skin GLB 3D model files from R2 under skins/ prefix.
-//  Auth: none — GLB files are public shop assets.
-//  Range-request support for large files (GLBs can be 50-70 MB).
+//  Streams directly from R2 body — no arrayBuffer() — so large
+//  GLBs (50–70 MB) don't hit Workers memory limits.
+//  Range-request support via R2's native range API.
 // ═══════════════════════════════════════════════════════════════
 app.get('/api/skin-glb/:id', async (c) => {
   if (!c.env.IMAGES) return c.json({ error: 'Storage unavailable' }, 503)
@@ -4372,37 +4373,46 @@ app.get('/api/skin-glb/:id', async (c) => {
   const key = `skins/${id}.glb`
   const rangeHeader = c.req.header('range')
 
-  const obj = await c.env.IMAGES.get(key)
-  if (!obj) return c.json({ error: 'Skin GLB not found' }, 404)
-  const full = await obj.arrayBuffer()
-  const total = full.byteLength
+  const commonHeaders: Record<string, string> = {
+    'Content-Type': 'model/gltf-binary',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'public, max-age=86400',
+    'Access-Control-Allow-Origin': '*',
+  }
 
   if (rangeHeader) {
+    // Parse range header
     const [, rangeVal] = rangeHeader.split('=')
     const [startStr, endStr] = rangeVal.split('-')
     const start = parseInt(startStr, 10)
-    const end = endStr ? parseInt(endStr, 10) : total - 1
-    const chunk = full.slice(start, end + 1)
-    return new Response(chunk, {
+    const end = endStr ? parseInt(endStr, 10) : undefined
+
+    // Use R2 native range — avoids loading entire object into memory
+    const obj = await (c.env.IMAGES as any).get(key, {
+      range: { offset: start, length: end !== undefined ? end - start + 1 : undefined }
+    })
+    if (!obj) return c.json({ error: 'Skin GLB not found' }, 404)
+
+    const size = obj.size as number
+    const rangeEnd = end !== undefined ? end : size - 1
+    return new Response(obj.body, {
       status: 206,
       headers: {
-        'Content-Type': 'model/gltf-binary',
-        'Content-Range': `bytes ${start}-${end}/${total}`,
-        'Accept-Ranges': 'bytes',
-        'Content-Length': String(chunk.byteLength),
-        'Cache-Control': 'public, max-age=86400',
-        'Access-Control-Allow-Origin': '*',
+        ...commonHeaders,
+        'Content-Range': `bytes ${start}-${rangeEnd}/${size}`,
+        'Content-Length': String(rangeEnd - start + 1),
       },
     })
   }
 
-  return new Response(full, {
+  // Full request — stream body directly, never buffer into memory
+  const obj = await c.env.IMAGES.get(key)
+  if (!obj) return c.json({ error: 'Skin GLB not found' }, 404)
+
+  return new Response(obj.body, {
     headers: {
-      'Content-Type': 'model/gltf-binary',
-      'Accept-Ranges': 'bytes',
-      'Content-Length': String(total),
-      'Cache-Control': 'public, max-age=86400',
-      'Access-Control-Allow-Origin': '*',
+      ...commonHeaders,
+      'Content-Length': String(obj.size),
     },
   })
 })
@@ -12487,7 +12497,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-207'
+const ASSET_VER = '20261022-208'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
