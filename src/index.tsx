@@ -4360,6 +4360,19 @@ app.get('/api/cover-image/:jobId', async (c) => {
   }
 })
 
+// TEMP diagnostic — admin only
+app.get('/api/r2-debug', async (c) => {
+  if (!c.env.IMAGES) return c.json({ error: 'no IMAGES binding' })
+  const key = 'skins/set_stone.glb'
+  try {
+    const obj = await c.env.IMAGES.get(key)
+    if (!obj) return c.json({ found: false, key, tried: key })
+    return c.json({ found: true, key, size: obj.size, etag: obj.etag, httpMetadata: obj.httpMetadata })
+  } catch(e: any) {
+    return c.json({ error: e?.message, key })
+  }
+})
+
 // ═══════════════════════════════════════════════════════════════
 //  GET /api/skin-glb/:id
 //  Serve skin GLB 3D model files from R2 under skins/ prefix.
@@ -12497,7 +12510,7 @@ app.get('/api/poll-cover/:id', async (c) => {
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 // Cache-buster: changes every deploy so browsers always fetch fresh CSS/JS
-const ASSET_VER = '20261022-208'
+const ASSET_VER = '20261022-209'
 
 function shell(title: string, body: string, extraHead = '') {
   return `<!DOCTYPE html>
